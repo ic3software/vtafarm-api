@@ -27,13 +27,35 @@ with per-user namespace isolation.
 
 ### Setup
 
-```bash
-cp .env.example .env
-make up                     # start PostgreSQL + API
-make migrate                # run migrations
-make seed                   # seed test data
-make logs                   # tail logs
-```
+1. Copy the example env file:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Start PostgreSQL + API:
+
+   ```bash
+   make up
+   ```
+
+3. Run migrations:
+
+   ```bash
+   make migrate
+   ```
+
+4. Seed test data:
+
+   ```bash
+   make seed
+   ```
+
+5. Tail logs:
+
+   ```bash
+   make logs
+   ```
 
 ### Environment Variables
 
