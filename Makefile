@@ -1,0 +1,75 @@
+# ─── Image & deploy variables ─────────────────────────────────────────────────
+NAME         ?= cipherportal
+DOCKER_USERNAME ?=
+IMAGE        ?= $(DOCKER_USERNAME)/cipherportal-api
+TAG          ?= $(shell git rev-parse --short HEAD)
+NAMESPACE    ?= default
+DEPLOY_ENV   ?= production
+PG_PASSWORD  ?=
+
+.PHONY: build tidy \
+        migrate migrate-down migrate-new \
+        up down reset logs seed \
+        image-build image-push \
+        deploy
+
+# ─── Local ────────────────────────────────────────────────────────────────────
+build:
+	go build -o bin/api ./main.go
+
+tidy:
+	go mod tidy
+
+# ─── Migrations ───────────────────────────────────────────────────────────────
+# Usage: make migrate-new NAME=create_users
+migrate-new:
+	@test -n "$(NAME)" || (echo "Usage: make migrate-new NAME=<name>"; exit 1)
+	@n=$$(ls migrations/*.up.sql 2>/dev/null | wc -l | tr -d ' '); \
+	seq=$$(printf "%06d" $$((n + 1))); \
+	touch migrations/$${seq}_$(NAME).up.sql migrations/$${seq}_$(NAME).down.sql; \
+	echo "Created migrations/$${seq}_$(NAME).{up,down}.sql"
+
+# ─── Docker Compose ───────────────────────────────────────────────────────────
+up:
+	docker compose up -d
+
+down:
+	docker compose down
+
+reset:
+	docker compose down -v
+	docker compose up -d
+
+logs:
+	docker compose logs -f api
+
+migrate:
+	docker compose exec api go run ./cmd/migrate up
+
+migrate-down:
+	docker compose exec api go run ./cmd/migrate down
+
+seed:
+	docker compose exec api go run ./seed
+
+# ─── Docker Hub ───────────────────────────────────────────────────────────────
+image-build:
+	docker build -t $(IMAGE):$(TAG) -t $(IMAGE):latest .
+
+image-push: image-build
+	docker push $(IMAGE):$(TAG)
+	docker push $(IMAGE):latest
+
+# ─── Kubernetes (Helm) ────────────────────────────────────────────────────────
+# Deploys both API and PostgreSQL as one release.
+# helm uninstall cipherportal → removes everything.
+# Usage: make deploy PG_PASSWORD=xxx [DOCKER_USERNAME=xxx] [TAG=abc1234]
+deploy:
+	@test -n "$(PG_PASSWORD)" || (echo "Error: PG_PASSWORD is required"; exit 1)
+	helm upgrade $(NAME) ./helm/cipherportal-api \
+	  --set image.repository=$(IMAGE) \
+	  --set image.tag=$(TAG) \
+	  --set app.env=$(DEPLOY_ENV) \
+	  --set postgresql.password=$(PG_PASSWORD) \
+	  --install --atomic --timeout=10m \
+	  --namespace=$(NAMESPACE)
