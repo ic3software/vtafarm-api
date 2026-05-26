@@ -1,0 +1,33 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  bin = "./tmp/main"
+  cmd = "go build -o ./tmp/main ./main.go"
+  delay = 1000
+  exclude_dir = ["assets", "tmp", "vendor", "testdata", "migrations", "seed"]
+  exclude_regex = ["_test.go"]
+  include_ext = ["go", "toml", "yaml", "yml"]
+  kill_delay = "0s"
+  log = "build-errors.log"
+  # Enable polling inside Docker (inotify not always available with mounted volumes)
+  poll = true
+  poll_interval = 1000
+  send_interrupt = false
+  stop_on_error = false
+
+[color]
+  build = "yellow"
+  main = "magenta"
+  runner = "green"
+  watcher = "cyan"
+
+[log]
+  time = true
+
+[misc]
+  clean_on_exit = true
+
+[screen]
+  clear_on_rebuild = false
+  keep_scroll = true

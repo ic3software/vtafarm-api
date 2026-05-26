@@ -1,0 +1,47 @@
+name: cipherportal-api
+replicaCount: 1
+
+image:
+  repository: ""
+  tag: ""
+
+service:
+  port: 8080
+
+ingress:
+  enabled: false
+  className: nginx
+  host: ""
+  tls: false
+  clusterIssuer: letsencrypt-prod
+
+app:
+  env: production
+  port: "8080"
+
+db:
+  # When postgresql.enabled=true, host is auto-set to {{ .Release.Name }}-postgresql.
+  # When postgresql.enabled=false, set host to your external DB endpoint.
+  host: ""
+  port: "5432"
+  user: postgres
+  name: cipherportal
+  sslmode: disable
+
+postgresql:
+  enabled: true
+  image: postgres:18-alpine
+  # Set via: --set postgresql.password=<your_password>
+  password: ""
+  storage: 5Gi
+
+k8s:
+  namespacePrefix: cp-user
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi

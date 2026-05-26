@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.name }}-config
+data:
+  APP_PORT:             {{ .Values.app.port | quote }}
+  APP_ENV:              {{ .Values.app.env | quote }}
+  {{- if .Values.postgresql.enabled }}
+  DB_HOST:              {{ printf "%s-postgresql" .Release.Name | quote }}
+  {{- else }}
+  DB_HOST:              {{ .Values.db.host | quote }}
+  {{- end }}
+  DB_PORT:              {{ .Values.db.port | quote }}
+  DB_USER:              {{ .Values.db.user | quote }}
+  DB_NAME:              {{ .Values.db.name | quote }}
+  DB_SSLMODE:           {{ .Values.db.sslmode | quote }}
+  K8S_NAMESPACE_PREFIX: {{ .Values.k8s.namespacePrefix | quote }}

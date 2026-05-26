@@ -1,0 +1,24 @@
+# Binaries
+bin/
+tmp/
+*.exe
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Go
+vendor/
+
+# Local PostgreSQL data (bind mount from docker-compose)
+data/
+
+# Air logs
+build-errors.log
