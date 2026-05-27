@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS pod_deployments (
     user_id      BIGINT       NOT NULL REFERENCES users(id),
     name         VARCHAR(255) NOT NULL,
     namespace    VARCHAR(255) NOT NULL,
-    yaml_content TEXT         NOT NULL,
+    spec         JSONB        NOT NULL DEFAULT '{}',
     status       VARCHAR(50)  NOT NULL DEFAULT 'pending',
     created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),

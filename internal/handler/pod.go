@@ -1,12 +1,14 @@
 package handler
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"sigs.k8s.io/yaml"
 
 	"github.com/ic3software/cipherportal-api/internal/k8s"
 	"github.com/ic3software/cipherportal-api/internal/model"
@@ -45,6 +47,13 @@ func (h *PodHandler) Create(c *gin.Context) {
 		return
 	}
 
+	// Convert YAML → JSON for JSONB storage.
+	specJSON, err := yaml.YAMLToJSON([]byte(req.YAMLContent))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid yaml: " + err.Error()})
+		return
+	}
+
 	userIDStr := fmt.Sprintf("%d", req.UserID)
 	ctx := c.Request.Context()
 
@@ -60,11 +69,11 @@ func (h *PodHandler) Create(c *gin.Context) {
 	}
 
 	record := model.PodDeployment{
-		UserID:      req.UserID,
-		Name:        pod.Name,
-		Namespace:   pod.Namespace,
-		YAMLContent: req.YAMLContent,
-		Status:      "created",
+		UserID:    req.UserID,
+		Name:      pod.Name,
+		Namespace: pod.Namespace,
+		Spec:      json.RawMessage(specJSON),
+		Status:    "created",
 	}
 	if err := h.db.Create(&record).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist record"})

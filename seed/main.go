@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 
 	"github.com/joho/godotenv"
 	"golang.org/x/crypto/bcrypt"
+	"sigs.k8s.io/yaml"
 
 	"github.com/ic3software/cipherportal-api/internal/config"
 	"github.com/ic3software/cipherportal-api/internal/database"
@@ -42,12 +44,7 @@ func main() {
 	}
 
 	// Seed pod deployments
-	pods := []model.PodDeployment{
-		{
-			UserID:    user.ID,
-			Name:      "nginx-demo",
-			Namespace: fmt.Sprintf("cp-user-%d", user.ID),
-			YAMLContent: `apiVersion: v1
+	nginxYAML := `apiVersion: v1
 kind: Pod
 metadata:
   name: nginx-demo
@@ -56,8 +53,20 @@ spec:
   - name: nginx
     image: nginx:alpine
     ports:
-    - containerPort: 80`,
-			Status: "seeded",
+    - containerPort: 80`
+
+	nginxJSON, err := yaml.YAMLToJSON([]byte(nginxYAML))
+	if err != nil {
+		log.Fatalf("yaml to json: %v", err)
+	}
+
+	pods := []model.PodDeployment{
+		{
+			UserID:    user.ID,
+			Name:      "nginx-demo",
+			Namespace: fmt.Sprintf("cp-user-%d", user.ID),
+			Spec:      json.RawMessage(nginxJSON),
+			Status:    "seeded",
 		},
 	}
 
