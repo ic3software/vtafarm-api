@@ -165,14 +165,31 @@ func (h *PodHandler) Delete(c *gin.Context) {
 	}
 
 	podName := c.Param("name")
-	if err := h.k8sClient.DeletePod(c.Request.Context(), userIDStr, podName); err != nil {
+	ctx := c.Request.Context()
+
+	if err := h.k8sClient.DeletePod(ctx, userIDStr, podName); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
+	// Update status then soft-delete so both `status` and `deleted_at` are set.
 	h.db.Model(&model.PodDeployment{}).
 		Where("name = ? AND user_id = ?", podName, uint(userID)).
 		Update("status", "deleted")
+	h.db.Where("name = ? AND user_id = ?", podName, uint(userID)).
+		Delete(&model.PodDeployment{})
+
+	// If the user's namespace is now empty, tear it down.
+	if remaining, err := h.k8sClient.ListPods(ctx, userIDStr); err == nil && len(remaining) == 0 {
+		if err := h.k8sClient.DeleteNamespace(ctx, userIDStr); err != nil {
+			// Non-fatal: log but still return success to the caller.
+			c.JSON(http.StatusOK, gin.H{
+				"message": "pod deleted",
+				"warning": "namespace cleanup failed: " + err.Error(),
+			})
+			return
+		}
+	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "pod deleted"})
 }

@@ -176,3 +176,14 @@ func (c *Client) DeletePod(ctx context.Context, userID, podName string) error {
 	}
 	return nil
 }
+
+// DeleteNamespace removes the user's namespace and everything inside it.
+// IsNotFound is treated as success (idempotent).
+func (c *Client) DeleteNamespace(ctx context.Context, userID string) error {
+	ns := c.UserNamespace(userID)
+	err := c.kube.CoreV1().Namespaces().Delete(ctx, ns, metav1.DeleteOptions{})
+	if err != nil && !k8serrors.IsNotFound(err) {
+		return fmt.Errorf("delete namespace: %w", err)
+	}
+	return nil
+}
