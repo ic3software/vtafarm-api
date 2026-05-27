@@ -8,7 +8,7 @@ DEPLOY_ENV   ?= production
 PG_PASSWORD  ?=
 
 .PHONY: build tidy dev \
-        migrate migrate-down migrate-new \
+        migrate migrate-down migrate-new seed \
         up down reset \
         image-build image-push \
         deploy
