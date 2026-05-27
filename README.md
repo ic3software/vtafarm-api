@@ -27,14 +27,7 @@ local `~/.kube/config` without any networking workarounds.
 
 - Go 1.26+
 - Docker & Docker Compose
-- [Air](https://github.com/air-verse/air) for hot reload
 - `kubectl` configured with access to a cluster (for K8s features)
-
-Install Air if you don't have it:
-
-```bash
-go install github.com/air-verse/air@latest
-```
 
 ### Setup
 
@@ -62,7 +55,7 @@ go install github.com/air-verse/air@latest
    make seed
    ```
 
-5. Start the API with hot reload:
+5. Start the API:
 
    ```bash
    make dev

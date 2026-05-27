@@ -20,9 +20,9 @@ build:
 tidy:
 	go mod tidy
 
-# Start the API locally with Air hot reload
+# Start the API locally
 dev:
-	air
+	go run ./main.go
 
 # ─── Migrations (run locally against DB_HOST=localhost) ───────────────────────
 # Usage: make migrate-new NAME=create_users
