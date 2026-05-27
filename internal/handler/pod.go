@@ -188,15 +188,25 @@ func (h *PodHandler) Delete(c *gin.Context) {
 	h.db.Where("name = ? AND user_id = ?", podName, uint(userID)).
 		Delete(&model.PodDeployment{})
 
-	// If the user's namespace is now empty, tear it down.
-	if remaining, err := h.k8sClient.ListPods(ctx, userIDStr); err == nil && len(remaining) == 0 {
-		if err := h.k8sClient.DeleteNamespace(ctx, userIDStr); err != nil {
-			// Non-fatal: log but still return success to the caller.
-			c.JSON(http.StatusOK, gin.H{
-				"message": "pod deleted",
-				"warning": "namespace cleanup failed: " + err.Error(),
-			})
-			return
+	// If the user's namespace has no live pods, tear it down.
+	// Pods in Terminating state (DeletionTimestamp set) are excluded because
+	// they are already being removed and won't consume the namespace for long.
+	if remaining, err := h.k8sClient.ListPods(ctx, userIDStr); err == nil {
+		activePods := 0
+		for _, p := range remaining {
+			if p.DeletionTimestamp == nil {
+				activePods++
+			}
+		}
+		if activePods == 0 {
+			if err := h.k8sClient.DeleteNamespace(ctx, userIDStr); err != nil {
+				// Non-fatal: return success with a warning.
+				c.JSON(http.StatusOK, gin.H{
+					"message": "pod deleted",
+					"warning": "namespace cleanup failed: " + err.Error(),
+				})
+				return
+			}
 		}
 	}
 
