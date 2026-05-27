@@ -15,27 +15,3 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile.dev
-    restart: unless-stopped
-    ports:
-      - "8080:8080"
-    env_file:
-      - .env
-    environment:
-      # Override host so it resolves to the db service inside Docker network
-      DB_HOST: db
-    volumes:
-      # Mount source for Air hot reload
-      - .:/app
-      # Exclude the tmp build dir from the host mount
-      - /app/tmp
-      # Mount host kubeconfig for K8s access during local dev
-      - ${HOME}/.kube:/root/.kube:ro
-    depends_on:
-      db:
-        condition: service_healthy
-

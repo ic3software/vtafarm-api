@@ -7,9 +7,9 @@ NAMESPACE    ?= default
 DEPLOY_ENV   ?= production
 PG_PASSWORD  ?=
 
-.PHONY: build tidy \
+.PHONY: build tidy dev \
         migrate migrate-down migrate-new \
-        up down reset logs seed \
+        up down reset \
         image-build image-push \
         deploy
 
@@ -20,7 +20,11 @@ build:
 tidy:
 	go mod tidy
 
-# ─── Migrations ───────────────────────────────────────────────────────────────
+# Start the API locally with Air hot reload
+dev:
+	air
+
+# ─── Migrations (run locally against DB_HOST=localhost) ───────────────────────
 # Usage: make migrate-new NAME=create_users
 migrate-new:
 	@test -n "$(NAME)" || (echo "Usage: make migrate-new NAME=<name>"; exit 1)
@@ -29,7 +33,16 @@ migrate-new:
 	touch migrations/$${seq}_$(NAME).up.sql migrations/$${seq}_$(NAME).down.sql; \
 	echo "Created migrations/$${seq}_$(NAME).{up,down}.sql"
 
-# ─── Docker Compose ───────────────────────────────────────────────────────────
+migrate:
+	go run ./cmd/migrate up
+
+migrate-down:
+	go run ./cmd/migrate down
+
+seed:
+	go run ./seed
+
+# ─── Docker Compose (DB only) ─────────────────────────────────────────────────
 up:
 	docker compose up -d
 
@@ -39,18 +52,6 @@ down:
 reset:
 	docker compose down -v
 	docker compose up -d
-
-logs:
-	docker compose logs -f api
-
-migrate:
-	docker compose exec api go run ./cmd/migrate up
-
-migrate-down:
-	docker compose exec api go run ./cmd/migrate down
-
-seed:
-	docker compose exec api go run ./seed
 
 # ─── Docker Hub ───────────────────────────────────────────────────────────────
 image-build:

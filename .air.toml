@@ -10,9 +10,8 @@ tmp_dir = "tmp"
   include_ext = ["go", "toml", "yaml", "yml"]
   kill_delay = "0s"
   log = "build-errors.log"
-  # Enable polling inside Docker (inotify not always available with mounted volumes)
-  poll = true
-  poll_interval = 1000
+  poll = false
+  poll_interval = 0
   send_interrupt = false
   stop_on_error = false
 

@@ -1,0 +1,4 @@
+{
+  "user_id": 1,
+  "yaml": "apiVersion: v1\nkind: Pod\nmetadata:\n  name: nginx-test\nspec:\n  containers:\n  - name: nginx\n    image: nginx:alpine"
+}

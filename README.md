@@ -19,11 +19,22 @@ with per-user namespace isolation.
 
 ## Local Development
 
+The API runs directly on your machine (with Air hot reload) while only
+the database runs in Docker. This gives the API direct access to your
+local `~/.kube/config` without any networking workarounds.
+
 ### Prerequisites
 
 - Go 1.26+
 - Docker & Docker Compose
+- [Air](https://github.com/air-verse/air) for hot reload
 - `kubectl` configured with access to a cluster (for K8s features)
+
+Install Air if you don't have it:
+
+```bash
+go install github.com/air-verse/air@latest
+```
 
 ### Setup
 
@@ -33,7 +44,7 @@ with per-user namespace isolation.
    cp .env.example .env
    ```
 
-2. Start PostgreSQL + API:
+2. Start PostgreSQL:
 
    ```bash
    make up
@@ -51,11 +62,13 @@ with per-user namespace isolation.
    make seed
    ```
 
-5. Tail logs:
+5. Start the API with hot reload:
 
    ```bash
-   make logs
+   make dev
    ```
+
+   The API is now available at `http://localhost:8080`.
 
 ### Environment Variables
 
@@ -64,7 +77,7 @@ Copy `.env.example` and adjust as needed:
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `APP_PORT` | `8080` | HTTP listen port |
-| `DB_HOST` | `db` | Auto-set by Docker Compose |
+| `DB_HOST` | `localhost` | Points to the Docker-managed PostgreSQL |
 | `DB_NAME` | `cipherportal` | |
 | `KUBECONFIG` | _(empty)_ | Auto-detects `~/.kube/config` when empty |
 | `K8S_NAMESPACE_PREFIX` | `cp-user` | Per-user namespace: `cp-user-{userID}` |
@@ -95,33 +108,30 @@ Health check:
 curl http://localhost:8080/health
 ```
 
-Create a pod:
+Create a pod (use the provided test fixture):
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/pods \
   -H "Content-Type: application/json" \
-  -d '{
-    "user_id": "user-001",
-    "yaml": "apiVersion: v1\nkind: Pod\nmetadata:\n  name: my-nginx\nspec:\n  containers:\n  - name: nginx\n    image: nginx:alpine"
-  }'
+  -d @testdata/create-pod.json
 ```
 
 List pods:
 
 ```bash
-curl "http://localhost:8080/api/v1/pods?user_id=user-001"
+curl "http://localhost:8080/api/v1/pods?user_id=1"
 ```
 
 Get a single pod:
 
 ```bash
-curl "http://localhost:8080/api/v1/pods/my-nginx?user_id=user-001"
+curl "http://localhost:8080/api/v1/pods/nginx-test?user_id=1"
 ```
 
 Delete a pod:
 
 ```bash
-curl -X DELETE "http://localhost:8080/api/v1/pods/my-nginx?user_id=user-001"
+curl -X DELETE "http://localhost:8080/api/v1/pods/nginx-test?user_id=1"
 ```
 
 ---
