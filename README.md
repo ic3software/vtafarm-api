@@ -191,14 +191,11 @@ make deploy \
   NAMESPACE=cipherportal
 ```
 
-**With Ingress enabled**, first update `helm/cipherportal-api/values.yaml`:
+**With Ingress**, set the host in `helm/cipherportal-api/values.yaml`:
 
 ```yaml
 ingress:
-  enabled: true
-  className: nginx
   host: api.example.com
-  tls: true   # requires a cert-manager TLS secret named cipherportal-tls
 ```
 
 Then run `make deploy`.

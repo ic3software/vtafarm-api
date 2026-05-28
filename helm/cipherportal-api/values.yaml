@@ -9,10 +9,8 @@ service:
   port: 8080
 
 ingress:
-  enabled: false
   className: nginx
   host: ""
-  tls: false
   clusterIssuer: letsencrypt-prod
 
 app:
