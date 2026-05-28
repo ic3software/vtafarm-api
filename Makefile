@@ -71,6 +71,7 @@ deploy:
 	  --set image.repository=$(IMAGE) \
 	  --set image.tag=$(TAG) \
 	  --set app.env=$(DEPLOY_ENV) \
+	  --set ingress.enabled=true \
 	  --set ingress.host=$(INGRESS_HOST) \
 	  --install --atomic --timeout=10m \
 	  --namespace=$(NAMESPACE)
