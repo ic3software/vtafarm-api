@@ -47,6 +47,11 @@ func (h *PodHandler) Create(c *gin.Context) {
 		return
 	}
 
+	if err := h.db.First(&model.User{}, req.UserID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+
 	// Convert YAML → JSON for JSONB storage.
 	specJSON, err := yaml.YAMLToJSON([]byte(req.YAMLContent))
 	if err != nil {
