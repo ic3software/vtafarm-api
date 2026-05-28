@@ -31,8 +31,9 @@ db:
 postgresql:
   enabled: true
   image: postgres:18-alpine
-  # Set via: --set postgresql.password=<your_password>
-  password: ""
+  # Pre-create with: kubectl create secret generic cipherportal-postgresql --from-literal=postgres-password='...'
+  # The secret must contain key: postgres-password
+  existingSecret: "cipherportal-postgresql"
   storage: 5Gi
 
 k8s:

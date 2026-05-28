@@ -5,7 +5,7 @@ IMAGE        ?= $(DOCKER_USERNAME)/cipherportal-api
 TAG          ?= $(shell git rev-parse --short HEAD)
 NAMESPACE    ?= default
 DEPLOY_ENV   ?= production
-PG_PASSWORD  ?=
+INGRESS_HOST ?=
 
 .PHONY: build tidy dev \
         migrate migrate-down migrate-new seed \
@@ -64,13 +64,13 @@ image-push: image-build
 # ─── Kubernetes (Helm) ────────────────────────────────────────────────────────
 # Deploys both API and PostgreSQL as one release.
 # helm uninstall cipherportal → removes everything.
-# Usage: make deploy PG_PASSWORD=xxx [DOCKER_USERNAME=xxx] [TAG=abc1234]
+# Pre-requisite: kubectl apply -f k8s/postgresql-secret.yaml (one-time, before first deploy)
+# Usage: make deploy [DOCKER_USERNAME=xxx] [TAG=abc1234]
 deploy:
-	@test -n "$(PG_PASSWORD)" || (echo "Error: PG_PASSWORD is required"; exit 1)
 	helm upgrade $(NAME) ./helm/cipherportal-api \
 	  --set image.repository=$(IMAGE) \
 	  --set image.tag=$(TAG) \
 	  --set app.env=$(DEPLOY_ENV) \
-	  --set postgresql.password=$(PG_PASSWORD) \
+	  --set ingress.host=$(INGRESS_HOST) \
 	  --install --atomic --timeout=10m \
 	  --namespace=$(NAMESPACE)

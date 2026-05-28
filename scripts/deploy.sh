@@ -4,7 +4,8 @@ set -e
 # Required env vars (set by GitHub Actions):
 #   SSH_PRIVATE_KEY, SERVER_IP, KUBECONFIG_PATH
 #   DOCKER_USERNAME, TAG
-#   PG_PASSWORD (only needed when deploying DB for the first time or changing password)
+# Pre-requisite: Secret "cipherportal-postgresql" must exist in the cluster namespace.
+#   See k8s/postgresql-secret.yaml — apply once manually before first deploy.
 
 # ── SSH setup ─────────────────────────────────────────────────────────────────
 echo "Setting up SSH..."
@@ -38,7 +39,7 @@ echo "Deploying cipherportal..."
 make deploy \
   DOCKER_USERNAME="$DOCKER_USERNAME" \
   TAG="$TAG" \
-  PG_PASSWORD="$PG_PASSWORD"
+  INGRESS_HOST="$INGRESS_HOST"
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 eval $(ssh-agent -k)

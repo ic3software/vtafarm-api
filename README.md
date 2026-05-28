@@ -12,14 +12,13 @@ with per-user namespace isolation.
 | Migrations | golang-migrate (raw SQL) |
 | Database | PostgreSQL 18 |
 | K8s client | client-go v0.36 |
-| Hot reload | Air |
 | Container | Docker Compose (dev) / Helm (prod) |
 
 ---
 
 ## Local Development
 
-The API runs directly on your machine (with Air hot reload) while only
+The API runs directly on your machine while only
 the database runs in Docker. This gives the API direct access to your
 local `~/.kube/config` without any networking workarounds.
 
@@ -158,19 +157,29 @@ kubectl config use-context <context>    # switch to the target cluster
 kubectl cluster-info                    # verify connectivity
 ```
 
-### 3. Deploy with Helm
+### 3. Create the PostgreSQL Secret (one-time)
 
-`PG_PASSWORD` is the only required secret. Pass it directly on the
-command line — it is stored as a Kubernetes Secret by the chart and
-never written to disk.
+Before the first deploy, create the database password as a Kubernetes
+Secret directly in the cluster. This only needs to be done once (or
+when rotating the password):
+
+```bash
+kubectl create secret generic cipherportal-postgresql \
+  --from-literal=postgres-password='your-strong-password' \
+  --namespace=default
+```
+
+If using a custom namespace, replace `--namespace=default` accordingly.
+The Secret is never stored in the repository or passed through CI.
+
+### 4. Deploy with Helm
 
 **Minimal deploy (bundled PostgreSQL):**
 
 ```bash
 make deploy \
   DOCKER_USERNAME=your-dockerhub-username \
-  TAG=$(git rev-parse --short HEAD) \
-  PG_PASSWORD=your-strong-password
+  TAG=$(git rev-parse --short HEAD)
 ```
 
 **With a custom namespace:**
@@ -179,7 +188,6 @@ make deploy \
 make deploy \
   DOCKER_USERNAME=your-dockerhub-username \
   TAG=$(git rev-parse --short HEAD) \
-  PG_PASSWORD=your-strong-password \
   NAMESPACE=cipherportal
 ```
 
@@ -201,7 +209,7 @@ Then run `make deploy`.
 helm uninstall cipherportal
 ```
 
-### 4. Run Migrations in the Cluster
+### 5. Run Migrations in the Cluster
 
 After the first deploy, exec into the API pod to apply migrations:
 
@@ -210,7 +218,7 @@ kubectl exec -it deployment/cipherportal \
   -n <namespace> -- go run ./cmd/migrate up
 ```
 
-### 5. CI/CD (GitHub Actions)
+### 6. CI/CD (GitHub Actions)
 
 `scripts/deploy.sh` automates the deploy step in CI. It expects the
 following repository secrets:
@@ -221,11 +229,7 @@ following repository secrets:
 | `SERVER_IP` | IP address of the Kubernetes server node |
 | `KUBECONFIG_PATH` | Remote path to the kubeconfig on the server |
 | `DOCKER_USERNAME` | Docker Hub username |
-| `PG_PASSWORD` | PostgreSQL password (first deploy or rotation) |
-
-The script copies the kubeconfig from the server over SSH, rewrites the
-API server URL from `127.0.0.1` to the public IP, installs `kubectl`
-and `helm`, then runs `make deploy`.
+| `DOCKERHUB_TOKEN` | Docker Hub access token |
 
 ### Production Kubernetes RBAC
 

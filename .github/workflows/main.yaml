@@ -34,7 +34,7 @@ jobs:
       KUBECONFIG_PATH:  ${{ secrets.KUBECONFIG_PATH }}
       DOCKER_USERNAME:  ${{ secrets.DOCKER_USERNAME }}
       TAG:              ${{ github.sha }}
-      PG_PASSWORD:      ${{ secrets.PG_PASSWORD }}
+      INGRESS_HOST:     cp-api.ic3.dev
     steps:
       - uses: actions/checkout@v6
 
