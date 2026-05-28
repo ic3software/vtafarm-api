@@ -22,7 +22,6 @@ jobs:
         run: make image-push
         env:
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-          TAG: ${{ github.sha }}
 
   deploy:
     name: 🚀 Deploy
@@ -33,7 +32,6 @@ jobs:
       SERVER_IP:        ${{ secrets.PRODUCTION_SERVER_IP }}
       KUBECONFIG_PATH:  ${{ secrets.KUBECONFIG_PATH }}
       DOCKER_USERNAME:  ${{ secrets.DOCKER_USERNAME }}
-      TAG:              ${{ github.sha }}
       INGRESS_HOST:     cp-api.ic3.dev
     steps:
       - uses: actions/checkout@v6
