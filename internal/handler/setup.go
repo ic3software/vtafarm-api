@@ -110,6 +110,25 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	})
 }
 
+// GET /did/:subdomain/did.jsonl
+// Public endpoint — serves the VTA DID log so did:webvh resolvers can fetch it.
+// Uses the random subdomain as the identifier to prevent session enumeration.
+func (h *SetupHandler) ServeDidLog(c *gin.Context) {
+	subdomain := c.Param("subdomain")
+
+	var session model.SetupSession
+	if err := h.db.Select("did_log").Where("subdomain = ?", subdomain).First(&session).Error; err != nil {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	if session.DidLog == "" {
+		c.Status(http.StatusNotFound)
+		return
+	}
+
+	c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(session.DidLog))
+}
+
 // DELETE /api/v1/setup/:id
 // Removes the Cloudflare DNS record and soft-deletes the session.
 func (h *SetupHandler) Delete(c *gin.Context) {

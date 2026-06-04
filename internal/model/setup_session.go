@@ -14,6 +14,7 @@ type SetupSession struct {
 	Domain      string         `gorm:"not null"                 json:"domain"`
 	Subdomain   string         `gorm:"not null"                 json:"subdomain"`
 	CFRecordID  string         `                                json:"cf_record_id,omitempty"`
+	DidLog      string         `gorm:"not null;default:''"      json:"-"`
 	ErrorMsg    string         `gorm:"not null;default:''"      json:"error_msg,omitempty"`
 	CreatedAt   time.Time      `                                json:"created_at"`
 	UpdatedAt   time.Time      `                                json:"updated_at"`
