@@ -34,6 +34,9 @@ See `.env.example` for all options. Key ones:
 | `DB_NAME` | `cipherportal` | |
 | `KUBECONFIG` | `~/.kube/config` | Leave empty; auto-detected |
 | `K8S_NAMESPACE_PREFIX` | `cp-user` | Per-user namespace prefix |
+| `CLOUDFLARE_API_TOKEN` | — | Cloudflare API token (`Zone:DNS:Edit` permission) |
+| `CLOUDFLARE_ZONE_ID` | — | Cloudflare Zone ID for the user's root domain |
+| `CLUSTER_INGRESS_IP` | — | External IP of the cluster's Ingress-NGINX LoadBalancer |
 
 ## Project Structure
 
@@ -44,15 +47,31 @@ See `.env.example` for all options. Key ones:
 ├── seed/main.go                # Test data seeder
 ├── migrations/
 │   ├── 000001_init.up.sql
-│   └── 000001_init.down.sql
+│   ├── 000001_init.down.sql
+│   ├── 000002_add_setup_sessions.up.sql   # VTA setup sessions table
+│   └── 000002_add_setup_sessions.down.sql
+├── docs/
+│   ├── automated-setup.md      # VTA stack CLI reference (source of truth for commands)
+│   └── vta-setup-design.md     # API design for VTA setup automation
 └── internal/
-    ├── config/config.go        # Config struct loaded from env vars
+    ├── config/config.go        # Config struct loaded from env vars (incl. Cloudflare + ingress IP)
     ├── database/database.go    # DB connect + auto-migrate on startup
-    ├── model/pod_deployment.go # GORM model for pod records
+    ├── cloudflare/client.go    # Cloudflare API: CreateARecord, DeleteRecord
+    ├── model/
+    │   ├── pod_deployment.go   # GORM model for pod records
+    │   └── setup_session.go    # GORM model for VTA setup sessions
     ├── handler/
     │   ├── health.go
-    │   └── pod.go              # CRUD handlers for pod deployments
-    ├── k8s/client.go           # K8s client: in-cluster + kubeconfig support
+    │   ├── pod.go              # CRUD handlers for pod deployments
+    │   └── setup.go            # VTA setup wizard endpoints (6 routes)
+    ├── k8s/
+    │   ├── client.go           # K8s client: in-cluster + kubeconfig support
+    │   ├── setup_jobs.go       # Launch/watch K8s Jobs for setup commands
+    │   └── vta_resources.go    # Create/teardown PVC, Service, Ingress, Deployment per component
+    ├── setup/
+    │   ├── orchestrator.go     # State machine (both modes), goroutine per session
+    │   ├── parser.go           # Regex extractors for DID/digest values from job logs
+    │   └── templates.go        # Go text/template renderers for VTA/Mediator/DIDS TOML configs
     └── router/router.go        # Gin route registration
 ```
 
@@ -82,6 +101,8 @@ Migrations run automatically on every API startup. `ErrNoChange` is silently ign
 
 All API routes are prefixed with `/api/v1`.
 
+### Pod Management
+
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Liveness check |
@@ -89,6 +110,46 @@ All API routes are prefixed with `/api/v1`.
 | `GET` | `/api/v1/pods?user_id=` | List pods in user namespace |
 | `GET` | `/api/v1/pods/:name?user_id=` | Get pod status |
 | `DELETE` | `/api/v1/pods/:name?user_id=` | Delete a pod |
+
+### VTA Setup Wizard
+
+Automates VTA stack installation driven by a frontend form. Two modes; see [`docs/vta-setup-design.md`](docs/vta-setup-design.md) for full design.
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/v1/setup/validate` | Validate form fields + check Cloudflare connectivity |
+| `POST` | `/api/v1/setup` | Submit form, create session, begin async setup |
+| `GET` | `/api/v1/setup/:id` | Poll state, collected DIDs/digests, live service URLs |
+| `POST` | `/api/v1/setup/:id/advance` | Unblock manual gate (provide `dids_digest` for Step 3) |
+| `GET` | `/api/v1/setup/:id/logs` | SSE stream of raw step output |
+| `DELETE` | `/api/v1/setup/:id` | Cancel + tear down DNS records and K8s resources |
+
+**Setup modes:**
+
+| Mode | Description |
+|---|---|
+| `vta_only` | Deploys VTA only; user provides external DID hosting URL |
+| `full_stack` | Deploys VTA + Mediator + WebVH DID Hosting Daemon in-cluster |
+
+**Form fields accepted by `POST /api/v1/setup`:**
+
+| Field | Mode | Required | Default |
+|---|---|---|---|
+| `mode` | both | yes | — |
+| `domain` | both | yes | — |
+| `did_hosting_url` | vta_only | yes | — |
+| `vta_name` | both | yes | `personal-vta` |
+| `vta_port` | both | no | `8100` |
+| `mediator_port` | full_stack | no | `7037` |
+| `dids_port` | full_stack | no | `8534` |
+| `log_level` | both | no | `info` |
+
+**What setup provisions automatically:**
+
+1. Cloudflare DNS A records (`vta.{domain}` → cluster ingress IP; +2 more for full_stack)
+2. K8s PVCs, Services, Ingresses (with cert-manager TLS) per component
+3. K8s Jobs for one-off setup commands, parsing DIDs/digests from stdout
+4. K8s Deployments for the running services (after all Jobs succeed)
 
 ### Create Pod Example
 
@@ -124,12 +185,24 @@ For production (in-cluster), the API server pod needs a **ClusterRole** with:
 ```yaml
 rules:
 - apiGroups: [""]
-  resources: ["namespaces", "serviceaccounts", "pods", "pods/log", "pods/exec"]
-  verbs: ["get", "list", "create", "delete", "watch"]
+  resources: ["namespaces", "serviceaccounts", "pods", "pods/log", "pods/exec",
+              "configmaps", "persistentvolumeclaims", "services"]
+  verbs: ["get", "list", "create", "update", "delete", "watch"]
 - apiGroups: ["rbac.authorization.k8s.io"]
   resources: ["roles", "rolebindings"]
   verbs: ["get", "list", "create", "delete"]
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "list", "create", "delete", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "create", "update", "delete", "watch"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "create", "update", "delete", "watch"]
 ```
+
+The VTA setup wizard provisions PVCs, Services, Ingresses, Jobs, and Deployments inside the user's namespace — all covered above.
 
 ### Pod Terminal Access (Future)
 
