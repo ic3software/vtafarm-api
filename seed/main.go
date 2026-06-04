@@ -41,5 +41,17 @@ func main() {
 		fmt.Printf("user already exists: %s (id=%d)\n", user.Username, user.ID)
 	}
 
+	// Seed cluster settings (placeholder ingress IP for local dev)
+	setting := model.ClusterSetting{Name: "dev-cluster", IngressIP: "1.2.3.4"}
+	var existing model.ClusterSetting
+	if db.First(&existing).Error != nil {
+		if err := db.Create(&setting).Error; err != nil {
+			log.Fatalf("seed cluster_settings: %v", err)
+		}
+		fmt.Printf("seeded cluster_settings: ingress_ip=%s (id=%d)\n", setting.IngressIP, setting.ID)
+	} else {
+		fmt.Printf("cluster_settings already exists: ingress_ip=%s (id=%d)\n", existing.IngressIP, existing.ID)
+	}
+
 	fmt.Println("seed complete")
 }

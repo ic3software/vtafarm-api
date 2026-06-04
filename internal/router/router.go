@@ -4,25 +4,21 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/ic3software/cipherportal-api/internal/cloudflare"
 	"github.com/ic3software/cipherportal-api/internal/handler"
-	"github.com/ic3software/cipherportal-api/internal/k8s"
 )
 
-func Setup(db *gorm.DB, k8sClient *k8s.Client) *gin.Engine {
+func Setup(db *gorm.DB, cfClient *cloudflare.Client, appEnv string) *gin.Engine {
 	r := gin.Default()
 
 	r.GET("/health", handler.Health)
 
 	v1 := r.Group("/api/v1")
 	{
-		ph := handler.NewPodHandler(db, k8sClient)
-		pods := v1.Group("/pods")
-		{
-			pods.POST("", ph.Create)
-			pods.GET("", ph.List)
-			pods.GET("/:name", ph.Get)
-			pods.DELETE("/:name", ph.Delete)
-		}
+		sh := handler.NewSetupHandler(db, cfClient, appEnv)
+		v1.POST("/setup/validate", sh.Validate)
+		v1.POST("/setup", sh.Create)
+		v1.DELETE("/setup/:id", sh.Delete)
 	}
 
 	return r

@@ -6,10 +6,16 @@ import (
 )
 
 type Config struct {
-	AppPort string
-	AppEnv  string
-	DB      DBConfig
-	K8s     K8sConfig
+	AppPort    string
+	AppEnv     string
+	DB         DBConfig
+	K8s        K8sConfig
+	Cloudflare CloudflareConfig
+}
+
+type CloudflareConfig struct {
+	APIToken string
+	ZoneID   string
 }
 
 type DBConfig struct {
@@ -59,6 +65,10 @@ func Load() *Config {
 		K8s: K8sConfig{
 			Kubeconfig:      getEnv("KUBECONFIG", ""),
 			NamespacePrefix: getEnv("K8S_NAMESPACE_PREFIX", "cp-user"),
+		},
+		Cloudflare: CloudflareConfig{
+			APIToken: getEnv("CLOUDFLARE_API_TOKEN", ""),
+			ZoneID:   getEnv("CLOUDFLARE_ZONE_ID", ""),
 		},
 	}
 }
