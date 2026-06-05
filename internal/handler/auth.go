@@ -44,10 +44,9 @@ func (h *AuthHandler) Login(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{
 				"token": token,
 				"user": gin.H{
-					"id":       admin.ID,
-					"email":    admin.Email,
-					"username": admin.Username,
-					"role":     model.RoleAdmin,
+					"id":    admin.ID,
+					"email": admin.Email,
+					"role":  model.RoleAdmin,
 				},
 			})
 			return
@@ -66,10 +65,9 @@ func (h *AuthHandler) Login(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{
 				"token": token,
 				"user": gin.H{
-					"id":       user.ID,
-					"email":    user.Email,
-					"username": user.Username,
-					"role":     model.RoleUser,
+					"id":    user.ID,
+					"email": user.Email,
+					"role":  model.RoleUser,
 				},
 			})
 			return

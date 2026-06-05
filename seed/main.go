@@ -21,13 +21,12 @@ func main() {
 		log.Fatalf("db connect: %v", err)
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte("admin1234"), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.DefaultCost)
 	if err != nil {
 		log.Fatalf("bcrypt: %v", err)
 	}
 	admin := model.Admin{
-		Email:    "admin@example.com",
-		Username: "admin",
+		Email:    "admin@ic3.dev",
 		Password: string(hash),
 	}
 	result := db.Where(model.Admin{Email: admin.Email}).FirstOrCreate(&admin)
@@ -35,9 +34,9 @@ func main() {
 		log.Fatalf("seed admin: %v", result.Error)
 	}
 	if result.RowsAffected > 0 {
-		fmt.Printf("seeded admin: %s (id=%d)\n", admin.Username, admin.ID)
+		fmt.Printf("seeded admin: %s (id=%d)\n", admin.Email, admin.ID)
 	} else {
-		fmt.Printf("admin already exists: %s (id=%d)\n", admin.Username, admin.ID)
+		fmt.Printf("admin already exists: %s (id=%d)\n", admin.Email, admin.ID)
 	}
 
 	fmt.Println("seed complete")

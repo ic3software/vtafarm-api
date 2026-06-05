@@ -20,7 +20,6 @@ func NewUserHandler(db *gorm.DB) *UserHandler {
 
 type createUserRequest struct {
 	Email    string `json:"email"    binding:"required,email"`
-	Username string `json:"username" binding:"required"`
 	Password string `json:"password" binding:"required,min=8"`
 }
 
@@ -39,17 +38,15 @@ func (h *UserHandler) Create(c *gin.Context) {
 
 	user := model.User{
 		Email:    req.Email,
-		Username: req.Username,
 		Password: string(hash),
 	}
 	if err := h.db.Create(&user).Error; err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "email or username already exists"})
+		c.JSON(http.StatusConflict, gin.H{"error": "email already exists"})
 		return
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"id":       user.ID,
-		"email":    user.Email,
-		"username": user.Username,
+		"id":    user.ID,
+		"email": user.Email,
 	})
 }
