@@ -6,12 +6,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const (
-	RoleUser  = "user"
-	RoleAdmin = "admin"
-)
-
-type User struct {
+type Admin struct {
 	ID        uint           `json:"id"         gorm:"primaryKey;autoIncrement"`
 	Email     string         `json:"email"      gorm:"not null"`
 	Username  string         `json:"username"   gorm:"not null"`

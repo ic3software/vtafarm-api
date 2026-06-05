@@ -71,8 +71,20 @@ Copy `.env.example` and adjust as needed:
 | `APP_PORT` | `8080` | HTTP listen port |
 | `DB_HOST` | `localhost` | Points to the Docker-managed PostgreSQL |
 | `DB_NAME` | `cipherportal` | |
+| `JWT_SECRET` | _(required)_ | HS256 signing secret — see below |
+| `CLUSTER_INGRESS_IP` | _(required)_ | External IP of the cluster's Ingress-NGINX LoadBalancer |
+| `CLOUDFLARE_API_TOKEN` | _(optional)_ | Required for VTA setup wizard |
+| `CLOUDFLARE_ZONE_ID` | _(optional)_ | Required for VTA setup wizard |
 | `KUBECONFIG` | _(empty)_ | Auto-detects `~/.kube/config` when empty |
 | `K8S_NAMESPACE_PREFIX` | `cp-user` | Per-user namespace: `cp-user-{userID}` |
+
+#### Generating JWT_SECRET
+
+Generate a cryptographically secure secret and paste it into your `.env`:
+
+```bash
+openssl rand -base64 32
+```
 
 ### Migration Workflow
 

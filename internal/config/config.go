@@ -6,11 +6,13 @@ import (
 )
 
 type Config struct {
-	AppPort    string
-	AppEnv     string
-	DB         DBConfig
-	K8s        K8sConfig
-	Cloudflare CloudflareConfig
+	AppPort          string
+	AppEnv           string
+	JWTSecret        string
+	ClusterIngressIP string
+	DB               DBConfig
+	K8s              K8sConfig
+	Cloudflare       CloudflareConfig
 }
 
 type CloudflareConfig struct {
@@ -52,8 +54,10 @@ type K8sConfig struct {
 
 func Load() *Config {
 	return &Config{
-		AppPort: getEnv("APP_PORT", "8080"),
-		AppEnv:  getEnv("APP_ENV", "development"),
+		AppPort:          getEnv("APP_PORT", "8080"),
+		AppEnv:           getEnv("APP_ENV", "development"),
+		JWTSecret:        getEnv("JWT_SECRET", "change-me-in-production"),
+		ClusterIngressIP: getEnv("CLUSTER_INGRESS_IP", ""),
 		DB: DBConfig{
 			Host:     getEnv("DB_HOST", "localhost"),
 			Port:     getEnv("DB_PORT", "5432"),

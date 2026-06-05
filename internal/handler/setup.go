@@ -7,18 +7,20 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/ic3software/cipherportal-api/internal/cloudflare"
+	"github.com/ic3software/cipherportal-api/internal/middleware"
 	"github.com/ic3software/cipherportal-api/internal/model"
 	"github.com/ic3software/cipherportal-api/internal/setup"
 )
 
 type SetupHandler struct {
-	db     *gorm.DB
-	cf     *cloudflare.Client
-	appEnv string
+	db        *gorm.DB
+	cf        *cloudflare.Client
+	appEnv    string
+	ingressIP string
 }
 
-func NewSetupHandler(db *gorm.DB, cf *cloudflare.Client, appEnv string) *SetupHandler {
-	return &SetupHandler{db: db, cf: cf, appEnv: appEnv}
+func NewSetupHandler(db *gorm.DB, cf *cloudflare.Client, appEnv, ingressIP string) *SetupHandler {
+	return &SetupHandler{db: db, cf: cf, appEnv: appEnv, ingressIP: ingressIP}
 }
 
 func (h *SetupHandler) cfRequired(c *gin.Context) bool {
@@ -30,7 +32,7 @@ func (h *SetupHandler) cfRequired(c *gin.Context) bool {
 }
 
 // POST /api/v1/setup/validate
-// Verifies Cloudflare connectivity and that a cluster ingress IP is stored.
+// Verifies Cloudflare connectivity and that CLUSTER_INGRESS_IP is set.
 func (h *SetupHandler) Validate(c *gin.Context) {
 	if !h.cfRequired(c) {
 		return
@@ -41,22 +43,20 @@ func (h *SetupHandler) Validate(c *gin.Context) {
 		return
 	}
 
-	var setting model.ClusterSetting
-	if err := h.db.First(&setting).Error; err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "cluster not configured: no ingress IP found in database"})
+	if h.ingressIP == "" {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "cluster not configured: CLUSTER_INGRESS_IP not set"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"cloudflare": "ok",
-		"ingress_ip": setting.IngressIP,
+		"ingress_ip": h.ingressIP,
 	})
 }
 
 type createSetupRequest struct {
-	UserID uint   `json:"user_id" binding:"required"`
-	Mode   string `json:"mode"    binding:"required,oneof=vta_only full_stack"`
-	Domain string `json:"domain"  binding:"required"`
+	Mode   string `json:"mode"   binding:"required,oneof=vta_only full_stack"`
+	Domain string `json:"domain" binding:"required"`
 }
 
 // POST /api/v1/setup
@@ -72,23 +72,23 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		return
 	}
 
-	var setting model.ClusterSetting
-	if err := h.db.First(&setting).Error; err != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "cluster not configured: no ingress IP found in database"})
+	if h.ingressIP == "" {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "cluster not configured: CLUSTER_INGRESS_IP not set"})
 		return
 	}
 
+	userID := c.MustGet(middleware.ContextUserID).(uint)
 	subdomain := setup.GenerateSubdomain(h.appEnv)
 	fqdn := subdomain + "." + req.Domain
 
-	recordID, err := h.cf.CreateARecord(c.Request.Context(), fqdn, setting.IngressIP)
+	recordID, err := h.cf.CreateARecord(c.Request.Context(), fqdn, h.ingressIP)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create DNS record: " + err.Error()})
 		return
 	}
 
 	session := model.SetupSession{
-		UserID:     req.UserID,
+		UserID:     userID,
 		Mode:       req.Mode,
 		Status:     "dns_provisioned",
 		Domain:     req.Domain,

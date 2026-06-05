@@ -33,7 +33,7 @@ func main() {
 		log.Printf("warn: CLOUDFLARE_API_TOKEN or CLOUDFLARE_ZONE_ID not set — setup endpoints disabled")
 	}
 
-	r := router.Setup(db, cfClient, cfg.AppEnv)
+	r := router.Setup(db, cfClient, cfg.AppEnv, cfg.ClusterIngressIP, cfg.JWTSecret)
 
 	log.Printf("server listening on :%s (env=%s)", cfg.AppPort, cfg.AppEnv)
 	if err := r.Run(":" + cfg.AppPort); err != nil {
