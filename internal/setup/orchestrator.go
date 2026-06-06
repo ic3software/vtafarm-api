@@ -17,19 +17,17 @@ import (
 // One goroutine per session; cancellation stops the goroutine without touching the DB
 // (the Delete handler owns DB + K8s cleanup in that case).
 type Orchestrator struct {
-	db       *gorm.DB
-	k8s      *k8s.Client
-	vtaImage string
-	mu       sync.Mutex
-	cancels  map[uint]context.CancelFunc
+	db      *gorm.DB
+	k8s     *k8s.Client
+	mu      sync.Mutex
+	cancels map[uint]context.CancelFunc
 }
 
-func NewOrchestrator(db *gorm.DB, k8sClient *k8s.Client, vtaImage string) *Orchestrator {
+func NewOrchestrator(db *gorm.DB, k8sClient *k8s.Client) *Orchestrator {
 	return &Orchestrator{
-		db:       db,
-		k8s:      k8sClient,
-		vtaImage: vtaImage,
-		cancels:  make(map[uint]context.CancelFunc),
+		db:      db,
+		k8s:     k8sClient,
+		cancels: make(map[uint]context.CancelFunc),
 	}
 }
 
@@ -103,11 +101,7 @@ func (o *Orchestrator) run(ctx context.Context, sessionID uint) {
 		return
 	}
 
-	// Resolve the image: prefer the per-session choice, fall back to server default.
 	vtaImage := session.VtaImage
-	if vtaImage == "" {
-		vtaImage = o.vtaImage
-	}
 
 	// Create ConfigMap + Job (idempotent on AlreadyExists).
 	jobName := k8s.SetupJobName(sessionID)

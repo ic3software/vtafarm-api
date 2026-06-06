@@ -20,7 +20,6 @@ func Setup(
 	k8sClient *k8s.Client,
 	orch *setup.Orchestrator,
 	ghcrClient *ghcr.Client,
-	defaultImage string,
 	appEnv, ingressIP, jwtSecret string,
 ) *gin.Engine {
 	r := gin.Default()
@@ -32,7 +31,7 @@ func Setup(
 		r.GET("/docs", apidocs.ServeUI)
 	}
 
-	sh := handler.NewSetupHandler(db, cfClient, appEnv, ingressIP, k8sClient, orch, ghcrClient, defaultImage)
+	sh := handler.NewSetupHandler(db, cfClient, appEnv, ingressIP, k8sClient, orch, ghcrClient)
 
 	v1 := r.Group("/api/v1")
 

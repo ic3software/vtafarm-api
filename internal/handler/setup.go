@@ -16,14 +16,13 @@ import (
 )
 
 type SetupHandler struct {
-	db           *gorm.DB
-	cf           *cloudflare.Client
-	appEnv       string
-	ingressIP    string
-	k8s          *k8s.Client
-	orch         *setup.Orchestrator
-	ghcr         *ghcr.Client // nil when not configured
-	defaultImage string       // fallback when vta_image not provided in request
+	db        *gorm.DB
+	cf        *cloudflare.Client
+	appEnv    string
+	ingressIP string
+	k8s       *k8s.Client
+	orch      *setup.Orchestrator
+	ghcr      *ghcr.Client // nil when not configured
 }
 
 func NewSetupHandler(
@@ -33,17 +32,15 @@ func NewSetupHandler(
 	k8sClient *k8s.Client,
 	orch *setup.Orchestrator,
 	ghcrClient *ghcr.Client,
-	defaultImage string,
 ) *SetupHandler {
 	return &SetupHandler{
-		db:           db,
-		cf:           cf,
-		appEnv:       appEnv,
-		ingressIP:    ingressIP,
-		k8s:          k8sClient,
-		orch:         orch,
-		ghcr:         ghcrClient,
-		defaultImage: defaultImage,
+		db:        db,
+		cf:        cf,
+		appEnv:    appEnv,
+		ingressIP: ingressIP,
+		k8s:       k8sClient,
+		orch:      orch,
+		ghcr:      ghcrClient,
 	}
 }
 
@@ -75,31 +72,14 @@ func (h *SetupHandler) Validate(c *gin.Context) {
 }
 
 // GET /api/v1/setup/images
-// Returns available VTA image tags fetched from GHCR.
-// Falls back to the server default image if GHCR is not configured.
 func (h *SetupHandler) Images(c *gin.Context) {
 	type imageOption struct {
-		Tag     string `json:"tag"`
-		Image   string `json:"image"`
-		Default bool   `json:"default,omitempty"`
+		Tag   string `json:"tag"`
+		Image string `json:"image"`
 	}
 
-	// No GHCR configured — return default if available.
 	if h.ghcr == nil {
-		if h.defaultImage == "" {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "image source not configured"})
-			return
-		}
-		tag := h.defaultImage
-		if idx := len(h.defaultImage) - 1; idx >= 0 {
-			for i := len(h.defaultImage) - 1; i >= 0; i-- {
-				if h.defaultImage[i] == ':' {
-					tag = h.defaultImage[i+1:]
-					break
-				}
-			}
-		}
-		c.JSON(http.StatusOK, []imageOption{{Tag: tag, Image: h.defaultImage, Default: true}})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "image source not configured"})
 		return
 	}
 
@@ -111,11 +91,7 @@ func (h *SetupHandler) Images(c *gin.Context) {
 
 	result := make([]imageOption, len(tags))
 	for i, t := range tags {
-		result[i] = imageOption{
-			Tag:     t.Tag,
-			Image:   t.Image,
-			Default: t.Image == h.defaultImage,
-		}
+		result[i] = imageOption{Tag: t.Tag, Image: t.Image}
 	}
 	c.JSON(http.StatusOK, result)
 }
@@ -126,7 +102,7 @@ type createSetupRequest struct {
 	VtaName     string `json:"vta_name"`
 	MediatorDID string `json:"mediator_did" binding:"required"`
 	VtaDidURL   string `json:"vta_did_url"  binding:"required,url"`
-	VtaImage    string `json:"vta_image"`   // optional — full image URL, e.g. ghcr.io/ic3software/vta:0.5.0
+	VtaImage    string `json:"vta_image"    binding:"required"`
 	// Advanced — optional
 	Portable         *bool `json:"portable"`
 	PreRotationCount *int  `json:"pre_rotation_count"`
@@ -146,16 +122,6 @@ func (h *SetupHandler) Create(c *gin.Context) {
 
 	if h.ingressIP == "" {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "cluster not configured: CLUSTER_INGRESS_IP not set"})
-		return
-	}
-
-	// Resolve image: prefer explicit selection, fall back to server default.
-	vtaImage := req.VtaImage
-	if vtaImage == "" {
-		vtaImage = h.defaultImage
-	}
-	if vtaImage == "" && h.orch != nil {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "vta_image is required (VTA_IMAGE not configured on server)"})
 		return
 	}
 
@@ -191,7 +157,7 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		VtaName:          req.VtaName,
 		MediatorDID:      req.MediatorDID,
 		VtaDidURL:        req.VtaDidURL,
-		VtaImage:         vtaImage,
+		VtaImage:         req.VtaImage,
 		Portable:         portable,
 		PreRotationCount: preRotationCount,
 	}
@@ -210,7 +176,7 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		"fqdn":      fqdn,
 		"url":       "https://" + fqdn,
 		"status":    session.Status,
-		"vta_image": vtaImage,
+		"vta_image": req.VtaImage,
 	})
 }
 

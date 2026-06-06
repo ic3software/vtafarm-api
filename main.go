@@ -46,13 +46,10 @@ func main() {
 		log.Printf("K8s client initialised")
 	}
 
-	// Orchestrator requires both K8s and a VTA image.
 	var orch *setup.Orchestrator
-	if k8sClient != nil && cfg.K8s.VTAImage != "" {
-		orch = setup.NewOrchestrator(db, k8sClient, cfg.K8s.VTAImage)
+	if k8sClient != nil {
+		orch = setup.NewOrchestrator(db, k8sClient)
 		orch.Resume(context.Background())
-	} else {
-		log.Printf("warn: VTA orchestrator disabled (set VTA_IMAGE and ensure K8s is reachable)")
 	}
 
 	// GHCR client for listing available image tags (optional).
@@ -64,7 +61,7 @@ func main() {
 		log.Printf("warn: GITHUB_PACKAGE_OWNER or GITHUB_PACKAGE_NAME not set — image listing disabled")
 	}
 
-	r := router.Setup(db, cfClient, k8sClient, orch, ghcrClient, cfg.K8s.VTAImage, cfg.AppEnv, cfg.ClusterIngressIP, cfg.JWTSecret)
+	r := router.Setup(db, cfClient, k8sClient, orch, ghcrClient, cfg.AppEnv, cfg.ClusterIngressIP, cfg.JWTSecret)
 
 	log.Printf("server listening on :%s (env=%s)", cfg.AppPort, cfg.AppEnv)
 	if err := r.Run(":" + cfg.AppPort); err != nil {

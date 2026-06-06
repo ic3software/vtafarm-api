@@ -110,7 +110,7 @@ components:
           example: "personal-vta"
         vta_image:
           type: string
-          description: Full image URL selected from GET /setup/images. Defaults to server VTA_IMAGE if omitted.
+          description: Full image URL selected from GET /setup/images.
           example: "ghcr.io/ic3software/vta:0.5.0"
         mediator_did:
           type: string
@@ -129,7 +129,7 @@ components:
           type: integer
           default: 1
           description: Advanced — number of pre-rotation keys
-      required: [mode, domain, mediator_did, vta_did_url]
+      required: [mode, domain, mediator_did, vta_did_url, vta_image]
 
     SetupSessionItem:
       type: object
@@ -368,9 +368,6 @@ paths:
                     image:
                       type: string
                       example: "ghcr.io/ic3software/vta:0.5.0"
-                    default:
-                      type: boolean
-                      description: True if this is the server-configured default
         "401":
           description: Missing or invalid token
           content:
