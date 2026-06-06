@@ -21,7 +21,7 @@ type SetupHandler struct {
 	appEnv         string
 	ingressIP      string
 	clusterDomain  string
-	didHostingBase string // e.g. https://dids.ic3.dev; empty = vta_did_url required in request
+	didHostingBase string // DID_HOSTING_SERVER_URL — public server URL used to build vta_did_url
 	k8s            *k8s.Client
 	orch           *setup.Orchestrator
 	ghcr           *ghcr.Client // nil when not configured
@@ -143,7 +143,7 @@ func (h *SetupHandler) Create(c *gin.Context) {
 
 	var user model.User
 	if err := h.db.First(&user, userID).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load user"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
 		return
 	}
 
@@ -358,33 +358,6 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 
 	fmt.Fprintf(c.Writer, "event: done\ndata: stream ended\n\n")
 	c.Writer.Flush()
-}
-
-// GET /api/v1/setup/:id/did-log
-func (h *SetupHandler) DidLog(c *gin.Context) {
-	id := c.Param("id")
-	userID := c.MustGet(middleware.ContextUserID).(uint)
-
-	var session model.SetupSession
-	if err := h.db.Where("id = ? AND user_id = ?", id, userID).First(&session).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
-		return
-	}
-
-	if session.Status == "dns_provisioned" || session.Status == "vta_setup_running" {
-		c.JSON(http.StatusConflict, gin.H{"error": "setup not complete yet"})
-		return
-	}
-
-	if session.DidLog == "" {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "did.jsonl not available"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"vta_did": session.VtaDid,
-		"did_log": session.DidLog,
-	})
 }
 
 // POST /api/v1/setup/:id/admin

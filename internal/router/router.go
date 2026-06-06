@@ -56,7 +56,6 @@ func Setup(
 		userOnly.GET("/setup/:id", sh.Get)
 		userOnly.DELETE("/setup/:id", sh.Delete)
 		userOnly.GET("/setup/:id/logs", sh.Logs)
-		userOnly.GET("/setup/:id/did-log", sh.DidLog)
 		userOnly.POST("/setup/:id/admin", sh.ProvisionAdmin)
 	}
 

@@ -19,7 +19,8 @@ type Config struct {
 }
 
 type DidHostingConfig struct {
-	BaseUrl    string // e.g. https://dids.ic3.dev — used to build vta_did_url
+	ControlUrl string // e.g. https://control.fpp2.ic3.dev — management API (auth + upload)
+	ServerUrl  string // e.g. https://dids.fpp2.ic3.dev — public DID resolution (used in vta_did_url)
 	Did        string // did:key:z6Mk... of this server
 	PrivateKey string // base64 ed25519 seed
 }
@@ -96,7 +97,8 @@ func Load() *Config {
 			PackageName: getEnv("GITHUB_PACKAGE_NAME", ""),
 		},
 		DidHosting: DidHostingConfig{
-			BaseUrl:    getEnv("DID_HOSTING_URL", ""),
+			ControlUrl: getEnv("DID_HOSTING_CONTROL_URL", ""),
+			ServerUrl:  getEnv("DID_HOSTING_SERVER_URL", ""),
 			Did:        getEnv("DID_HOSTING_DID", ""),
 			PrivateKey: getEnv("DID_HOSTING_PRIVATE_KEY", ""),
 		},

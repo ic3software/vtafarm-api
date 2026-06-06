@@ -613,61 +613,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /api/v1/setup/{id}/did-log:
-    get:
-      summary: Get DID log
-      description: |
-        Returns the raw `did.jsonl` content and parsed `vta_did` after VTA setup completes.
-        Available once `status` is no longer `dns_provisioned` or `vta_setup_running`.
-      tags: [User]
-      security:
-        - BearerAuth: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: integer
-      responses:
-        "200":
-          description: DID log content
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  vta_did:
-                    type: string
-                    description: Parsed VTA DID from the log
-                    example: "did:webvh:abc123:cp-xyz.example.com:personal-vta"
-                  did_log:
-                    type: string
-                    description: Raw JSONL content of VTA-did.jsonl
-        "401":
-          description: Missing or invalid token
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "404":
-          description: Session not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "409":
-          description: Setup not complete yet
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "503":
-          description: DID log not yet available
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-
   /api/v1/setup/{id}/admin:
     post:
       summary: Provision admin DID

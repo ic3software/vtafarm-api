@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
 	"gorm.io/gorm"
 
+	"github.com/ic3software/cipherportal-api/internal/didhosting"
 	"github.com/ic3software/cipherportal-api/internal/k8s"
 	"github.com/ic3software/cipherportal-api/internal/model"
 )
@@ -18,17 +20,19 @@ import (
 // Phase 2 (Provision):  vta_setup_complete → provisioning → running
 // Cancellation stops the goroutine; the Delete handler owns K8s + DB cleanup.
 type Orchestrator struct {
-	db      *gorm.DB
-	k8s     *k8s.Client
-	mu      sync.Mutex
-	cancels map[uint]context.CancelFunc
+	db         *gorm.DB
+	k8s        *k8s.Client
+	didHosting *didhosting.Client // nil when DID_HOSTING_CONTROL_URL not configured
+	mu         sync.Mutex
+	cancels    map[uint]context.CancelFunc
 }
 
-func NewOrchestrator(db *gorm.DB, k8sClient *k8s.Client) *Orchestrator {
+func NewOrchestrator(db *gorm.DB, k8sClient *k8s.Client, dhClient *didhosting.Client) *Orchestrator {
 	return &Orchestrator{
-		db:      db,
-		k8s:     k8sClient,
-		cancels: make(map[uint]context.CancelFunc),
+		db:         db,
+		k8s:        k8sClient,
+		didHosting: dhClient,
+		cancels:    make(map[uint]context.CancelFunc),
 	}
 }
 
@@ -177,10 +181,22 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 	o.db.Model(&model.SetupSession{}).Where("id = ?", sessionID).Updates(map[string]any{
 		"status":     "vta_setup_complete",
 		"vta_did":    vtaDID,
-		"did_log":    didLog,
 		"updated_at": time.Now(),
 	})
 	log.Printf("[orchestrator] session %d: setup complete, VTA DID=%s", sessionID, vtaDID)
+
+	if o.didHosting != nil && didLog != "" && session.VtaDidUrl != "" {
+		// Extract path from the full URL e.g. https://dids.fpp2.ic3.dev/user-abc/pvta → user-abc/pvta
+		path := session.VtaDidUrl
+		if idx := strings.Index(path, "/user-"); idx >= 0 {
+			path = path[idx+1:] // user-abc/pvta
+		}
+		if err := o.didHosting.RegisterDid(ctx, path, didLog); err != nil {
+			log.Printf("[orchestrator] session %d: warning: DID upload failed: %v", sessionID, err)
+		} else {
+			log.Printf("[orchestrator] session %d: DID log uploaded to hosting service", sessionID)
+		}
+	}
 }
 
 // ── Phase 2: import-did + Deployment ─────────────────────────────────────────

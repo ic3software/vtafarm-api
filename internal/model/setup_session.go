@@ -20,8 +20,7 @@ type SetupSession struct {
 	// Image used for the vta-setup K8s Job
 	VtaImage         string    `gorm:"not null;default:''"             json:"vta_image,omitempty"`
 	// Output populated after vta setup runs
-	VtaDid   string `gorm:"column:vta_did;not null;default:''"    json:"vta_did,omitempty"`
-	DidLog   string `gorm:"column:did_log;not null;default:''"    json:"-"`
+	VtaDid   string `gorm:"column:vta_did;not null;default:''"   json:"vta_did,omitempty"`
 	AdminDid string `gorm:"column:admin_did;not null;default:''" json:"admin_did,omitempty"`
 	CreatedAt        time.Time `                                       json:"created_at"`
 	UpdatedAt        time.Time `                                       json:"updated_at"`

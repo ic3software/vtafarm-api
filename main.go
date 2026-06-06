@@ -9,6 +9,7 @@ import (
 	"github.com/ic3software/cipherportal-api/internal/cloudflare"
 	"github.com/ic3software/cipherportal-api/internal/config"
 	"github.com/ic3software/cipherportal-api/internal/database"
+	"github.com/ic3software/cipherportal-api/internal/didhosting"
 	"github.com/ic3software/cipherportal-api/internal/ghcr"
 	"github.com/ic3software/cipherportal-api/internal/k8s"
 	"github.com/ic3software/cipherportal-api/internal/router"
@@ -46,9 +47,23 @@ func main() {
 		log.Printf("K8s client initialised")
 	}
 
+	var dhClient *didhosting.Client
+	if cfg.DidHosting.ControlUrl != "" && cfg.DidHosting.Did != "" && cfg.DidHosting.PrivateKey != "" {
+		var dhErr error
+		dhClient, dhErr = didhosting.New(cfg.DidHosting.ControlUrl, cfg.DidHosting.Did, cfg.DidHosting.PrivateKey)
+		if dhErr != nil {
+			log.Printf("warn: DID hosting client init failed: %v — auto-upload disabled", dhErr)
+			dhClient = nil
+		} else {
+			log.Printf("DID hosting auto-upload enabled (%s)", cfg.DidHosting.ControlUrl)
+		}
+	} else {
+		log.Printf("warn: DID_HOSTING_CONTROL_URL/DID/PRIVATE_KEY not set — DID auto-upload disabled")
+	}
+
 	var orch *setup.Orchestrator
 	if k8sClient != nil {
-		orch = setup.NewOrchestrator(db, k8sClient)
+		orch = setup.NewOrchestrator(db, k8sClient, dhClient)
 		orch.Resume(context.Background())
 	}
 
@@ -61,7 +76,7 @@ func main() {
 		log.Printf("warn: GITHUB_PACKAGE_OWNER or GITHUB_PACKAGE_NAME not set — image listing disabled")
 	}
 
-	r := router.Setup(db, cfClient, k8sClient, orch, ghcrClient, cfg.AppEnv, cfg.ClusterIngressIP, cfg.ClusterDomain, cfg.DidHosting.BaseUrl, cfg.JWTSecret)
+	r := router.Setup(db, cfClient, k8sClient, orch, ghcrClient, cfg.AppEnv, cfg.ClusterIngressIP, cfg.ClusterDomain, cfg.DidHosting.ServerUrl, cfg.JWTSecret)
 
 	log.Printf("server listening on :%s (env=%s)", cfg.AppPort, cfg.AppEnv)
 	if err := r.Run(":" + cfg.AppPort); err != nil {
