@@ -76,7 +76,7 @@ func main() {
 		log.Printf("warn: GITHUB_PACKAGE_OWNER or GITHUB_PACKAGE_NAME not set — image listing disabled")
 	}
 
-	r := router.Setup(db, cfClient, k8sClient, orch, ghcrClient, cfg.AppEnv, cfg.ClusterIngressIP, cfg.ClusterDomain, cfg.DidHosting.ServerUrl, cfg.JWTSecret)
+	r := router.Setup(db, cfClient, k8sClient, orch, ghcrClient, dhClient, cfg.AppEnv, cfg.ClusterIngressIP, cfg.ClusterDomain, cfg.DidHosting.ServerUrl, cfg.JWTSecret)
 
 	log.Printf("server listening on :%s (env=%s)", cfg.AppPort, cfg.AppEnv)
 	if err := r.Run(":" + cfg.AppPort); err != nil {

@@ -167,16 +167,8 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 		return
 	}
 
-	// Read did.jsonl from PVC and store it in the session for later retrieval.
-	didLog, err := o.k8s.ReadFileFromPVC(ctx, ns, sessionID, session.VtaImage, "data/vta/did-logs/VTA-did.jsonl")
-	if err != nil {
-		if ctx.Err() != nil {
-			return
-		}
-		// Non-fatal: mark complete without did_log; user can retry via GET /did-log.
-		log.Printf("[orchestrator] session %d: warning: could not read did.jsonl: %v", sessionID, err)
-		didLog = ""
-	}
+	// Extract did.jsonl content appended to the job logs after the marker.
+	didLog := ParseVtaDidLog(logs)
 
 	o.db.Model(&model.SetupSession{}).Where("id = ?", sessionID).Updates(map[string]any{
 		"status":     "vta_setup_complete",
@@ -196,6 +188,12 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 		} else {
 			log.Printf("[orchestrator] session %d: DID log uploaded to hosting service", sessionID)
 		}
+	}
+
+	// Auto-trigger Phase 2 if admin_did was provided at session creation time.
+	if session.AdminDid != "" {
+		log.Printf("[orchestrator] session %d: admin_did present, auto-starting provisioning", sessionID)
+		o.Provision(sessionID, session.AdminDid)
 	}
 }
 
@@ -257,11 +255,19 @@ func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDi
 		return
 	}
 
+	if err := o.k8s.CreateVtaIngress(ctx, ns, sessionID, session.FQDN()); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		o.markFailed(sessionID, "failed to create VTA ingress: "+err.Error())
+		return
+	}
+
 	o.db.Model(&model.SetupSession{}).Where("id = ?", sessionID).Updates(map[string]any{
 		"status":     "running",
 		"updated_at": time.Now(),
 	})
-	log.Printf("[orchestrator] session %d: VTA running", sessionID)
+	log.Printf("[orchestrator] session %d: VTA running at %s", sessionID, session.FQDN())
 }
 
 func (o *Orchestrator) markFailed(sessionID uint, msg string) {

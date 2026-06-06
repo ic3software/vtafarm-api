@@ -3,11 +3,13 @@ package handler
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
 	"github.com/ic3software/cipherportal-api/internal/cloudflare"
+	"github.com/ic3software/cipherportal-api/internal/didhosting"
 	"github.com/ic3software/cipherportal-api/internal/ghcr"
 	"github.com/ic3software/cipherportal-api/internal/k8s"
 	"github.com/ic3software/cipherportal-api/internal/middleware"
@@ -22,6 +24,7 @@ type SetupHandler struct {
 	ingressIP      string
 	clusterDomain  string
 	didHostingBase string // DID_HOSTING_SERVER_URL — public server URL used to build vta_did_url
+	didHosting     *didhosting.Client // nil when not configured
 	k8s            *k8s.Client
 	orch           *setup.Orchestrator
 	ghcr           *ghcr.Client // nil when not configured
@@ -31,6 +34,7 @@ func NewSetupHandler(
 	db *gorm.DB,
 	cf *cloudflare.Client,
 	appEnv, ingressIP, clusterDomain, didHostingBase string,
+	dhClient *didhosting.Client,
 	k8sClient *k8s.Client,
 	orch *setup.Orchestrator,
 	ghcrClient *ghcr.Client,
@@ -42,6 +46,7 @@ func NewSetupHandler(
 		ingressIP:      ingressIP,
 		clusterDomain:  clusterDomain,
 		didHostingBase: didHostingBase,
+		didHosting:     dhClient,
 		k8s:            k8sClient,
 		orch:           orch,
 		ghcr:           ghcrClient,
@@ -105,6 +110,8 @@ type createSetupRequest struct {
 	VtaName     string `json:"vta_name"`
 	MediatorDid string `json:"mediator_did" binding:"required"`
 	VtaImage    string `json:"vta_image"    binding:"required"`
+	// Optional — if set, Phase 2 (import-did + Deployment) starts automatically after Phase 1.
+	AdminDid string `json:"admin_did"`
 	// Advanced — optional
 	Portable         *bool `json:"portable"`
 	PreRotationCount *int  `json:"pre_rotation_count"`
@@ -176,6 +183,7 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		MediatorDid:      req.MediatorDid,
 		VtaDidUrl:        vtaDidUrl,
 		VtaImage:         req.VtaImage,
+		AdminDid:         req.AdminDid,
 		Portable:         portable,
 		PreRotationCount: preRotationCount,
 	}
@@ -289,6 +297,17 @@ func (h *SetupHandler) Delete(c *gin.Context) {
 	if h.cf != nil && session.CFRecordID != "" {
 		if err := h.cf.DeleteRecord(c.Request.Context(), session.CFRecordID); err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to delete DNS record: " + err.Error()})
+			return
+		}
+	}
+
+	if h.didHosting != nil && session.VtaDidUrl != "" {
+		path := session.VtaDidUrl
+		if idx := strings.Index(path, "/user-"); idx >= 0 {
+			path = path[idx+1:] // user-abc/pvta
+		}
+		if err := h.didHosting.DeleteDid(c.Request.Context(), path); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to delete DID from hosting: " + err.Error()})
 			return
 		}
 	}

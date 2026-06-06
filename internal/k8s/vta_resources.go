@@ -6,6 +6,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -106,13 +107,58 @@ func (c *Client) CreateVtaService(ctx context.Context, ns string, sessionID uint
 	return nil
 }
 
-// DeleteVtaResources removes the Deployment, Service, import-did Job, and PVC for a session.
+// CreateVtaIngress creates an nginx Ingress routing the session FQDN to the VTA service.
+// TLS is terminated at the ingress (cert-manager annotation assumed on the cluster).
+// Idempotent — AlreadyExists is ignored.
+func (c *Client) CreateVtaIngress(ctx context.Context, ns string, sessionID uint, fqdn string) error {
+	name := vtaDeploymentName(sessionID)
+	svcName := vtaServiceName(sessionID)
+	port := intstr.FromInt32(8100)
+	pathType := networkingv1.PathTypePrefix
+
+	_, err := c.kube.NetworkingV1().Ingresses(ns).Create(ctx, &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: ns,
+			Annotations: map[string]string{
+				"kubernetes.io/ingress.class":                "nginx",
+				"nginx.ingress.kubernetes.io/ssl-redirect":   "true",
+			},
+		},
+		Spec: networkingv1.IngressSpec{
+			Rules: []networkingv1.IngressRule{{
+				Host: fqdn,
+				IngressRuleValue: networkingv1.IngressRuleValue{
+					HTTP: &networkingv1.HTTPIngressRuleValue{
+						Paths: []networkingv1.HTTPIngressPath{{
+							Path:     "/",
+							PathType: &pathType,
+							Backend: networkingv1.IngressBackend{
+								Service: &networkingv1.IngressServiceBackend{
+									Name: svcName,
+									Port: networkingv1.ServiceBackendPort{Number: port.IntVal},
+								},
+							},
+						}},
+					},
+				},
+			}},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil && !k8serrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create ingress: %w", err)
+	}
+	return nil
+}
+
+// DeleteVtaResources removes the Deployment, Service, Ingress, import-did Job, and PVC for a session.
 // All errors are silently ignored — this is best-effort cleanup.
 func (c *Client) DeleteVtaResources(ctx context.Context, ns string, sessionID uint) {
 	propagation := metav1.DeletePropagationBackground
 	opts := metav1.DeleteOptions{PropagationPolicy: &propagation}
 
 	_ = c.kube.AppsV1().Deployments(ns).Delete(ctx, vtaDeploymentName(sessionID), opts)
+	_ = c.kube.NetworkingV1().Ingresses(ns).Delete(ctx, vtaDeploymentName(sessionID), metav1.DeleteOptions{})
 	_ = c.kube.CoreV1().Services(ns).Delete(ctx, vtaServiceName(sessionID), metav1.DeleteOptions{})
 	_ = c.kube.BatchV1().Jobs(ns).Delete(ctx, ImportDidJobName(sessionID), opts)
 	_ = c.kube.CoreV1().PersistentVolumeClaims(ns).Delete(ctx, VtaPVCName(sessionID), metav1.DeleteOptions{})

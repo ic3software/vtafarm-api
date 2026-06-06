@@ -6,6 +6,7 @@ import (
 
 	"github.com/ic3software/cipherportal-api/internal/apidocs"
 	"github.com/ic3software/cipherportal-api/internal/cloudflare"
+	"github.com/ic3software/cipherportal-api/internal/didhosting"
 	"github.com/ic3software/cipherportal-api/internal/ghcr"
 	"github.com/ic3software/cipherportal-api/internal/handler"
 	"github.com/ic3software/cipherportal-api/internal/k8s"
@@ -20,6 +21,7 @@ func Setup(
 	k8sClient *k8s.Client,
 	orch *setup.Orchestrator,
 	ghcrClient *ghcr.Client,
+	dhClient *didhosting.Client,
 	appEnv, ingressIP, clusterDomain, didHostingBase, jwtSecret string,
 ) *gin.Engine {
 	r := gin.Default()
@@ -31,7 +33,7 @@ func Setup(
 		r.GET("/docs", apidocs.ServeUI)
 	}
 
-	sh := handler.NewSetupHandler(db, cfClient, appEnv, ingressIP, clusterDomain, didHostingBase, k8sClient, orch, ghcrClient)
+	sh := handler.NewSetupHandler(db, cfClient, appEnv, ingressIP, clusterDomain, didHostingBase, dhClient, k8sClient, orch, ghcrClient)
 
 	v1 := r.Group("/api/v1")
 

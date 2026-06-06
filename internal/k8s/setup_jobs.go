@@ -33,10 +33,6 @@ func ImportDidJobName(sessionID uint) string {
 	return fmt.Sprintf("vta-import-%d", sessionID)
 }
 
-// ReaderJobName returns the K8s Job name for the PVC file-reader job.
-func ReaderJobName(sessionID uint) string {
-	return fmt.Sprintf("pvc-reader-%d", sessionID)
-}
 
 // CreateSetupResources creates a 1Gi PVC, a ConfigMap with the TOML config, and a Job
 // that runs `vta setup --from /config/vta-setup.toml` with the PVC mounted at /vta-data.
@@ -91,9 +87,11 @@ func (c *Client) CreateSetupResources(ctx context.Context, ns string, sessionID 
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyNever,
 					Containers: []corev1.Container{{
-						Name:       "vta-setup",
-						Image:      vtaImage,
-						Command:    []string{"vta", "setup", "--from", "/config/vta-setup.toml"},
+						Name:  "vta-setup",
+						Image: vtaImage,
+						// After setup, print the marker then cat did.jsonl so the
+						// orchestrator can extract it from job logs without a reader pod.
+						Command:    []string{"sh", "-c", "vta setup --from /config/vta-setup.toml && echo '---DID_LOG_START---' && cat /vta-data/data/vta/did-logs/VTA-did.jsonl"},
 						WorkingDir: "/vta-data",
 						VolumeMounts: []corev1.VolumeMount{
 							{Name: "config", MountPath: "/config"},
@@ -272,72 +270,11 @@ func (c *Client) CreateImportDidJob(ctx context.Context, ns string, sessionID ui
 	return nil
 }
 
-// DeleteSetupResources removes the setup Job, its ConfigMap, and the reader job.
+// DeleteSetupResources removes the setup Job and its ConfigMap.
 // Errors are silently ignored — this is best-effort cleanup.
 func (c *Client) DeleteSetupResources(ctx context.Context, ns string, sessionID uint) {
 	propagation := metav1.DeletePropagationBackground
 	opts := metav1.DeleteOptions{PropagationPolicy: &propagation}
 	_ = c.kube.BatchV1().Jobs(ns).Delete(ctx, SetupJobName(sessionID), opts)
-	_ = c.kube.BatchV1().Jobs(ns).Delete(ctx, ReaderJobName(sessionID), opts)
 	_ = c.kube.CoreV1().ConfigMaps(ns).Delete(ctx, setupConfigMapName(sessionID), metav1.DeleteOptions{})
-}
-
-// ReadFileFromPVC creates a one-shot Job that cats a file from the PVC, reads the output,
-// then cleans up. image should be the VTA image (has cat). relPath is relative to /vta-data.
-func (c *Client) ReadFileFromPVC(ctx context.Context, ns string, sessionID uint, image, relPath string) (string, error) {
-	jobName := ReaderJobName(sessionID)
-	pvcName := VtaPVCName(sessionID)
-
-	backoff := int32(0)
-	ttl := int32(120)
-	deadline := int64(60)
-
-	_, err := c.kube.BatchV1().Jobs(ns).Create(ctx, &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: ns},
-		Spec: batchv1.JobSpec{
-			BackoffLimit:            &backoff,
-			TTLSecondsAfterFinished: &ttl,
-			ActiveDeadlineSeconds:   &deadline,
-			Template: corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyNever,
-					Containers: []corev1.Container{{
-						Name:    "reader",
-						Image:   image,
-						Command: []string{"cat", "/vta-data/" + relPath},
-						VolumeMounts: []corev1.VolumeMount{{
-							Name:      "data",
-							MountPath: "/vta-data",
-						}},
-					}},
-					Volumes: []corev1.Volume{{
-						Name: "data",
-						VolumeSource: corev1.VolumeSource{
-							PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-								ClaimName: pvcName,
-							},
-						},
-					}},
-				},
-			},
-		},
-	}, metav1.CreateOptions{})
-	if err != nil && !k8serrors.IsAlreadyExists(err) {
-		return "", fmt.Errorf("create reader job: %w", err)
-	}
-
-	ok, failMsg, err := c.WaitForJob(ctx, ns, jobName)
-	if err != nil {
-		return "", fmt.Errorf("wait reader job: %w", err)
-	}
-	if !ok {
-		return "", fmt.Errorf("reader job failed: %s", failMsg)
-	}
-
-	content, err := c.JobLogs(ctx, ns, jobName)
-
-	propagation := metav1.DeletePropagationBackground
-	_ = c.kube.BatchV1().Jobs(ns).Delete(ctx, jobName, metav1.DeleteOptions{PropagationPolicy: &propagation})
-
-	return content, err
 }
