@@ -48,10 +48,7 @@ func (h *SetupHandler) Validate(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"cloudflare": "ok",
-		"ingress_ip": h.ingressIP,
-	})
+	c.JSON(http.StatusOK, gin.H{"cloudflare": "ok"})
 }
 
 type createSetupRequest struct {

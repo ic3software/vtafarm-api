@@ -1,7 +1,6 @@
 # CipherPortal API
 
-Go REST API backend for managing Kubernetes pod deployments
-with per-user namespace isolation.
+Go REST API backend for managing VTA setup sessions with per-user namespace isolation.
 
 ## Tech Stack
 
@@ -12,20 +11,22 @@ with per-user namespace isolation.
 | Migrations | golang-migrate (raw SQL) |
 | Database | PostgreSQL 18 |
 | K8s client | client-go v0.36 |
+| Hot reload | Air |
 | Container | Docker Compose (dev) / Helm (prod) |
 
 ---
 
 ## Local Development
 
-The API runs directly on your machine while only
-the database runs in Docker. This gives the API direct access to your
-local `~/.kube/config` without any networking workarounds.
+The API runs directly on your machine while only the database runs in Docker.
+This gives the API direct access to your local `~/.kube/config` without any
+networking workarounds.
 
 ### Prerequisites
 
 - Go 1.26+
 - Docker & Docker Compose
+- [Air](https://github.com/air-verse/air) — `go install github.com/air-verse/air@latest`
 - `kubectl` configured with access to a cluster (for K8s features)
 
 ### Setup
@@ -36,31 +37,20 @@ local `~/.kube/config` without any networking workarounds.
    cp .env.example .env
    ```
 
-2. Start PostgreSQL:
-
-   ```bash
-   make up
-   ```
-
-3. Run migrations:
-
-   ```bash
-   make migrate
-   ```
-
-4. Seed test data:
-
-   ```bash
-   make seed
-   ```
-
-5. Start the API:
+2. Start the DB + API (migrations run automatically on startup):
 
    ```bash
    make dev
    ```
 
    The API is now available at `http://localhost:8080`.
+   API docs: `http://localhost:8080/docs`
+
+3. (Optional) Seed test data — run in a separate terminal while the API is running:
+
+   ```bash
+   make seed
+   ```
 
 ### Environment Variables
 
@@ -69,6 +59,7 @@ Copy `.env.example` and adjust as needed:
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `APP_PORT` | `8080` | HTTP listen port |
+| `APP_ENV` | `development` | Set to `production` to disable `/docs` |
 | `DB_HOST` | `localhost` | Points to the Docker-managed PostgreSQL |
 | `DB_NAME` | `cipherportal` | |
 | `JWT_SECRET` | _(required)_ | HS256 signing secret — see below |
@@ -79,8 +70,6 @@ Copy `.env.example` and adjust as needed:
 | `K8S_NAMESPACE_PREFIX` | `cp-user` | Per-user namespace: `cp-user-{userID}` |
 
 #### Generating JWT_SECRET
-
-Generate a cryptographically secure secret and paste it into your `.env`:
 
 ```bash
 openssl rand -base64 32
@@ -96,84 +85,11 @@ make migrate-down                        # roll back one step
 
 ---
 
-## Testing
-
-### Unit / Integration Tests
-
-```bash
-go test ./...
-```
-
-### Manual API Testing
-
-Health check:
-
-```bash
-curl http://localhost:8080/health
-```
-
-Create a pod (use the provided test fixture):
-
-```bash
-curl -X POST http://localhost:8080/api/v1/pods \
-  -H "Content-Type: application/json" \
-  -d @testdata/create-pod.json
-```
-
-List pods:
-
-```bash
-curl "http://localhost:8080/api/v1/pods?user_id=1"
-```
-
-Get a single pod:
-
-```bash
-curl "http://localhost:8080/api/v1/pods/nginx-test?user_id=1"
-```
-
-Delete a pod:
-
-```bash
-curl -X DELETE "http://localhost:8080/api/v1/pods/nginx-test?user_id=1"
-```
-
----
-
 ## Production Deployment
 
-The production stack is deployed to a Kubernetes cluster via Helm. The
-chart (`helm/cipherportal-api`) ships both the API and a bundled
-PostgreSQL instance as a single release.
+The production stack is deployed to a Kubernetes cluster via Helm.
 
-### 1. Build and Push the Docker Image
-
-Set your Docker Hub username and build:
-
-```bash
-export DOCKER_USERNAME=your-dockerhub-username
-
-# builds + tags with git SHA and "latest", then pushes
-make image-push
-# or pin a specific tag:
-make image-push TAG=v1.2.3
-```
-
-### 2. Connect to the Target Cluster
-
-Ensure `kubectl` is pointing at the correct cluster:
-
-```bash
-kubectl config get-contexts             # list available contexts
-kubectl config use-context <context>    # switch to the target cluster
-kubectl cluster-info                    # verify connectivity
-```
-
-### 3. Create the PostgreSQL Secret (one-time)
-
-Before the first deploy, create the database password as a Kubernetes
-Secret directly in the cluster. This only needs to be done once (or
-when rotating the password):
+### 1. Create the PostgreSQL Secret (one-time)
 
 ```bash
 kubectl create secret generic cipherportal-postgresql \
@@ -181,12 +97,7 @@ kubectl create secret generic cipherportal-postgresql \
   --namespace=default
 ```
 
-If using a custom namespace, replace `--namespace=default` accordingly.
-The Secret is never stored in the repository or passed through CI.
-
-### 4. Deploy with Helm
-
-**Minimal deploy (bundled PostgreSQL):**
+### 2. Deploy with Helm
 
 ```bash
 make deploy \
@@ -194,7 +105,7 @@ make deploy \
   TAG=$(git rev-parse --short HEAD)
 ```
 
-**With a custom namespace:**
+With a custom namespace:
 
 ```bash
 make deploy \
@@ -203,31 +114,20 @@ make deploy \
   NAMESPACE=cipherportal
 ```
 
-**With Ingress**, set the host in `helm/cipherportal-api/values.yaml`:
-
-```yaml
-ingress:
-  host: api.example.com
-```
-
-Then run `make deploy`.
-
 **Uninstall:**
 
 ```bash
 helm uninstall cipherportal
 ```
 
-### 5. Run Migrations in the Cluster
-
-After the first deploy, exec into the API pod to apply migrations:
+### 3. Run Migrations in the Cluster
 
 ```bash
 kubectl exec -it deployment/cipherportal \
   -n <namespace> -- go run ./cmd/migrate up
 ```
 
-### 6. CI/CD (GitHub Actions)
+### 4. CI/CD (GitHub Actions)
 
 `scripts/deploy.sh` automates the deploy step in CI. It expects the
 following repository secrets:
@@ -242,18 +142,24 @@ following repository secrets:
 
 ### Production Kubernetes RBAC
 
-The API server pod needs a `ClusterRole` with these permissions to
-manage per-user namespaces:
+The API server pod needs a `ClusterRole` with these permissions:
 
 ```yaml
 rules:
 - apiGroups: [""]
-  resources: ["namespaces", "serviceaccounts", "pods", "pods/log", "pods/exec"]
-  verbs: ["get", "list", "create", "delete", "watch"]
+  resources: ["namespaces", "serviceaccounts", "pods", "pods/log", "pods/exec",
+              "configmaps", "persistentvolumeclaims", "services"]
+  verbs: ["get", "list", "create", "update", "delete", "watch"]
 - apiGroups: ["rbac.authorization.k8s.io"]
   resources: ["roles", "rolebindings"]
   verbs: ["get", "list", "create", "delete"]
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "list", "create", "delete", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "create", "update", "delete", "watch"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "create", "update", "delete", "watch"]
 ```
-
-This is provisioned automatically by the Helm chart via `clusterrole.yaml`
-and `clusterrolebinding.yaml`.

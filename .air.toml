@@ -1,0 +1,12 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+cmd = "go build -o ./tmp/api ./main.go"
+bin = "./tmp/api"
+include_ext = ["go", "yaml"]
+exclude_dir = ["tmp", "vendor", "migrations", "testdata", "seed", "docs", "helm"]
+delay = 500
+
+[log]
+time = true

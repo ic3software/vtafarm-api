@@ -1,0 +1,372 @@
+openapi: "3.1.0"
+
+info:
+  title: CipherPortal API
+  version: "1.0.0"
+  description: REST API for managing VTA setup sessions with per-user namespace isolation.
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+  - url: https://cp-api.ic3.dev
+    description: Production
+
+tags:
+  - name: System
+    description: Health and system endpoints
+  - name: Auth — Admin
+    description: Authentication for admin accounts
+  - name: Auth — User
+    description: Authentication for user accounts
+  - name: Admin
+    description: Admin-only endpoints (requires admin JWT)
+  - name: User
+    description: User endpoints (requires user JWT)
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
+
+    LoginRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          example: user@example.com
+        password:
+          type: string
+          example: "secret123"
+      required: [email, password]
+
+    LoginResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        user:
+          type: object
+          properties:
+            id:
+              type: integer
+            email:
+              type: string
+            role:
+              type: string
+              enum: [user, admin]
+
+    CreateUserRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          example: newuser@example.com
+        password:
+          type: string
+          minLength: 8
+          example: "password123"
+      required: [email, password]
+
+    CreateUserResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+
+    ValidateResponse:
+      type: object
+      properties:
+        cloudflare:
+          type: string
+          example: ok
+
+    CreateSetupRequest:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [vta_only, full_stack]
+          description: |
+            - `vta_only`: Deploys VTA only; user provides external DID hosting URL.
+            - `full_stack`: Deploys VTA + Mediator + WebVH DID Hosting Daemon in-cluster.
+        domain:
+          type: string
+          example: "example.com"
+      required: [mode, domain]
+
+    CreateSetupResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+        subdomain:
+          type: string
+          example: "abc123.example.com"
+        url:
+          type: string
+          example: "https://abc123.example.com"
+        status:
+          type: string
+          example: "dns_provisioned"
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      tags: [System]
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /api/v1/auth/admin/login:
+    post:
+      summary: Admin login
+      tags: [Auth — Admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/auth/user/login:
+    post:
+      summary: User login
+      tags: [Auth — User]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/users:
+    post:
+      summary: Create user
+      description: Creates a new user account. Requires admin JWT.
+      tags: [Admin]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUserRequest"
+      responses:
+        "201":
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateUserResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role (admin required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Email already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/setup/validate:
+    post:
+      summary: Validate setup prerequisites
+      description: Verifies Cloudflare connectivity. Requires user JWT.
+      tags: [User]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Validation passed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidateResponse"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Cluster ingress IP not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Cloudflare connectivity failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Cloudflare not configured on server
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/setup:
+    post:
+      summary: Create setup session
+      description: Generates a random subdomain, creates a Cloudflare DNS A record, and stores the session. Requires user JWT.
+      tags: [User]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSetupRequest"
+      responses:
+        "201":
+          description: Setup session created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateSetupResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Cluster ingress IP not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Failed to create DNS record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Cloudflare not configured on server
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/setup/{id}:
+    delete:
+      summary: Delete setup session
+      description: Removes the Cloudflare DNS record and deletes the session. Requires user JWT.
+      tags: [User]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Setup session ID
+      responses:
+        "204":
+          description: Session deleted
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Failed to delete DNS record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
