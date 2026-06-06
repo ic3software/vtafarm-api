@@ -40,7 +40,9 @@ func Setup(db *gorm.DB, cfClient *cloudflare.Client, appEnv, ingressIP, jwtSecre
 		// User only
 		userOnly := auth.Group("", middleware.RequireRole(model.RoleUser))
 		userOnly.POST("/setup/validate", sh.Validate)
+		userOnly.GET("/setup", sh.List)
 		userOnly.POST("/setup", sh.Create)
+		userOnly.GET("/setup/:id", sh.Get)
 		userOnly.DELETE("/setup/:id", sh.Delete)
 	}
 

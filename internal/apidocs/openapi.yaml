@@ -100,13 +100,97 @@ components:
         mode:
           type: string
           enum: [vta_only, full_stack]
-          description: |
-            - `vta_only`: Deploys VTA only; user provides external DID hosting URL.
-            - `full_stack`: Deploys VTA + Mediator + WebVH DID Hosting Daemon in-cluster.
+          default: vta_only
         domain:
           type: string
           example: "example.com"
-      required: [mode, domain]
+        vta_name:
+          type: string
+          default: "personal-vta"
+          example: "personal-vta"
+        mediator_did:
+          type: string
+          description: DID of the external Mediator (kind="existing")
+          example: "did:webvh:abc123:mediator.example.com"
+        vta_did_url:
+          type: string
+          format: uri
+          description: WebVH URL where the VTA DID will be hosted
+          example: "https://dids.example.com/vta"
+        portable:
+          type: boolean
+          default: true
+          description: Advanced — VTA DID portability
+        pre_rotation_count:
+          type: integer
+          default: 1
+          description: Advanced — number of pre-rotation keys
+      required: [mode, domain, mediator_did, vta_did_url]
+
+    SetupSessionItem:
+      type: object
+      properties:
+        id:
+          type: integer
+        status:
+          type: string
+          enum: [dns_provisioned, vta_setup_running, waiting_webvh, vta_starting, complete, failed]
+        mode:
+          type: string
+          enum: [vta_only, full_stack]
+        fqdn:
+          type: string
+          example: "cp-abc12345.example.com"
+        url:
+          type: string
+          example: "https://cp-abc12345.example.com"
+        vta_name:
+          type: string
+        vta_did:
+          type: string
+          description: Populated after vta setup completes
+        mediator_did:
+          type: string
+          description: Populated after vta setup completes
+        error_msg:
+          type: string
+          description: Present only when status is `failed`
+        created_at:
+          type: string
+          format: date-time
+
+    GetSetupSessionResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+        status:
+          type: string
+          enum:
+            - dns_provisioned
+            - vta_setup_running
+            - waiting_webvh
+            - vta_starting
+            - complete
+            - failed
+        mode:
+          type: string
+          enum: [vta_only, full_stack]
+        fqdn:
+          type: string
+          example: "cp-abc12345.example.com"
+        url:
+          type: string
+          example: "https://cp-abc12345.example.com"
+        error_msg:
+          type: string
+          description: Present only when status is `failed`
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
 
     CreateSetupResponse:
       type: object
@@ -183,6 +267,9 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/LoginRequest"
+            example:
+              email: "user@ic3.dev"
+              password: "password"
       responses:
         "200":
           description: Login successful
@@ -246,6 +333,29 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: Email already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/setup:
+    get:
+      summary: List setup sessions
+      description: Returns all setup sessions owned by the requesting user, newest first.
+      tags: [User]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SetupSessionItem"
+        "401":
+          description: Missing or invalid token
           content:
             application/json:
               schema:
@@ -342,6 +452,37 @@ paths:
                 $ref: "#/components/schemas/Error"
 
   /api/v1/setup/{id}:
+    get:
+      summary: Get setup session
+      description: Returns the current status of a setup session. Poll this endpoint to track progress.
+      tags: [User]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Session state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetSetupSessionResponse"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     delete:
       summary: Delete setup session
       description: Removes the Cloudflare DNS record and deletes the session. Requires user JWT.

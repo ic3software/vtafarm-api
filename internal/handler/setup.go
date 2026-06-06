@@ -52,8 +52,14 @@ func (h *SetupHandler) Validate(c *gin.Context) {
 }
 
 type createSetupRequest struct {
-	Mode   string `json:"mode"   binding:"required,oneof=vta_only full_stack"`
-	Domain string `json:"domain" binding:"required"`
+	Mode             string `json:"mode"         binding:"required,oneof=vta_only full_stack"`
+	Domain           string `json:"domain"       binding:"required"`
+	VtaName          string `json:"vta_name"`
+	MediatorDID      string `json:"mediator_did" binding:"required"`
+	VtaDidURL        string `json:"vta_did_url"  binding:"required,url"`
+	// Advanced — optional
+	Portable         *bool  `json:"portable"`
+	PreRotationCount *int   `json:"pre_rotation_count"`
 }
 
 // POST /api/v1/setup
@@ -74,6 +80,18 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		return
 	}
 
+	if req.VtaName == "" {
+		req.VtaName = "personal-vta"
+	}
+	portable := true
+	if req.Portable != nil {
+		portable = *req.Portable
+	}
+	preRotationCount := 1
+	if req.PreRotationCount != nil {
+		preRotationCount = *req.PreRotationCount
+	}
+
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 	subdomain := setup.GenerateSubdomain(h.appEnv)
 	fqdn := subdomain + "." + req.Domain
@@ -85,12 +103,17 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	}
 
 	session := model.SetupSession{
-		UserID:     userID,
-		Mode:       req.Mode,
-		Status:     "dns_provisioned",
-		Domain:     req.Domain,
-		Subdomain:  subdomain,
-		CFRecordID: recordID,
+		UserID:           userID,
+		Mode:             req.Mode,
+		Status:           "dns_provisioned",
+		Domain:           req.Domain,
+		Subdomain:        subdomain,
+		CFRecordID:       recordID,
+		VtaName:     req.VtaName,
+		MediatorDID: req.MediatorDID,
+		VtaDidURL:   req.VtaDidURL,
+		Portable:         portable,
+		PreRotationCount: preRotationCount,
 	}
 	if err := h.db.Create(&session).Error; err != nil {
 		// DNS record created but session save failed — clean up to avoid orphan records.
@@ -100,30 +123,82 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"id":        session.ID,
-		"subdomain": fqdn,
-		"url":       "https://" + fqdn,
-		"status":    session.Status,
+		"id":     session.ID,
+		"fqdn":   fqdn,
+		"url":    "https://" + fqdn,
+		"status": session.Status,
 	})
 }
 
-// GET /did/:subdomain/did.jsonl
-// Public endpoint — serves the VTA DID log so did:webvh resolvers can fetch it.
-// Uses the random subdomain as the identifier to prevent session enumeration.
-func (h *SetupHandler) ServeDidLog(c *gin.Context) {
-	subdomain := c.Param("subdomain")
+// GET /api/v1/setup
+// Lists all setup sessions owned by the requesting user.
+func (h *SetupHandler) List(c *gin.Context) {
+	userID := c.MustGet(middleware.ContextUserID).(uint)
+
+	var sessions []model.SetupSession
+	if err := h.db.Where("user_id = ?", userID).Order("created_at DESC").Find(&sessions).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list sessions"})
+		return
+	}
+
+	type item struct {
+		ID          uint   `json:"id"`
+		Status      string `json:"status"`
+		Mode        string `json:"mode"`
+		FQDN        string `json:"fqdn"`
+		URL         string `json:"url"`
+		VtaName     string `json:"vta_name"`
+		MediatorDID string `json:"mediator_did"`
+		VtaDidURL   string `json:"vta_did_url"`
+		VtaDID      string `json:"vta_did,omitempty"`
+		ErrorMsg    string `json:"error_msg,omitempty"`
+		CreatedAt   any    `json:"created_at"`
+	}
+
+	result := make([]item, len(sessions))
+	for i, s := range sessions {
+		result[i] = item{
+			ID:          s.ID,
+			Status:      s.Status,
+			Mode:        s.Mode,
+			FQDN:        s.FQDN(),
+			URL:         s.PublicURL(),
+			VtaName:     s.VtaName,
+			MediatorDID: s.MediatorDID,
+			VtaDidURL:   s.VtaDidURL,
+			VtaDID:      s.VtaDID,
+			ErrorMsg:    s.ErrorMsg,
+			CreatedAt:   s.CreatedAt,
+		}
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// GET /api/v1/setup/:id
+// Returns the current state of a setup session owned by the requesting user.
+func (h *SetupHandler) Get(c *gin.Context) {
+	id := c.Param("id")
+	userID := c.MustGet(middleware.ContextUserID).(uint)
 
 	var session model.SetupSession
-	if err := h.db.Select("did_log").Where("subdomain = ?", subdomain).First(&session).Error; err != nil {
-		c.Status(http.StatusNotFound)
-		return
-	}
-	if session.DidLog == "" {
-		c.Status(http.StatusNotFound)
+	if err := h.db.Where("id = ? AND user_id = ?", id, userID).First(&session).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
 
-	c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(session.DidLog))
+	resp := gin.H{
+		"id":         session.ID,
+		"status":     session.Status,
+		"mode":       session.Mode,
+		"fqdn":       session.FQDN(),
+		"url":        "https://" + session.FQDN(),
+		"created_at": session.CreatedAt,
+		"updated_at": session.UpdatedAt,
+	}
+	if session.ErrorMsg != "" {
+		resp["error_msg"] = session.ErrorMsg
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // DELETE /api/v1/setup/:id
