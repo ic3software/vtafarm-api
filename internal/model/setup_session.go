@@ -17,6 +17,8 @@ type SetupSession struct {
 	VtaDidURL        string    `gorm:"not null;default:''"             json:"vta_did_url"`
 	Portable         bool      `gorm:"not null;default:true"           json:"portable"`
 	PreRotationCount int       `gorm:"not null;default:1"              json:"pre_rotation_count"`
+	// Image used for the vta-setup K8s Job
+	VtaImage         string    `gorm:"not null;default:''"             json:"vta_image,omitempty"`
 	// Output populated after vta setup runs
 	VtaDID           string    `gorm:"not null;default:''"             json:"vta_did,omitempty"`
 	CreatedAt        time.Time `                                       json:"created_at"`

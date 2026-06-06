@@ -108,6 +108,10 @@ components:
           type: string
           default: "personal-vta"
           example: "personal-vta"
+        vta_image:
+          type: string
+          description: Full image URL selected from GET /setup/images. Defaults to server VTA_IMAGE if omitted.
+          example: "ghcr.io/ic3software/vta:0.5.0"
         mediator_did:
           type: string
           description: DID of the external Mediator (kind="existing")
@@ -338,24 +342,49 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /api/v1/setup:
+  /api/v1/setup/images:
     get:
-      summary: List setup sessions
-      description: Returns all setup sessions owned by the requesting user, newest first.
+      summary: List available VTA images
+      description: |
+        Returns available VTA container image tags fetched from GHCR.
+        Use this to populate the image version dropdown before creating a session.
+        Falls back to the server default image if GHCR is not configured.
       tags: [User]
       security:
         - BearerAuth: []
       responses:
         "200":
-          description: List of sessions
+          description: List of available image versions
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/SetupSessionItem"
+                  type: object
+                  properties:
+                    tag:
+                      type: string
+                      example: "0.5.0"
+                    image:
+                      type: string
+                      example: "ghcr.io/ic3software/vta:0.5.0"
+                    default:
+                      type: boolean
+                      description: True if this is the server-configured default
         "401":
           description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Failed to fetch tags from GHCR
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Image source not configured on server
           content:
             application/json:
               schema:
@@ -401,9 +430,30 @@ paths:
                 $ref: "#/components/schemas/Error"
 
   /api/v1/setup:
+    get:
+      summary: List setup sessions
+      description: Returns all setup sessions owned by the requesting user, newest first.
+      tags: [User]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SetupSessionItem"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     post:
       summary: Create setup session
-      description: Generates a random subdomain, creates a Cloudflare DNS A record, and stores the session. Requires user JWT.
+      description: Generates a random subdomain, creates a Cloudflare DNS A record, stores the session, and begins async VTA setup. Requires user JWT.
       tags: [User]
       security:
         - BearerAuth: []
@@ -513,6 +563,58 @@ paths:
                 $ref: "#/components/schemas/Error"
         "502":
           description: Failed to delete DNS record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/setup/{id}/logs:
+    get:
+      summary: Stream setup logs
+      description: |
+        Server-Sent Events (SSE) stream of raw output from the vta-setup K8s Job.
+        - While `status = vta_setup_running`: streams live output.
+        - After job completes: replays buffered output then closes.
+        - `status = dns_provisioned`: returns 409 (not started yet).
+        Each event is a plain log line: `data: <line>\n\n`.
+        A final `event: done` signals the end of the stream.
+      tags: [User]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: SSE log stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: Newline-delimited SSE events
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Setup not started yet (status is dns_provisioned)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: K8s not configured on server
           content:
             application/json:
               schema:

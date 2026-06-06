@@ -6,12 +6,23 @@ import (
 
 	"github.com/ic3software/cipherportal-api/internal/apidocs"
 	"github.com/ic3software/cipherportal-api/internal/cloudflare"
+	"github.com/ic3software/cipherportal-api/internal/ghcr"
 	"github.com/ic3software/cipherportal-api/internal/handler"
+	"github.com/ic3software/cipherportal-api/internal/k8s"
 	"github.com/ic3software/cipherportal-api/internal/middleware"
 	"github.com/ic3software/cipherportal-api/internal/model"
+	"github.com/ic3software/cipherportal-api/internal/setup"
 )
 
-func Setup(db *gorm.DB, cfClient *cloudflare.Client, appEnv, ingressIP, jwtSecret string) *gin.Engine {
+func Setup(
+	db *gorm.DB,
+	cfClient *cloudflare.Client,
+	k8sClient *k8s.Client,
+	orch *setup.Orchestrator,
+	ghcrClient *ghcr.Client,
+	defaultImage string,
+	appEnv, ingressIP, jwtSecret string,
+) *gin.Engine {
 	r := gin.Default()
 
 	r.GET("/health", handler.Health)
@@ -21,7 +32,7 @@ func Setup(db *gorm.DB, cfClient *cloudflare.Client, appEnv, ingressIP, jwtSecre
 		r.GET("/docs", apidocs.ServeUI)
 	}
 
-	sh := handler.NewSetupHandler(db, cfClient, appEnv, ingressIP)
+	sh := handler.NewSetupHandler(db, cfClient, appEnv, ingressIP, k8sClient, orch, ghcrClient, defaultImage)
 
 	v1 := r.Group("/api/v1")
 
@@ -40,10 +51,12 @@ func Setup(db *gorm.DB, cfClient *cloudflare.Client, appEnv, ingressIP, jwtSecre
 		// User only
 		userOnly := auth.Group("", middleware.RequireRole(model.RoleUser))
 		userOnly.POST("/setup/validate", sh.Validate)
+		userOnly.GET("/setup/images", sh.Images)
 		userOnly.GET("/setup", sh.List)
 		userOnly.POST("/setup", sh.Create)
 		userOnly.GET("/setup/:id", sh.Get)
 		userOnly.DELETE("/setup/:id", sh.Delete)
+		userOnly.GET("/setup/:id/logs", sh.Logs)
 	}
 
 	return r

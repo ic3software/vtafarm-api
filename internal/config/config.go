@@ -13,11 +13,18 @@ type Config struct {
 	DB               DBConfig
 	K8s              K8sConfig
 	Cloudflare       CloudflareConfig
+	GHCR             GHCRConfig
 }
 
 type CloudflareConfig struct {
 	APIToken string
 	ZoneID   string
+}
+
+type GHCRConfig struct {
+	Token       string // GitHub PAT — optional for public packages
+	Owner       string // e.g. "ic3software"
+	PackageName string // e.g. "vta"
 }
 
 type DBConfig struct {
@@ -50,6 +57,8 @@ type K8sConfig struct {
 	// Empty → falls back to ~/.kube/config for out-of-cluster dev.
 	Kubeconfig      string
 	NamespacePrefix string
+	// VTAImage is the container image used by the vta-setup Job.
+	VTAImage string
 }
 
 func Load() *Config {
@@ -69,10 +78,16 @@ func Load() *Config {
 		K8s: K8sConfig{
 			Kubeconfig:      getEnv("KUBECONFIG", ""),
 			NamespacePrefix: getEnv("K8S_NAMESPACE_PREFIX", "cp-user"),
+			VTAImage:        getEnv("VTA_IMAGE", ""),
 		},
 		Cloudflare: CloudflareConfig{
 			APIToken: getEnv("CLOUDFLARE_API_TOKEN", ""),
 			ZoneID:   getEnv("CLOUDFLARE_ZONE_ID", ""),
+		},
+		GHCR: GHCRConfig{
+			Token:       getEnv("GITHUB_TOKEN", ""),
+			Owner:       getEnv("GITHUB_PACKAGE_OWNER", ""),
+			PackageName: getEnv("GITHUB_PACKAGE_NAME", ""),
 		},
 	}
 }
