@@ -29,11 +29,11 @@ backend = "plaintext"
 
 [messaging]
 kind = "existing"
-did  = "{{ .MediatorDID }}"
+did  = "{{ .MediatorDid }}"
 
 [vta_did]
 kind               = "create_webvh"
-url                = "{{ .VtaDidURL }}"
+url                = "{{ .VtaDidUrl }}"
 portable           = {{ .Portable }}
 pre_rotation_count = {{ .PreRotationCount }}
 `))
@@ -41,8 +41,8 @@ pre_rotation_count = {{ .PreRotationCount }}
 type vtaSetupData struct {
 	VtaName          string
 	PublicURL        string
-	MediatorDID      string
-	VtaDidURL        string
+	MediatorDid      string
+	VtaDidUrl        string
 	Portable         bool
 	PreRotationCount int
 }
@@ -52,8 +52,8 @@ func RenderVtaSetupTOML(s *model.SetupSession) (string, error) {
 	err := vtaSetupTmpl.Execute(&buf, vtaSetupData{
 		VtaName:          s.VtaName,
 		PublicURL:        s.PublicURL(),
-		MediatorDID:      s.MediatorDID,
-		VtaDidURL:        s.VtaDidURL,
+		MediatorDid:      s.MediatorDid,
+		VtaDidUrl:        s.VtaDidUrl,
 		Portable:         s.Portable,
 		PreRotationCount: s.PreRotationCount,
 	})

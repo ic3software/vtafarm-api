@@ -101,9 +101,6 @@ components:
           type: string
           enum: [vta_only, full_stack]
           default: vta_only
-        domain:
-          type: string
-          example: "example.com"
         vta_name:
           type: string
           default: "personal-vta"
@@ -129,7 +126,7 @@ components:
           type: integer
           default: 1
           description: Advanced — number of pre-rotation keys
-      required: [mode, domain, mediator_did, vta_did_url, vta_image]
+      required: [mode, mediator_did, vta_did_url, vta_image]
 
     SetupSessionItem:
       type: object

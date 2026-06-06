@@ -10,6 +10,7 @@ type Config struct {
 	AppEnv           string
 	JWTSecret        string
 	ClusterIngressIP string
+	ClusterDomain    string
 	DB               DBConfig
 	K8s              K8sConfig
 	Cloudflare       CloudflareConfig
@@ -65,6 +66,7 @@ func Load() *Config {
 		AppEnv:           getEnv("APP_ENV", "development"),
 		JWTSecret:        getEnv("JWT_SECRET", "change-me-in-production"),
 		ClusterIngressIP: getEnv("CLUSTER_INGRESS_IP", ""),
+		ClusterDomain:    getEnv("CLUSTER_DOMAIN", ""),
 		DB: DBConfig{
 			Host:     getEnv("DB_HOST", "localhost"),
 			Port:     getEnv("DB_PORT", "5432"),

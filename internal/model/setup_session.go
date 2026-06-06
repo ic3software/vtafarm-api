@@ -13,14 +13,14 @@ type SetupSession struct {
 	ErrorMsg         string    `gorm:"not null;default:''"      json:"error_msg,omitempty"`
 	// VTA config inputs
 	VtaName          string    `gorm:"not null;default:'personal-vta'" json:"vta_name"`
-	MediatorDID      string    `gorm:"not null;default:''"             json:"mediator_did"`
-	VtaDidURL        string    `gorm:"not null;default:''"             json:"vta_did_url"`
+	MediatorDid      string    `gorm:"column:mediator_did;not null;default:''"  json:"mediator_did"`
+	VtaDidUrl        string    `gorm:"column:vta_did_url;not null;default:''"   json:"vta_did_url"`
 	Portable         bool      `gorm:"not null;default:true"           json:"portable"`
 	PreRotationCount int       `gorm:"not null;default:1"              json:"pre_rotation_count"`
 	// Image used for the vta-setup K8s Job
 	VtaImage         string    `gorm:"not null;default:''"             json:"vta_image,omitempty"`
 	// Output populated after vta setup runs
-	VtaDID           string    `gorm:"not null;default:''"             json:"vta_did,omitempty"`
+	VtaDid           string    `gorm:"column:vta_did;not null;default:''"       json:"vta_did,omitempty"`
 	CreatedAt        time.Time `                                       json:"created_at"`
 	UpdatedAt        time.Time `                                       json:"updated_at"`
 }

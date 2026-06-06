@@ -16,31 +16,33 @@ import (
 )
 
 type SetupHandler struct {
-	db        *gorm.DB
-	cf        *cloudflare.Client
-	appEnv    string
-	ingressIP string
-	k8s       *k8s.Client
-	orch      *setup.Orchestrator
-	ghcr      *ghcr.Client // nil when not configured
+	db            *gorm.DB
+	cf            *cloudflare.Client
+	appEnv        string
+	ingressIP     string
+	clusterDomain string
+	k8s           *k8s.Client
+	orch          *setup.Orchestrator
+	ghcr          *ghcr.Client // nil when not configured
 }
 
 func NewSetupHandler(
 	db *gorm.DB,
 	cf *cloudflare.Client,
-	appEnv, ingressIP string,
+	appEnv, ingressIP, clusterDomain string,
 	k8sClient *k8s.Client,
 	orch *setup.Orchestrator,
 	ghcrClient *ghcr.Client,
 ) *SetupHandler {
 	return &SetupHandler{
-		db:        db,
-		cf:        cf,
-		appEnv:    appEnv,
-		ingressIP: ingressIP,
-		k8s:       k8sClient,
-		orch:      orch,
-		ghcr:      ghcrClient,
+		db:            db,
+		cf:            cf,
+		appEnv:        appEnv,
+		ingressIP:     ingressIP,
+		clusterDomain: clusterDomain,
+		k8s:           k8sClient,
+		orch:          orch,
+		ghcr:          ghcrClient,
 	}
 }
 
@@ -98,10 +100,9 @@ func (h *SetupHandler) Images(c *gin.Context) {
 
 type createSetupRequest struct {
 	Mode        string `json:"mode"         binding:"required,oneof=vta_only full_stack"`
-	Domain      string `json:"domain"       binding:"required"`
 	VtaName     string `json:"vta_name"`
-	MediatorDID string `json:"mediator_did" binding:"required"`
-	VtaDidURL   string `json:"vta_did_url"  binding:"required,url"`
+	MediatorDid string `json:"mediator_did" binding:"required"`
+	VtaDidUrl   string `json:"vta_did_url"  binding:"required,url"`
 	VtaImage    string `json:"vta_image"    binding:"required"`
 	// Advanced — optional
 	Portable         *bool `json:"portable"`
@@ -120,8 +121,8 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		return
 	}
 
-	if h.ingressIP == "" {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "cluster not configured: CLUSTER_INGRESS_IP not set"})
+	if h.ingressIP == "" || h.clusterDomain == "" {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "cluster not configured: CLUSTER_INGRESS_IP and CLUSTER_DOMAIN must be set"})
 		return
 	}
 
@@ -139,7 +140,7 @@ func (h *SetupHandler) Create(c *gin.Context) {
 
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 	subdomain := setup.GenerateSubdomain(h.appEnv)
-	fqdn := subdomain + "." + req.Domain
+	fqdn := subdomain + "." + h.clusterDomain
 
 	recordID, err := h.cf.CreateARecord(c.Request.Context(), fqdn, h.ingressIP)
 	if err != nil {
@@ -151,12 +152,12 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		UserID:           userID,
 		Mode:             req.Mode,
 		Status:           "dns_provisioned",
-		Domain:           req.Domain,
+		Domain:           h.clusterDomain,
 		Subdomain:        subdomain,
 		CFRecordID:       recordID,
 		VtaName:          req.VtaName,
-		MediatorDID:      req.MediatorDID,
-		VtaDidURL:        req.VtaDidURL,
+		MediatorDid:      req.MediatorDid,
+		VtaDidUrl:        req.VtaDidUrl,
 		VtaImage:         req.VtaImage,
 		Portable:         portable,
 		PreRotationCount: preRotationCount,
@@ -198,9 +199,9 @@ func (h *SetupHandler) List(c *gin.Context) {
 		URL         string `json:"url"`
 		VtaName     string `json:"vta_name"`
 		VtaImage    string `json:"vta_image,omitempty"`
-		MediatorDID string `json:"mediator_did"`
-		VtaDidURL   string `json:"vta_did_url"`
-		VtaDID      string `json:"vta_did,omitempty"`
+		MediatorDid string `json:"mediator_did"`
+		VtaDidUrl   string `json:"vta_did_url"`
+		VtaDid      string `json:"vta_did,omitempty"`
 		ErrorMsg    string `json:"error_msg,omitempty"`
 		CreatedAt   any    `json:"created_at"`
 	}
@@ -215,9 +216,9 @@ func (h *SetupHandler) List(c *gin.Context) {
 			URL:         s.PublicURL(),
 			VtaName:     s.VtaName,
 			VtaImage:    s.VtaImage,
-			MediatorDID: s.MediatorDID,
-			VtaDidURL:   s.VtaDidURL,
-			VtaDID:      s.VtaDID,
+			MediatorDid: s.MediatorDid,
+			VtaDidUrl:   s.VtaDidUrl,
+			VtaDid:      s.VtaDid,
 			ErrorMsg:    s.ErrorMsg,
 			CreatedAt:   s.CreatedAt,
 		}
@@ -243,7 +244,7 @@ func (h *SetupHandler) Get(c *gin.Context) {
 		"fqdn":       session.FQDN(),
 		"url":        "https://" + session.FQDN(),
 		"vta_image":  session.VtaImage,
-		"vta_did":    session.VtaDID,
+		"vta_did":    session.VtaDid,
 		"created_at": session.CreatedAt,
 		"updated_at": session.UpdatedAt,
 	}
