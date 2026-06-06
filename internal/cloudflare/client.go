@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 )
 
@@ -45,10 +46,17 @@ type apiError struct {
 }
 
 func New(apiToken, zoneID string) *Client {
+	dialer := &net.Dialer{}
 	return &Client{
 		apiToken: apiToken,
 		zoneID:   zoneID,
-		http:     &http.Client{},
+		http: &http.Client{
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
+					return dialer.DialContext(ctx, "tcp4", addr)
+				},
+			},
+		},
 	}
 }
 
