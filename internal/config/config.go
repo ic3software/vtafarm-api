@@ -15,6 +15,13 @@ type Config struct {
 	K8s              K8sConfig
 	Cloudflare       CloudflareConfig
 	GHCR             GHCRConfig
+	DidHosting       DidHostingConfig
+}
+
+type DidHostingConfig struct {
+	BaseUrl    string // e.g. https://dids.ic3.dev — used to build vta_did_url
+	Did        string // did:key:z6Mk... of this server
+	PrivateKey string // base64 ed25519 seed
 }
 
 type CloudflareConfig struct {
@@ -87,6 +94,11 @@ func Load() *Config {
 			Token:       getEnv("GITHUB_TOKEN", ""),
 			Owner:       getEnv("GITHUB_PACKAGE_OWNER", ""),
 			PackageName: getEnv("GITHUB_PACKAGE_NAME", ""),
+		},
+		DidHosting: DidHostingConfig{
+			BaseUrl:    getEnv("DID_HOSTING_URL", ""),
+			Did:        getEnv("DID_HOSTING_DID", ""),
+			PrivateKey: getEnv("DID_HOSTING_PRIVATE_KEY", ""),
 		},
 	}
 }

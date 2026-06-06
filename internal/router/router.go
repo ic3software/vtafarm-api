@@ -20,7 +20,7 @@ func Setup(
 	k8sClient *k8s.Client,
 	orch *setup.Orchestrator,
 	ghcrClient *ghcr.Client,
-	appEnv, ingressIP, clusterDomain, jwtSecret string,
+	appEnv, ingressIP, clusterDomain, didHostingBase, jwtSecret string,
 ) *gin.Engine {
 	r := gin.Default()
 
@@ -31,7 +31,7 @@ func Setup(
 		r.GET("/docs", apidocs.ServeUI)
 	}
 
-	sh := handler.NewSetupHandler(db, cfClient, appEnv, ingressIP, clusterDomain, k8sClient, orch, ghcrClient)
+	sh := handler.NewSetupHandler(db, cfClient, appEnv, ingressIP, clusterDomain, didHostingBase, k8sClient, orch, ghcrClient)
 
 	v1 := r.Group("/api/v1")
 
@@ -56,6 +56,8 @@ func Setup(
 		userOnly.GET("/setup/:id", sh.Get)
 		userOnly.DELETE("/setup/:id", sh.Delete)
 		userOnly.GET("/setup/:id/logs", sh.Logs)
+		userOnly.GET("/setup/:id/did-log", sh.DidLog)
+		userOnly.POST("/setup/:id/admin", sh.ProvisionAdmin)
 	}
 
 	return r

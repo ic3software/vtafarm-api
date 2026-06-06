@@ -16,33 +16,35 @@ import (
 )
 
 type SetupHandler struct {
-	db            *gorm.DB
-	cf            *cloudflare.Client
-	appEnv        string
-	ingressIP     string
-	clusterDomain string
-	k8s           *k8s.Client
-	orch          *setup.Orchestrator
-	ghcr          *ghcr.Client // nil when not configured
+	db             *gorm.DB
+	cf             *cloudflare.Client
+	appEnv         string
+	ingressIP      string
+	clusterDomain  string
+	didHostingBase string // e.g. https://dids.ic3.dev; empty = vta_did_url required in request
+	k8s            *k8s.Client
+	orch           *setup.Orchestrator
+	ghcr           *ghcr.Client // nil when not configured
 }
 
 func NewSetupHandler(
 	db *gorm.DB,
 	cf *cloudflare.Client,
-	appEnv, ingressIP, clusterDomain string,
+	appEnv, ingressIP, clusterDomain, didHostingBase string,
 	k8sClient *k8s.Client,
 	orch *setup.Orchestrator,
 	ghcrClient *ghcr.Client,
 ) *SetupHandler {
 	return &SetupHandler{
-		db:            db,
-		cf:            cf,
-		appEnv:        appEnv,
-		ingressIP:     ingressIP,
-		clusterDomain: clusterDomain,
-		k8s:           k8sClient,
-		orch:          orch,
-		ghcr:          ghcrClient,
+		db:             db,
+		cf:             cf,
+		appEnv:         appEnv,
+		ingressIP:      ingressIP,
+		clusterDomain:  clusterDomain,
+		didHostingBase: didHostingBase,
+		k8s:            k8sClient,
+		orch:           orch,
+		ghcr:           ghcrClient,
 	}
 }
 
@@ -102,7 +104,6 @@ type createSetupRequest struct {
 	Mode        string `json:"mode"         binding:"required,oneof=vta_only full_stack"`
 	VtaName     string `json:"vta_name"`
 	MediatorDid string `json:"mediator_did" binding:"required"`
-	VtaDidUrl   string `json:"vta_did_url"  binding:"required,url"`
 	VtaImage    string `json:"vta_image"    binding:"required"`
 	// Advanced — optional
 	Portable         *bool `json:"portable"`
@@ -139,6 +140,22 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	}
 
 	userID := c.MustGet(middleware.ContextUserID).(uint)
+
+	var user model.User
+	if err := h.db.First(&user, userID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load user"})
+		return
+	}
+
+	var existing int64
+	h.db.Model(&model.SetupSession{}).Where("user_id = ? AND vta_name = ?", userID, req.VtaName).Count(&existing)
+	if existing > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "vta_name already in use"})
+		return
+	}
+
+	vtaDidUrl := h.didHostingBase + "/user-" + user.UniqueId + "/" + req.VtaName
+
 	subdomain := setup.GenerateSubdomain(h.appEnv)
 	fqdn := subdomain + "." + h.clusterDomain
 
@@ -157,7 +174,7 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		CFRecordID:       recordID,
 		VtaName:          req.VtaName,
 		MediatorDid:      req.MediatorDid,
-		VtaDidUrl:        req.VtaDidUrl,
+		VtaDidUrl:        vtaDidUrl,
 		VtaImage:         req.VtaImage,
 		Portable:         portable,
 		PreRotationCount: preRotationCount,
@@ -279,6 +296,7 @@ func (h *SetupHandler) Delete(c *gin.Context) {
 	if h.k8s != nil {
 		ns := h.k8s.UserNamespace(fmt.Sprintf("%d", session.UserID))
 		h.k8s.DeleteSetupResources(c.Request.Context(), ns, session.ID)
+		h.k8s.DeleteVtaResources(c.Request.Context(), ns, session.ID)
 	}
 
 	if err := h.db.Delete(&session).Error; err != nil {
@@ -340,6 +358,67 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 
 	fmt.Fprintf(c.Writer, "event: done\ndata: stream ended\n\n")
 	c.Writer.Flush()
+}
+
+// GET /api/v1/setup/:id/did-log
+func (h *SetupHandler) DidLog(c *gin.Context) {
+	id := c.Param("id")
+	userID := c.MustGet(middleware.ContextUserID).(uint)
+
+	var session model.SetupSession
+	if err := h.db.Where("id = ? AND user_id = ?", id, userID).First(&session).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+		return
+	}
+
+	if session.Status == "dns_provisioned" || session.Status == "vta_setup_running" {
+		c.JSON(http.StatusConflict, gin.H{"error": "setup not complete yet"})
+		return
+	}
+
+	if session.DidLog == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "did.jsonl not available"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"vta_did": session.VtaDid,
+		"did_log": session.DidLog,
+	})
+}
+
+// POST /api/v1/setup/:id/admin
+func (h *SetupHandler) ProvisionAdmin(c *gin.Context) {
+	id := c.Param("id")
+	userID := c.MustGet(middleware.ContextUserID).(uint)
+
+	var session model.SetupSession
+	if err := h.db.Where("id = ? AND user_id = ?", id, userID).First(&session).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+		return
+	}
+
+	if session.Status != "vta_setup_complete" {
+		c.JSON(http.StatusConflict, gin.H{"error": "session must be in vta_setup_complete status"})
+		return
+	}
+
+	if h.orch == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "k8s not configured"})
+		return
+	}
+
+	var req struct {
+		AdminDid string `json:"admin_did" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	h.orch.Provision(session.ID, req.AdminDid)
+
+	c.JSON(http.StatusAccepted, gin.H{"status": "provisioning"})
 }
 
 func splitLines(s string) []string {

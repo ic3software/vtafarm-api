@@ -7,7 +7,7 @@ NAMESPACE    ?= default
 DEPLOY_ENV   ?= production
 INGRESS_HOST ?=
 
-.PHONY: build tidy dev \
+.PHONY: build gen-keypair tidy dev \
         migrate migrate-down migrate-new seed \
         up down reset \
         image-build image-push \
@@ -16,6 +16,9 @@ INGRESS_HOST ?=
 # ─── Local ────────────────────────────────────────────────────────────────────
 build:
 	go build -o bin/api ./main.go
+
+gen-keypair:
+	go run ./cmd/gen-keypair
 
 tidy:
 	go mod tidy

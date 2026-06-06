@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"crypto/rand"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -9,6 +10,18 @@ import (
 
 	"github.com/ic3software/cipherportal-api/internal/model"
 )
+
+const uniqueIdAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+func generateUniqueId() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	result := make([]byte, 8)
+	for i, byt := range b {
+		result[i] = uniqueIdAlphabet[int(byt)%len(uniqueIdAlphabet)]
+	}
+	return string(result)
+}
 
 type UserHandler struct {
 	db *gorm.DB
@@ -37,6 +50,7 @@ func (h *UserHandler) Create(c *gin.Context) {
 	}
 
 	user := model.User{
+		UniqueId: generateUniqueId(),
 		Email:    req.Email,
 		Password: string(hash),
 	}
@@ -46,7 +60,8 @@ func (h *UserHandler) Create(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"id":    user.ID,
-		"email": user.Email,
+		"id":        user.ID,
+		"unique_id": user.UniqueId,
+		"email":     user.Email,
 	})
 }

@@ -13,9 +13,10 @@ import (
 	"github.com/ic3software/cipherportal-api/internal/model"
 )
 
-// Orchestrator drives a setup session from dns_provisioned through to complete/failed.
-// One goroutine per session; cancellation stops the goroutine without touching the DB
-// (the Delete handler owns DB + K8s cleanup in that case).
+// Orchestrator drives a setup session through its full lifecycle.
+// Phase 1 (Start):      dns_provisioned → vta_setup_running → vta_setup_complete
+// Phase 2 (Provision):  vta_setup_complete → provisioning → running
+// Cancellation stops the goroutine; the Delete handler owns K8s + DB cleanup.
 type Orchestrator struct {
 	db      *gorm.DB
 	k8s     *k8s.Client
@@ -31,11 +32,27 @@ func NewOrchestrator(db *gorm.DB, k8sClient *k8s.Client) *Orchestrator {
 	}
 }
 
-// Start launches a goroutine to drive session sessionID. Safe to call from an HTTP handler.
+// Start launches Phase 1 for a session. Safe to call from an HTTP handler.
 func (o *Orchestrator) Start(sessionID uint) {
+	o.launch(sessionID, func(ctx context.Context) {
+		o.runSetup(ctx, sessionID)
+	})
+}
+
+// Provision launches Phase 2 for a session. Called after the user provides their admin DID.
+func (o *Orchestrator) Provision(sessionID uint, adminDid string) {
+	o.launch(sessionID, func(ctx context.Context) {
+		o.runProvision(ctx, sessionID, adminDid)
+	})
+}
+
+func (o *Orchestrator) launch(sessionID uint, fn func(context.Context)) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	o.mu.Lock()
+	if existing, ok := o.cancels[sessionID]; ok {
+		existing()
+	}
 	o.cancels[sessionID] = cancel
 	o.mu.Unlock()
 
@@ -46,12 +63,11 @@ func (o *Orchestrator) Start(sessionID uint) {
 			o.mu.Unlock()
 			cancel()
 		}()
-		o.run(ctx, sessionID)
+		fn(ctx)
 	}()
 }
 
-// Cancel stops the goroutine for sessionID. Called by the Delete handler before it tears
-// down DNS and K8s resources so the goroutine doesn't race with that cleanup.
+// Cancel stops the goroutine for sessionID (called by Delete handler).
 func (o *Orchestrator) Cancel(sessionID uint) {
 	o.mu.Lock()
 	if cancel, ok := o.cancels[sessionID]; ok {
@@ -61,22 +77,30 @@ func (o *Orchestrator) Cancel(sessionID uint) {
 	o.mu.Unlock()
 }
 
-// Resume re-attaches goroutines for any session stuck in vta_setup_running at startup.
-// Called once from main() after the K8s client is ready.
+// Resume re-attaches goroutines for sessions that were interrupted mid-run at startup.
 func (o *Orchestrator) Resume(ctx context.Context) {
-	var sessions []model.SetupSession
-	if err := o.db.Where("status = ?", "vta_setup_running").Find(&sessions).Error; err != nil {
+	var running []model.SetupSession
+	if err := o.db.Where("status = ?", "vta_setup_running").Find(&running).Error; err != nil {
 		log.Printf("[orchestrator] resume: query failed: %v", err)
-		return
 	}
-	for _, s := range sessions {
-		log.Printf("[orchestrator] resuming session %d", s.ID)
+	for _, s := range running {
+		log.Printf("[orchestrator] resuming setup session %d", s.ID)
 		o.Start(s.ID)
+	}
+
+	var provisioning []model.SetupSession
+	if err := o.db.Where("status = ? AND admin_did != ''", "provisioning").Find(&provisioning).Error; err != nil {
+		log.Printf("[orchestrator] resume: query failed: %v", err)
+	}
+	for _, s := range provisioning {
+		log.Printf("[orchestrator] resuming provision session %d", s.ID)
+		o.Provision(s.ID, s.AdminDid)
 	}
 }
 
-// run is the state machine body. Advances dns_provisioned → vta_setup_running → complete/failed.
-func (o *Orchestrator) run(ctx context.Context, sessionID uint) {
+// ── Phase 1: vta setup job ────────────────────────────────────────────────────
+
+func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 	var session model.SetupSession
 	if err := o.db.First(&session, sessionID).Error; err != nil {
 		log.Printf("[orchestrator] session %d: load failed: %v", sessionID, err)
@@ -85,7 +109,6 @@ func (o *Orchestrator) run(ctx context.Context, sessionID uint) {
 
 	ns := o.k8s.UserNamespace(fmt.Sprintf("%d", session.UserID))
 
-	// Ensure the user's K8s namespace exists.
 	if err := o.k8s.EnsureUserEnvironment(ctx, fmt.Sprintf("%d", session.UserID)); err != nil {
 		if ctx.Err() != nil {
 			return
@@ -94,18 +117,14 @@ func (o *Orchestrator) run(ctx context.Context, sessionID uint) {
 		return
 	}
 
-	// Render the VTA TOML config.
 	toml, err := RenderVtaSetupTOML(&session)
 	if err != nil {
 		o.markFailed(sessionID, "failed to render TOML: "+err.Error())
 		return
 	}
 
-	vtaImage := session.VtaImage
-
-	// Create ConfigMap + Job (idempotent on AlreadyExists).
 	jobName := k8s.SetupJobName(sessionID)
-	if err := o.k8s.CreateSetupResources(ctx, ns, sessionID, toml, vtaImage); err != nil {
+	if err := o.k8s.CreateSetupResources(ctx, ns, sessionID, toml, session.VtaImage); err != nil {
 		if ctx.Err() != nil {
 			return
 		}
@@ -113,19 +132,16 @@ func (o *Orchestrator) run(ctx context.Context, sessionID uint) {
 		return
 	}
 
-	// Advance status so the frontend can show progress.
 	o.db.Model(&model.SetupSession{}).Where("id = ?", sessionID).Updates(map[string]any{
 		"status":     "vta_setup_running",
 		"updated_at": time.Now(),
 	})
+	log.Printf("[orchestrator] session %d: setup job %s started in %s", sessionID, jobName, ns)
 
-	log.Printf("[orchestrator] session %d: job %s started in namespace %s", sessionID, jobName, ns)
-
-	// Wait for the job to reach a terminal state.
 	succeeded, failMsg, err := o.k8s.WaitForJob(ctx, ns, jobName)
 	if err != nil {
 		if ctx.Err() != nil {
-			return // session was cancelled/deleted
+			return
 		}
 		o.markFailed(sessionID, "job watch error: "+err.Error())
 		return
@@ -135,7 +151,6 @@ func (o *Orchestrator) run(ctx context.Context, sessionID uint) {
 		return
 	}
 
-	// Parse the VTA DID from the job output.
 	logs, err := o.k8s.JobLogs(ctx, ns, jobName)
 	if err != nil {
 		o.markFailed(sessionID, "failed to read job logs: "+err.Error())
@@ -148,12 +163,89 @@ func (o *Orchestrator) run(ctx context.Context, sessionID uint) {
 		return
 	}
 
+	// Read did.jsonl from PVC and store it in the session for later retrieval.
+	didLog, err := o.k8s.ReadFileFromPVC(ctx, ns, sessionID, session.VtaImage, "data/vta/did-logs/VTA-did.jsonl")
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		// Non-fatal: mark complete without did_log; user can retry via GET /did-log.
+		log.Printf("[orchestrator] session %d: warning: could not read did.jsonl: %v", sessionID, err)
+		didLog = ""
+	}
+
 	o.db.Model(&model.SetupSession{}).Where("id = ?", sessionID).Updates(map[string]any{
-		"status":     "complete",
+		"status":     "vta_setup_complete",
 		"vta_did":    vtaDID,
+		"did_log":    didLog,
 		"updated_at": time.Now(),
 	})
-	log.Printf("[orchestrator] session %d: complete, VTA DID=%s", sessionID, vtaDID)
+	log.Printf("[orchestrator] session %d: setup complete, VTA DID=%s", sessionID, vtaDID)
+}
+
+// ── Phase 2: import-did + Deployment ─────────────────────────────────────────
+
+func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDid string) {
+	var session model.SetupSession
+	if err := o.db.First(&session, sessionID).Error; err != nil {
+		log.Printf("[orchestrator] provision %d: load failed: %v", sessionID, err)
+		return
+	}
+
+	ns := o.k8s.UserNamespace(fmt.Sprintf("%d", session.UserID))
+
+	o.db.Model(&model.SetupSession{}).Where("id = ?", sessionID).Updates(map[string]any{
+		"status":     "provisioning",
+		"admin_did":  adminDid,
+		"updated_at": time.Now(),
+	})
+	log.Printf("[orchestrator] session %d: provisioning, importing admin DID %s", sessionID, adminDid)
+
+	// Run `vta import-did --did <adminDid> --role admin` as a K8s Job.
+	if err := o.k8s.CreateImportDidJob(ctx, ns, sessionID, session.VtaImage, adminDid); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		o.markFailed(sessionID, "failed to create import-did job: "+err.Error())
+		return
+	}
+
+	succeeded, failMsg, err := o.k8s.WaitForJob(ctx, ns, k8s.ImportDidJobName(sessionID))
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		o.markFailed(sessionID, "import-did job watch error: "+err.Error())
+		return
+	}
+	if !succeeded {
+		o.markFailed(sessionID, "import-did job failed: "+failMsg)
+		return
+	}
+
+	log.Printf("[orchestrator] session %d: admin DID imported, starting VTA deployment", sessionID)
+
+	if err := o.k8s.CreateVtaDeployment(ctx, ns, sessionID, session.VtaImage); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		o.markFailed(sessionID, "failed to create VTA deployment: "+err.Error())
+		return
+	}
+
+	if err := o.k8s.CreateVtaService(ctx, ns, sessionID); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		o.markFailed(sessionID, "failed to create VTA service: "+err.Error())
+		return
+	}
+
+	o.db.Model(&model.SetupSession{}).Where("id = ?", sessionID).Updates(map[string]any{
+		"status":     "running",
+		"updated_at": time.Now(),
+	})
+	log.Printf("[orchestrator] session %d: VTA running", sessionID)
 }
 
 func (o *Orchestrator) markFailed(sessionID uint, msg string) {
