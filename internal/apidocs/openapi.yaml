@@ -338,6 +338,45 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/setup/validate:
+    post:
+      summary: Validate setup prerequisites
+      description: Verifies Cloudflare connectivity. Requires user JWT.
+      tags: [User]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Validation passed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidateResponse"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Cluster ingress IP not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Cloudflare connectivity failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Cloudflare not configured on server
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/v1/setup/images:
     get:
       summary: List available VTA images
@@ -383,67 +422,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /api/v1/setup/validate:
-    post:
-      summary: Validate setup prerequisites
-      description: Verifies Cloudflare connectivity. Requires user JWT.
-      tags: [User]
-      security:
-        - BearerAuth: []
-      responses:
-        "200":
-          description: Validation passed
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ValidateResponse"
-        "401":
-          description: Missing or invalid token
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "422":
-          description: Cluster ingress IP not configured
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "502":
-          description: Cloudflare connectivity failed
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "503":
-          description: Cloudflare not configured on server
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-
   /api/v1/setup:
-    get:
-      summary: List setup sessions
-      description: Returns all setup sessions owned by the requesting user, newest first.
-      tags: [User]
-      security:
-        - BearerAuth: []
-      responses:
-        "200":
-          description: List of sessions
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/SetupSessionItem"
-        "401":
-          description: Missing or invalid token
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
     post:
       summary: Create setup session
       description: Generates a random subdomain, creates a Cloudflare DNS A record, stores the session, and begins async VTA setup. Requires user JWT.
@@ -489,6 +468,27 @@ paths:
                 $ref: "#/components/schemas/Error"
         "503":
           description: Cloudflare not configured on server
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      summary: List setup sessions
+      description: Returns all setup sessions owned by the requesting user, newest first.
+      tags: [User]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SetupSessionItem"
+        "401":
+          description: Missing or invalid token
           content:
             application/json:
               schema:
@@ -681,3 +681,4 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
