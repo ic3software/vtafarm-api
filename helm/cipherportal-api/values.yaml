@@ -35,6 +35,14 @@ postgresql:
 k8s:
   namespacePrefix: cp-user
 
+cluster:
+  ingressIP: "95.217.184.144"
+  domain: "ic3.dev"
+
+github:
+  packageOwner: ic3software
+  packageName: vta
+
 resources:
   requests:
     cpu: 100m

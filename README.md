@@ -46,7 +46,16 @@ networking workarounds.
    The API is now available at `http://localhost:8080`.
    API docs: `http://localhost:8080/docs`
 
-3. (Optional) Seed test data — run in a separate terminal while the API is running:
+3. (Optional) Generate a DID hosting keypair (required only if DID hosting is enabled):
+
+   ```bash
+   make gen-keypair
+   ```
+
+   Copy the two output lines (`DID_HOSTING_PRIVATE_KEY` and `DID_HOSTING_DID`) into your `.env`,
+   then register the DID in the did-hosting service Access Control with **role=Service**.
+
+4. (Optional) Seed test data — run in a separate terminal while the API is running:
 
    ```bash
    make seed
@@ -143,7 +152,33 @@ RKE2 will reconcile the change and restart the ingress controller automatically.
 After this, every VTA Ingress gets HTTPS automatically — no `tls:` block or
 cert-manager annotation required on individual Ingress resources.
 
-### 2. Create the PostgreSQL Secret (one-time)
+### 2. Create the API Secrets (one-time)
+
+Copy the example secret manifest and fill in real values:
+
+```bash
+cp k8s/secret.yaml.example k8s/secret.yaml
+```
+
+Edit `k8s/secret.yaml`, then generate the values you need:
+
+```bash
+# JWT_SECRET
+openssl rand -base64 32
+
+# DID_HOSTING_PRIVATE_KEY + DID_HOSTING_DID
+make gen-keypair
+```
+
+Apply to the cluster:
+
+```bash
+kubectl apply -f k8s/secret.yaml
+```
+
+> **Note:** `k8s/secret.yaml` is listed in `.gitignore` — never commit it.
+
+### 3. Create the PostgreSQL Secret (one-time)
 
 ```bash
 kubectl create secret generic cipherportal-postgresql \
@@ -151,7 +186,7 @@ kubectl create secret generic cipherportal-postgresql \
   --namespace=default
 ```
 
-### 3. Deploy with Helm
+### 4. Deploy with Helm
 
 ```bash
 make deploy \
@@ -174,14 +209,14 @@ make deploy \
 helm uninstall cipherportal
 ```
 
-### 4. Run Migrations in the Cluster
+### 5. Run Migrations in the Cluster
 
 ```bash
 kubectl exec -it deployment/cipherportal \
   -n <namespace> -- go run ./cmd/migrate up
 ```
 
-### 5. CI/CD (GitHub Actions)
+### 6. CI/CD (GitHub Actions)
 
 `scripts/deploy.sh` automates the deploy step in CI. It expects the
 following repository secrets:

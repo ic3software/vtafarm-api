@@ -33,6 +33,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ .Values.name }}-config
+            - secretRef:
+                name: {{ .Values.name }}-secrets
           env:
             - name: DB_PASSWORD
               valueFrom:
