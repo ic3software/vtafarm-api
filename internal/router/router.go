@@ -47,7 +47,11 @@ func Setup(
 	{
 		// Admin only
 		uh := handler.NewUserHandler(db)
-		auth.POST("/users", middleware.RequireRole(model.RoleAdmin), uh.Create)
+		adminH := handler.NewAdminHandler(db)
+		adminOnly := auth.Group("", middleware.RequireRole(model.RoleAdmin))
+		adminOnly.POST("/users", uh.Create)
+		adminOnly.PUT("/admin/password", adminH.ChangeOwnPassword)
+		adminOnly.PUT("/users/:id/password", adminH.ChangeUserPassword)
 
 		// User only
 		userOnly := auth.Group("", middleware.RequireRole(model.RoleUser))
