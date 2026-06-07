@@ -5,7 +5,7 @@ Go REST API backend for managing VTA setup sessions with per-user namespace isol
 ## Tech Stack
 
 | Layer | Choice |
-|---|---|
+| --- | --- |
 | HTTP | Gin (`github.com/gin-gonic/gin`) |
 | ORM | GORM + `gorm.io/driver/postgres` |
 | Migrations | golang-migrate (`file://migrations`, raw SQL) |
@@ -30,7 +30,7 @@ Docs (local only): `http://localhost:8080/docs`
 See `.env.example` for all options. Key ones:
 
 | Variable | Default | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `APP_PORT` | `8080` | HTTP listen port |
 | `APP_ENV` | `development` | Set to `production` to disable `/docs` |
 | `DB_HOST` | `localhost` | Overridden to `db` in docker-compose |
@@ -44,7 +44,7 @@ See `.env.example` for all options. Key ones:
 
 ## Project Structure
 
-```
+```text
 .
 ├── main.go                     # Entry point: config → DB → migrate → K8s → router
 ├── cmd/migrate/main.go         # Migration CLI (up / down / drop)
@@ -103,20 +103,20 @@ Local docs: `http://localhost:8080/docs` (disabled when `APP_ENV=production`).
 ### Auth
 
 | Method | Path | Role | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `POST` | `/api/v1/auth/admin/login` | public | Admin login → JWT |
 | `POST` | `/api/v1/auth/user/login` | public | User login → JWT |
 
 ### Admin
 
 | Method | Path | Role | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `POST` | `/api/v1/users` | admin | Create a user account |
 
 ### User — VTA Setup Wizard
 
 | Method | Path | Role | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `POST` | `/api/v1/setup/validate` | user | Check Cloudflare connectivity |
 | `POST` | `/api/v1/setup` | user | Create session + provision DNS |
 | `DELETE` | `/api/v1/setup/:id` | user | Cancel session + tear down DNS |
@@ -126,6 +126,7 @@ Local docs: `http://localhost:8080/docs` (disabled when `APP_ENV=production`).
 **Every new route must be documented in `internal/apidocs/openapi.yaml`.**
 
 Assign the correct tag so it appears in the right group in Scalar:
+
 - `System` — health / system routes
 - `Auth — Admin` / `Auth — User` — login routes
 - `Admin` — routes requiring admin JWT
@@ -138,6 +139,7 @@ Assign the correct tag so it appears in the right group in Scalar:
 Every user gets their own namespace: `cp-user-{userID}`.
 
 `EnsureUserEnvironment` creates on first use (idempotent):
+
 1. **Namespace** labelled `managed-by=cipherportal`
 2. **ServiceAccount** `pod-operator`
 3. **Role** `pod-manager` — grants `pods`, `pods/log`, `pods/exec`

@@ -6,6 +6,7 @@ Automates VTA stack installation driven by a frontend form. Supports two modes:
 - **Full Stack** — deploys VTA + DIDComm Mediator + WebVH DID Hosting Daemon; all three are hosted in-cluster.
 
 In both modes the backend:
+
 1. Validates form inputs
 2. Creates Cloudflare DNS subdomains
 3. Provisions K8s resources (PVC, Service, Ingress per component)
@@ -24,7 +25,7 @@ VTA source & architecture: `verifiable-trust-infrastructure/docs/`
 
 User provides their own DID hosting endpoint. CipherPortal deploys only the VTA service.
 
-```
+```text
 User provides:
   domain            → creates  vta.{domain}   (DNS + Ingress + TLS)
   did_hosting_url   → e.g. https://dids.example.com/vta  (external WebVH host)
@@ -39,7 +40,8 @@ VTA TOML uses:
 ```
 
 **State machine (VTA Only):**
-```
+
+```text
 pending → dns_provision → k8s_provision → step_vta → deploy → completed
                                                             ↓ (any step)
                                                          failed
@@ -49,7 +51,7 @@ pending → dns_provision → k8s_provision → step_vta → deploy → complete
 
 CipherPortal deploys and wires all three components.
 
-```
+```text
 User provides:
   domain  → creates  vta.{domain}       (VTA)
                      mediator.{domain}  (DIDComm Mediator)
@@ -57,7 +59,8 @@ User provides:
 ```
 
 **State machine (Full Stack):**
-```
+
+```text
 pending
   → dns_provision          create 3 Cloudflare DNS records
   → k8s_provision          create PVCs, Services, Ingresses for all 3 components
@@ -82,7 +85,7 @@ pending
 ## Frontend Form Fields
 
 | Field | Mode | Required | Default | Validation |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `mode` | both | yes | — | `vta_only` \| `full_stack` |
 | `domain` | both | yes | — | valid FQDN, no `https://` prefix, no trailing slash |
 | `did_hosting_url` | vta_only | yes | — | valid HTTPS URL ending with DID path segment |
@@ -95,7 +98,7 @@ pending
 **Derived subdomain URLs** (backend computes):
 
 | Subdomain | Pattern | Used for |
-|---|---|---|
+| --- | --- | --- |
 | `vta.{domain}` | `https://vta.{domain}` | VTA public URL + VTA REST endpoint |
 | `mediator.{domain}` | `https://mediator.{domain}/mediator/v1` | Mediator DIDComm URL *(full_stack only)* |
 | `dids.{domain}` | `https://dids.{domain}` | WebVH DID hosting base URL *(full_stack only)* |
@@ -109,7 +112,7 @@ The backend calls the Cloudflare API to create DNS records **before** running an
 ### Config (env vars)
 
 | Variable | Notes |
-|---|---|
+| --- | --- |
 | `CLOUDFLARE_API_TOKEN` | Cloudflare API token with `Zone:DNS:Edit` permission |
 | `CLOUDFLARE_ZONE_ID` | Zone ID for the user's root domain (from Cloudflare dashboard) |
 | `CLUSTER_INGRESS_IP` | External IP of the cluster's Nginx/Ingress-NGINX LoadBalancer |
@@ -117,12 +120,14 @@ The backend calls the Cloudflare API to create DNS records **before** running an
 ### DNS Records Created
 
 For **VTA Only** mode:
-```
+
+```text
 A   vta.{domain}  →  {CLUSTER_INGRESS_IP}   proxied=true
 ```
 
 For **Full Stack** mode:
-```
+
+```text
 A   vta.{domain}       →  {CLUSTER_INGRESS_IP}   proxied=true
 A   mediator.{domain}  →  {CLUSTER_INGRESS_IP}   proxied=true
 A   dids.{domain}      →  {CLUSTER_INGRESS_IP}   proxied=true
@@ -150,7 +155,7 @@ All resources are created in the user's isolated namespace (`cp-user-{userID}`) 
 ### Resources per component
 
 | Resource | Name pattern | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `PersistentVolumeClaim` | `{component}-data` | Persistent storage for config + data dir |
 | `Service` | `{component}` | ClusterIP, exposes component port |
 | `Ingress` | `{component}` | nginx ingress with cert-manager TLS annotation |
@@ -211,6 +216,7 @@ The API server's ClusterRole must include:
 ### Setup phase (one-off Jobs)
 
 Each CLI setup command runs as a K8s Job:
+
 1. Backend renders TOML template → stores as `ConfigMap`
 2. Job mounts the ConfigMap and the component's PVC
 3. Backend watches Job via informer until `Succeeded` or `Failed`
@@ -218,6 +224,7 @@ Each CLI setup command runs as a K8s Job:
 5. Updates `SetupSession` in DB, advances state machine
 
 **Job pod spec sketch:**
+
 ```yaml
 volumes:
   - name: config
@@ -383,7 +390,7 @@ force = false
 ## Output Parsing (Regex)
 
 | Step | Extracted value | Regex |
-|---|---|---|
+| --- | --- | --- |
 | `step_vta` | VTA DID (1a) | `VTA DID:\s+(did:\S+)` |
 | `step_vta` | Mediator DID (1b) | `Mediator:\s+(did:\S+)` |
 | `step_mediator_vta` | SHA-256 digest (2a) | `SHA-256 digest:\s+(\S+)` |
@@ -439,7 +446,7 @@ type SetupSession struct {
 ## API Endpoints
 
 | Method | Path | Description |
-|---|---|---|
+| --- | --- | --- |
 | `POST` | `/api/v1/setup/validate` | Validate form fields, check Cloudflare connectivity |
 | `POST` | `/api/v1/setup` | Submit form, create session, start async setup |
 | `GET` | `/api/v1/setup/:id` | Poll session state, collected values, service URLs |
@@ -501,7 +508,7 @@ When `status = "completed"`, the `urls` block contains the live endpoints the us
 
 ## New File Layout
 
-```
+```text
 internal/
 ├── config/config.go          + CloudflareAPIToken, CloudflareZoneID, ClusterIngressIP
 ├── cloudflare/
