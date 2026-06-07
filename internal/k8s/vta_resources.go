@@ -21,7 +21,7 @@ func vtaServiceName(sessionID uint) string {
 }
 
 // CreateVtaDeployment creates a Deployment that runs the VTA service using the PVC created
-// during setup. The PVC is mounted at /vta-data (workingDir), so VTA reads config.toml from
+// during setup. The PVC is mounted at /app/vta, so VTA reads config.toml from
 // there. Port 8100. Idempotent — AlreadyExists is ignored.
 func (c *Client) CreateVtaDeployment(ctx context.Context, ns string, sessionID uint, image string) error {
 	name := vtaDeploymentName(sessionID)
@@ -46,16 +46,15 @@ func (c *Client) CreateVtaDeployment(ctx context.Context, ns string, sessionID u
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
-						Name:       "vta",
-						Image:      image,
-						WorkingDir: "/vta-data",
+						Name:  "vta",
+						Image: image,
 						Ports: []corev1.ContainerPort{{
 							ContainerPort: port,
 							Protocol:      corev1.ProtocolTCP,
 						}},
 						VolumeMounts: []corev1.VolumeMount{{
 							Name:      "data",
-							MountPath: "/vta-data",
+							MountPath: "/app/vta",
 						}},
 					}},
 					Volumes: []corev1.Volume{{
@@ -108,24 +107,25 @@ func (c *Client) CreateVtaService(ctx context.Context, ns string, sessionID uint
 }
 
 // CreateVtaIngress creates an nginx Ingress routing the session FQDN to the VTA service.
-// TLS is terminated at the ingress (cert-manager annotation assumed on the cluster).
-// Idempotent — AlreadyExists is ignored.
+// TLS is handled by the cluster-wide wildcard default-ssl-certificate on nginx-ingress;
+// no tls: block is needed. Idempotent — AlreadyExists is ignored.
 func (c *Client) CreateVtaIngress(ctx context.Context, ns string, sessionID uint, fqdn string) error {
 	name := vtaDeploymentName(sessionID)
 	svcName := vtaServiceName(sessionID)
 	port := intstr.FromInt32(8100)
 	pathType := networkingv1.PathTypePrefix
+	ingressClass := "nginx"
 
 	_, err := c.kube.NetworkingV1().Ingresses(ns).Create(ctx, &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: ns,
 			Annotations: map[string]string{
-				"kubernetes.io/ingress.class":                "nginx",
-				"nginx.ingress.kubernetes.io/ssl-redirect":   "true",
+				"nginx.ingress.kubernetes.io/ssl-redirect": "true",
 			},
 		},
 		Spec: networkingv1.IngressSpec{
+			IngressClassName: &ingressClass,
 			Rules: []networkingv1.IngressRule{{
 				Host: fqdn,
 				IngressRuleValue: networkingv1.IngressRuleValue{

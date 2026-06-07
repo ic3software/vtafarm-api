@@ -35,7 +35,7 @@ func ImportDidJobName(sessionID uint) string {
 
 
 // CreateSetupResources creates a 1Gi PVC, a ConfigMap with the TOML config, and a Job
-// that runs `vta setup --from /config/vta-setup.toml` with the PVC mounted at /vta-data.
+// that runs `vta setup --from /config/vta-setup.toml` with the PVC mounted at /app/vta.
 // All three calls are idempotent (AlreadyExists is ignored).
 func (c *Client) CreateSetupResources(ctx context.Context, ns string, sessionID uint, toml, vtaImage string) error {
 	pvcName := VtaPVCName(sessionID)
@@ -91,11 +91,11 @@ func (c *Client) CreateSetupResources(ctx context.Context, ns string, sessionID 
 						Image: vtaImage,
 						// After setup, print the marker then cat did.jsonl so the
 						// orchestrator can extract it from job logs without a reader pod.
-						Command:    []string{"sh", "-c", "vta setup --from /config/vta-setup.toml && echo '---DID_LOG_START---' && cat /vta-data/data/vta/did-logs/VTA-did.jsonl"},
-						WorkingDir: "/vta-data",
+						Command:    []string{"sh", "-c", "vta setup --from /config/vta-setup.toml && echo '---DID_LOG_START---' && cat /app/vta/data/vta/did-logs/VTA-did.jsonl"},
+						WorkingDir: "/app/vta",
 						VolumeMounts: []corev1.VolumeMount{
 							{Name: "config", MountPath: "/config"},
-							{Name: "data", MountPath: "/vta-data"},
+							{Name: "data", MountPath: "/app/vta"},
 						},
 					}},
 					Volumes: []corev1.Volume{
@@ -224,7 +224,7 @@ wait:
 }
 
 // CreateImportDidJob creates a K8s Job that runs `vta import-did --did <adminDid> --role admin`
-// using the session PVC (workingDir /vta-data). Idempotent on AlreadyExists.
+// using the session PVC (workingDir /app/vta). Idempotent on AlreadyExists.
 func (c *Client) CreateImportDidJob(ctx context.Context, ns string, sessionID uint, image, adminDid string) error {
 	jobName := ImportDidJobName(sessionID)
 	pvcName := VtaPVCName(sessionID)
@@ -246,10 +246,10 @@ func (c *Client) CreateImportDidJob(ctx context.Context, ns string, sessionID ui
 						Name:       "vta-import",
 						Image:      image,
 						Command:    []string{"vta", "import-did", "--did", adminDid, "--role", "admin"},
-						WorkingDir: "/vta-data",
+						WorkingDir: "/app/vta",
 						VolumeMounts: []corev1.VolumeMount{{
 							Name:      "data",
-							MountPath: "/vta-data",
+							MountPath: "/app/vta",
 						}},
 					}},
 					Volumes: []corev1.Volume{{
