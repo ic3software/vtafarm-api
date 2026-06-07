@@ -87,9 +87,63 @@ make migrate-down                        # roll back one step
 
 ## Production Deployment
 
-The production stack is deployed to a Kubernetes cluster via Helm.
+The production stack is deployed to a Kubernetes cluster (RKE2) via Helm.
 
-### 1. Create the PostgreSQL Secret (one-time)
+### 1. TLS — Wildcard Certificate via cert-manager (one-time cluster setup)
+
+All VTA sessions share a single `*.ic3.dev` wildcard certificate managed by
+cert-manager. nginx-ingress serves it as the default SSL certificate, so no
+per-Ingress TLS configuration is needed.
+
+#### Step 1 — Create the Cloudflare API token Secret
+
+The token needs **Zone → Zone → Read** and **Zone → DNS → Edit** permissions on `ic3.dev`.
+
+```bash
+kubectl create secret generic cloudflare-api-token \
+  --namespace=cert-manager \
+  --from-literal=api-token='<CLOUDFLARE_API_TOKEN>'
+```
+
+#### Step 2 — Apply ClusterIssuer
+
+```bash
+kubectl apply -f k8s/tls/clusterissuer.yaml
+```
+
+Verify it registered with Let's Encrypt:
+
+```bash
+kubectl get clusterissuer letsencrypt-prod
+```
+
+#### Step 3 — Apply Certificate
+
+```bash
+kubectl apply -f k8s/tls/certificate.yaml
+```
+
+cert-manager will complete the DNS-01 challenge (adds a `_acme-challenge.ic3.dev`
+TXT record to Cloudflare, then removes it) and store the issued certificate.
+Check status with:
+
+```bash
+kubectl get certificate -n cert-manager ic3-dev-wildcard
+```
+
+#### Step 4 — Configure nginx-ingress to use the wildcard cert by default
+
+RKE2 manages its built-in nginx ingress controller via the `HelmChartConfig` CRD.
+
+```bash
+kubectl apply -f k8s/tls/rke2-ingress-nginx-config.yaml
+```
+
+RKE2 will reconcile the change and restart the ingress controller automatically.
+After this, every VTA Ingress gets HTTPS automatically — no `tls:` block or
+cert-manager annotation required on individual Ingress resources.
+
+### 2. Create the PostgreSQL Secret (one-time)
 
 ```bash
 kubectl create secret generic cipherportal-postgresql \
@@ -97,7 +151,7 @@ kubectl create secret generic cipherportal-postgresql \
   --namespace=default
 ```
 
-### 2. Deploy with Helm
+### 3. Deploy with Helm
 
 ```bash
 make deploy \
@@ -120,14 +174,14 @@ make deploy \
 helm uninstall cipherportal
 ```
 
-### 3. Run Migrations in the Cluster
+### 4. Run Migrations in the Cluster
 
 ```bash
 kubectl exec -it deployment/cipherportal \
   -n <namespace> -- go run ./cmd/migrate up
 ```
 
-### 4. CI/CD (GitHub Actions)
+### 5. CI/CD (GitHub Actions)
 
 `scripts/deploy.sh` automates the deploy step in CI. It expects the
 following repository secrets:
@@ -139,6 +193,8 @@ following repository secrets:
 | `KUBECONFIG_PATH` | Remote path to the kubeconfig on the server |
 | `DOCKER_USERNAME` | Docker Hub username |
 | `DOCKERHUB_TOKEN` | Docker Hub access token |
+
+---
 
 ### Production Kubernetes RBAC
 
