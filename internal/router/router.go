@@ -25,7 +25,7 @@ func Setup(
 	orch *setup.Orchestrator,
 	ghcrClient *ghcr.Client,
 	dhClient *didhosting.Client,
-	appEnv, ingressIP, clusterDomain, didHostingBase, jwtSecret string,
+	appEnv, ingressIP, clusterDomain, mediatorDid, didHostingBase, jwtSecret string,
 ) *gin.Engine {
 	r := gin.Default()
 
@@ -44,7 +44,7 @@ func Setup(
 		r.GET("/docs", apidocs.ServeUI)
 	}
 
-	sh := handler.NewSetupHandler(db, cfClient, appEnv, ingressIP, clusterDomain, didHostingBase, dhClient, k8sClient, orch, ghcrClient)
+	sh := handler.NewSetupHandler(db, cfClient, appEnv, ingressIP, clusterDomain, mediatorDid, didHostingBase, dhClient, k8sClient, orch, ghcrClient)
 
 	v1 := r.Group("/api/v1")
 

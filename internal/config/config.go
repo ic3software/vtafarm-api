@@ -11,6 +11,7 @@ type Config struct {
 	JWTSecret        string
 	ClusterIngressIP string
 	ClusterDomain    string
+	MediatorDid      string
 	DB               DBConfig
 	K8s              K8sConfig
 	Cloudflare       CloudflareConfig
@@ -75,6 +76,7 @@ func Load() *Config {
 		JWTSecret:        getEnv("JWT_SECRET", "change-me-in-production"),
 		ClusterIngressIP: getEnv("CLUSTER_INGRESS_IP", ""),
 		ClusterDomain:    getEnv("CLUSTER_DOMAIN", ""),
+		MediatorDid:      getEnv("MEDIATOR_DID", ""),
 		DB: DBConfig{
 			Host:     getEnv("DB_HOST", "localhost"),
 			Port:     getEnv("DB_PORT", "5432"),

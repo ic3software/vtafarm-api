@@ -23,6 +23,7 @@ type SetupHandler struct {
 	appEnv         string
 	ingressIP      string
 	clusterDomain  string
+	mediatorDid    string
 	didHostingBase string // DID_HOSTING_SERVER_URL — public server URL used to build vta_did_url
 	didHosting     *didhosting.Client // nil when not configured
 	k8s            *k8s.Client
@@ -33,7 +34,7 @@ type SetupHandler struct {
 func NewSetupHandler(
 	db *gorm.DB,
 	cf *cloudflare.Client,
-	appEnv, ingressIP, clusterDomain, didHostingBase string,
+	appEnv, ingressIP, clusterDomain, mediatorDid, didHostingBase string,
 	dhClient *didhosting.Client,
 	k8sClient *k8s.Client,
 	orch *setup.Orchestrator,
@@ -45,6 +46,7 @@ func NewSetupHandler(
 		appEnv:         appEnv,
 		ingressIP:      ingressIP,
 		clusterDomain:  clusterDomain,
+		mediatorDid:    mediatorDid,
 		didHostingBase: didHostingBase,
 		didHosting:     dhClient,
 		k8s:            k8sClient,
@@ -106,13 +108,12 @@ func (h *SetupHandler) Images(c *gin.Context) {
 }
 
 type createSetupRequest struct {
-	Mode        string `json:"mode"         binding:"required,oneof=vta_only full_stack"`
-	VtaName     string `json:"vta_name"`
-	MediatorDid string `json:"mediator_did" binding:"required"`
-	VtaImage    string `json:"vta_image"    binding:"required"`
+	Mode     string `json:"mode"      binding:"required,oneof=vta_only full_stack"`
+	VtaName  string `json:"vta_name"`
+	VtaImage string `json:"vta_image" binding:"required"`
 	// Optional — if set, Phase 2 (import-did + Deployment) starts automatically after Phase 1.
 	AdminDid string `json:"admin_did"`
-	// Advanced — optional
+	// Advanced — optional, defaults: portable=true, pre_rotation_count=1
 	Portable         *bool `json:"portable"`
 	PreRotationCount *int  `json:"pre_rotation_count"`
 }
@@ -180,7 +181,7 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		Subdomain:        subdomain,
 		CFRecordID:       recordID,
 		VtaName:          req.VtaName,
-		MediatorDid:      req.MediatorDid,
+		MediatorDid:      h.mediatorDid,
 		VtaDidUrl:        vtaDidUrl,
 		VtaImage:         req.VtaImage,
 		AdminDid:         req.AdminDid,

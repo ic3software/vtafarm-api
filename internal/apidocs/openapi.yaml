@@ -113,10 +113,6 @@ components:
           type: string
           description: Full image URL selected from GET /setup/images.
           example: "ghcr.io/ic3software/vta:0.5.0"
-        mediator_did:
-          type: string
-          description: DID of the external Mediator (kind="existing")
-          example: "did:webvh:abc123:mediator.example.com"
         portable:
           type: boolean
           default: true
@@ -125,7 +121,7 @@ components:
           type: integer
           default: 1
           description: Advanced — number of pre-rotation keys
-      required: [mode, mediator_did, vta_image]
+      required: [mode, vta_image]
 
     SetupSessionItem:
       type: object
