@@ -30,7 +30,7 @@ func Setup(
 	r := gin.Default()
 
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:  []string{"http://localhost:8080"},
+		AllowOrigins:  []string{"https://cipher.ic3.dev", "http://localhost:5173", "http://localhost:8080"},
 		AllowMethods:  []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowHeaders:  []string{"Authorization", "Content-Type"},
 		ExposeHeaders: []string{"Content-Length"},
