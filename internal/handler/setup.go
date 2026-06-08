@@ -113,9 +113,6 @@ type createSetupRequest struct {
 	VtaImage string `json:"vta_image" binding:"required"`
 	// Optional — if set, Phase 2 (import-did + Deployment) starts automatically after Phase 1.
 	AdminDid string `json:"admin_did"`
-	// Advanced — optional, defaults: portable=true, pre_rotation_count=1
-	Portable         *bool `json:"portable"`
-	PreRotationCount *int  `json:"pre_rotation_count"`
 }
 
 // POST /api/v1/setup
@@ -138,15 +135,6 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	if req.VtaName == "" {
 		req.VtaName = "personal-vta"
 	}
-	portable := true
-	if req.Portable != nil {
-		portable = *req.Portable
-	}
-	preRotationCount := 1
-	if req.PreRotationCount != nil {
-		preRotationCount = *req.PreRotationCount
-	}
-
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 
 	var user model.User
@@ -185,8 +173,8 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		VtaDidUrl:        vtaDidUrl,
 		VtaImage:         req.VtaImage,
 		AdminDid:         req.AdminDid,
-		Portable:         portable,
-		PreRotationCount: preRotationCount,
+		Portable:         true,
+		PreRotationCount: 1,
 	}
 	if err := h.db.Create(&session).Error; err != nil {
 		_ = h.cf.DeleteRecord(c.Request.Context(), recordID)
