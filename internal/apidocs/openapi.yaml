@@ -113,6 +113,14 @@ components:
           type: string
           description: Full image URL selected from GET /setup/images.
           example: "ghcr.io/ic3software/vta:0.5.0"
+        portable:
+          type: boolean
+          default: true
+          description: Advanced — VTA DID portability. Defaults to true if omitted.
+        pre_rotation_count:
+          type: integer
+          default: 1
+          description: Advanced — number of pre-rotation keys. Defaults to 1 if omitted.
       required: [mode, vta_image]
 
     SetupSessionItem:
