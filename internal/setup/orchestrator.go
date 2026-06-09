@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -178,10 +179,10 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 	log.Printf("[orchestrator] session %d: setup complete, VTA DID=%s", sessionID, vtaDID)
 
 	if o.didHosting != nil && didLog != "" && session.VtaDidUrl != "" {
-		// Extract path from the full URL e.g. https://dids.fpp2.ic3.dev/user-abc/pvta → user-abc/pvta
+		// Extract path from the full URL e.g. https://dids.fpp2.ic3.dev/abc123/pvta → abc123/pvta
 		path := session.VtaDidUrl
-		if idx := strings.Index(path, "/user-"); idx >= 0 {
-			path = path[idx+1:] // user-abc/pvta
+		if u, err := url.Parse(path); err == nil {
+			path = strings.TrimPrefix(u.Path, "/")
 		}
 		if err := o.didHosting.RegisterDid(ctx, path, didLog); err != nil {
 			log.Printf("[orchestrator] session %d: warning: DID upload failed: %v", sessionID, err)

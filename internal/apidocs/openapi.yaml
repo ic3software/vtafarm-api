@@ -135,7 +135,7 @@ components:
           type: string
           default: "personal-vta"
           example: "personal-vta"
-          description: Unique name per user. Auto-generates the DID hosting path user-{unique_id}/{vta_name}.
+          description: Unique name per user. Auto-generates the DID hosting path {unique_id}/{vta_name}.
         vta_image:
           type: string
           description: Full image URL selected from GET /setup/images.

@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -161,7 +162,7 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		return
 	}
 
-	vtaDidUrl := h.didHostingBase + "/user-" + user.UniqueId + "/" + req.VtaName
+	vtaDidUrl := h.didHostingBase + "/" + user.UniqueId + "/" + req.VtaName
 
 	subdomain := setup.GenerateSubdomain(h.appEnv)
 	fqdn := subdomain + "." + h.clusterDomain
@@ -190,12 +191,12 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	const maxAttempts = 5
 	var createErr error
 	for range maxAttempts {
-		session.PublicID = generateUniqueId()
+		session.UniqueId = generateUniqueId()
 		createErr = h.db.Create(&session).Error
 		if createErr == nil {
 			break
 		}
-		if !strings.Contains(createErr.Error(), "setup_sessions_public_id_unique") {
+		if !strings.Contains(createErr.Error(), "setup_sessions_unique_id_unique") {
 			break
 		}
 	}
@@ -210,7 +211,7 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"id":        session.PublicID,
+		"id":        session.UniqueId,
 		"url":       "https://" + fqdn,
 		"status":    session.Status,
 		"vta_image": req.VtaImage,
@@ -245,7 +246,7 @@ func (h *SetupHandler) List(c *gin.Context) {
 	result := make([]item, len(sessions))
 	for i, s := range sessions {
 		result[i] = item{
-			ID:          s.PublicID,
+			ID:          s.UniqueId,
 			Status:      s.Status,
 			Mode:        s.Mode,
 			URL:         s.PublicURL(),
@@ -268,13 +269,13 @@ func (h *SetupHandler) Get(c *gin.Context) {
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 
 	var session model.SetupSession
-	if err := h.db.Where("public_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
+	if err := h.db.Where("unique_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
 
 	resp := gin.H{
-		"id":         session.PublicID,
+		"id":         session.UniqueId,
 		"status":     session.Status,
 		"mode":       session.Mode,
 		"url":        session.PublicURL(),
@@ -295,7 +296,7 @@ func (h *SetupHandler) Delete(c *gin.Context) {
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 
 	var session model.SetupSession
-	if err := h.db.Where("public_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
+	if err := h.db.Where("unique_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
@@ -313,8 +314,8 @@ func (h *SetupHandler) Delete(c *gin.Context) {
 
 	if h.didHosting != nil && session.VtaDidUrl != "" {
 		path := session.VtaDidUrl
-		if idx := strings.Index(path, "/user-"); idx >= 0 {
-			path = path[idx+1:] // user-abc/pvta
+		if u, err := url.Parse(path); err == nil {
+			path = strings.TrimPrefix(u.Path, "/")
 		}
 		if err := h.didHosting.DeleteDid(c.Request.Context(), path); err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to delete DID from hosting: " + err.Error()})
@@ -342,7 +343,7 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 
 	var session model.SetupSession
-	if err := h.db.Where("public_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
+	if err := h.db.Where("unique_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
@@ -395,7 +396,7 @@ func (h *SetupHandler) ProvisionAdmin(c *gin.Context) {
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 
 	var session model.SetupSession
-	if err := h.db.Where("public_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
+	if err := h.db.Where("unique_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}

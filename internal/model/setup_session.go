@@ -4,7 +4,7 @@ import "time"
 
 type SetupSession struct {
 	ID               uint      `gorm:"primaryKey;autoIncrement" json:"-"`
-	PublicID         string    `gorm:"column:public_id;size:8;not null;uniqueIndex" json:"id"`
+	UniqueId         string    `gorm:"column:unique_id;size:8;not null;uniqueIndex" json:"id"`
 	UserID           uint      `gorm:"not null;index"           json:"user_id"`
 	Status           string    `gorm:"not null;default:pending" json:"status"`
 	Mode             string    `gorm:"not null"                 json:"mode"`

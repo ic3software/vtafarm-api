@@ -91,7 +91,7 @@ func fetchServerDid(baseURL string, hc *http.Client) (string, error) {
 
 // RegisterDid authenticates with the hosting service and atomically
 // claims + publishes the DID log at the given path.
-// path is e.g. "user-nd5y4gpn/pvta" (everything after baseURL/).
+// path is e.g. "nd5y4gpn/pvta" (everything after baseURL/).
 func (c *Client) RegisterDid(ctx context.Context, path, didLog string) error {
 	token, err := c.authenticate(ctx)
 	if err != nil {
@@ -216,7 +216,7 @@ func (c *Client) buildAuthEnvelope(sessionId, challenge string) (string, error) 
 }
 
 // DeleteDid deletes the DID at path from the hosting service.
-// path is e.g. "user-nd5y4gpn/pvta".
+// path is e.g. "nd5y4gpn/pvta".
 func (c *Client) DeleteDid(ctx context.Context, path string) error {
 	token, err := c.authenticate(ctx)
 	if err != nil {
