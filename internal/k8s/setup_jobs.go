@@ -209,7 +209,8 @@ wait:
 		}
 	}
 
-	req := c.kube.CoreV1().Pods(ns).GetLogs(podName, &corev1.PodLogOptions{Follow: true})
+	tailLines := int64(0)
+	req := c.kube.CoreV1().Pods(ns).GetLogs(podName, &corev1.PodLogOptions{Follow: true, TailLines: &tailLines})
 	stream, err := req.Stream(ctx)
 	if err != nil {
 		return fmt.Errorf("stream logs for pod %s: %w", podName, err)
