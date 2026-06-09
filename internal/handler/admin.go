@@ -26,7 +26,7 @@ type createAdminRequest struct {
 
 func (h *AdminHandler) List(c *gin.Context) {
 	var admins []model.Admin
-	if err := h.db.Order("created_at desc").Find(&admins).Error; err != nil {
+	if err := h.db.Order("id asc").Find(&admins).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not fetch admins"})
 		return
 	}

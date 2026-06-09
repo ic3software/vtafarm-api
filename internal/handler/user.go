@@ -74,7 +74,7 @@ type changeUserOwnPasswordRequest struct {
 
 func (h *UserHandler) List(c *gin.Context) {
 	var users []model.User
-	if err := h.db.Order("created_at desc").Find(&users).Error; err != nil {
+	if err := h.db.Order("id asc").Find(&users).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not fetch users"})
 		return
 	}
