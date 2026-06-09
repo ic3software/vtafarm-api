@@ -68,6 +68,7 @@ func Setup(
 	uh := handler.NewUserHandler(db)
 	{
 		adminH := handler.NewAdminHandler(db)
+		adminAuth.GET("/users", uh.List)
 		adminAuth.POST("/users", uh.Create)
 		adminAuth.PUT("/admin/password", adminH.ChangeOwnPassword)
 		adminAuth.PUT("/users/:id/password", adminH.ChangeUserPassword)

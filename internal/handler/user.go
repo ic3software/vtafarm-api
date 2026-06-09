@@ -72,6 +72,31 @@ type changeUserOwnPasswordRequest struct {
 	NewPassword     string `json:"new_password"     binding:"required,min=8"`
 }
 
+func (h *UserHandler) List(c *gin.Context) {
+	var users []model.User
+	if err := h.db.Order("created_at desc").Find(&users).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not fetch users"})
+		return
+	}
+
+	type userItem struct {
+		ID        uint   `json:"id"`
+		UniqueId  string `json:"unique_id"`
+		Email     string `json:"email"`
+		CreatedAt string `json:"created_at"`
+	}
+	result := make([]userItem, len(users))
+	for i, u := range users {
+		result[i] = userItem{
+			ID:        u.ID,
+			UniqueId:  u.UniqueId,
+			Email:     u.Email,
+			CreatedAt: u.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		}
+	}
+	c.JSON(http.StatusOK, result)
+}
+
 func (h *UserHandler) ChangeOwnPassword(c *gin.Context) {
 	var req changeUserOwnPasswordRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

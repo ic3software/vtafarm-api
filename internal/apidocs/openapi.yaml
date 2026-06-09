@@ -334,6 +334,45 @@ paths:
           description: Logged out
 
   /api/v1/users:
+    get:
+      summary: List users
+      description: Returns all user accounts, newest first.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      responses:
+        "200":
+          description: List of users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: integer
+                    unique_id:
+                      type: string
+                      example: "a1b2c3d4"
+                    email:
+                      type: string
+                      format: email
+                    created_at:
+                      type: string
+                      format: date-time
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role (admin required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     post:
       summary: Create user
       description: Creates a new user account.
