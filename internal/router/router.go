@@ -65,8 +65,8 @@ func Setup(
 		middleware.AuthRequired(cfg.JWTSecret, middleware.CookieAdmin),
 		middleware.RequireRole(model.RoleAdmin),
 	)
+	uh := handler.NewUserHandler(db)
 	{
-		uh := handler.NewUserHandler(db)
 		adminH := handler.NewAdminHandler(db)
 		adminAuth.POST("/users", uh.Create)
 		adminAuth.PUT("/admin/password", adminH.ChangeOwnPassword)
@@ -79,6 +79,7 @@ func Setup(
 		middleware.RequireRole(model.RoleUser),
 	)
 	{
+		userAuth.PUT("/user/password", uh.ChangeOwnPassword)
 		userAuth.POST("/setup/validate", sh.Validate)
 		userAuth.GET("/setup/images", sh.Images)
 		userAuth.GET("/setup", sh.List)
