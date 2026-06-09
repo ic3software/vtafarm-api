@@ -154,16 +154,14 @@ components:
       type: object
       properties:
         id:
-          type: integer
+          type: string
+          example: "a1b2c3d4"
         status:
           type: string
           enum: [dns_provisioned, vta_setup_running, waiting_webvh, vta_starting, complete, failed]
         mode:
           type: string
           enum: [vta_only, full_stack]
-        fqdn:
-          type: string
-          example: "cp-abc12345.example.com"
         url:
           type: string
           example: "https://cp-abc12345.example.com"
@@ -181,12 +179,16 @@ components:
         created_at:
           type: string
           format: date-time
+        updated_at:
+          type: string
+          format: date-time
 
     GetSetupSessionResponse:
       type: object
       properties:
         id:
-          type: integer
+          type: string
+          example: "a1b2c3d4"
         status:
           type: string
           enum:
@@ -199,9 +201,6 @@ components:
         mode:
           type: string
           enum: [vta_only, full_stack]
-        fqdn:
-          type: string
-          example: "cp-abc12345.example.com"
         url:
           type: string
           example: "https://cp-abc12345.example.com"
@@ -219,10 +218,8 @@ components:
       type: object
       properties:
         id:
-          type: integer
-        subdomain:
           type: string
-          example: "abc123.example.com"
+          example: "a1b2c3d4"
         url:
           type: string
           example: "https://abc123.example.com"

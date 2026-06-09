@@ -49,8 +49,23 @@ func main() {
 		}
 		fmt.Println("migrate: drop — done")
 
+	case "force":
+		if len(os.Args) < 3 {
+			fmt.Fprintf(os.Stderr, "usage: force <version>\n")
+			os.Exit(1)
+		}
+		var version int
+		if _, err := fmt.Sscanf(os.Args[2], "%d", &version); err != nil {
+			fmt.Fprintf(os.Stderr, "invalid version %q\n", os.Args[2])
+			os.Exit(1)
+		}
+		if err := m.Force(version); err != nil {
+			log.Fatalf("migrate force: %v", err)
+		}
+		fmt.Printf("migrate: forced version %d — done\n", version)
+
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q — use: up | down | drop\n", cmd)
+		fmt.Fprintf(os.Stderr, "unknown command %q — use: up | down | drop | force <version>\n", cmd)
 		os.Exit(1)
 	}
 }

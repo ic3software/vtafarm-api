@@ -187,7 +187,19 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		Portable:         portable,
 		PreRotationCount: preRotationCount,
 	}
-	if err := h.db.Create(&session).Error; err != nil {
+	const maxAttempts = 5
+	var createErr error
+	for range maxAttempts {
+		session.PublicID = generateUniqueId()
+		createErr = h.db.Create(&session).Error
+		if createErr == nil {
+			break
+		}
+		if !strings.Contains(createErr.Error(), "setup_sessions_public_id_unique") {
+			break
+		}
+	}
+	if createErr != nil {
 		_ = h.cf.DeleteRecord(c.Request.Context(), recordID)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist session"})
 		return
@@ -198,8 +210,7 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"id":        session.ID,
-		"fqdn":      fqdn,
+		"id":        session.PublicID,
 		"url":       "https://" + fqdn,
 		"status":    session.Status,
 		"vta_image": req.VtaImage,
@@ -217,10 +228,9 @@ func (h *SetupHandler) List(c *gin.Context) {
 	}
 
 	type item struct {
-		ID          uint   `json:"id"`
+		ID          string `json:"id"`
 		Status      string `json:"status"`
 		Mode        string `json:"mode"`
-		FQDN        string `json:"fqdn"`
 		URL         string `json:"url"`
 		VtaName     string `json:"vta_name"`
 		VtaImage    string `json:"vta_image,omitempty"`
@@ -229,15 +239,15 @@ func (h *SetupHandler) List(c *gin.Context) {
 		VtaDid      string `json:"vta_did,omitempty"`
 		ErrorMsg    string `json:"error_msg,omitempty"`
 		CreatedAt   any    `json:"created_at"`
+		UpdatedAt   any    `json:"updated_at"`
 	}
 
 	result := make([]item, len(sessions))
 	for i, s := range sessions {
 		result[i] = item{
-			ID:          s.ID,
+			ID:          s.PublicID,
 			Status:      s.Status,
 			Mode:        s.Mode,
-			FQDN:        s.FQDN(),
 			URL:         s.PublicURL(),
 			VtaName:     s.VtaName,
 			VtaImage:    s.VtaImage,
@@ -246,6 +256,7 @@ func (h *SetupHandler) List(c *gin.Context) {
 			VtaDid:      s.VtaDid,
 			ErrorMsg:    s.ErrorMsg,
 			CreatedAt:   s.CreatedAt,
+			UpdatedAt:   s.UpdatedAt,
 		}
 	}
 	c.JSON(http.StatusOK, result)
@@ -253,21 +264,20 @@ func (h *SetupHandler) List(c *gin.Context) {
 
 // GET /api/v1/setup/:id
 func (h *SetupHandler) Get(c *gin.Context) {
-	id := c.Param("id")
+	publicID := c.Param("id")
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 
 	var session model.SetupSession
-	if err := h.db.Where("id = ? AND user_id = ?", id, userID).First(&session).Error; err != nil {
+	if err := h.db.Where("public_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
 
 	resp := gin.H{
-		"id":         session.ID,
+		"id":         session.PublicID,
 		"status":     session.Status,
 		"mode":       session.Mode,
-		"fqdn":       session.FQDN(),
-		"url":        "https://" + session.FQDN(),
+		"url":        session.PublicURL(),
 		"vta_image":  session.VtaImage,
 		"vta_did":    session.VtaDid,
 		"created_at": session.CreatedAt,
@@ -281,11 +291,11 @@ func (h *SetupHandler) Get(c *gin.Context) {
 
 // DELETE /api/v1/setup/:id
 func (h *SetupHandler) Delete(c *gin.Context) {
-	id := c.Param("id")
+	publicID := c.Param("id")
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 
 	var session model.SetupSession
-	if err := h.db.Where("id = ? AND user_id = ?", id, userID).First(&session).Error; err != nil {
+	if err := h.db.Where("public_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
@@ -328,11 +338,11 @@ func (h *SetupHandler) Delete(c *gin.Context) {
 
 // GET /api/v1/setup/:id/logs
 func (h *SetupHandler) Logs(c *gin.Context) {
-	id := c.Param("id")
+	publicID := c.Param("id")
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 
 	var session model.SetupSession
-	if err := h.db.Where("id = ? AND user_id = ?", id, userID).First(&session).Error; err != nil {
+	if err := h.db.Where("public_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
@@ -381,11 +391,11 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 
 // POST /api/v1/setup/:id/admin
 func (h *SetupHandler) ProvisionAdmin(c *gin.Context) {
-	id := c.Param("id")
+	publicID := c.Param("id")
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 
 	var session model.SetupSession
-	if err := h.db.Where("id = ? AND user_id = ?", id, userID).First(&session).Error; err != nil {
+	if err := h.db.Where("public_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}

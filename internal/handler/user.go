@@ -3,6 +3,7 @@ package handler
 import (
 	"crypto/rand"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
@@ -51,12 +52,27 @@ func (h *UserHandler) Create(c *gin.Context) {
 	}
 
 	user := model.User{
-		UniqueId: generateUniqueId(),
 		Email:    req.Email,
 		Password: string(hash),
 	}
-	if err := h.db.Create(&user).Error; err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "email already exists"})
+	const maxAttempts = 5
+	var createErr error
+	for range maxAttempts {
+		user.UniqueId = generateUniqueId()
+		createErr = h.db.Create(&user).Error
+		if createErr == nil {
+			break
+		}
+		if !strings.Contains(createErr.Error(), "idx_users_unique_id") {
+			break
+		}
+	}
+	if createErr != nil {
+		if strings.Contains(createErr.Error(), "idx_users_email") {
+			c.JSON(http.StatusConflict, gin.H{"error": "email already exists"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create user"})
+		}
 		return
 	}
 
