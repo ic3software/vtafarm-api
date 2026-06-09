@@ -19,6 +19,64 @@ func NewAdminHandler(db *gorm.DB) *AdminHandler {
 	return &AdminHandler{db: db}
 }
 
+type createAdminRequest struct {
+	Email    string `json:"email"    binding:"required,email"`
+	Password string `json:"password" binding:"required,min=8"`
+}
+
+func (h *AdminHandler) List(c *gin.Context) {
+	var admins []model.Admin
+	if err := h.db.Order("created_at desc").Find(&admins).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not fetch admins"})
+		return
+	}
+
+	type adminItem struct {
+		ID        uint   `json:"id"`
+		Email     string `json:"email"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+	}
+	result := make([]adminItem, len(admins))
+	for i, a := range admins {
+		result[i] = adminItem{
+			ID:        a.ID,
+			Email:     a.Email,
+			CreatedAt: a.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			UpdatedAt: a.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		}
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func (h *AdminHandler) Create(c *gin.Context) {
+	var req createAdminRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not hash password"})
+		return
+	}
+
+	admin := model.Admin{
+		Email:    req.Email,
+		Password: string(hash),
+	}
+	if err := h.db.Create(&admin).Error; err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "email already exists"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"id":    admin.ID,
+		"email": admin.Email,
+	})
+}
+
 type changeOwnPasswordRequest struct {
 	CurrentPassword string `json:"current_password" binding:"required"`
 	NewPassword     string `json:"new_password"     binding:"required,min=8"`

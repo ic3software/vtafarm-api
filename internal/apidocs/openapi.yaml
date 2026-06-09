@@ -333,6 +333,99 @@ paths:
         "204":
           description: Logged out
 
+  /api/v1/admins:
+    get:
+      summary: List admins
+      description: Returns all admin accounts, newest first.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      responses:
+        "200":
+          description: List of admins
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: integer
+                    email:
+                      type: string
+                      format: email
+                    created_at:
+                      type: string
+                      format: date-time
+                    updated_at:
+                      type: string
+                      format: date-time
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role (admin required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      summary: Create admin
+      description: Creates a new admin account.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUserRequest"
+            example:
+              email: "newadmin@ic3.dev"
+              password: "password123"
+      responses:
+        "201":
+          description: Admin created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  email:
+                    type: string
+                    format: email
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role (admin required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Email already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/v1/users:
     get:
       summary: List users
@@ -359,6 +452,9 @@ paths:
                       type: string
                       format: email
                     created_at:
+                      type: string
+                      format: date-time
+                    updated_at:
                       type: string
                       format: date-time
         "401":

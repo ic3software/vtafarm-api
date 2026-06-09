@@ -84,6 +84,7 @@ func (h *UserHandler) List(c *gin.Context) {
 		UniqueId  string `json:"unique_id"`
 		Email     string `json:"email"`
 		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
 	}
 	result := make([]userItem, len(users))
 	for i, u := range users {
@@ -92,6 +93,7 @@ func (h *UserHandler) List(c *gin.Context) {
 			UniqueId:  u.UniqueId,
 			Email:     u.Email,
 			CreatedAt: u.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			UpdatedAt: u.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		}
 	}
 	c.JSON(http.StatusOK, result)
