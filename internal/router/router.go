@@ -9,6 +9,7 @@ import (
 
 	"github.com/ic3software/cipherportal-api/internal/apidocs"
 	"github.com/ic3software/cipherportal-api/internal/cloudflare"
+	"github.com/ic3software/cipherportal-api/internal/config"
 	"github.com/ic3software/cipherportal-api/internal/didhosting"
 	"github.com/ic3software/cipherportal-api/internal/ghcr"
 	"github.com/ic3software/cipherportal-api/internal/handler"
@@ -25,55 +26,67 @@ func Setup(
 	orch *setup.Orchestrator,
 	ghcrClient *ghcr.Client,
 	dhClient *didhosting.Client,
-	appEnv, ingressIP, clusterDomain, mediatorDid, didHostingBase, jwtSecret string,
+	cfg *config.Config,
 ) *gin.Engine {
 	r := gin.Default()
 
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:  []string{"https://cipher.ic3.dev", "http://localhost:5173", "http://localhost:8080"},
-		AllowMethods:  []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowHeaders:  []string{"Authorization", "Content-Type"},
-		ExposeHeaders: []string{"Content-Length"},
-		MaxAge:        12 * time.Hour,
+		AllowOrigins:     []string{"https://cipher.ic3.dev", "http://localhost:5173", "http://localhost:5174", "http://localhost:5175"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Authorization", "Content-Type"},
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
 	}))
 
 	r.GET("/health", handler.Health)
 
-	if appEnv != "production" {
+	if cfg.AppEnv != "production" {
 		r.GET("/openapi.yaml", apidocs.ServeSpec)
 		r.GET("/docs", apidocs.ServeUI)
 	}
 
-	sh := handler.NewSetupHandler(db, cfClient, appEnv, ingressIP, clusterDomain, mediatorDid, didHostingBase, dhClient, k8sClient, orch, ghcrClient)
+	sh := handler.NewSetupHandler(
+		db, cfClient, cfg.AppEnv, cfg.ClusterIngressIP, cfg.ClusterDomain,
+		cfg.MediatorDid, cfg.DidHosting.ServerUrl, dhClient, k8sClient, orch, ghcrClient,
+	)
 
 	v1 := r.Group("/api/v1")
 
-	// Public
-	ah := handler.NewAuthHandler(db, jwtSecret)
+	// Public auth
+	ah := handler.NewAuthHandler(db, cfg.JWTSecret, cfg.CookieDomain, cfg.CookieSecure())
 	v1.POST("/auth/admin/login", ah.AdminLogin)
+	v1.POST("/auth/admin/logout", ah.AdminLogout)
 	v1.POST("/auth/user/login", ah.UserLogin)
+	v1.POST("/auth/user/logout", ah.UserLogout)
 
-	// Auth required
-	auth := v1.Group("", middleware.AuthRequired(jwtSecret))
+	// Admin routes — cookie: cipher_admin
+	adminAuth := v1.Group("",
+		middleware.AuthRequired(cfg.JWTSecret, middleware.CookieAdmin),
+		middleware.RequireRole(model.RoleAdmin),
+	)
 	{
-		// Admin only
 		uh := handler.NewUserHandler(db)
 		adminH := handler.NewAdminHandler(db)
-		adminOnly := auth.Group("", middleware.RequireRole(model.RoleAdmin))
-		adminOnly.POST("/users", uh.Create)
-		adminOnly.PUT("/admin/password", adminH.ChangeOwnPassword)
-		adminOnly.PUT("/users/:id/password", adminH.ChangeUserPassword)
+		adminAuth.POST("/users", uh.Create)
+		adminAuth.PUT("/admin/password", adminH.ChangeOwnPassword)
+		adminAuth.PUT("/users/:id/password", adminH.ChangeUserPassword)
+	}
 
-		// User only
-		userOnly := auth.Group("", middleware.RequireRole(model.RoleUser))
-		userOnly.POST("/setup/validate", sh.Validate)
-		userOnly.GET("/setup/images", sh.Images)
-		userOnly.GET("/setup", sh.List)
-		userOnly.POST("/setup", sh.Create)
-		userOnly.GET("/setup/:id", sh.Get)
-		userOnly.DELETE("/setup/:id", sh.Delete)
-		userOnly.GET("/setup/:id/logs", sh.Logs)
-		userOnly.POST("/setup/:id/admin", sh.ProvisionAdmin)
+	// User routes — cookie: cipher_user
+	userAuth := v1.Group("",
+		middleware.AuthRequired(cfg.JWTSecret, middleware.CookieUser),
+		middleware.RequireRole(model.RoleUser),
+	)
+	{
+		userAuth.POST("/setup/validate", sh.Validate)
+		userAuth.GET("/setup/images", sh.Images)
+		userAuth.GET("/setup", sh.List)
+		userAuth.POST("/setup", sh.Create)
+		userAuth.GET("/setup/:id", sh.Get)
+		userAuth.DELETE("/setup/:id", sh.Delete)
+		userAuth.GET("/setup/:id/logs", sh.Logs)
+		userAuth.POST("/setup/:id/admin", sh.ProvisionAdmin)
 	}
 
 	return r

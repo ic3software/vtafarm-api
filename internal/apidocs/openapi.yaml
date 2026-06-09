@@ -3,7 +3,24 @@ openapi: "3.1.0"
 info:
   title: CipherPortal API
   version: "1.0.0"
-  description: REST API for managing VTA setup sessions with per-user namespace isolation.
+  description: |
+    REST API for managing VTA setup sessions with per-user namespace isolation.
+
+    ## Authentication
+
+    Protected endpoints use **httpOnly cookies** set at login.
+    Cookie `cipher_user` is required for User endpoints; `cipher_admin` for Admin endpoints.
+
+    ### In Scalar / browser
+    1. Call **POST /api/v1/auth/user/login** (or `/auth/admin/login`)
+    2. The browser stores the cookie automatically — no further configuration needed
+    3. All subsequent requests in this tab carry the cookie automatically
+
+    ### curl / non-browser clients
+    Use the `token` field from the login response body as a Bearer token:
+    ```
+    Authorization: Bearer <token>
+    ```
 
 servers:
   - url: http://localhost:8080
@@ -19,16 +36,20 @@ tags:
   - name: Auth — User
     description: Authentication for user accounts
   - name: Admin
-    description: Admin-only endpoints (requires admin JWT)
+    description: Admin-only endpoints (requires `cipher_admin` cookie)
   - name: User
-    description: User endpoints (requires user JWT)
+    description: User endpoints (requires `cipher_user` cookie)
 
 components:
   securitySchemes:
-    BearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
+    CookieAuthUser:
+      type: apiKey
+      in: cookie
+      name: cipher_user
+    CookieAuthAdmin:
+      type: apiKey
+      in: cookie
+      name: cipher_admin
 
   schemas:
     Error:
@@ -51,10 +72,16 @@ components:
       required: [email, password]
 
     LoginResponse:
+      description: |
+        On success the server sets an httpOnly cookie (`cipher_user` or `cipher_admin`).
+        Browser clients rely on the cookie and should ignore the `token` field.
+        Non-browser clients (curl, Postman, Scalar) can use the returned `token` as
+        `Authorization: Bearer <token>` — the Bearer header fallback remains active.
       type: object
       properties:
         token:
           type: string
+          description: JWT for non-browser clients. Browser clients use the httpOnly cookie instead.
         user:
           type: object
           properties:
@@ -223,6 +250,7 @@ paths:
   /api/v1/auth/admin/login:
     post:
       summary: Admin login
+      description: Sets the `cipher_admin` httpOnly cookie on success.
       tags: [Auth — Admin]
       requestBody:
         required: true
@@ -235,7 +263,7 @@ paths:
               password: "password"
       responses:
         "200":
-          description: Login successful
+          description: Login successful — sets cipher_admin cookie
           content:
             application/json:
               schema:
@@ -253,9 +281,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/auth/admin/logout:
+    post:
+      summary: Admin logout
+      description: Clears the `cipher_admin` cookie.
+      tags: [Auth — Admin]
+      responses:
+        "204":
+          description: Logged out
+
   /api/v1/auth/user/login:
     post:
       summary: User login
+      description: Sets the `cipher_user` httpOnly cookie on success.
       tags: [Auth — User]
       requestBody:
         required: true
@@ -268,7 +306,7 @@ paths:
               password: "password"
       responses:
         "200":
-          description: Login successful
+          description: Login successful — sets cipher_user cookie
           content:
             application/json:
               schema:
@@ -286,13 +324,22 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/auth/user/logout:
+    post:
+      summary: User logout
+      description: Clears the `cipher_user` cookie.
+      tags: [Auth — User]
+      responses:
+        "204":
+          description: Logged out
+
   /api/v1/users:
     post:
       summary: Create user
-      description: Creates a new user account. Requires admin JWT.
+      description: Creates a new user account.
       tags: [Admin]
       security:
-        - BearerAuth: []
+        - CookieAuthAdmin: []
       requestBody:
         required: true
         content:
@@ -340,7 +387,7 @@ paths:
       description: Allows the authenticated admin to change their own password. Requires the current password for verification.
       tags: [Admin]
       security:
-        - BearerAuth: []
+        - CookieAuthAdmin: []
       requestBody:
         required: true
         content:
@@ -392,7 +439,7 @@ paths:
       description: Allows an admin to reset a user's password without requiring the current password.
       tags: [Admin]
       security:
-        - BearerAuth: []
+        - CookieAuthAdmin: []
       parameters:
         - name: id
           in: path
@@ -451,10 +498,10 @@ paths:
   /api/v1/setup/validate:
     post:
       summary: Validate setup prerequisites
-      description: Verifies Cloudflare connectivity. Requires user JWT.
+      description: Verifies Cloudflare connectivity.
       tags: [User]
       security:
-        - BearerAuth: []
+        - CookieAuthUser: []
       responses:
         "200":
           description: Validation passed
@@ -496,7 +543,7 @@ paths:
         Falls back to the server default image if GHCR is not configured.
       tags: [User]
       security:
-        - BearerAuth: []
+        - CookieAuthUser: []
       responses:
         "200":
           description: List of available image versions
@@ -535,10 +582,10 @@ paths:
   /api/v1/setup:
     post:
       summary: Create setup session
-      description: Generates a random subdomain, creates a Cloudflare DNS A record, stores the session, and begins async VTA setup. Requires user JWT.
+      description: Generates a random subdomain, creates a Cloudflare DNS A record, stores the session, and begins async VTA setup.
       tags: [User]
       security:
-        - BearerAuth: []
+        - CookieAuthUser: []
       requestBody:
         required: true
         content:
@@ -587,7 +634,7 @@ paths:
       description: Returns all setup sessions owned by the requesting user, newest first.
       tags: [User]
       security:
-        - BearerAuth: []
+        - CookieAuthUser: []
       responses:
         "200":
           description: List of sessions
@@ -610,7 +657,7 @@ paths:
       description: Returns the current status of a setup session. Poll this endpoint to track progress.
       tags: [User]
       security:
-        - BearerAuth: []
+        - CookieAuthUser: []
       parameters:
         - name: id
           in: path
@@ -638,10 +685,10 @@ paths:
                 $ref: "#/components/schemas/Error"
     delete:
       summary: Delete setup session
-      description: Removes the Cloudflare DNS record and deletes the session. Requires user JWT.
+      description: Removes the Cloudflare DNS record and deletes the session.
       tags: [User]
       security:
-        - BearerAuth: []
+        - CookieAuthUser: []
       parameters:
         - name: id
           in: path
@@ -683,7 +730,7 @@ paths:
         A final `event: done` signals the end of the stream.
       tags: [User]
       security:
-        - BearerAuth: []
+        - CookieAuthUser: []
       parameters:
         - name: id
           in: path
@@ -731,7 +778,7 @@ paths:
         Session must be in `vta_setup_complete` status before calling this.
       tags: [User]
       security:
-        - BearerAuth: []
+        - CookieAuthUser: []
       parameters:
         - name: id
           in: path

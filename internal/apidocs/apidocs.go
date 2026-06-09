@@ -18,7 +18,7 @@ const scalarHTML = `<!doctype html>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
   </head>
   <body>
-    <script id="api-reference" data-url="/openapi.yaml" data-configuration='{"persistAuth":true}'></script>
+    <script id="api-reference" data-url="/openapi.yaml" data-configuration='{"persistAuth":true,"authentication":{"preferredSecurityScheme":"CookieAuthUser"}}'></script>
     <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
   </body>
 </html>`

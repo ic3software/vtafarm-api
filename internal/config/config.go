@@ -9,6 +9,7 @@ type Config struct {
 	AppPort          string
 	AppEnv           string
 	JWTSecret        string
+	CookieDomain     string // e.g. ".ic3.dev" for subdomain sharing; "" for host-only
 	ClusterIngressIP string
 	ClusterDomain    string
 	MediatorDid      string
@@ -18,6 +19,9 @@ type Config struct {
 	GHCR             GHCRConfig
 	DidHosting       DidHostingConfig
 }
+
+// CookieSecure returns true when running in production (requires HTTPS).
+func (c *Config) CookieSecure() bool { return c.AppEnv == "production" }
 
 type DidHostingConfig struct {
 	ControlUrl string // e.g. https://control.fpp2.ic3.dev — management API (auth + upload)
@@ -74,6 +78,7 @@ func Load() *Config {
 		AppPort:          getEnv("APP_PORT", "8080"),
 		AppEnv:           getEnv("APP_ENV", "development"),
 		JWTSecret:        getEnv("JWT_SECRET", "change-me-in-production"),
+		CookieDomain:     getEnv("COOKIE_DOMAIN", ""),
 		ClusterIngressIP: getEnv("CLUSTER_INGRESS_IP", ""),
 		ClusterDomain:    getEnv("CLUSTER_DOMAIN", ""),
 		MediatorDid:      getEnv("MEDIATOR_DID", ""),

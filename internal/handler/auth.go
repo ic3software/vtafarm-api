@@ -11,13 +11,17 @@ import (
 	"github.com/ic3software/cipherportal-api/internal/model"
 )
 
+const cookieMaxAge = 24 * 60 * 60 // 24 hours in seconds
+
 type AuthHandler struct {
-	db        *gorm.DB
-	jwtSecret string
+	db           *gorm.DB
+	jwtSecret    string
+	cookieDomain string
+	cookieSecure bool
 }
 
-func NewAuthHandler(db *gorm.DB, jwtSecret string) *AuthHandler {
-	return &AuthHandler{db: db, jwtSecret: jwtSecret}
+func NewAuthHandler(db *gorm.DB, jwtSecret, cookieDomain string, cookieSecure bool) *AuthHandler {
+	return &AuthHandler{db: db, jwtSecret: jwtSecret, cookieDomain: cookieDomain, cookieSecure: cookieSecure}
 }
 
 type loginRequest struct {
@@ -44,10 +48,22 @@ func (h *AuthHandler) AdminLogin(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not generate token"})
 		return
 	}
+
+	c.SetSameSite(http.SameSiteStrictMode)
+	c.SetCookie(middleware.CookieAdmin, token, cookieMaxAge, "/", h.cookieDomain, h.cookieSecure, true)
+
+	// token is included for non-browser clients (curl, Postman, Scalar).
+	// Browser frontend must rely on the httpOnly cookie and ignore this field.
 	c.JSON(http.StatusOK, gin.H{
 		"token": token,
 		"user":  gin.H{"id": admin.ID, "email": admin.Email, "role": model.RoleAdmin},
 	})
+}
+
+func (h *AuthHandler) AdminLogout(c *gin.Context) {
+	c.SetSameSite(http.SameSiteStrictMode)
+	c.SetCookie(middleware.CookieAdmin, "", -1, "/", h.cookieDomain, h.cookieSecure, true)
+	c.Status(http.StatusNoContent)
 }
 
 func (h *AuthHandler) UserLogin(c *gin.Context) {
@@ -69,8 +85,20 @@ func (h *AuthHandler) UserLogin(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not generate token"})
 		return
 	}
+
+	c.SetSameSite(http.SameSiteStrictMode)
+	c.SetCookie(middleware.CookieUser, token, cookieMaxAge, "/", h.cookieDomain, h.cookieSecure, true)
+
+	// token is included for non-browser clients (curl, Postman, Scalar).
+	// Browser frontend must rely on the httpOnly cookie and ignore this field.
 	c.JSON(http.StatusOK, gin.H{
 		"token": token,
 		"user":  gin.H{"id": user.ID, "email": user.Email, "role": model.RoleUser},
 	})
+}
+
+func (h *AuthHandler) UserLogout(c *gin.Context) {
+	c.SetSameSite(http.SameSiteStrictMode)
+	c.SetCookie(middleware.CookieUser, "", -1, "/", h.cookieDomain, h.cookieSecure, true)
+	c.Status(http.StatusNoContent)
 }

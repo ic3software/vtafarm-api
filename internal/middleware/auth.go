@@ -12,6 +12,9 @@ import (
 const (
 	ContextUserID = "user_id"
 	ContextRole   = "user_role"
+
+	CookieUser  = "cipher_user"
+	CookieAdmin = "cipher_admin"
 )
 
 type Claims struct {
@@ -32,14 +35,27 @@ func GenerateToken(userID uint, role, secret string) (string, error) {
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
 }
 
-func AuthRequired(secret string) gin.HandlerFunc {
+// AuthRequired validates the JWT from the named cookie, falling back to the
+// Authorization: Bearer header for non-browser clients and testing.
+func AuthRequired(secret, cookieName string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		header := c.GetHeader("Authorization")
-		if !strings.HasPrefix(header, "Bearer ") {
+		var tokenStr string
+
+		if cookie, err := c.Cookie(cookieName); err == nil && cookie != "" {
+			tokenStr = cookie
+		}
+
+		if tokenStr == "" {
+			if h := c.GetHeader("Authorization"); strings.HasPrefix(h, "Bearer ") {
+				tokenStr = strings.TrimPrefix(h, "Bearer ")
+			}
+		}
+
+		if tokenStr == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing or invalid token"})
 			return
 		}
-		tokenStr := strings.TrimPrefix(header, "Bearer ")
+
 		claims := &Claims{}
 		token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (any, error) {
 			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -51,6 +67,7 @@ func AuthRequired(secret string) gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 			return
 		}
+
 		c.Set(ContextUserID, claims.UserID)
 		c.Set(ContextRole, claims.Role)
 		c.Next()
