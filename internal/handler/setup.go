@@ -334,6 +334,14 @@ func (h *SetupHandler) Delete(c *gin.Context) {
 		return
 	}
 
+	if h.k8s != nil {
+		var remaining int64
+		h.db.Model(&model.SetupSession{}).Where("user_id = ?", session.UserID).Count(&remaining)
+		if remaining == 0 {
+			_ = h.k8s.DeleteNamespace(c.Request.Context(), fmt.Sprintf("%d", session.UserID))
+		}
+	}
+
 	c.Status(http.StatusNoContent)
 }
 
@@ -364,6 +372,49 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
+
+	sseLines := func(logs string) {
+		for _, line := range splitLines(logs) {
+			fmt.Fprintf(c.Writer, "data: %s\n\n", line)
+		}
+		c.Writer.Flush()
+	}
+	sseError := func(err error) {
+		fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", err.Error())
+		c.Writer.Flush()
+	}
+
+	if source := c.Query("source"); source != "" {
+		switch source {
+		case "setup":
+			logs, err := h.k8s.JobLogs(c.Request.Context(), ns, k8s.SetupJobName(session.ID))
+			if err != nil {
+				sseError(err)
+			} else {
+				sseLines(logs)
+			}
+		case "import-did":
+			logs, err := h.k8s.JobLogs(c.Request.Context(), ns, k8s.ImportDidJobName(session.ID))
+			if err != nil {
+				sseError(err)
+			} else {
+				sseLines(logs)
+			}
+		case "vta":
+			if err := h.k8s.StreamVtaPodLogs(c.Request.Context(), ns, session.ID, func(line string) {
+				fmt.Fprintf(c.Writer, "data: %s\n\n", line)
+				c.Writer.Flush()
+			}); err != nil && c.Request.Context().Err() == nil {
+				sseError(err)
+			}
+		default:
+			fmt.Fprintf(c.Writer, "event: error\ndata: unknown source %q\n\n", source)
+			c.Writer.Flush()
+		}
+		fmt.Fprintf(c.Writer, "event: done\ndata: stream ended\n\n")
+		c.Writer.Flush()
+		return
+	}
 
 	switch session.Status {
 	case "vta_setup_running":
