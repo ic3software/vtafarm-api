@@ -904,12 +904,15 @@ paths:
 
   /api/v1/setup/{id}/logs:
     get:
-      summary: Stream setup logs
+      summary: Stream logs
       description: |
-        Server-Sent Events (SSE) stream of raw output from the vta-setup K8s Job.
-        - While `status = vta_setup_running`: streams live output.
-        - After job completes: replays buffered output then closes.
-        - `status = dns_provisioned`: returns 409 (not started yet).
+        Server-Sent Events (SSE) stream. The source depends on session status:
+        - `vta_setup_running` — live output from the vta-setup K8s Job
+        - `provisioning` — live output from the vta-import-did K8s Job
+        - `vta_starting` / `running` / `complete` — live output from the running VTA pod
+        - `vta_setup_complete` — replays buffered vta-setup job output then closes
+        - `failed` — replays the last job's output then closes
+        - `dns_provisioned` — returns 409 (not started yet)
         Each event is a plain log line: `data: <line>\n\n`.
         A final `event: done` signals the end of the stream.
       tags: [User]

@@ -359,23 +359,53 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 	}
 
 	ns := h.k8s.UserNamespace(fmt.Sprintf("%d", session.UserID))
-	jobName := k8s.SetupJobName(session.ID)
 
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 
-	if session.Status == "vta_setup_running" {
-		if err := h.k8s.StreamJobLogs(c.Request.Context(), ns, jobName, func(line string) {
+	switch session.Status {
+	case "vta_setup_running":
+		if err := h.k8s.StreamJobLogs(c.Request.Context(), ns, k8s.SetupJobName(session.ID), func(line string) {
 			fmt.Fprintf(c.Writer, "data: %s\n\n", line)
 			c.Writer.Flush()
 		}); err != nil && c.Request.Context().Err() == nil {
 			fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", err.Error())
 			c.Writer.Flush()
 		}
-	} else {
+	case "provisioning":
+		if err := h.k8s.StreamJobLogs(c.Request.Context(), ns, k8s.ImportDidJobName(session.ID), func(line string) {
+			fmt.Fprintf(c.Writer, "data: %s\n\n", line)
+			c.Writer.Flush()
+		}); err != nil && c.Request.Context().Err() == nil {
+			fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", err.Error())
+			c.Writer.Flush()
+		}
+	case "vta_starting", "running", "complete":
+		if err := h.k8s.StreamVtaPodLogs(c.Request.Context(), ns, session.ID, func(line string) {
+			fmt.Fprintf(c.Writer, "data: %s\n\n", line)
+			c.Writer.Flush()
+		}); err != nil && c.Request.Context().Err() == nil {
+			fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", err.Error())
+			c.Writer.Flush()
+		}
+	case "vta_setup_complete":
+		logs, err := h.k8s.JobLogs(c.Request.Context(), ns, k8s.SetupJobName(session.ID))
+		if err != nil {
+			fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", err.Error())
+		} else {
+			for _, line := range splitLines(logs) {
+				fmt.Fprintf(c.Writer, "data: %s\n\n", line)
+			}
+		}
+		c.Writer.Flush()
+	default: // failed — replay import job if it exists, else setup job
+		jobName := k8s.ImportDidJobName(session.ID)
 		logs, err := h.k8s.JobLogs(c.Request.Context(), ns, jobName)
+		if err != nil {
+			logs, err = h.k8s.JobLogs(c.Request.Context(), ns, k8s.SetupJobName(session.ID))
+		}
 		if err != nil {
 			fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", err.Error())
 		} else {

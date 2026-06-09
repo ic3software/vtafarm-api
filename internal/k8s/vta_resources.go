@@ -1,8 +1,10 @@
 package k8s
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -149,6 +151,46 @@ func (c *Client) CreateVtaIngress(ctx context.Context, ns string, sessionID uint
 		return fmt.Errorf("create ingress: %w", err)
 	}
 	return nil
+}
+
+// StreamVtaPodLogs finds the running VTA pod for a session and streams its logs line by line.
+// Waits up to 2 minutes for the pod to appear. Blocks until the stream ends or ctx is cancelled.
+func (c *Client) StreamVtaPodLogs(ctx context.Context, ns string, sessionID uint, onLine func(string)) error {
+	selector := fmt.Sprintf("app=vta,session-id=%d", sessionID)
+
+	var podName string
+	timeout := time.After(2 * time.Minute)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+wait:
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timeout:
+			return fmt.Errorf("timeout waiting for VTA pod (session %d)", sessionID)
+		case <-ticker.C:
+			pods, err := c.kube.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: selector})
+			if err == nil && len(pods.Items) > 0 {
+				podName = pods.Items[0].Name
+				break wait
+			}
+		}
+	}
+
+	req := c.kube.CoreV1().Pods(ns).GetLogs(podName, &corev1.PodLogOptions{Follow: true})
+	stream, err := req.Stream(ctx)
+	if err != nil {
+		return fmt.Errorf("stream logs for pod %s: %w", podName, err)
+	}
+	defer stream.Close()
+
+	scanner := bufio.NewScanner(stream)
+	for scanner.Scan() {
+		onLine(scanner.Text())
+	}
+	return scanner.Err()
 }
 
 // DeleteVtaResources removes the Deployment, Service, Ingress, import-did Job, and PVC for a session.
