@@ -21,7 +21,7 @@ spec:
             - sh
             - -c
             - |
-              until pg_isready -h {{ .Release.Name }}-postgresql -U {{ .Values.db.user }}; do
+              until pg_isready -h {{ .Values.name }}-postgresql -U {{ .Values.db.user }}; do
                 echo "waiting for postgresql..."; sleep 2
               done
       {{- end }}
@@ -40,7 +40,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   {{- if .Values.postgresql.enabled }}
-                  name: {{ .Release.Name }}-postgresql
+                  name: {{ .Values.name }}-postgresql
                   key: postgres-password
                   {{- else }}
                   name: {{ .Values.name }}-db

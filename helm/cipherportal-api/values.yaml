@@ -16,7 +16,7 @@ app:
   port: "8080"
 
 db:
-  # When postgresql.enabled=true, host is auto-set to {{ .Release.Name }}-postgresql.
+  # When postgresql.enabled=true, host is auto-set to {{ .Values.name }}-postgresql.
   # When postgresql.enabled=false, set host to your external DB endpoint.
   host: ""
   port: "5432"
@@ -27,9 +27,9 @@ db:
 postgresql:
   enabled: true
   image: postgres:18-alpine
-  # Pre-create with: kubectl create secret generic cipherportal-postgresql --from-literal=postgres-password='...'
+  # Pre-create with: kubectl create secret generic cipherportal-api-postgresql --from-literal=postgres-password='...'
   # The secret must contain key: postgres-password
-  existingSecret: "cipherportal-postgresql"
+  existingSecret: "cipherportal-api-postgresql"
   storage: 5Gi
 
 k8s:
