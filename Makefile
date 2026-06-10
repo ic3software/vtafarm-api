@@ -1,13 +1,13 @@
 # ─── Image & deploy variables ─────────────────────────────────────────────────
-NAME         ?= cipherportal
+NAME         ?= cipherportal-api
 DOCKER_USERNAME ?=
-IMAGE        ?= $(DOCKER_USERNAME)/cipherportal-api
+IMAGE        ?= $(DOCKER_USERNAME)/$(NAME)
 TAG          ?= $(shell git rev-parse --short HEAD)
 NAMESPACE    ?= default
 DEPLOY_ENV   ?= production
 INGRESS_HOST ?=
 
-.PHONY: build tidy dev \
+.PHONY: build gen-keypair tidy dev \
         migrate migrate-down migrate-new seed \
         up down reset \
         image-build image-push \
@@ -17,12 +17,16 @@ INGRESS_HOST ?=
 build:
 	go build -o bin/api ./main.go
 
+gen-keypair:
+	go run ./cmd/gen-keypair
+
 tidy:
 	go mod tidy
 
-# Start the API locally
+# Start DB + API with Air hot-reload
 dev:
-	go run ./main.go
+	$(MAKE) up
+	air
 
 # ─── Migrations (run locally against DB_HOST=localhost) ───────────────────────
 # Usage: make migrate-new NAME=create_users
@@ -63,7 +67,7 @@ image-push: image-build
 
 # ─── Kubernetes (Helm) ────────────────────────────────────────────────────────
 # Deploys both API and PostgreSQL as one release.
-# helm uninstall cipherportal → removes everything.
+# helm uninstall cipherportal-api → removes everything.
 # Pre-requisite: kubectl apply -f k8s/postgresql-secret.yaml (one-time, before first deploy)
 # Usage: make deploy [DOCKER_USERNAME=xxx] [TAG=abc1234]
 deploy:

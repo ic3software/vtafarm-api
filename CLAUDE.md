@@ -1,15 +1,15 @@
 # CipherPortal API
 
-Go REST API backend for managing Kubernetes pod deployments with per-user namespace isolation.
+Go REST API backend for managing VTA setup sessions with per-user namespace isolation.
 
 ## Tech Stack
 
 | Layer | Choice |
-|---|---|
+| --- | --- |
 | HTTP | Gin (`github.com/gin-gonic/gin`) |
 | ORM | GORM + `gorm.io/driver/postgres` |
 | Migrations | golang-migrate (`file://migrations`, raw SQL) |
-| Database | PostgreSQL 16 |
+| Database | PostgreSQL 18 |
 | K8s client | `k8s.io/client-go` v0.36 |
 | Hot reload | Air (`github.com/air-verse/air`) |
 | Container | Docker Compose (dev) + multi-stage Dockerfile (prod) |
@@ -18,62 +18,79 @@ Go REST API backend for managing Kubernetes pod deployments with per-user namesp
 
 ```bash
 cp .env.example .env
-make up                       # start DB + API (Air hot-reload inside container)
-make migrate                  # run migrations
-make seed                     # insert test data
+make dev                  # start DB (Docker) + API with Air hot-reload; migrations run automatically
+make seed                 # (optional) insert test data — run in a separate terminal
 ```
+
+API: `http://localhost:8080`
+Docs (local only): `http://localhost:8080/docs`
 
 ## Environment Variables
 
 See `.env.example` for all options. Key ones:
 
 | Variable | Default | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `APP_PORT` | `8080` | HTTP listen port |
+| `APP_ENV` | `development` | Set to `production` to disable `/docs` |
 | `DB_HOST` | `localhost` | Overridden to `db` in docker-compose |
 | `DB_NAME` | `cipherportal` | |
+| `JWT_SECRET` | `change-me-in-production` | HS256 signing secret |
 | `KUBECONFIG` | `~/.kube/config` | Leave empty; auto-detected |
 | `K8S_NAMESPACE_PREFIX` | `cp-user` | Per-user namespace prefix |
+| `CLOUDFLARE_API_TOKEN` | — | Cloudflare API token (`Zone:DNS:Edit` permission) |
+| `CLOUDFLARE_ZONE_ID` | — | Cloudflare Zone ID for the user's root domain |
+| `CLUSTER_INGRESS_IP` | — | External IP of the cluster's Ingress-NGINX LoadBalancer |
 
 ## Project Structure
 
-```
+```text
 .
 ├── main.go                     # Entry point: config → DB → migrate → K8s → router
 ├── cmd/migrate/main.go         # Migration CLI (up / down / drop)
 ├── seed/main.go                # Test data seeder
+├── .air.toml                   # Air hot-reload config
 ├── migrations/
 │   ├── 000001_init.up.sql
 │   └── 000001_init.down.sql
+├── docs/
+│   ├── automated-setup.md      # VTA stack CLI reference
+│   └── vta-setup-design.md     # API design for VTA setup automation
 └── internal/
+    ├── apidocs/
+    │   ├── openapi.yaml        # OpenAPI 3.1 spec — update whenever routes change
+    │   └── apidocs.go          # Embeds spec; serves GET /openapi.yaml and GET /docs
     ├── config/config.go        # Config struct loaded from env vars
-    ├── database/database.go    # DB connect + auto-migrate on startup
-    ├── model/pod_deployment.go # GORM model for pod records
+    ├── database/database.go    # DB connect + migrate on startup
+    ├── cloudflare/client.go    # Cloudflare API: CreateARecord, DeleteRecord
+    ├── model/
+    │   ├── admin.go
+    │   ├── user.go
+    │   └── setup_session.go    # GORM model for VTA setup sessions
     ├── handler/
     │   ├── health.go
-    │   └── pod.go              # CRUD handlers for pod deployments
-    ├── k8s/client.go           # K8s client: in-cluster + kubeconfig support
+    │   ├── auth.go             # AdminLogin, UserLogin
+    │   ├── user.go             # Create user (admin only)
+    │   └── setup.go            # VTA setup wizard endpoints
+    ├── middleware/
+    │   └── auth.go             # JWT auth + role enforcement
+    ├── k8s/
+    │   ├── client.go           # K8s client: in-cluster + kubeconfig support
+    │   ├── setup_jobs.go       # Launch/watch K8s Jobs for setup commands
+    │   └── vta_resources.go    # Create/teardown PVC, Service, Ingress, Deployment
+    ├── setup/
+    │   ├── orchestrator.go     # State machine, goroutine per session
+    │   ├── parser.go           # Regex extractors for DID/digest values from job logs
+    │   └── templates.go        # Go text/template renderers for VTA/Mediator/DIDS configs
     └── router/router.go        # Gin route registration
 ```
 
 ## Migration Workflow
 
-Migrations live in `migrations/` as numbered SQL files:
-
-```
-000001_init.up.sql / 000001_init.down.sql
-000002_<name>.up.sql / 000002_<name>.down.sql
-```
-
 ```bash
-# Create a new migration pair
-make migrate-new NAME=create_users
-
-# Apply all pending migrations
-make migrate
-
-# Roll back one step
-make migrate-down
+make migrate-new NAME=create_users   # create a new migration pair
+make migrate                          # apply pending migrations
+make migrate-down                     # roll back one step
 ```
 
 Migrations run automatically on every API startup. `ErrNoChange` is silently ignored.
@@ -81,28 +98,39 @@ Migrations run automatically on every API startup. `ErrNoChange` is silently ign
 ## REST API Endpoints
 
 All API routes are prefixed with `/api/v1`.
+Local docs: `http://localhost:8080/docs` (disabled when `APP_ENV=production`).
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/health` | Liveness check |
-| `POST` | `/api/v1/pods` | Create a pod from YAML in user namespace |
-| `GET` | `/api/v1/pods?user_id=` | List pods in user namespace |
-| `GET` | `/api/v1/pods/:name?user_id=` | Get pod status |
-| `DELETE` | `/api/v1/pods/:name?user_id=` | Delete a pod |
+### Auth
 
-### Create Pod Example
+| Method | Path | Role | Description |
+| --- | --- | --- | --- |
+| `POST` | `/api/v1/auth/admin/login` | public | Admin login → JWT |
+| `POST` | `/api/v1/auth/user/login` | public | User login → JWT |
 
-```bash
-curl -X POST http://localhost:8080/api/v1/pods \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_id": "user-001",
-    "yaml": "apiVersion: v1\nkind: Pod\nmetadata:\n  name: my-nginx\nspec:\n  containers:\n  - name: nginx\n    image: nginx:alpine"
-  }'
-```
+### Admin
 
-> **Note:** `user_id` is currently passed in the request body. This is a placeholder —
-> production auth middleware will extract it from a JWT/session token.
+| Method | Path | Role | Description |
+| --- | --- | --- | --- |
+| `POST` | `/api/v1/users` | admin | Create a user account |
+
+### User — VTA Setup Wizard
+
+| Method | Path | Role | Description |
+| --- | --- | --- | --- |
+| `POST` | `/api/v1/setup/validate` | user | Check Cloudflare connectivity |
+| `POST` | `/api/v1/setup` | user | Create session + provision DNS |
+| `DELETE` | `/api/v1/setup/:id` | user | Cancel session + tear down DNS |
+
+## API Docs Rule
+
+**Every new route must be documented in `internal/apidocs/openapi.yaml`.**
+
+Assign the correct tag so it appears in the right group in Scalar:
+
+- `System` — health / system routes
+- `Auth — Admin` / `Auth — User` — login routes
+- `Admin` — routes requiring admin JWT
+- `User` — routes requiring user JWT
 
 ## Kubernetes Design
 
@@ -111,50 +139,30 @@ curl -X POST http://localhost:8080/api/v1/pods \
 Every user gets their own namespace: `cp-user-{userID}`.
 
 `EnsureUserEnvironment` creates on first use (idempotent):
+
 1. **Namespace** labelled `managed-by=cipherportal`
-2. **ServiceAccount** `pod-operator` — the identity under which user's pods run
-3. **Role** `pod-manager` — grants `pods`, `pods/log`, `pods/exec` within the namespace
+2. **ServiceAccount** `pod-operator`
+3. **Role** `pod-manager` — grants `pods`, `pods/log`, `pods/exec`
 4. **RoleBinding** — binds the SA to the Role
 
-### API Server Permissions
+### API Server Permissions (Production)
 
-For development, the API uses your local `~/.kube/config` (full admin access).
-
-For production (in-cluster), the API server pod needs a **ClusterRole** with:
 ```yaml
 rules:
 - apiGroups: [""]
-  resources: ["namespaces", "serviceaccounts", "pods", "pods/log", "pods/exec"]
-  verbs: ["get", "list", "create", "delete", "watch"]
+  resources: ["namespaces", "serviceaccounts", "pods", "pods/log", "pods/exec",
+              "configmaps", "persistentvolumeclaims", "services"]
+  verbs: ["get", "list", "create", "update", "delete", "watch"]
 - apiGroups: ["rbac.authorization.k8s.io"]
   resources: ["roles", "rolebindings"]
   verbs: ["get", "list", "create", "delete"]
-```
-
-### Pod Terminal Access (Future)
-
-Connecting to a pod terminal requires proxying a WebSocket connection to the K8s
-API `pods/exec` subresource. This will be implemented as a WebSocket endpoint
-(`GET /api/v1/pods/:name/exec?user_id=`) using `k8s.io/client-go/tools/remotecommand`.
-The per-user Role already grants `pods/exec` — no RBAC changes needed.
-
-## Adding a New Migration
-
-```bash
-make migrate-new NAME=add_users_table
-# → creates migrations/000002_add_users_table.{up,down}.sql
-# Edit the files, then:
-make migrate-up
-```
-
-## Docker
-
-```bash
-# Dev (hot reload via Air)
-make docker-up
-make docker-down
-make docker-reset          # wipe volumes and restart
-
-# Production image (multi-stage, minimal alpine)
-docker build -t cipherportal-api .
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "list", "create", "delete", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "create", "update", "delete", "watch"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "create", "update", "delete", "watch"]
 ```

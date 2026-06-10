@@ -6,10 +6,39 @@ import (
 )
 
 type Config struct {
-	AppPort string
-	AppEnv  string
-	DB      DBConfig
-	K8s     K8sConfig
+	AppPort          string
+	AppEnv           string
+	JWTSecret        string
+	CookieDomain     string // e.g. ".ic3.dev" for subdomain sharing; "" for host-only
+	ClusterIngressIP string
+	ClusterDomain    string
+	MediatorDid      string
+	DB               DBConfig
+	K8s              K8sConfig
+	Cloudflare       CloudflareConfig
+	GHCR             GHCRConfig
+	DidHosting       DidHostingConfig
+}
+
+// CookieSecure returns true when running in production (requires HTTPS).
+func (c *Config) CookieSecure() bool { return c.AppEnv == "production" }
+
+type DidHostingConfig struct {
+	ControlUrl string // e.g. https://control.fpp2.ic3.dev — management API (auth + upload)
+	ServerUrl  string // e.g. https://dids.fpp2.ic3.dev — public DID resolution (used in vta_did_url)
+	Did        string // did:key:z6Mk... of this server
+	PrivateKey string // base64 ed25519 seed
+}
+
+type CloudflareConfig struct {
+	APIToken string
+	ZoneID   string
+}
+
+type GHCRConfig struct {
+	Token       string // GitHub PAT — optional for public packages
+	Owner       string // e.g. "ic3software"
+	PackageName string // e.g. "vta"
 }
 
 type DBConfig struct {
@@ -46,8 +75,13 @@ type K8sConfig struct {
 
 func Load() *Config {
 	return &Config{
-		AppPort: getEnv("APP_PORT", "8080"),
-		AppEnv:  getEnv("APP_ENV", "development"),
+		AppPort:          getEnv("APP_PORT", "8080"),
+		AppEnv:           getEnv("APP_ENV", "development"),
+		JWTSecret:        getEnv("JWT_SECRET", "change-me-in-production"),
+		CookieDomain:     getEnv("COOKIE_DOMAIN", ""),
+		ClusterIngressIP: getEnv("CLUSTER_INGRESS_IP", ""),
+		ClusterDomain:    getEnv("CLUSTER_DOMAIN", ""),
+		MediatorDid:      getEnv("MEDIATOR_DID", ""),
 		DB: DBConfig{
 			Host:     getEnv("DB_HOST", "localhost"),
 			Port:     getEnv("DB_PORT", "5432"),
@@ -59,6 +93,21 @@ func Load() *Config {
 		K8s: K8sConfig{
 			Kubeconfig:      getEnv("KUBECONFIG", ""),
 			NamespacePrefix: getEnv("K8S_NAMESPACE_PREFIX", "cp-user"),
+		},
+		Cloudflare: CloudflareConfig{
+			APIToken: getEnv("CLOUDFLARE_API_TOKEN", ""),
+			ZoneID:   getEnv("CLOUDFLARE_ZONE_ID", ""),
+		},
+		GHCR: GHCRConfig{
+			Token:       getEnv("GITHUB_TOKEN", ""),
+			Owner:       getEnv("GITHUB_PACKAGE_OWNER", ""),
+			PackageName: getEnv("GITHUB_PACKAGE_NAME", ""),
+		},
+		DidHosting: DidHostingConfig{
+			ControlUrl: getEnv("DID_HOSTING_CONTROL_URL", ""),
+			ServerUrl:  getEnv("DID_HOSTING_SERVER_URL", ""),
+			Did:        getEnv("DID_HOSTING_DID", ""),
+			PrivateKey: getEnv("DID_HOSTING_PRIVATE_KEY", ""),
 		},
 	}
 }

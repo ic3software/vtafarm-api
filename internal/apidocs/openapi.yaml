@@ -1,0 +1,1041 @@
+openapi: "3.1.0"
+
+info:
+  title: CipherPortal API
+  version: "1.0.0"
+  description: |
+    REST API for managing VTA setup sessions with per-user namespace isolation.
+
+    ## Authentication
+
+    Protected endpoints use **httpOnly cookies** set at login.
+    Cookie `cipher_user` is required for User endpoints; `cipher_admin` for Admin endpoints.
+
+    ### In Scalar / browser
+    1. Call **POST /api/v1/auth/user/login** (or `/auth/admin/login`)
+    2. The browser stores the cookie automatically — no further configuration needed
+    3. All subsequent requests in this tab carry the cookie automatically
+
+    ### curl / non-browser clients
+    Use the `token` field from the login response body as a Bearer token:
+    ```
+    Authorization: Bearer <token>
+    ```
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+  - url: https://cp-api.ic3.dev
+    description: Production
+
+tags:
+  - name: System
+    description: Health and system endpoints
+  - name: Auth — Admin
+    description: Authentication for admin accounts
+  - name: Auth — User
+    description: Authentication for user accounts
+  - name: Admin
+    description: Admin-only endpoints (requires `cipher_admin` cookie)
+  - name: User
+    description: User endpoints (requires `cipher_user` cookie)
+
+components:
+  securitySchemes:
+    CookieAuthUser:
+      type: apiKey
+      in: cookie
+      name: cipher_user
+    CookieAuthAdmin:
+      type: apiKey
+      in: cookie
+      name: cipher_admin
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
+
+    LoginRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          example: user@example.com
+        password:
+          type: string
+          example: "secret123"
+      required: [email, password]
+
+    LoginResponse:
+      description: |
+        On success the server sets an httpOnly cookie (`cipher_user` or `cipher_admin`).
+        Browser clients rely on the cookie and should ignore the `token` field.
+        Non-browser clients (curl, Postman, Scalar) can use the returned `token` as
+        `Authorization: Bearer <token>` — the Bearer header fallback remains active.
+      type: object
+      properties:
+        token:
+          type: string
+          description: JWT for non-browser clients. Browser clients use the httpOnly cookie instead.
+        user:
+          type: object
+          properties:
+            id:
+              type: integer
+            email:
+              type: string
+            role:
+              type: string
+              enum: [user, admin]
+
+    CreateUserRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          example: newuser@example.com
+        password:
+          type: string
+          minLength: 8
+          example: "password123"
+      required: [email, password]
+
+    CreateUserResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+        unique_id:
+          type: string
+          example: "a1b2c3d4"
+        email:
+          type: string
+
+    ValidateResponse:
+      type: object
+      properties:
+        cloudflare:
+          type: string
+          example: ok
+
+    CreateSetupRequest:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [vta_only, full_stack]
+          default: vta_only
+        vta_name:
+          type: string
+          default: "personal-vta"
+          example: "personal-vta"
+          description: Unique name per user. Auto-generates the DID hosting path {unique_id}/{vta_name}.
+        vta_image:
+          type: string
+          description: Full image URL selected from GET /setup/images.
+          example: "ghcr.io/ic3software/vta:0.5.0"
+        portable:
+          type: boolean
+          default: true
+          description: Advanced — VTA DID portability. Defaults to true if omitted.
+        pre_rotation_count:
+          type: integer
+          default: 1
+          description: Advanced — number of pre-rotation keys. Defaults to 1 if omitted.
+      required: [mode, vta_image]
+
+    SetupSessionItem:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "a1b2c3d4"
+        status:
+          type: string
+          enum: [dns_provisioned, vta_setup_running, vta_setup_complete, provisioning, running, failed]
+        mode:
+          type: string
+          enum: [vta_only, full_stack]
+        url:
+          type: string
+          example: "https://cp-abc12345.example.com"
+        vta_name:
+          type: string
+        vta_did:
+          type: string
+          description: Populated after vta setup completes
+        mediator_did:
+          type: string
+          description: Populated after vta setup completes
+        error_msg:
+          type: string
+          description: Present only when status is `failed`
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    GetSetupSessionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "a1b2c3d4"
+        status:
+          type: string
+          enum:
+            - dns_provisioned
+            - vta_setup_running
+            - vta_setup_complete
+            - provisioning
+            - running
+            - failed
+        mode:
+          type: string
+          enum: [vta_only, full_stack]
+        url:
+          type: string
+          example: "https://cp-abc12345.example.com"
+        error_msg:
+          type: string
+          description: Present only when status is `failed`
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateSetupResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "a1b2c3d4"
+        url:
+          type: string
+          example: "https://abc123.example.com"
+        status:
+          type: string
+          example: "dns_provisioned"
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      tags: [System]
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /api/v1/auth/admin/login:
+    post:
+      summary: Admin login
+      description: Sets the `cipher_admin` httpOnly cookie on success.
+      tags: [Auth — Admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+            example:
+              email: "admin@ic3.dev"
+              password: "password"
+      responses:
+        "200":
+          description: Login successful — sets cipher_admin cookie
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/auth/admin/logout:
+    post:
+      summary: Admin logout
+      description: Clears the `cipher_admin` cookie.
+      tags: [Auth — Admin]
+      responses:
+        "204":
+          description: Logged out
+
+  /api/v1/auth/user/login:
+    post:
+      summary: User login
+      description: Sets the `cipher_user` httpOnly cookie on success.
+      tags: [Auth — User]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+            example:
+              email: "user@ic3.dev"
+              password: "password"
+      responses:
+        "200":
+          description: Login successful — sets cipher_user cookie
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/auth/user/logout:
+    post:
+      summary: User logout
+      description: Clears the `cipher_user` cookie.
+      tags: [Auth — User]
+      responses:
+        "204":
+          description: Logged out
+
+  /api/v1/admins:
+    get:
+      summary: List admins
+      description: Returns all admin accounts, newest first.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      responses:
+        "200":
+          description: List of admins
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: integer
+                    email:
+                      type: string
+                      format: email
+                    created_at:
+                      type: string
+                      format: date-time
+                    updated_at:
+                      type: string
+                      format: date-time
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role (admin required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      summary: Create admin
+      description: Creates a new admin account.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUserRequest"
+            example:
+              email: "newadmin@ic3.dev"
+              password: "password123"
+      responses:
+        "201":
+          description: Admin created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  email:
+                    type: string
+                    format: email
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role (admin required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Email already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/users:
+    get:
+      summary: List users
+      description: Returns all user accounts, newest first.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      responses:
+        "200":
+          description: List of users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: integer
+                    unique_id:
+                      type: string
+                      example: "a1b2c3d4"
+                    email:
+                      type: string
+                      format: email
+                    created_at:
+                      type: string
+                      format: date-time
+                    updated_at:
+                      type: string
+                      format: date-time
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role (admin required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      summary: Create user
+      description: Creates a new user account.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUserRequest"
+            example:
+              email: "user@ic3.dev"
+              password: "password"
+      responses:
+        "201":
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateUserResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role (admin required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Email already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/admin/password:
+    put:
+      summary: Change admin password
+      description: Allows the authenticated admin to change their own password. Requires the current password for verification.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                current_password:
+                  type: string
+                  example: "oldpassword"
+                new_password:
+                  type: string
+                  minLength: 8
+                  example: "newpassword123"
+              required: [current_password, new_password]
+      responses:
+        "200":
+          description: Password updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: password updated
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing/invalid token or wrong current password
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role (admin required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/users/{id}/password:
+    put:
+      summary: Reset user password
+      description: Allows an admin to reset a user's password without requiring the current password.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: User ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                new_password:
+                  type: string
+                  minLength: 8
+                  example: "newpassword123"
+              required: [new_password]
+      responses:
+        "200":
+          description: Password updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: password updated
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role (admin required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/user/password:
+    put:
+      summary: Change user password
+      description: Allows the authenticated user to change their own password. Requires the current password for verification.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                current_password:
+                  type: string
+                  example: "oldpassword"
+                new_password:
+                  type: string
+                  minLength: 8
+                  example: "newpassword123"
+              required: [current_password, new_password]
+      responses:
+        "200":
+          description: Password updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: password updated
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing/invalid token or wrong current password
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role (user required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/setup/validate:
+    post:
+      summary: Validate setup prerequisites
+      description: Verifies Cloudflare connectivity.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      responses:
+        "200":
+          description: Validation passed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidateResponse"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Cluster ingress IP not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Cloudflare connectivity failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Cloudflare not configured on server
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/setup/images:
+    get:
+      summary: List available VTA images
+      description: |
+        Returns available VTA container image tags fetched from GHCR.
+        Use this to populate the image version dropdown before creating a session.
+        Falls back to the server default image if GHCR is not configured.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      responses:
+        "200":
+          description: List of available image versions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    tag:
+                      type: string
+                      example: "0.5.0"
+                    image:
+                      type: string
+                      example: "ghcr.io/ic3software/vta:0.5.0"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Failed to fetch tags from GHCR
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Image source not configured on server
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/setup:
+    post:
+      summary: Create setup session
+      description: Generates a random subdomain, creates a Cloudflare DNS A record, stores the session, and begins async VTA setup.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSetupRequest"
+      responses:
+        "201":
+          description: Setup session created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateSetupResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Cluster ingress IP not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Failed to create DNS record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Cloudflare not configured on server
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      summary: List setup sessions
+      description: Returns all setup sessions owned by the requesting user, newest first.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      responses:
+        "200":
+          description: List of sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SetupSessionItem"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/setup/{id}:
+    get:
+      summary: Get setup session
+      description: Returns the current status of a setup session. Poll this endpoint to track progress.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Session state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetSetupSessionResponse"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Delete setup session
+      description: Removes the Cloudflare DNS record and deletes the session.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Setup session ID
+      responses:
+        "204":
+          description: Session deleted
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Failed to delete DNS record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/setup/{id}/logs:
+    get:
+      summary: Stream logs
+      description: |
+        Server-Sent Events (SSE) stream.
+
+        **Optional query param** `?source=setup|import-did|vta` — explicitly select the log source
+        regardless of session status. Holds the connection open until the pod is ready, then streams.
+
+        Without `?source`, the source is chosen by session status:
+        - `vta_setup_running` — live output from the vta-setup K8s Job
+        - `provisioning` — live output from the vta-import-did K8s Job
+        - `running` — live output from the running VTA pod
+        - `vta_setup_complete` — replays buffered vta-setup job output then closes
+        - `failed` — replays the last job's output then closes
+        - `dns_provisioned` — returns 409 (not started yet)
+
+        Each event is a plain log line: `data: <line>\n\n`.
+        A final `event: done` signals the end of the stream.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: source
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [setup, import-did, vta]
+          description: Explicitly select log source regardless of session status
+      responses:
+        "200":
+          description: SSE log stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: Newline-delimited SSE events
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Setup not started yet (status is dns_provisioned)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: K8s not configured on server
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/setup/{id}/admin:
+    post:
+      summary: Provision admin DID
+      description: |
+        Phase 2 of setup: imports an admin DID into the VTA, then creates the VTA Deployment and Service.
+        Session must be in `vta_setup_complete` status before calling this.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                admin_did:
+                  type: string
+                  description: DID to import as admin into the VTA
+                  example: "did:key:z6Mk..."
+              required: [admin_did]
+      responses:
+        "202":
+          description: Provisioning started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: provisioning
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Session not in vta_setup_complete status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: K8s not configured on server
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+

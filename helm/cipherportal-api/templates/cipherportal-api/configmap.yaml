@@ -6,7 +6,7 @@ data:
   APP_PORT:             {{ .Values.app.port | quote }}
   APP_ENV:              {{ .Values.app.env | quote }}
   {{- if .Values.postgresql.enabled }}
-  DB_HOST:              {{ printf "%s-postgresql" .Release.Name | quote }}
+  DB_HOST:              {{ printf "%s-postgresql" .Values.name | quote }}
   {{- else }}
   DB_HOST:              {{ .Values.db.host | quote }}
   {{- end }}
@@ -15,3 +15,7 @@ data:
   DB_NAME:              {{ .Values.db.name | quote }}
   DB_SSLMODE:           {{ .Values.db.sslmode | quote }}
   K8S_NAMESPACE_PREFIX: {{ .Values.k8s.namespacePrefix | quote }}
+  CLUSTER_INGRESS_IP:   {{ .Values.cluster.ingressIP | quote }}
+  CLUSTER_DOMAIN:       {{ .Values.cluster.domain | quote }}
+  GITHUB_PACKAGE_OWNER: {{ .Values.github.packageOwner | quote }}
+  GITHUB_PACKAGE_NAME:  {{ .Values.github.packageName | quote }}

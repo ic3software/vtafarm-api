@@ -2,16 +2,16 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Release.Name }}-postgresql
+  name: {{ .Values.name }}-postgresql
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: {{ .Release.Name }}-postgresql
+      app: {{ .Values.name }}-postgresql
   template:
     metadata:
       labels:
-        app: {{ .Release.Name }}-postgresql
+        app: {{ .Values.name }}-postgresql
     spec:
       containers:
         - name: postgresql
@@ -26,7 +26,7 @@ spec:
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.postgresql.existingSecret | default (printf "%s-postgresql" .Release.Name) }}
+                  name: {{ .Values.postgresql.existingSecret | default (printf "%s-postgresql" .Values.name) }}
                   key: postgres-password
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
@@ -46,5 +46,5 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim:
-            claimName: {{ .Release.Name }}-postgresql
+            claimName: {{ .Values.name }}-postgresql
 {{- end }}
