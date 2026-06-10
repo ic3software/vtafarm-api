@@ -373,12 +373,6 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 
-	sseLines := func(logs string) {
-		for _, line := range splitLines(logs) {
-			fmt.Fprintf(c.Writer, "data: %s\n\n", line)
-		}
-		c.Writer.Flush()
-	}
 	sseError := func(err error) {
 		fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", err.Error())
 		c.Writer.Flush()
@@ -387,11 +381,17 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 	if source := c.Query("source"); source != "" {
 		switch source {
 		case "setup":
-			logs, err := h.k8s.JobLogs(c.Request.Context(), ns, k8s.SetupJobName(session.ID))
-			if err != nil {
+			sawMarker := false
+			if err := h.k8s.StreamJobLogs(c.Request.Context(), ns, k8s.SetupJobName(session.ID), func(line string) {
+				if line == "---DID_LOG_START---" {
+					sawMarker = true
+				}
+				if !sawMarker {
+					fmt.Fprintf(c.Writer, "data: %s\n\n", line)
+					c.Writer.Flush()
+				}
+			}); err != nil && c.Request.Context().Err() == nil {
 				sseError(err)
-			} else {
-				sseLines(logs)
 			}
 		case "import-did":
 			if err := h.k8s.StreamJobLogs(c.Request.Context(), ns, k8s.ImportDidJobName(session.ID), func(line string) {
@@ -401,7 +401,7 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 				sseError(err)
 			}
 		case "vta":
-			if err := h.k8s.StreamVtaPodLogs(c.Request.Context(), ns, session.ID, func(line string) {
+			if err := h.k8s.StreamVtaPodLogs(c.Request.Context(), ns, session.ID, true, func(line string) {
 				fmt.Fprintf(c.Writer, "data: %s\n\n", line)
 				c.Writer.Flush()
 			}); err != nil && c.Request.Context().Err() == nil {
@@ -418,9 +418,15 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 
 	switch session.Status {
 	case "vta_setup_running":
+		sawMarker := false
 		if err := h.k8s.StreamJobLogs(c.Request.Context(), ns, k8s.SetupJobName(session.ID), func(line string) {
-			fmt.Fprintf(c.Writer, "data: %s\n\n", line)
-			c.Writer.Flush()
+			if line == "---DID_LOG_START---" {
+				sawMarker = true
+			}
+			if !sawMarker {
+				fmt.Fprintf(c.Writer, "data: %s\n\n", line)
+				c.Writer.Flush()
+			}
 		}); err != nil && c.Request.Context().Err() == nil {
 			fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", err.Error())
 			c.Writer.Flush()
@@ -434,7 +440,7 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 			c.Writer.Flush()
 		}
 	case "vta_starting", "running", "complete":
-		if err := h.k8s.StreamVtaPodLogs(c.Request.Context(), ns, session.ID, func(line string) {
+		if err := h.k8s.StreamVtaPodLogs(c.Request.Context(), ns, session.ID, false, func(line string) {
 			fmt.Fprintf(c.Writer, "data: %s\n\n", line)
 			c.Writer.Flush()
 		}); err != nil && c.Request.Context().Err() == nil {
@@ -447,6 +453,9 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 			fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", err.Error())
 		} else {
 			for _, line := range splitLines(logs) {
+				if line == "---DID_LOG_START---" {
+					break
+				}
 				fmt.Fprintf(c.Writer, "data: %s\n\n", line)
 			}
 		}

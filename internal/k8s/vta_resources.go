@@ -155,7 +155,8 @@ func (c *Client) CreateVtaIngress(ctx context.Context, ns string, sessionID uint
 
 // StreamVtaPodLogs finds the running VTA pod for a session and streams its logs line by line.
 // Waits up to 2 minutes for the pod to appear. Blocks until the stream ends or ctx is cancelled.
-func (c *Client) StreamVtaPodLogs(ctx context.Context, ns string, sessionID uint, onLine func(string)) error {
+// fromStart=true delivers all historical logs from pod start; false streams only new lines.
+func (c *Client) StreamVtaPodLogs(ctx context.Context, ns string, sessionID uint, fromStart bool, onLine func(string)) error {
 	selector := fmt.Sprintf("app=vta,session-id=%d", sessionID)
 
 	var podName string
@@ -182,8 +183,12 @@ wait:
 		}
 	}
 
-	tailLines := int64(0)
-	req := c.kube.CoreV1().Pods(ns).GetLogs(podName, &corev1.PodLogOptions{Follow: true, TailLines: &tailLines})
+	opts := &corev1.PodLogOptions{Follow: true}
+	if !fromStart {
+		tailLines := int64(0)
+		opts.TailLines = &tailLines
+	}
+	req := c.kube.CoreV1().Pods(ns).GetLogs(podName, opts)
 	stream, err := req.Stream(ctx)
 	if err != nil {
 		return fmt.Errorf("stream logs for pod %s: %w", podName, err)
