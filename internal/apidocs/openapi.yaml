@@ -158,7 +158,7 @@ components:
           example: "a1b2c3d4"
         status:
           type: string
-          enum: [dns_provisioned, vta_setup_running, waiting_webvh, vta_starting, complete, failed]
+          enum: [dns_provisioned, vta_setup_running, vta_setup_complete, provisioning, running, failed]
         mode:
           type: string
           enum: [vta_only, full_stack]
@@ -194,9 +194,9 @@ components:
           enum:
             - dns_provisioned
             - vta_setup_running
-            - waiting_webvh
-            - vta_starting
-            - complete
+            - vta_setup_complete
+            - provisioning
+            - running
             - failed
         mode:
           type: string
@@ -906,13 +906,19 @@ paths:
     get:
       summary: Stream logs
       description: |
-        Server-Sent Events (SSE) stream. The source depends on session status:
+        Server-Sent Events (SSE) stream.
+
+        **Optional query param** `?source=setup|import-did|vta` — explicitly select the log source
+        regardless of session status. Holds the connection open until the pod is ready, then streams.
+
+        Without `?source`, the source is chosen by session status:
         - `vta_setup_running` — live output from the vta-setup K8s Job
         - `provisioning` — live output from the vta-import-did K8s Job
-        - `vta_starting` / `running` / `complete` — live output from the running VTA pod
+        - `running` — live output from the running VTA pod
         - `vta_setup_complete` — replays buffered vta-setup job output then closes
         - `failed` — replays the last job's output then closes
         - `dns_provisioned` — returns 409 (not started yet)
+
         Each event is a plain log line: `data: <line>\n\n`.
         A final `event: done` signals the end of the stream.
       tags: [User]
@@ -924,6 +930,13 @@ paths:
           required: true
           schema:
             type: integer
+        - name: source
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [setup, import-did, vta]
+          description: Explicitly select log source regardless of session status
       responses:
         "200":
           description: SSE log stream
