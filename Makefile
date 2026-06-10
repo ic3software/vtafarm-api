@@ -1,7 +1,7 @@
 # ─── Image & deploy variables ─────────────────────────────────────────────────
-NAME         ?= cipherportal
+NAME         ?= cipherportal-api
 DOCKER_USERNAME ?=
-IMAGE        ?= $(DOCKER_USERNAME)/cipherportal-api
+IMAGE        ?= $(DOCKER_USERNAME)/$(NAME)
 TAG          ?= $(shell git rev-parse --short HEAD)
 NAMESPACE    ?= default
 DEPLOY_ENV   ?= production
@@ -67,7 +67,7 @@ image-push: image-build
 
 # ─── Kubernetes (Helm) ────────────────────────────────────────────────────────
 # Deploys both API and PostgreSQL as one release.
-# helm uninstall cipherportal → removes everything.
+# helm uninstall cipherportal-api → removes everything.
 # Pre-requisite: kubectl apply -f k8s/postgresql-secret.yaml (one-time, before first deploy)
 # Usage: make deploy [DOCKER_USERNAME=xxx] [TAG=abc1234]
 deploy:
