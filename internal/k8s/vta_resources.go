@@ -173,8 +173,11 @@ wait:
 		case <-ticker.C:
 			pods, err := c.kube.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: selector})
 			if err == nil && len(pods.Items) > 0 {
-				podName = pods.Items[0].Name
-				break wait
+				p := pods.Items[0]
+				if p.Status.Phase == corev1.PodRunning || p.Status.Phase == corev1.PodSucceeded {
+					podName = p.Name
+					break wait
+				}
 			}
 		}
 	}

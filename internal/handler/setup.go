@@ -394,11 +394,11 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 				sseLines(logs)
 			}
 		case "import-did":
-			logs, err := h.k8s.JobLogs(c.Request.Context(), ns, k8s.ImportDidJobName(session.ID))
-			if err != nil {
+			if err := h.k8s.StreamJobLogs(c.Request.Context(), ns, k8s.ImportDidJobName(session.ID), func(line string) {
+				fmt.Fprintf(c.Writer, "data: %s\n\n", line)
+				c.Writer.Flush()
+			}); err != nil && c.Request.Context().Err() == nil {
 				sseError(err)
-			} else {
-				sseLines(logs)
 			}
 		case "vta":
 			if err := h.k8s.StreamVtaPodLogs(c.Request.Context(), ns, session.ID, func(line string) {

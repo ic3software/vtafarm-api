@@ -203,8 +203,11 @@ wait:
 				LabelSelector: "job-name=" + jobName,
 			})
 			if err == nil && len(pods.Items) > 0 {
-				podName = pods.Items[0].Name
-				break wait
+				p := pods.Items[0]
+				if p.Status.Phase == corev1.PodRunning || p.Status.Phase == corev1.PodSucceeded {
+					podName = p.Name
+					break wait
+				}
 			}
 		}
 	}
