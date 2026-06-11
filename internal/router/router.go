@@ -66,6 +66,7 @@ func Setup(
 		middleware.RequireRole(model.RoleAdmin),
 	)
 	uh := handler.NewUserHandler(db)
+	ih := handler.NewInvitationHandler(db)
 	{
 		adminH := handler.NewAdminHandler(db)
 		adminAuth.GET("/admins", adminH.List)
@@ -74,7 +75,13 @@ func Setup(
 		adminAuth.POST("/users", uh.Create)
 		adminAuth.PUT("/admin/password", adminH.ChangeOwnPassword)
 		adminAuth.PUT("/users/:id/password", adminH.ChangeUserPassword)
+		adminAuth.POST("/invitations", ih.Create)
+		adminAuth.GET("/invitations", ih.List)
 	}
+
+	// Public invitation routes (no auth required)
+	v1.GET("/invitations/:token", ih.Validate)
+	v1.POST("/invitations/:token/register", ih.Register)
 
 	// User routes — cookie: cipher_user
 	userAuth := v1.Group("",
