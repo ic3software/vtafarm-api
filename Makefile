@@ -8,7 +8,7 @@ DEPLOY_ENV   ?= production
 INGRESS_HOST ?=
 
 .PHONY: build gen-keypair tidy dev \
-        migrate migrate-down migrate-new seed \
+        migrate migrate-down migrate-new seed enroll \
         up down reset \
         image-build image-push \
         deploy
@@ -45,6 +45,9 @@ migrate-down:
 
 seed:
 	go run ./seed
+
+enroll:
+	go run ./cmd/enroll
 
 # ─── Docker Compose (DB only) ─────────────────────────────────────────────────
 up:

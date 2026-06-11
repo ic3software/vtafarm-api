@@ -19,7 +19,7 @@ Go REST API backend for managing VTA setup sessions with per-user namespace isol
 ```bash
 cp .env.example .env
 make dev                  # start DB (Docker) + API with Air hot-reload; migrations run automatically
-make seed                 # (optional) insert test data — run in a separate terminal
+make enroll               # create first admin + print 24h enrollment token (run in a separate terminal)
 ```
 
 API: `http://localhost:8080`
@@ -100,17 +100,44 @@ Migrations run automatically on every API startup. `ErrNoChange` is silently ign
 All API routes are prefixed with `/api/v1`.
 Local docs: `http://localhost:8080/docs` (disabled when `APP_ENV=production`).
 
+## Admin Enrollment
+
+All accounts (admin and user) use **passkey-only** authentication. There are no passwords.
+
+To create the first admin:
+
+```bash
+make enroll
+# prints: ID, UniqueID, Token, and the enrollment URL
+```
+
+The token is valid for 24 hours. Pass it to the frontend enrollment page, or call the API directly:
+
+```bash
+# 1. Consume the token — returns cipher_admin cookie + JWT
+POST /api/v1/admin/enroll/<token>
+
+# 2. Register a passkey (use the returned JWT as Bearer token)
+POST /api/v1/admin/passkeys/register/begin
+POST /api/v1/admin/passkeys/register/complete?name=MyKey
+```
+
+To create additional admins, an authenticated admin calls `POST /api/v1/admins`, which returns a new enrollment token.
+
 ### Auth
 
 | Method | Path | Role | Description |
 | --- | --- | --- | --- |
-| `POST` | `/api/v1/auth/admin/login` | public | Admin login → JWT |
-| `POST` | `/api/v1/auth/user/login` | public | User login → JWT |
+| `POST` | `/api/v1/auth/passkey/begin` | public | Begin passkey login (admin or user) |
+| `POST` | `/api/v1/auth/passkey/complete` | public | Complete passkey login → JWT + cookie |
+| `GET`  | `/api/v1/admin/enroll/:token` | public | Validate admin enrollment token |
+| `POST` | `/api/v1/admin/enroll/:token` | public | Consume token → auto-login as admin |
 
 ### Admin
 
 | Method | Path | Role | Description |
 | --- | --- | --- | --- |
+| `POST` | `/api/v1/admins` | admin | Create admin + return enrollment token |
 | `POST` | `/api/v1/users` | admin | Create a user account |
 
 ### User — VTA Setup Wizard

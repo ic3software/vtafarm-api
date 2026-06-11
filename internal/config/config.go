@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 type Config struct {
@@ -18,6 +19,13 @@ type Config struct {
 	Cloudflare       CloudflareConfig
 	GHCR             GHCRConfig
 	DidHosting       DidHostingConfig
+	WebAuthn         WebAuthnConfig
+}
+
+type WebAuthnConfig struct {
+	RPID          string
+	RPOrigins     []string
+	RPDisplayName string
 }
 
 // CookieSecure returns true when running in production (requires HTTPS).
@@ -109,7 +117,23 @@ func Load() *Config {
 			Did:        getEnv("DID_HOSTING_DID", ""),
 			PrivateKey: getEnv("DID_HOSTING_PRIVATE_KEY", ""),
 		},
+		WebAuthn: WebAuthnConfig{
+			RPID:          getEnv("WEBAUTHN_RP_ID", "localhost"),
+			RPOrigins:     splitComma(getEnv("WEBAUTHN_RP_ORIGINS", "http://localhost:5173")),
+			RPDisplayName: getEnv("WEBAUTHN_RP_DISPLAY_NAME", "CipherPortal"),
+		},
 	}
+}
+
+func splitComma(s string) []string {
+	parts := strings.Split(s, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if v := strings.TrimSpace(p); v != "" {
+			result = append(result, v)
+		}
+	}
+	return result
 }
 
 func getEnv(key, defaultVal string) string {

@@ -43,6 +43,11 @@ github:
   packageOwner: ic3software
   packageName: vta
 
+webauthn:
+  rpID: "cipher.ic3.dev"
+  rpOrigins: "https://cipher.ic3.dev"
+  rpDisplayName: "CipherPortal"
+
 resources:
   requests:
     cpu: 100m

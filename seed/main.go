@@ -5,39 +5,20 @@ import (
 	"log"
 
 	"github.com/joho/godotenv"
-	"golang.org/x/crypto/bcrypt"
 
 	"github.com/ic3software/cipherportal-api/internal/config"
 	"github.com/ic3software/cipherportal-api/internal/database"
-	"github.com/ic3software/cipherportal-api/internal/model"
 )
 
 func main() {
 	_ = godotenv.Load()
 	cfg := config.Load()
 
-	db, err := database.Connect(cfg)
+	_, err := database.Connect(cfg)
 	if err != nil {
 		log.Fatalf("db connect: %v", err)
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.DefaultCost)
-	if err != nil {
-		log.Fatalf("bcrypt: %v", err)
-	}
-	admin := model.Admin{
-		Email:    "admin@ic3.dev",
-		Password: string(hash),
-	}
-	result := db.Where(model.Admin{Email: admin.Email}).FirstOrCreate(&admin)
-	if result.Error != nil {
-		log.Fatalf("seed admin: %v", result.Error)
-	}
-	if result.RowsAffected > 0 {
-		fmt.Printf("seeded admin: %s (id=%d)\n", admin.Email, admin.ID)
-	} else {
-		fmt.Printf("admin already exists: %s (id=%d)\n", admin.Email, admin.ID)
-	}
-
-	fmt.Println("seed complete")
+	fmt.Println("No seed data to insert.")
+	fmt.Println("To create the first admin, run:  go run ./cmd/enroll")
 }
