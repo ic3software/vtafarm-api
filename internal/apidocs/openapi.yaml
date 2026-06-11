@@ -39,6 +39,8 @@ tags:
     description: Admin-only endpoints (requires `cipher_admin` cookie)
   - name: User
     description: User endpoints (requires `cipher_user` cookie)
+  - name: Admin - Invitations
+    description: Invitation link management. Create/list require `cipher_admin` cookie; validate and register are public.
 
 components:
   securitySchemes:
@@ -683,7 +685,7 @@ paths:
     post:
       summary: Create invitation link
       description: Generates a single-use invitation link valid for 24 hours.
-      tags: [Admin]
+      tags: [Admin - Invitations]
       security:
         - CookieAuthAdmin: []
       responses:
@@ -723,7 +725,7 @@ paths:
     get:
       summary: List invitation links
       description: Returns all invitation links, newest first.
-      tags: [Admin]
+      tags: [Admin - Invitations]
       security:
         - CookieAuthAdmin: []
       responses:
@@ -767,9 +769,9 @@ paths:
 
   /api/v1/invitations/{token}:
     get:
-      summary: Validate invitation token
-      description: Checks whether the invitation token is valid (not expired, not already used).
-      tags: [Auth — User]
+      summary: "(public) Validate invitation token"
+      description: Checks whether the invitation token is valid (not expired, not already used). No authentication required.
+      tags: [Admin - Invitations]
       parameters:
         - name: token
           in: path
@@ -805,12 +807,12 @@ paths:
 
   /api/v1/invitations/{token}/register:
     post:
-      summary: Register via invitation
+      summary: "(public) Register via invitation"
       description: |
-        Creates a new user account using a valid invitation token.
+        Creates a new user account using a valid invitation token. No authentication required.
         The token is single-use — it is marked as used after successful registration.
         The new user can then log in via `POST /api/v1/auth/user/login`.
-      tags: [Auth — User]
+      tags: [Admin - Invitations]
       parameters:
         - name: token
           in: path
