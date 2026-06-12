@@ -57,7 +57,7 @@ func Setup(
 	v1 := r.Group("/api/v1")
 
 	// Auth — logout only (login is via passkey)
-	ah := handler.NewAuthHandler(cfg.CookieDomain, cfg.CookieSecure())
+	ah := handler.NewAuthHandler(cfg.CookieSecure())
 	v1.POST("/auth/admin/logout", ah.AdminLogout)
 	v1.POST("/auth/user/logout", ah.UserLogout)
 
@@ -72,14 +72,14 @@ func Setup(
 		log.Fatalf("webauthn init: %v", err)
 	}
 	passkeyStore := passkey.NewSessionStore()
-	pkh := handler.NewPasskeyHandler(db, wa, passkeyStore, cfg.JWTSecret, cfg.CookieDomain, cfg.CookieSecure())
+	pkh := handler.NewPasskeyHandler(db, wa, passkeyStore, cfg.JWTSecret, cfg.CookieSecure())
 	v1.POST("/auth/admin/passkey/begin", pkh.AdminLoginBegin)
 	v1.POST("/auth/admin/passkey/complete", pkh.AdminLoginComplete)
 	v1.POST("/auth/user/passkey/begin", pkh.UserLoginBegin)
 	v1.POST("/auth/user/passkey/complete", pkh.UserLoginComplete)
 
 	// Admin enrollment (public — no auth required)
-	aeh := handler.NewAdminEnrollHandler(db, cfg.JWTSecret, cfg.CookieDomain, cfg.CookieSecure())
+	aeh := handler.NewAdminEnrollHandler(db, cfg.JWTSecret, cfg.CookieSecure())
 	v1.GET("/admin/enroll/:token", aeh.Validate)
 	v1.POST("/admin/enroll/:token", aeh.Enroll)
 
@@ -89,7 +89,7 @@ func Setup(
 		middleware.RequireRole(model.RoleAdmin),
 	)
 	uh := handler.NewUserHandler(db)
-	ih := handler.NewInvitationHandler(db, cfg.JWTSecret, cfg.CookieDomain, cfg.CookieSecure())
+	ih := handler.NewInvitationHandler(db, cfg.JWTSecret, cfg.CookieSecure())
 	{
 		adminH := handler.NewAdminHandler(db)
 		adminAuth.GET("/admins", adminH.List)

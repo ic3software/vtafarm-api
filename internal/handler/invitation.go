@@ -19,12 +19,11 @@ const defaultInvitationTTL = 24 * time.Hour
 type InvitationHandler struct {
 	db           *gorm.DB
 	jwtSecret    string
-	cookieDomain string
 	cookieSecure bool
 }
 
-func NewInvitationHandler(db *gorm.DB, jwtSecret, cookieDomain string, cookieSecure bool) *InvitationHandler {
-	return &InvitationHandler{db: db, jwtSecret: jwtSecret, cookieDomain: cookieDomain, cookieSecure: cookieSecure}
+func NewInvitationHandler(db *gorm.DB, jwtSecret string, cookieSecure bool) *InvitationHandler {
+	return &InvitationHandler{db: db, jwtSecret: jwtSecret, cookieSecure: cookieSecure}
 }
 
 func generateInviteToken() (string, error) {
@@ -171,7 +170,7 @@ func (h *InvitationHandler) Register(c *gin.Context) {
 		return
 	}
 	c.SetSameSite(http.SameSiteStrictMode)
-	c.SetCookie(middleware.CookieUser, jwtToken, cookieMaxAge, "/", h.cookieDomain, h.cookieSecure, true)
+	c.SetCookie(middleware.CookieUser, jwtToken, cookieMaxAge, "/", "", h.cookieSecure, true)
 
 	c.JSON(http.StatusCreated, gin.H{
 		"id":        user.ID,

@@ -24,7 +24,6 @@ type PasskeyHandler struct {
 	wa           *webauthn.WebAuthn
 	sessions     *passkey.SessionStore
 	jwtSecret    string
-	cookieDomain string
 	cookieSecure bool
 }
 
@@ -32,12 +31,12 @@ func NewPasskeyHandler(
 	db *gorm.DB,
 	wa *webauthn.WebAuthn,
 	sessions *passkey.SessionStore,
-	jwtSecret, cookieDomain string,
+	jwtSecret string,
 	cookieSecure bool,
 ) *PasskeyHandler {
 	return &PasskeyHandler{
 		db: db, wa: wa, sessions: sessions,
-		jwtSecret: jwtSecret, cookieDomain: cookieDomain, cookieSecure: cookieSecure,
+		jwtSecret: jwtSecret, cookieSecure: cookieSecure,
 	}
 }
 
@@ -365,9 +364,9 @@ func (h *PasskeyHandler) loginComplete(c *gin.Context, expectedRole string) {
 
 	c.SetSameSite(http.SameSiteStrictMode)
 	if authenticatedUser.role == model.RoleAdmin {
-		c.SetCookie(middleware.CookieAdmin, token, cookieMaxAge, "/", h.cookieDomain, h.cookieSecure, true)
+		c.SetCookie(middleware.CookieAdmin, token, cookieMaxAge, "/", "", h.cookieSecure, true)
 	} else {
-		c.SetCookie(middleware.CookieUser, token, cookieMaxAge, "/", h.cookieDomain, h.cookieSecure, true)
+		c.SetCookie(middleware.CookieUser, token, cookieMaxAge, "/", "", h.cookieSecure, true)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
