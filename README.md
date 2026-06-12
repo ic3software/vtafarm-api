@@ -55,11 +55,24 @@ networking workarounds.
    Copy the two output lines (`DID_HOSTING_PRIVATE_KEY` and `DID_HOSTING_DID`) into your `.env`,
    then register the DID in the did-hosting service Access Control with **role=Service**.
 
-4. (Optional) Seed test data — run in a separate terminal while the API is running:
+4. Create the first admin enrollment token — run in a separate terminal while the API is running:
 
    ```bash
-   make seed
+   make enroll
    ```
+
+   This prints a 24-hour single-use token. Pass it to your frontend enrollment page, or call the API directly:
+
+   ```bash
+   # Consume the token — creates the admin account and sets cipher_admin cookie
+   POST /api/v1/admin/enroll/<token>
+
+   # Then register a passkey (use the returned JWT as Authorization: Bearer)
+   POST /api/v1/admin/passkeys/register/begin
+   POST /api/v1/admin/passkeys/register/complete?name=MyKey
+   ```
+
+   To create additional admins, an authenticated admin calls `POST /api/v1/admins`, which returns a new enrollment token.
 
 ### Environment Variables
 
