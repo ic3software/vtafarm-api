@@ -4,7 +4,7 @@ set -e
 # Required env vars (set by GitHub Actions):
 #   SSH_PRIVATE_KEY, SERVER_IP, KUBECONFIG_PATH, DOCKER_USERNAME
 # TAG defaults to the short git SHA via the Makefile (git rev-parse --short HEAD).
-# Pre-requisite: Secret "vtafarm-postgresql" must exist in the cluster namespace.
+# Pre-requisite: Secret "vtafarm-api-postgresql" must exist in the cluster namespace.
 #   See k8s/postgresql-secret.yaml — apply once manually before first deploy.
 
 # ── SSH setup ─────────────────────────────────────────────────────────────────

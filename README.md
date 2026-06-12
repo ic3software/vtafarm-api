@@ -194,7 +194,7 @@ kubectl apply -f k8s/secret.yaml
 ### 3. Create the PostgreSQL Secret (one-time)
 
 ```bash
-kubectl create secret generic vtafarm-postgresql \
+kubectl create secret generic vtafarm-api-postgresql \
   --from-literal=postgres-password='your-strong-password' \
   --namespace=default
 ```
