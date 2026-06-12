@@ -1,4 +1,4 @@
-module github.com/ic3software/cipherportal-api
+module github.com/ic3software/vtafarm-api
 
 go 1.26.3
 

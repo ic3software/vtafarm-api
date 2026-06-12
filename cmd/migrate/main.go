@@ -11,7 +11,7 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/joho/godotenv"
 
-	"github.com/ic3software/cipherportal-api/internal/config"
+	"github.com/ic3software/vtafarm-api/internal/config"
 )
 
 func main() {

@@ -5,7 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/ic3software/cipherportal-api/internal/middleware"
+	"github.com/ic3software/vtafarm-api/internal/middleware"
 )
 
 const cookieMaxAge = 24 * 60 * 60

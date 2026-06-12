@@ -10,8 +10,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	"github.com/ic3software/cipherportal-api/internal/middleware"
-	"github.com/ic3software/cipherportal-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/middleware"
+	"github.com/ic3software/vtafarm-api/internal/model"
 )
 
 const defaultInvitationTTL = 24 * time.Hour
@@ -121,7 +121,7 @@ func (h *InvitationHandler) Validate(c *gin.Context) {
 }
 
 // Register — public: self-register using an invitation token. No request body needed.
-// On success the user is automatically logged in via the cipher_user cookie
+// On success the user is automatically logged in via the vtafarm_user cookie
 // so they can proceed to set up their passkey without a separate login step.
 func (h *InvitationHandler) Register(c *gin.Context) {
 	token := c.Param("token")
@@ -164,7 +164,7 @@ func (h *InvitationHandler) Register(c *gin.Context) {
 		return
 	}
 
-	// Auto-login: set cipher_user cookie so the user can immediately register their passkey.
+	// Auto-login: set vtafarm_user cookie so the user can immediately register their passkey.
 	jwtToken, err := middleware.GenerateToken(user.ID, model.RoleUser, h.jwtSecret)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not generate token"})

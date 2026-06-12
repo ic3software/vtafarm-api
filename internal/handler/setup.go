@@ -9,13 +9,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	"github.com/ic3software/cipherportal-api/internal/cloudflare"
-	"github.com/ic3software/cipherportal-api/internal/didhosting"
-	"github.com/ic3software/cipherportal-api/internal/ghcr"
-	"github.com/ic3software/cipherportal-api/internal/k8s"
-	"github.com/ic3software/cipherportal-api/internal/middleware"
-	"github.com/ic3software/cipherportal-api/internal/model"
-	"github.com/ic3software/cipherportal-api/internal/setup"
+	"github.com/ic3software/vtafarm-api/internal/cloudflare"
+	"github.com/ic3software/vtafarm-api/internal/didhosting"
+	"github.com/ic3software/vtafarm-api/internal/ghcr"
+	"github.com/ic3software/vtafarm-api/internal/k8s"
+	"github.com/ic3software/vtafarm-api/internal/middleware"
+	"github.com/ic3software/vtafarm-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/setup"
 )
 
 type SetupHandler struct {

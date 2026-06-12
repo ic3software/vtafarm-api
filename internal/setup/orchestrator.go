@@ -11,9 +11,9 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/ic3software/cipherportal-api/internal/didhosting"
-	"github.com/ic3software/cipherportal-api/internal/k8s"
-	"github.com/ic3software/cipherportal-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/didhosting"
+	"github.com/ic3software/vtafarm-api/internal/k8s"
+	"github.com/ic3software/vtafarm-api/internal/model"
 )
 
 // Orchestrator drives a setup session through its full lifecycle.

@@ -32,7 +32,7 @@ jobs:
       SERVER_IP:        ${{ secrets.PRODUCTION_SERVER_IP }}
       KUBECONFIG_PATH:  ${{ secrets.KUBECONFIG_PATH }}
       DOCKER_USERNAME:  ${{ secrets.DOCKER_USERNAME }}
-      INGRESS_HOST:     cp-api.ic3.dev
+      INGRESS_HOST:     vtafarm-api.firstperson.dev
     steps:
       - uses: actions/checkout@v6
 

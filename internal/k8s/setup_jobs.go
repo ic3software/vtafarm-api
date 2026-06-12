@@ -47,7 +47,7 @@ func (c *Client) CreateSetupResources(ctx context.Context, ns string, sessionID 
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      pvcName,
 			Namespace: ns,
-			Labels:    map[string]string{"managed-by": "cipherportal"},
+			Labels:    map[string]string{"managed-by": "vtafarm"},
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},

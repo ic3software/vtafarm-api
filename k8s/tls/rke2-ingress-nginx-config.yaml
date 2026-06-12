@@ -7,4 +7,4 @@ spec:
   valuesContent: |-
     controller:
       extraArgs:
-        default-ssl-certificate: cert-manager/ic3-dev-wildcard-tls
+        default-ssl-certificate: cert-manager/firstperson-dev-wildcard-tls

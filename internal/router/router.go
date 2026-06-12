@@ -9,17 +9,17 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 	"gorm.io/gorm"
 
-	"github.com/ic3software/cipherportal-api/internal/apidocs"
-	"github.com/ic3software/cipherportal-api/internal/cloudflare"
-	"github.com/ic3software/cipherportal-api/internal/config"
-	"github.com/ic3software/cipherportal-api/internal/didhosting"
-	"github.com/ic3software/cipherportal-api/internal/ghcr"
-	"github.com/ic3software/cipherportal-api/internal/handler"
-	"github.com/ic3software/cipherportal-api/internal/k8s"
-	"github.com/ic3software/cipherportal-api/internal/middleware"
-	"github.com/ic3software/cipherportal-api/internal/model"
-	"github.com/ic3software/cipherportal-api/internal/passkey"
-	"github.com/ic3software/cipherportal-api/internal/setup"
+	"github.com/ic3software/vtafarm-api/internal/apidocs"
+	"github.com/ic3software/vtafarm-api/internal/cloudflare"
+	"github.com/ic3software/vtafarm-api/internal/config"
+	"github.com/ic3software/vtafarm-api/internal/didhosting"
+	"github.com/ic3software/vtafarm-api/internal/ghcr"
+	"github.com/ic3software/vtafarm-api/internal/handler"
+	"github.com/ic3software/vtafarm-api/internal/k8s"
+	"github.com/ic3software/vtafarm-api/internal/middleware"
+	"github.com/ic3software/vtafarm-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/passkey"
+	"github.com/ic3software/vtafarm-api/internal/setup"
 )
 
 func Setup(
@@ -34,7 +34,7 @@ func Setup(
 	r := gin.Default()
 
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"https://cipher.ic3.dev", "http://localhost:5173", "http://localhost:5174", "http://localhost:5175"},
+		AllowOrigins:     []string{"https://vtafarm.firstperson.dev", "http://localhost:5173", "http://localhost:5174", "http://localhost:5175"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Authorization", "Content-Type"},
 		ExposeHeaders:    []string{"Content-Length"},
@@ -83,7 +83,7 @@ func Setup(
 	v1.GET("/admin/enroll/:token", aeh.Validate)
 	v1.POST("/admin/enroll/:token", aeh.Enroll)
 
-	// Admin routes — cookie: cipher_admin
+	// Admin routes — cookie: vtafarm_admin
 	adminAuth := v1.Group("",
 		middleware.AuthRequired(cfg.JWTSecret, middleware.CookieAdmin),
 		middleware.RequireRole(model.RoleAdmin),
@@ -107,7 +107,7 @@ func Setup(
 	v1.GET("/invitations/:token", ih.Validate)
 	v1.POST("/invitations/:token/register", ih.Register)
 
-	// User routes — cookie: cipher_user
+	// User routes — cookie: vtafarm_user
 	userAuth := v1.Group("",
 		middleware.AuthRequired(cfg.JWTSecret, middleware.CookieUser),
 		middleware.RequireRole(model.RoleUser),

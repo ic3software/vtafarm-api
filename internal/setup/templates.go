@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"text/template"
 
-	"github.com/ic3software/cipherportal-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/model"
 )
 
 var vtaSetupTmpl = template.Must(template.New("vta-setup").Parse(`config_path = "config.toml"

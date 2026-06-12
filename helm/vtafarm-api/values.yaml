@@ -1,4 +1,4 @@
-name: cipherportal-api
+name: vtafarm-api
 replicaCount: 1
 
 image:
@@ -21,32 +21,32 @@ db:
   host: ""
   port: "5432"
   user: postgres
-  name: cipherportal
+  name: vtafarm
   sslmode: disable
 
 postgresql:
   enabled: true
   image: postgres:18-alpine
-  # Pre-create with: kubectl create secret generic cipherportal-api-postgresql --from-literal=postgres-password='...'
+  # Pre-create with: kubectl create secret generic vtafarm-api-postgresql --from-literal=postgres-password='...'
   # The secret must contain key: postgres-password
-  existingSecret: "cipherportal-api-postgresql"
+  existingSecret: "vtafarm-api-postgresql"
   storage: 5Gi
 
 k8s:
-  namespacePrefix: cp-user
+  namespacePrefix: vtafarm-user
 
 cluster:
   ingressIP: "95.217.184.144"
-  domain: "ic3.dev"
+  domain: "firstperson.dev"
 
 github:
   packageOwner: ic3software
   packageName: vta
 
 webauthn:
-  rpID: "cipher.ic3.dev"
-  rpOrigins: "https://cipher.ic3.dev"
-  rpDisplayName: "CipherPortal"
+  rpID: "vtafarm.firstperson.dev"
+  rpOrigins: "https://vtafarm.firstperson.dev"
+  rpDisplayName: "VTA Farm"
 
 resources:
   requests:

@@ -6,8 +6,8 @@ import (
 
 	"github.com/joho/godotenv"
 
-	"github.com/ic3software/cipherportal-api/internal/config"
-	"github.com/ic3software/cipherportal-api/internal/database"
+	"github.com/ic3software/vtafarm-api/internal/config"
+	"github.com/ic3software/vtafarm-api/internal/database"
 )
 
 func main() {

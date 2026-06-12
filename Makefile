@@ -1,5 +1,5 @@
 # ─── Image & deploy variables ─────────────────────────────────────────────────
-NAME         ?= cipherportal-api
+NAME         ?= vtafarm-api
 DOCKER_USERNAME ?=
 IMAGE        ?= $(DOCKER_USERNAME)/$(NAME)
 TAG          ?= $(shell git rev-parse --short HEAD)
@@ -70,11 +70,11 @@ image-push: image-build
 
 # ─── Kubernetes (Helm) ────────────────────────────────────────────────────────
 # Deploys both API and PostgreSQL as one release.
-# helm uninstall cipherportal-api → removes everything.
+# helm uninstall vtafarm-api → removes everything.
 # Pre-requisite: kubectl apply -f k8s/postgresql-secret.yaml (one-time, before first deploy)
 # Usage: make deploy [DOCKER_USERNAME=xxx] [TAG=abc1234]
 deploy:
-	helm upgrade $(NAME) ./helm/cipherportal-api \
+	helm upgrade $(NAME) ./helm/vtafarm-api \
 	  --set image.repository=$(IMAGE) \
 	  --set image.tag=$(TAG) \
 	  --set app.env=$(DEPLOY_ENV) \

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: vtafarm-api
+description: VTA Farm API — Go REST backend for Kubernetes pod management
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

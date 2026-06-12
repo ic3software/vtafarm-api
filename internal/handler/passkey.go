@@ -14,9 +14,9 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
-	"github.com/ic3software/cipherportal-api/internal/middleware"
-	"github.com/ic3software/cipherportal-api/internal/model"
-	"github.com/ic3software/cipherportal-api/internal/passkey"
+	"github.com/ic3software/vtafarm-api/internal/middleware"
+	"github.com/ic3software/vtafarm-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/passkey"
 )
 
 type PasskeyHandler struct {

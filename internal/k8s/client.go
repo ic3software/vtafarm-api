@@ -14,7 +14,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/yaml"
 
-	"github.com/ic3software/cipherportal-api/internal/config"
+	"github.com/ic3software/vtafarm-api/internal/config"
 )
 
 type Client struct {
@@ -56,7 +56,7 @@ func NewClient(cfg *config.Config) (*Client, error) {
 }
 
 // UserNamespace returns the isolated K8s namespace for a given user.
-// Pattern: {prefix}-{userID}  e.g. cp-user-abc123
+// Pattern: {prefix}-{userID}  e.g. vtafarm-user-abc123
 func (c *Client) UserNamespace(userID string) string {
 	return fmt.Sprintf("%s-%s", c.namespacePrefix, userID)
 }
@@ -79,7 +79,7 @@ func (c *Client) EnsureUserEnvironment(ctx context.Context, userID string) error
 		ObjectMeta: metav1.ObjectMeta{
 			Name: ns,
 			Labels: map[string]string{
-				"managed-by": "cipherportal",
+				"managed-by": "vtafarm",
 				"user-id":    userID,
 			},
 		},
