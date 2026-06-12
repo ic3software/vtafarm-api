@@ -86,8 +86,9 @@ func (h *SetupHandler) Validate(c *gin.Context) {
 // GET /api/v1/setup/images
 func (h *SetupHandler) Images(c *gin.Context) {
 	type imageOption struct {
-		Tag   string `json:"tag"`
-		Image string `json:"image"`
+		Tag    string `json:"tag"`
+		Image  string `json:"image"`
+		Latest bool   `json:"latest,omitempty"`
 	}
 
 	if h.ghcr == nil {
@@ -103,7 +104,7 @@ func (h *SetupHandler) Images(c *gin.Context) {
 
 	result := make([]imageOption, len(tags))
 	for i, t := range tags {
-		result[i] = imageOption{Tag: t.Tag, Image: t.Image}
+		result[i] = imageOption{Tag: t.Tag, Image: t.Image, Latest: t.Latest}
 	}
 	c.JSON(http.StatusOK, result)
 }

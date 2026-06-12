@@ -1113,10 +1113,14 @@ paths:
                   properties:
                     tag:
                       type: string
-                      example: "0.5.0"
+                      example: "0.9.0-917881c"
                     image:
                       type: string
-                      example: "ghcr.io/ic3software/vta:0.5.0"
+                      example: "ghcr.io/ic3software/vta:0.9.0-917881c"
+                    latest:
+                      type: boolean
+                      description: True on the versioned tag that "latest" currently points to. Absent on all other tags. This entry is always first in the list.
+                      example: true
         "401":
           description: Missing or invalid token
           content:

@@ -22,8 +22,9 @@ type Client struct {
 
 // ImageTag is one entry in the version dropdown.
 type ImageTag struct {
-	Tag   string `json:"tag"`
-	Image string `json:"image"`
+	Tag    string `json:"tag"`
+	Image  string `json:"image"`
+	Latest bool   `json:"latest,omitempty"`
 }
 
 func New(token, owner, packageName string) *Client {
@@ -40,7 +41,8 @@ func (c *Client) FullImage() string {
 	return fmt.Sprintf("ghcr.io/%s/%s", c.owner, c.packageName)
 }
 
-// ListTags fetches all tags for the package (excluding "latest"), sorted newest-first by semver.
+// ListTags fetches all tags for the package, sorted newest-first by semver.
+// The tag that "latest" points to is marked with Latest=true.
 func (c *Client) ListTags(ctx context.Context) ([]ImageTag, error) {
 	registryToken, err := c.fetchRegistryToken(ctx)
 	if err != nil {
@@ -71,21 +73,71 @@ func (c *Client) ListTags(ctx context.Context) ([]ImageTag, error) {
 		return nil, fmt.Errorf("decode tags: %w", err)
 	}
 
-	// Filter out "latest" and sort newest-first.
+	// Separate versioned tags from "latest" and sort newest-first.
 	var tags []string
+	hasLatest := false
 	for _, t := range body.Tags {
-		if t != "latest" {
+		if t == "latest" {
+			hasLatest = true
+		} else {
 			tags = append(tags, t)
 		}
 	}
 	sortSemverDesc(tags)
 
+	// Resolve which versioned tag "latest" points to by comparing manifest digests.
+	latestDigest := ""
+	if hasLatest {
+		latestDigest, _ = c.manifestDigest(ctx, registryToken, "latest")
+	}
+
 	base := c.FullImage()
 	result := make([]ImageTag, len(tags))
+	latestFound := false
 	for i, t := range tags {
-		result[i] = ImageTag{Tag: t, Image: base + ":" + t}
+		isLatest := false
+		if latestDigest != "" && !latestFound {
+			digest, _ := c.manifestDigest(ctx, registryToken, t)
+			if digest == latestDigest {
+				isLatest = true
+				latestFound = true
+			}
+		}
+		result[i] = ImageTag{Tag: t, Image: base + ":" + t, Latest: isLatest}
 	}
+
+	// Ensure the latest-marked tag is first so frontends can default to result[0].
+	if latestFound {
+		for i, r := range result {
+			if r.Latest && i != 0 {
+				result[0], result[i] = result[i], result[0]
+				break
+			}
+		}
+	}
+
 	return result, nil
+}
+
+// manifestDigest returns the Docker-Content-Digest for a given tag.
+func (c *Client) manifestDigest(ctx context.Context, registryToken, tag string) (string, error) {
+	url := fmt.Sprintf("https://ghcr.io/v2/%s/%s/manifests/%s", c.owner, c.packageName, tag)
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+registryToken)
+	req.Header.Set("Accept", "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.v2+json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("manifests/%s: status %d", tag, resp.StatusCode)
+	}
+	return resp.Header.Get("Docker-Content-Digest"), nil
 }
 
 // fetchRegistryToken exchanges credentials (or performs anonymous exchange) for a
