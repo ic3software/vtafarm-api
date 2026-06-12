@@ -159,7 +159,7 @@ components:
           enum: [vta_only, full_stack]
         url:
           type: string
-          example: "https://cp-abc12345.example.com"
+          example: "https://fpp-abc12345.example.com"
         vta_name:
           type: string
         vta_did:
@@ -198,7 +198,7 @@ components:
           enum: [vta_only, full_stack]
         url:
           type: string
-          example: "https://cp-abc12345.example.com"
+          example: "https://fpp-abc12345.example.com"
         error_msg:
           type: string
           description: Present only when status is `failed`
