@@ -14,9 +14,9 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
-	"github.com/ic3software/cipherportal-api/internal/middleware"
-	"github.com/ic3software/cipherportal-api/internal/model"
-	"github.com/ic3software/cipherportal-api/internal/passkey"
+	"github.com/ic3software/vtafarm-api/internal/middleware"
+	"github.com/ic3software/vtafarm-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/passkey"
 )
 
 type PasskeyHandler struct {
@@ -24,7 +24,6 @@ type PasskeyHandler struct {
 	wa           *webauthn.WebAuthn
 	sessions     *passkey.SessionStore
 	jwtSecret    string
-	cookieDomain string
 	cookieSecure bool
 }
 
@@ -32,12 +31,12 @@ func NewPasskeyHandler(
 	db *gorm.DB,
 	wa *webauthn.WebAuthn,
 	sessions *passkey.SessionStore,
-	jwtSecret, cookieDomain string,
+	jwtSecret string,
 	cookieSecure bool,
 ) *PasskeyHandler {
 	return &PasskeyHandler{
 		db: db, wa: wa, sessions: sessions,
-		jwtSecret: jwtSecret, cookieDomain: cookieDomain, cookieSecure: cookieSecure,
+		jwtSecret: jwtSecret, cookieSecure: cookieSecure,
 	}
 }
 
@@ -133,7 +132,10 @@ func (h *PasskeyHandler) RegisterBegin(c *gin.Context) {
 		})
 	}
 
-	opts, session, err := h.wa.BeginRegistration(waUser, webauthn.WithExclusions(exclusions))
+	opts, session, err := h.wa.BeginRegistration(waUser,
+		webauthn.WithExclusions(exclusions),
+		webauthn.WithResidentKeyRequirement(protocol.ResidentKeyRequirementRequired),
+	)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not begin registration"})
 		return
@@ -365,9 +367,9 @@ func (h *PasskeyHandler) loginComplete(c *gin.Context, expectedRole string) {
 
 	c.SetSameSite(http.SameSiteStrictMode)
 	if authenticatedUser.role == model.RoleAdmin {
-		c.SetCookie(middleware.CookieAdmin, token, cookieMaxAge, "/", h.cookieDomain, h.cookieSecure, true)
+		c.SetCookie(middleware.CookieAdmin, token, cookieMaxAge, "/", "", h.cookieSecure, true)
 	} else {
-		c.SetCookie(middleware.CookieUser, token, cookieMaxAge, "/", h.cookieDomain, h.cookieSecure, true)
+		c.SetCookie(middleware.CookieUser, token, cookieMaxAge, "/", "", h.cookieSecure, true)
 	}
 
 	c.JSON(http.StatusOK, gin.H{

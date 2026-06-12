@@ -13,8 +13,8 @@ const (
 	ContextUserID = "user_id"
 	ContextRole   = "user_role"
 
-	CookieUser  = "cipher_user"
-	CookieAdmin = "cipher_admin"
+	CookieUser  = "vtafarm_user"
+	CookieAdmin = "vtafarm_admin"
 )
 
 type Claims struct {

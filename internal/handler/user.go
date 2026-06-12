@@ -7,7 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	"github.com/ic3software/cipherportal-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/model"
 )
 
 const uniqueIdAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789"

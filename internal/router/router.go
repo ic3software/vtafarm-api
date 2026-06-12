@@ -9,17 +9,17 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 	"gorm.io/gorm"
 
-	"github.com/ic3software/cipherportal-api/internal/apidocs"
-	"github.com/ic3software/cipherportal-api/internal/cloudflare"
-	"github.com/ic3software/cipherportal-api/internal/config"
-	"github.com/ic3software/cipherportal-api/internal/didhosting"
-	"github.com/ic3software/cipherportal-api/internal/ghcr"
-	"github.com/ic3software/cipherportal-api/internal/handler"
-	"github.com/ic3software/cipherportal-api/internal/k8s"
-	"github.com/ic3software/cipherportal-api/internal/middleware"
-	"github.com/ic3software/cipherportal-api/internal/model"
-	"github.com/ic3software/cipherportal-api/internal/passkey"
-	"github.com/ic3software/cipherportal-api/internal/setup"
+	"github.com/ic3software/vtafarm-api/internal/apidocs"
+	"github.com/ic3software/vtafarm-api/internal/cloudflare"
+	"github.com/ic3software/vtafarm-api/internal/config"
+	"github.com/ic3software/vtafarm-api/internal/didhosting"
+	"github.com/ic3software/vtafarm-api/internal/ghcr"
+	"github.com/ic3software/vtafarm-api/internal/handler"
+	"github.com/ic3software/vtafarm-api/internal/k8s"
+	"github.com/ic3software/vtafarm-api/internal/middleware"
+	"github.com/ic3software/vtafarm-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/passkey"
+	"github.com/ic3software/vtafarm-api/internal/setup"
 )
 
 func Setup(
@@ -34,7 +34,7 @@ func Setup(
 	r := gin.Default()
 
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"https://cipher.ic3.dev", "http://localhost:5173", "http://localhost:5174", "http://localhost:5175"},
+		AllowOrigins:     []string{"https://vtafarm.firstperson.dev", "http://localhost:5173", "http://localhost:5174", "http://localhost:5175"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Authorization", "Content-Type"},
 		ExposeHeaders:    []string{"Content-Length"},
@@ -57,7 +57,7 @@ func Setup(
 	v1 := r.Group("/api/v1")
 
 	// Auth — logout only (login is via passkey)
-	ah := handler.NewAuthHandler(cfg.CookieDomain, cfg.CookieSecure())
+	ah := handler.NewAuthHandler(cfg.CookieSecure())
 	v1.POST("/auth/admin/logout", ah.AdminLogout)
 	v1.POST("/auth/user/logout", ah.UserLogout)
 
@@ -72,24 +72,24 @@ func Setup(
 		log.Fatalf("webauthn init: %v", err)
 	}
 	passkeyStore := passkey.NewSessionStore()
-	pkh := handler.NewPasskeyHandler(db, wa, passkeyStore, cfg.JWTSecret, cfg.CookieDomain, cfg.CookieSecure())
+	pkh := handler.NewPasskeyHandler(db, wa, passkeyStore, cfg.JWTSecret, cfg.CookieSecure())
 	v1.POST("/auth/admin/passkey/begin", pkh.AdminLoginBegin)
 	v1.POST("/auth/admin/passkey/complete", pkh.AdminLoginComplete)
 	v1.POST("/auth/user/passkey/begin", pkh.UserLoginBegin)
 	v1.POST("/auth/user/passkey/complete", pkh.UserLoginComplete)
 
 	// Admin enrollment (public — no auth required)
-	aeh := handler.NewAdminEnrollHandler(db, cfg.JWTSecret, cfg.CookieDomain, cfg.CookieSecure())
+	aeh := handler.NewAdminEnrollHandler(db, cfg.JWTSecret, cfg.CookieSecure())
 	v1.GET("/admin/enroll/:token", aeh.Validate)
 	v1.POST("/admin/enroll/:token", aeh.Enroll)
 
-	// Admin routes — cookie: cipher_admin
+	// Admin routes — cookie: vtafarm_admin
 	adminAuth := v1.Group("",
 		middleware.AuthRequired(cfg.JWTSecret, middleware.CookieAdmin),
 		middleware.RequireRole(model.RoleAdmin),
 	)
 	uh := handler.NewUserHandler(db)
-	ih := handler.NewInvitationHandler(db, cfg.JWTSecret, cfg.CookieDomain, cfg.CookieSecure())
+	ih := handler.NewInvitationHandler(db, cfg.JWTSecret, cfg.CookieSecure())
 	{
 		adminH := handler.NewAdminHandler(db)
 		adminAuth.GET("/admins", adminH.List)
@@ -107,7 +107,7 @@ func Setup(
 	v1.GET("/invitations/:token", ih.Validate)
 	v1.POST("/invitations/:token/register", ih.Register)
 
-	// User routes — cookie: cipher_user
+	// User routes — cookie: vtafarm_user
 	userAuth := v1.Group("",
 		middleware.AuthRequired(cfg.JWTSecret, middleware.CookieUser),
 		middleware.RequireRole(model.RoleUser),

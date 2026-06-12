@@ -10,7 +10,6 @@ type Config struct {
 	AppPort          string
 	AppEnv           string
 	JWTSecret        string
-	CookieDomain     string // e.g. ".ic3.dev" for subdomain sharing; "" for host-only
 	ClusterIngressIP string
 	ClusterDomain    string
 	MediatorDid      string
@@ -86,7 +85,6 @@ func Load() *Config {
 		AppPort:          getEnv("APP_PORT", "8080"),
 		AppEnv:           getEnv("APP_ENV", "development"),
 		JWTSecret:        getEnv("JWT_SECRET", "change-me-in-production"),
-		CookieDomain:     getEnv("COOKIE_DOMAIN", ""),
 		ClusterIngressIP: getEnv("CLUSTER_INGRESS_IP", ""),
 		ClusterDomain:    getEnv("CLUSTER_DOMAIN", ""),
 		MediatorDid:      getEnv("MEDIATOR_DID", ""),
@@ -95,12 +93,12 @@ func Load() *Config {
 			Port:     getEnv("DB_PORT", "5432"),
 			User:     getEnv("DB_USER", "postgres"),
 			Password: getEnv("DB_PASSWORD", "postgres"),
-			Name:     getEnv("DB_NAME", "cipherportal"),
+			Name:     getEnv("DB_NAME", "vtafarm"),
 			SSLMode:  getEnv("DB_SSLMODE", "disable"),
 		},
 		K8s: K8sConfig{
 			Kubeconfig:      getEnv("KUBECONFIG", ""),
-			NamespacePrefix: getEnv("K8S_NAMESPACE_PREFIX", "cp-user"),
+			NamespacePrefix: getEnv("K8S_NAMESPACE_PREFIX", "vtafarm-user"),
 		},
 		Cloudflare: CloudflareConfig{
 			APIToken: getEnv("CLOUDFLARE_API_TOKEN", ""),
@@ -120,7 +118,7 @@ func Load() *Config {
 		WebAuthn: WebAuthnConfig{
 			RPID:          getEnv("WEBAUTHN_RP_ID", "localhost"),
 			RPOrigins:     splitComma(getEnv("WEBAUTHN_RP_ORIGINS", "http://localhost:5173")),
-			RPDisplayName: getEnv("WEBAUTHN_RP_DISPLAY_NAME", "CipherPortal"),
+			RPDisplayName: getEnv("WEBAUTHN_RP_DISPLAY_NAME", "VTA Farm"),
 		},
 	}
 }

@@ -1,7 +1,7 @@
 openapi: "3.1.0"
 
 info:
-  title: CipherPortal API
+  title: VTA Farm API
   version: "1.0.0"
   description: |
     REST API for managing VTA setup sessions with per-user namespace isolation.
@@ -10,7 +10,7 @@ info:
 
     All accounts use **passkey-only** authentication. There are no passwords.
     Protected endpoints use **httpOnly cookies** set at login.
-    Cookie `cipher_user` is required for User endpoints; `cipher_admin` for Admin endpoints.
+    Cookie `vtafarm_user` is required for User endpoints; `vtafarm_admin` for Admin endpoints.
 
     ### In Scalar / browser
     1. Call the passkey login begin endpoint for your account type
@@ -26,7 +26,7 @@ info:
 servers:
   - url: http://localhost:8080
     description: Local development
-  - url: https://cp-api.ic3.dev
+  - url: https://vtafarm-api.firstperson.dev
     description: Production
 
 tags:
@@ -39,7 +39,7 @@ tags:
       **Login flow:**
       1. `POST /auth/admin/passkey/begin` — receive `session_id` + WebAuthn options
       2. Pass `options.publicKey` to `startAuthentication()`
-      3. `POST /auth/admin/passkey/complete?session_id=<id>` — receive `cipher_admin` cookie
+      3. `POST /auth/admin/passkey/complete?session_id=<id>` — receive `vtafarm_admin` cookie
 
       **First-time enrollment:**
       Run `make enroll` to generate an enrollment token, then call `POST /admin/enroll/{token}`.
@@ -50,24 +50,24 @@ tags:
       **Login flow:**
       1. `POST /auth/user/passkey/begin` — receive `session_id` + WebAuthn options
       2. Pass `options.publicKey` to `startAuthentication()`
-      3. `POST /auth/user/passkey/complete?session_id=<id>` — receive `cipher_user` cookie
+      3. `POST /auth/user/passkey/complete?session_id=<id>` — receive `vtafarm_user` cookie
   - name: Admin
-    description: Admin-only management endpoints (requires `cipher_admin` cookie)
+    description: Admin-only management endpoints (requires `vtafarm_admin` cookie)
   - name: Admin — Passkeys
     description: |
-      Manage passkeys bound to the authenticated admin account (requires `cipher_admin` cookie).
+      Manage passkeys bound to the authenticated admin account (requires `vtafarm_admin` cookie).
 
       **Registration flow:**
       1. `POST /admin/passkeys/register/begin` — receive WebAuthn creation options
       2. Pass `options.publicKey` to `startRegistration()`
       3. `POST /admin/passkeys/register/complete?name=<device-name>` — save passkey
   - name: Admin — Invitations
-    description: "Invitation link management. Create/list require `cipher_admin` cookie; validate and register are public."
+    description: "Invitation link management. Create/list require `vtafarm_admin` cookie; validate and register are public."
   - name: User
-    description: User endpoints (requires `cipher_user` cookie)
+    description: User endpoints (requires `vtafarm_user` cookie)
   - name: User — Passkeys
     description: |
-      Manage passkeys bound to the authenticated user account (requires `cipher_user` cookie).
+      Manage passkeys bound to the authenticated user account (requires `vtafarm_user` cookie).
 
       **Registration flow:**
       1. `POST /user/passkeys/register/begin` — receive WebAuthn creation options
@@ -79,11 +79,11 @@ components:
     CookieAuthUser:
       type: apiKey
       in: cookie
-      name: cipher_user
+      name: vtafarm_user
     CookieAuthAdmin:
       type: apiKey
       in: cookie
-      name: cipher_admin
+      name: vtafarm_admin
 
   schemas:
     Error:
@@ -95,7 +95,7 @@ components:
 
     PasskeyLoginResponse:
       description: |
-        On success the server sets an httpOnly cookie (`cipher_admin` or `cipher_user`).
+        On success the server sets an httpOnly cookie (`vtafarm_admin` or `vtafarm_user`).
         Browser clients rely on the cookie; non-browser clients use `token` as `Authorization: Bearer <token>`.
       type: object
       properties:
@@ -159,7 +159,7 @@ components:
           enum: [vta_only, full_stack]
         url:
           type: string
-          example: "https://cp-abc12345.example.com"
+          example: "https://fpp-abc12345.example.com"
         vta_name:
           type: string
         vta_did:
@@ -198,7 +198,7 @@ components:
           enum: [vta_only, full_stack]
         url:
           type: string
-          example: "https://cp-abc12345.example.com"
+          example: "https://fpp-abc12345.example.com"
         error_msg:
           type: string
           description: Present only when status is `failed`
@@ -275,7 +275,7 @@ paths:
       description: |
         Send the credential assertion from the browser along with `session_id` from `/begin`.
         Only admin passkeys are accepted — using a user passkey here returns 401.
-        On success sets the `cipher_admin` httpOnly cookie.
+        On success sets the `vtafarm_admin` httpOnly cookie.
       tags: [Auth — Admin]
       parameters:
         - name: session_id
@@ -292,7 +292,7 @@ paths:
               description: Raw `AuthenticationResponseJSON` from `startAuthentication()`
       responses:
         "200":
-          description: Login successful — sets cipher_admin cookie
+          description: Login successful — sets vtafarm_admin cookie
           content:
             application/json:
               schema:
@@ -313,7 +313,7 @@ paths:
   /api/v1/auth/admin/logout:
     post:
       summary: Admin logout
-      description: Clears the `cipher_admin` cookie.
+      description: Clears the `vtafarm_admin` cookie.
       tags: [Auth — Admin]
       responses:
         "204":
@@ -359,7 +359,7 @@ paths:
     post:
       summary: "(public) Enroll admin via token"
       description: |
-        Consumes the enrollment token and sets the `cipher_admin` cookie (auto-login),
+        Consumes the enrollment token and sets the `vtafarm_admin` cookie (auto-login),
         so the admin can immediately register their passkey without a separate login step.
         Tokens are single-use and valid for 24 hours.
       tags: [Auth — Admin]
@@ -371,7 +371,7 @@ paths:
             type: string
       responses:
         "200":
-          description: Enrolled and logged in — cipher_admin cookie is set
+          description: Enrolled and logged in — vtafarm_admin cookie is set
           content:
             application/json:
               schema:
@@ -433,7 +433,7 @@ paths:
       description: |
         Send the credential assertion from the browser along with `session_id` from `/begin`.
         Only user passkeys are accepted — using an admin passkey here returns 401.
-        On success sets the `cipher_user` httpOnly cookie.
+        On success sets the `vtafarm_user` httpOnly cookie.
       tags: [Auth — User]
       parameters:
         - name: session_id
@@ -450,7 +450,7 @@ paths:
               description: Raw `AuthenticationResponseJSON` from `startAuthentication()`
       responses:
         "200":
-          description: Login successful — sets cipher_user cookie
+          description: Login successful — sets vtafarm_user cookie
           content:
             application/json:
               schema:
@@ -471,7 +471,7 @@ paths:
   /api/v1/auth/user/logout:
     post:
       summary: User logout
-      description: Clears the `cipher_user` cookie.
+      description: Clears the `vtafarm_user` cookie.
       tags: [Auth — User]
       responses:
         "204":
@@ -867,7 +867,7 @@ paths:
       summary: "(public) Register via invitation"
       description: |
         Creates a new user account using a valid invitation token. The token is single-use.
-        On success sets the `cipher_user` cookie so the user is immediately authenticated
+        On success sets the `vtafarm_user` cookie so the user is immediately authenticated
         and can proceed to register their passkey.
       tags: [Admin — Invitations]
       parameters:
@@ -878,7 +878,7 @@ paths:
             type: string
       responses:
         "201":
-          description: User registered and logged in — cipher_user cookie is set
+          description: User registered and logged in — vtafarm_user cookie is set
           content:
             application/json:
               schema:

@@ -13,7 +13,7 @@ var spec []byte
 const scalarHTML = `<!doctype html>
 <html>
   <head>
-    <title>CipherPortal API</title>
+    <title>VTA Farm API</title>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
   </head>

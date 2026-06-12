@@ -23,7 +23,7 @@ VTA source & architecture: `verifiable-trust-infrastructure/docs/`
 
 ### Mode A — VTA Only
 
-User provides their own DID hosting endpoint. CipherPortal deploys only the VTA service.
+User provides their own DID hosting endpoint. VTA Farm deploys only the VTA service.
 
 ```text
 User provides:
@@ -49,7 +49,7 @@ pending → dns_provision → k8s_provision → step_vta → deploy → complete
 
 ### Mode B — Full Stack
 
-CipherPortal deploys and wires all three components.
+VTA Farm deploys and wires all three components.
 
 ```text
 User provides:
@@ -150,7 +150,7 @@ func (c *Client) ListRecords(ctx context.Context, name string) ([]DNSRecord, err
 
 ## Kubernetes Resource Provisioning
 
-All resources are created in the user's isolated namespace (`cp-user-{userID}`) before setup Jobs run. Ingress resources rely on cert-manager (already in the cluster) for automatic TLS.
+All resources are created in the user's isolated namespace (`vtafarm-user-{userID}`) before setup Jobs run. Ingress resources rely on cert-manager (already in the cluster) for automatic TLS.
 
 ### Resources per component
 
@@ -169,7 +169,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {component}
-  namespace: cp-user-{userID}
+  namespace: vtafarm-user-{userID}
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
@@ -544,5 +544,5 @@ migrations/
 9. **Orchestrator** — `internal/setup/orchestrator.go` (goroutine per session, full state machine for both modes)
 10. **Handler** — `internal/handler/setup.go` (6 endpoints)
 11. **Router** — wire new routes in `internal/router/router.go`
-12. **Helm values** — add `cloudflare.*` and `clusterIngressIP` to `helm/cipherportal-api/values.yaml`
+12. **Helm values** — add `cloudflare.*` and `clusterIngressIP` to `helm/vtafarm-api/values.yaml`
 13. **ClusterRole** — add `persistentvolumeclaims`, `deployments`, `ingresses` to Helm ClusterRole template

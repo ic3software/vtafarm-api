@@ -9,7 +9,7 @@ const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
 const idLength = 8
 
 // GenerateSubdomain returns a random subdomain prefix using an 8-char alphanumeric ID.
-// In development it uses "cp-local-<id>" to distinguish local DNS records from production.
+// In development it uses "fpp-local-<id>" to distinguish local DNS records from production.
 func GenerateSubdomain(env string) string {
 	id := make([]byte, idLength)
 	for i := range id {
@@ -17,7 +17,7 @@ func GenerateSubdomain(env string) string {
 		id[i] = alphabet[n.Int64()]
 	}
 	if env == "development" {
-		return "cp-local-" + string(id)
+		return "fpp-local-" + string(id)
 	}
-	return "cp-" + string(id)
+	return "fpp-" + string(id)
 }

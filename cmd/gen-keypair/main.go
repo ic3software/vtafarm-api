@@ -51,7 +51,7 @@ func main() {
 	// Store only the 32-byte seed (private key), not the full 64-byte Go representation
 	privB64 := base64.StdEncoding.EncodeToString(priv.Seed())
 
-	fmt.Println("=== CipherPortal Service Keypair ===")
+	fmt.Println("=== VTA Farm Service Keypair ===")
 	fmt.Println()
 	fmt.Printf("DID_HOSTING_PRIVATE_KEY=%s\n", privB64)
 	fmt.Printf("DID_HOSTING_DID=%s\n", didKey)
@@ -61,6 +61,6 @@ func main() {
 	fmt.Printf("2. In did-hosting Access Control → Add Entry:\n")
 	fmt.Printf("   DID:   %s\n", didKey)
 	fmt.Println("   Role:  Service")
-	fmt.Println("   Label: cipherportal")
+	fmt.Println("   Label: vtafarm")
 	fmt.Println("   Domain scope: All")
 }

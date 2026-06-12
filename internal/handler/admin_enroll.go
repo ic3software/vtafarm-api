@@ -8,19 +8,18 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	"github.com/ic3software/cipherportal-api/internal/middleware"
-	"github.com/ic3software/cipherportal-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/middleware"
+	"github.com/ic3software/vtafarm-api/internal/model"
 )
 
 type AdminEnrollHandler struct {
 	db           *gorm.DB
 	jwtSecret    string
-	cookieDomain string
 	cookieSecure bool
 }
 
-func NewAdminEnrollHandler(db *gorm.DB, jwtSecret, cookieDomain string, cookieSecure bool) *AdminEnrollHandler {
-	return &AdminEnrollHandler{db: db, jwtSecret: jwtSecret, cookieDomain: cookieDomain, cookieSecure: cookieSecure}
+func NewAdminEnrollHandler(db *gorm.DB, jwtSecret string, cookieSecure bool) *AdminEnrollHandler {
+	return &AdminEnrollHandler{db: db, jwtSecret: jwtSecret, cookieSecure: cookieSecure}
 }
 
 // Validate — GET /api/v1/admin/enroll/:token
@@ -43,7 +42,7 @@ func (h *AdminEnrollHandler) Validate(c *gin.Context) {
 }
 
 // Enroll — POST /api/v1/admin/enroll/:token
-// Consumes the enrollment token, creates the admin account, and sets the cipher_admin cookie
+// Consumes the enrollment token, creates the admin account, and sets the vtafarm_admin cookie
 // so the admin can immediately register their passkey.
 func (h *AdminEnrollHandler) Enroll(c *gin.Context) {
 	token := c.Param("token")
@@ -92,7 +91,7 @@ func (h *AdminEnrollHandler) Enroll(c *gin.Context) {
 	}
 
 	c.SetSameSite(http.SameSiteStrictMode)
-	c.SetCookie(middleware.CookieAdmin, jwtToken, cookieMaxAge, "/", h.cookieDomain, h.cookieSecure, true)
+	c.SetCookie(middleware.CookieAdmin, jwtToken, cookieMaxAge, "/", "", h.cookieSecure, true)
 
 	c.JSON(http.StatusOK, gin.H{
 		"id":        admin.ID,

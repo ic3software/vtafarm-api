@@ -10,7 +10,7 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 
-	"github.com/ic3software/cipherportal-api/internal/config"
+	"github.com/ic3software/vtafarm-api/internal/config"
 )
 
 func Connect(cfg *config.Config) (*gorm.DB, error) {

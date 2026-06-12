@@ -1,4 +1,4 @@
-# CipherPortal API
+# VTA Farm API
 
 Go REST API backend for managing VTA setup sessions with per-user namespace isolation.
 
@@ -64,7 +64,7 @@ networking workarounds.
    This prints a 24-hour single-use token. Pass it to your frontend enrollment page, or call the API directly:
 
    ```bash
-   # Consume the token — creates the admin account and sets cipher_admin cookie
+   # Consume the token — creates the admin account and sets vtafarm_admin cookie
    POST /api/v1/admin/enroll/<token>
 
    # Then register a passkey (use the returned JWT as Authorization: Bearer)
@@ -83,13 +83,13 @@ Copy `.env.example` and adjust as needed:
 | `APP_PORT` | `8080` | HTTP listen port |
 | `APP_ENV` | `development` | Set to `production` to disable `/docs` |
 | `DB_HOST` | `localhost` | Points to the Docker-managed PostgreSQL |
-| `DB_NAME` | `cipherportal` | |
+| `DB_NAME` | `vtafarm` | |
 | `JWT_SECRET` | _(required)_ | HS256 signing secret — see below |
 | `CLUSTER_INGRESS_IP` | _(required)_ | External IP of the cluster's Ingress-NGINX LoadBalancer |
 | `CLOUDFLARE_API_TOKEN` | _(optional)_ | Required for VTA setup wizard |
 | `CLOUDFLARE_ZONE_ID` | _(optional)_ | Required for VTA setup wizard |
 | `KUBECONFIG` | _(empty)_ | Auto-detects `~/.kube/config` when empty |
-| `K8S_NAMESPACE_PREFIX` | `cp-user` | Per-user namespace: `cp-user-{userID}` |
+| `K8S_NAMESPACE_PREFIX` | `vtafarm-user` | Per-user namespace: `vtafarm-user-{userID}` |
 
 #### Generating JWT_SECRET
 
@@ -113,13 +113,13 @@ The production stack is deployed to a Kubernetes cluster (RKE2) via Helm.
 
 ### 1. TLS — Wildcard Certificate via cert-manager (one-time cluster setup)
 
-All VTA sessions share a single `*.ic3.dev` wildcard certificate managed by
+All VTA sessions share a single `*.firstperson.dev` wildcard certificate managed by
 cert-manager. nginx-ingress serves it as the default SSL certificate, so no
 per-Ingress TLS configuration is needed.
 
 #### Step 1 — Create the Cloudflare API token Secret
 
-The token needs **Zone → Zone → Read** and **Zone → DNS → Edit** permissions on `ic3.dev`.
+The token needs **Zone → Zone → Read** and **Zone → DNS → Edit** permissions on `firstperson.dev`.
 
 ```bash
 kubectl create secret generic cloudflare-api-token \
@@ -145,12 +145,12 @@ kubectl get clusterissuer letsencrypt-prod
 kubectl apply -f k8s/tls/certificate.yaml
 ```
 
-cert-manager will complete the DNS-01 challenge (adds a `_acme-challenge.ic3.dev`
+cert-manager will complete the DNS-01 challenge (adds a `_acme-challenge.firstperson.dev`
 TXT record to Cloudflare, then removes it) and store the issued certificate.
 Check status with:
 
 ```bash
-kubectl get certificate -n cert-manager ic3-dev-wildcard
+kubectl get certificate -n cert-manager firstperson-dev-wildcard
 ```
 
 #### Step 4 — Configure nginx-ingress to use the wildcard cert by default
@@ -194,7 +194,7 @@ kubectl apply -f k8s/secret.yaml
 ### 3. Create the PostgreSQL Secret (one-time)
 
 ```bash
-kubectl create secret generic cipherportal-postgresql \
+kubectl create secret generic vtafarm-api-postgresql \
   --from-literal=postgres-password='your-strong-password' \
   --namespace=default
 ```
@@ -213,19 +213,19 @@ With a custom namespace:
 make deploy \
   DOCKER_USERNAME=your-dockerhub-username \
   TAG=$(git rev-parse --short HEAD) \
-  NAMESPACE=cipherportal
+  NAMESPACE=vtafarm
 ```
 
 **Uninstall:**
 
 ```bash
-helm uninstall cipherportal
+helm uninstall vtafarm
 ```
 
 ### 5. Run Migrations in the Cluster
 
 ```bash
-kubectl exec -it deployment/cipherportal \
+kubectl exec -it deployment/vtafarm \
   -n <namespace> -- go run ./cmd/migrate up
 ```
 

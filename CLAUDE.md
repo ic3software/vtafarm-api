@@ -1,4 +1,4 @@
-# CipherPortal API
+# VTA Farm API
 
 Go REST API backend for managing VTA setup sessions with per-user namespace isolation.
 
@@ -34,10 +34,10 @@ See `.env.example` for all options. Key ones:
 | `APP_PORT` | `8080` | HTTP listen port |
 | `APP_ENV` | `development` | Set to `production` to disable `/docs` |
 | `DB_HOST` | `localhost` | Overridden to `db` in docker-compose |
-| `DB_NAME` | `cipherportal` | |
+| `DB_NAME` | `vtafarm` | |
 | `JWT_SECRET` | `change-me-in-production` | HS256 signing secret |
 | `KUBECONFIG` | `~/.kube/config` | Leave empty; auto-detected |
-| `K8S_NAMESPACE_PREFIX` | `cp-user` | Per-user namespace prefix |
+| `K8S_NAMESPACE_PREFIX` | `vtafarm-user` | Per-user namespace prefix |
 | `CLOUDFLARE_API_TOKEN` | — | Cloudflare API token (`Zone:DNS:Edit` permission) |
 | `CLOUDFLARE_ZONE_ID` | — | Cloudflare Zone ID for the user's root domain |
 | `CLUSTER_INGRESS_IP` | — | External IP of the cluster's Ingress-NGINX LoadBalancer |
@@ -114,7 +114,7 @@ make enroll
 The token is valid for 24 hours. Pass it to the frontend enrollment page, or call the API directly:
 
 ```bash
-# 1. Consume the token — returns cipher_admin cookie + JWT
+# 1. Consume the token — returns vtafarm_admin cookie + JWT
 POST /api/v1/admin/enroll/<token>
 
 # 2. Register a passkey (use the returned JWT as Bearer token)
@@ -163,11 +163,11 @@ Assign the correct tag so it appears in the right group in Scalar:
 
 ### Per-User Namespace Isolation
 
-Every user gets their own namespace: `cp-user-{userID}`.
+Every user gets their own namespace: `vtafarm-user-{userID}`.
 
 `EnsureUserEnvironment` creates on first use (idempotent):
 
-1. **Namespace** labelled `managed-by=cipherportal`
+1. **Namespace** labelled `managed-by=vtafarm`
 2. **ServiceAccount** `pod-operator`
 3. **Role** `pod-manager` — grants `pods`, `pods/log`, `pods/exec`
 4. **RoleBinding** — binds the SA to the Role

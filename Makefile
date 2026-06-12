@@ -1,5 +1,5 @@
 # ─── Image & deploy variables ─────────────────────────────────────────────────
-NAME         ?= cipherportal-api
+NAME         ?= vtafarm-api
 DOCKER_USERNAME ?=
 IMAGE        ?= $(DOCKER_USERNAME)/$(NAME)
 TAG          ?= $(shell git rev-parse --short HEAD)
@@ -8,7 +8,7 @@ DEPLOY_ENV   ?= production
 INGRESS_HOST ?=
 
 .PHONY: build gen-keypair tidy dev \
-        migrate migrate-down migrate-new seed enroll \
+        migrate migrate-down migrate-new enroll enroll-prod \
         up down reset \
         image-build image-push \
         deploy
@@ -43,11 +43,11 @@ migrate:
 migrate-down:
 	go run ./cmd/migrate down
 
-seed:
-	go run ./seed
-
 enroll:
 	go run ./cmd/enroll
+
+enroll-prod:
+	kubectl exec -n $(NAMESPACE) deploy/$(NAME) -- ./enroll
 
 # ─── Docker Compose (DB only) ─────────────────────────────────────────────────
 up:
@@ -70,11 +70,11 @@ image-push: image-build
 
 # ─── Kubernetes (Helm) ────────────────────────────────────────────────────────
 # Deploys both API and PostgreSQL as one release.
-# helm uninstall cipherportal-api → removes everything.
+# helm uninstall vtafarm-api → removes everything.
 # Pre-requisite: kubectl apply -f k8s/postgresql-secret.yaml (one-time, before first deploy)
 # Usage: make deploy [DOCKER_USERNAME=xxx] [TAG=abc1234]
 deploy:
-	helm upgrade $(NAME) ./helm/cipherportal-api \
+	helm upgrade $(NAME) ./helm/vtafarm-api \
 	  --set image.repository=$(IMAGE) \
 	  --set image.tag=$(TAG) \
 	  --set app.env=$(DEPLOY_ENV) \

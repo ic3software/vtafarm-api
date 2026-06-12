@@ -6,14 +6,14 @@ import (
 
 	"github.com/joho/godotenv"
 
-	"github.com/ic3software/cipherportal-api/internal/cloudflare"
-	"github.com/ic3software/cipherportal-api/internal/config"
-	"github.com/ic3software/cipherportal-api/internal/database"
-	"github.com/ic3software/cipherportal-api/internal/didhosting"
-	"github.com/ic3software/cipherportal-api/internal/ghcr"
-	"github.com/ic3software/cipherportal-api/internal/k8s"
-	"github.com/ic3software/cipherportal-api/internal/router"
-	"github.com/ic3software/cipherportal-api/internal/setup"
+	"github.com/ic3software/vtafarm-api/internal/cloudflare"
+	"github.com/ic3software/vtafarm-api/internal/config"
+	"github.com/ic3software/vtafarm-api/internal/database"
+	"github.com/ic3software/vtafarm-api/internal/didhosting"
+	"github.com/ic3software/vtafarm-api/internal/ghcr"
+	"github.com/ic3software/vtafarm-api/internal/k8s"
+	"github.com/ic3software/vtafarm-api/internal/router"
+	"github.com/ic3software/vtafarm-api/internal/setup"
 )
 
 func main() {

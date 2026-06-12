@@ -9,9 +9,9 @@ import (
 
 	"github.com/joho/godotenv"
 
-	"github.com/ic3software/cipherportal-api/internal/config"
-	"github.com/ic3software/cipherportal-api/internal/database"
-	"github.com/ic3software/cipherportal-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/config"
+	"github.com/ic3software/vtafarm-api/internal/database"
+	"github.com/ic3software/vtafarm-api/internal/model"
 )
 
 func main() {
@@ -41,7 +41,13 @@ func main() {
 	fmt.Printf("Enrollment token created (valid 24h)\n")
 	fmt.Printf("  Token:   %s\n", token)
 	fmt.Printf("  Expires: %s\n", expires.UTC().Format(time.RFC3339))
-	fmt.Printf("\nPass the token to your frontend enrollment page, or call:\n")
-	fmt.Printf("  POST http://localhost:%s/api/v1/admin/enroll/%s\n", cfg.AppPort, token)
+
+	if cfg.AppEnv == "production" {
+		fmt.Printf("\nEnrollment URL:\n")
+		fmt.Printf("  https://%s/admin/enroll/%s\n", cfg.WebAuthn.RPID, token)
+	} else {
+		fmt.Printf("\nPass the token to your frontend enrollment page, or call:\n")
+		fmt.Printf("  POST http://localhost:%s/api/v1/admin/enroll/%s\n", cfg.AppPort, token)
+	}
 	fmt.Printf("\nThe admin account will be created when the token is consumed.\n")
 }
