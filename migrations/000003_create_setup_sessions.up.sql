@@ -1,6 +1,6 @@
 CREATE TABLE setup_sessions (
-    id                  SERIAL       PRIMARY KEY,
-    user_id             INTEGER      NOT NULL,
+    id                  BIGSERIAL    PRIMARY KEY,
+    user_id             BIGINT       NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     status              VARCHAR(50)  NOT NULL DEFAULT 'pending',
     mode                VARCHAR(20)  NOT NULL,
     domain              VARCHAR(255) NOT NULL,

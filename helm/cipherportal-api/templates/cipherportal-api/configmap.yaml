@@ -17,5 +17,8 @@ data:
   K8S_NAMESPACE_PREFIX: {{ .Values.k8s.namespacePrefix | quote }}
   CLUSTER_INGRESS_IP:   {{ .Values.cluster.ingressIP | quote }}
   CLUSTER_DOMAIN:       {{ .Values.cluster.domain | quote }}
-  GITHUB_PACKAGE_OWNER: {{ .Values.github.packageOwner | quote }}
-  GITHUB_PACKAGE_NAME:  {{ .Values.github.packageName | quote }}
+  GITHUB_PACKAGE_OWNER:      {{ .Values.github.packageOwner | quote }}
+  GITHUB_PACKAGE_NAME:       {{ .Values.github.packageName | quote }}
+  WEBAUTHN_RP_ID:            {{ .Values.webauthn.rpID | quote }}
+  WEBAUTHN_RP_ORIGINS:       {{ .Values.webauthn.rpOrigins | quote }}
+  WEBAUTHN_RP_DISPLAY_NAME:  {{ .Values.webauthn.rpDisplayName | quote }}

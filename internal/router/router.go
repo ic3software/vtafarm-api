@@ -1,10 +1,12 @@
 package router
 
 import (
+	"log"
 	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/go-webauthn/webauthn/webauthn"
 	"gorm.io/gorm"
 
 	"github.com/ic3software/cipherportal-api/internal/apidocs"
@@ -16,6 +18,7 @@ import (
 	"github.com/ic3software/cipherportal-api/internal/k8s"
 	"github.com/ic3software/cipherportal-api/internal/middleware"
 	"github.com/ic3software/cipherportal-api/internal/model"
+	"github.com/ic3software/cipherportal-api/internal/passkey"
 	"github.com/ic3software/cipherportal-api/internal/setup"
 )
 
@@ -53,12 +56,32 @@ func Setup(
 
 	v1 := r.Group("/api/v1")
 
-	// Public auth
-	ah := handler.NewAuthHandler(db, cfg.JWTSecret, cfg.CookieDomain, cfg.CookieSecure())
-	v1.POST("/auth/admin/login", ah.AdminLogin)
+	// Auth — logout only (login is via passkey)
+	ah := handler.NewAuthHandler(cfg.CookieDomain, cfg.CookieSecure())
 	v1.POST("/auth/admin/logout", ah.AdminLogout)
-	v1.POST("/auth/user/login", ah.UserLogin)
 	v1.POST("/auth/user/logout", ah.UserLogout)
+
+	// Passkey login — admin and user have separate endpoints for clear docs separation.
+	// Both use the discoverable flow; the complete endpoint validates the decoded role.
+	wa, err := webauthn.New(&webauthn.Config{
+		RPDisplayName: cfg.WebAuthn.RPDisplayName,
+		RPID:          cfg.WebAuthn.RPID,
+		RPOrigins:     cfg.WebAuthn.RPOrigins,
+	})
+	if err != nil {
+		log.Fatalf("webauthn init: %v", err)
+	}
+	passkeyStore := passkey.NewSessionStore()
+	pkh := handler.NewPasskeyHandler(db, wa, passkeyStore, cfg.JWTSecret, cfg.CookieDomain, cfg.CookieSecure())
+	v1.POST("/auth/admin/passkey/begin", pkh.AdminLoginBegin)
+	v1.POST("/auth/admin/passkey/complete", pkh.AdminLoginComplete)
+	v1.POST("/auth/user/passkey/begin", pkh.UserLoginBegin)
+	v1.POST("/auth/user/passkey/complete", pkh.UserLoginComplete)
+
+	// Admin enrollment (public — no auth required)
+	aeh := handler.NewAdminEnrollHandler(db, cfg.JWTSecret, cfg.CookieDomain, cfg.CookieSecure())
+	v1.GET("/admin/enroll/:token", aeh.Validate)
+	v1.POST("/admin/enroll/:token", aeh.Enroll)
 
 	// Admin routes — cookie: cipher_admin
 	adminAuth := v1.Group("",
@@ -66,15 +89,16 @@ func Setup(
 		middleware.RequireRole(model.RoleAdmin),
 	)
 	uh := handler.NewUserHandler(db)
-	ih := handler.NewInvitationHandler(db)
+	ih := handler.NewInvitationHandler(db, cfg.JWTSecret, cfg.CookieDomain, cfg.CookieSecure())
 	{
 		adminH := handler.NewAdminHandler(db)
 		adminAuth.GET("/admins", adminH.List)
 		adminAuth.POST("/admins", adminH.Create)
 		adminAuth.GET("/users", uh.List)
-		adminAuth.POST("/users", uh.Create)
-		adminAuth.PUT("/admin/password", adminH.ChangeOwnPassword)
-		adminAuth.PUT("/users/:id/password", adminH.ChangeUserPassword)
+		adminAuth.POST("/admin/passkeys/register/begin", pkh.RegisterBegin)
+		adminAuth.POST("/admin/passkeys/register/complete", pkh.RegisterComplete)
+		adminAuth.GET("/admin/passkeys", pkh.List)
+		adminAuth.DELETE("/admin/passkeys/:id", pkh.Delete)
 		adminAuth.POST("/invitations", ih.Create)
 		adminAuth.GET("/invitations", ih.List)
 	}
@@ -89,7 +113,10 @@ func Setup(
 		middleware.RequireRole(model.RoleUser),
 	)
 	{
-		userAuth.PUT("/user/password", uh.ChangeOwnPassword)
+		userAuth.POST("/user/passkeys/register/begin", pkh.RegisterBegin)
+		userAuth.POST("/user/passkeys/register/complete", pkh.RegisterComplete)
+		userAuth.GET("/user/passkeys", pkh.List)
+		userAuth.DELETE("/user/passkeys/:id", pkh.Delete)
 		userAuth.POST("/setup/validate", sh.Validate)
 		userAuth.GET("/setup/images", sh.Images)
 		userAuth.GET("/setup", sh.List)

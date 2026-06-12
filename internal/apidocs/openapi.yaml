@@ -8,13 +8,14 @@ info:
 
     ## Authentication
 
+    All accounts use **passkey-only** authentication. There are no passwords.
     Protected endpoints use **httpOnly cookies** set at login.
     Cookie `cipher_user` is required for User endpoints; `cipher_admin` for Admin endpoints.
 
     ### In Scalar / browser
-    1. Call **POST /api/v1/auth/user/login** (or `/auth/admin/login`)
-    2. The browser stores the cookie automatically — no further configuration needed
-    3. All subsequent requests in this tab carry the cookie automatically
+    1. Call the passkey login begin endpoint for your account type
+    2. Complete the passkey challenge
+    3. The browser stores the cookie automatically — all subsequent requests carry it
 
     ### curl / non-browser clients
     Use the `token` field from the login response body as a Bearer token:
@@ -32,15 +33,46 @@ tags:
   - name: System
     description: Health and system endpoints
   - name: Auth — Admin
-    description: Authentication for admin accounts
+    description: |
+      Admin passkey login and enrollment.
+
+      **Login flow:**
+      1. `POST /auth/admin/passkey/begin` — receive `session_id` + WebAuthn options
+      2. Pass `options.publicKey` to `startAuthentication()`
+      3. `POST /auth/admin/passkey/complete?session_id=<id>` — receive `cipher_admin` cookie
+
+      **First-time enrollment:**
+      Run `make enroll` to generate an enrollment token, then call `POST /admin/enroll/{token}`.
   - name: Auth — User
-    description: Authentication for user accounts
+    description: |
+      User passkey login.
+
+      **Login flow:**
+      1. `POST /auth/user/passkey/begin` — receive `session_id` + WebAuthn options
+      2. Pass `options.publicKey` to `startAuthentication()`
+      3. `POST /auth/user/passkey/complete?session_id=<id>` — receive `cipher_user` cookie
   - name: Admin
-    description: Admin-only endpoints (requires `cipher_admin` cookie)
+    description: Admin-only management endpoints (requires `cipher_admin` cookie)
+  - name: Admin — Passkeys
+    description: |
+      Manage passkeys bound to the authenticated admin account (requires `cipher_admin` cookie).
+
+      **Registration flow:**
+      1. `POST /admin/passkeys/register/begin` — receive WebAuthn creation options
+      2. Pass `options.publicKey` to `startRegistration()`
+      3. `POST /admin/passkeys/register/complete?name=<device-name>` — save passkey
+  - name: Admin — Invitations
+    description: "Invitation link management. Create/list require `cipher_admin` cookie; validate and register are public."
   - name: User
     description: User endpoints (requires `cipher_user` cookie)
-  - name: Admin - Invitations
-    description: Invitation link management. Create/list require `cipher_admin` cookie; validate and register are public.
+  - name: User — Passkeys
+    description: |
+      Manage passkeys bound to the authenticated user account (requires `cipher_user` cookie).
+
+      **Registration flow:**
+      1. `POST /user/passkeys/register/begin` — receive WebAuthn creation options
+      2. Pass `options.publicKey` to `startRegistration()`
+      3. `POST /user/passkeys/register/complete?name=<device-name>` — save passkey
 
 components:
   securitySchemes:
@@ -61,63 +93,24 @@ components:
           type: string
       required: [error]
 
-    LoginRequest:
-      type: object
-      properties:
-        email:
-          type: string
-          format: email
-          example: user@example.com
-        password:
-          type: string
-          example: "secret123"
-      required: [email, password]
-
-    LoginResponse:
+    PasskeyLoginResponse:
       description: |
-        On success the server sets an httpOnly cookie (`cipher_user` or `cipher_admin`).
-        Browser clients rely on the cookie and should ignore the `token` field.
-        Non-browser clients (curl, Postman, Scalar) can use the returned `token` as
-        `Authorization: Bearer <token>` — the Bearer header fallback remains active.
+        On success the server sets an httpOnly cookie (`cipher_admin` or `cipher_user`).
+        Browser clients rely on the cookie; non-browser clients use `token` as `Authorization: Bearer <token>`.
       type: object
       properties:
         token:
           type: string
-          description: JWT for non-browser clients. Browser clients use the httpOnly cookie instead.
         user:
           type: object
           properties:
             id:
               type: integer
-            email:
+            unique_id:
               type: string
             role:
               type: string
-              enum: [user, admin]
-
-    CreateUserRequest:
-      type: object
-      properties:
-        email:
-          type: string
-          format: email
-          example: newuser@example.com
-        password:
-          type: string
-          minLength: 8
-          example: "password123"
-      required: [email, password]
-
-    CreateUserResponse:
-      type: object
-      properties:
-        id:
-          type: integer
-        unique_id:
-          type: string
-          example: "a1b2c3d4"
-        email:
-          type: string
+              enum: [admin, user]
 
     ValidateResponse:
       type: object
@@ -246,35 +239,72 @@ paths:
                     type: string
                     example: ok
 
-  /api/v1/auth/admin/login:
+  # ── Auth — Admin ────────────────────────────────────────────────────────────
+
+  /api/v1/auth/admin/passkey/begin:
     post:
-      summary: Admin login
-      description: Sets the `cipher_admin` httpOnly cookie on success.
+      summary: "(public) Begin admin passkey login"
+      description: |
+        No request body needed. Discoverable flow — the device shows all admin passkeys
+        registered for this site. Store the returned `session_id` for the `/complete` call.
       tags: [Auth — Admin]
+      responses:
+        "200":
+          description: WebAuthn assertion options
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_id:
+                    type: string
+                    example: "550e8400-e29b-41d4-a716-446655440000"
+                  publicKey:
+                    type: object
+                    description: "Pass directly to startAuthentication({ optionsJSON: publicKey })"
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/auth/admin/passkey/complete:
+    post:
+      summary: "(public) Complete admin passkey login"
+      description: |
+        Send the credential assertion from the browser along with `session_id` from `/begin`.
+        Only admin passkeys are accepted — using a user passkey here returns 401.
+        On success sets the `cipher_admin` httpOnly cookie.
+      tags: [Auth — Admin]
+      parameters:
+        - name: session_id
+          in: query
+          required: true
+          schema:
+            type: string
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/LoginRequest"
-            example:
-              email: "admin@ic3.dev"
-              password: "password"
+              type: object
+              description: Raw `AuthenticationResponseJSON` from `startAuthentication()`
       responses:
         "200":
           description: Login successful — sets cipher_admin cookie
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/LoginResponse"
+                $ref: "#/components/schemas/PasskeyLoginResponse"
         "400":
-          description: Invalid request body
+          description: Missing or expired session
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "401":
-          description: Invalid credentials
+          description: Passkey verification failed or wrong account type
           content:
             application/json:
               schema:
@@ -289,35 +319,150 @@ paths:
         "204":
           description: Logged out
 
-  /api/v1/auth/user/login:
+  /api/v1/admin/enroll/{token}:
+    get:
+      summary: "(public) Validate admin enrollment token"
+      description: Checks whether the enrollment token is valid (not expired, not already used).
+      tags: [Auth — Admin]
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Token is valid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                    example: true
+                  expires_at:
+                    type: string
+                    format: date-time
+        "404":
+          description: Token not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "410":
+          description: Token expired or already used
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     post:
-      summary: User login
-      description: Sets the `cipher_user` httpOnly cookie on success.
+      summary: "(public) Enroll admin via token"
+      description: |
+        Consumes the enrollment token and sets the `cipher_admin` cookie (auto-login),
+        so the admin can immediately register their passkey without a separate login step.
+        Tokens are single-use and valid for 24 hours.
+      tags: [Auth — Admin]
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Enrolled and logged in — cipher_admin cookie is set
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  unique_id:
+                    type: string
+                  token:
+                    type: string
+                    description: JWT for non-browser clients
+        "404":
+          description: Token not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "410":
+          description: Token expired or already used
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ── Auth — User ─────────────────────────────────────────────────────────────
+
+  /api/v1/auth/user/passkey/begin:
+    post:
+      summary: "(public) Begin user passkey login"
+      description: |
+        No request body needed. Discoverable flow — the device shows all user passkeys
+        registered for this site. Store the returned `session_id` for the `/complete` call.
       tags: [Auth — User]
+      responses:
+        "200":
+          description: WebAuthn assertion options
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_id:
+                    type: string
+                    example: "550e8400-e29b-41d4-a716-446655440000"
+                  publicKey:
+                    type: object
+                    description: "Pass directly to startAuthentication({ optionsJSON: publicKey })"
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/auth/user/passkey/complete:
+    post:
+      summary: "(public) Complete user passkey login"
+      description: |
+        Send the credential assertion from the browser along with `session_id` from `/begin`.
+        Only user passkeys are accepted — using an admin passkey here returns 401.
+        On success sets the `cipher_user` httpOnly cookie.
+      tags: [Auth — User]
+      parameters:
+        - name: session_id
+          in: query
+          required: true
+          schema:
+            type: string
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/LoginRequest"
-            example:
-              email: "user@ic3.dev"
-              password: "password"
+              type: object
+              description: Raw `AuthenticationResponseJSON` from `startAuthentication()`
       responses:
         "200":
           description: Login successful — sets cipher_user cookie
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/LoginResponse"
+                $ref: "#/components/schemas/PasskeyLoginResponse"
         "400":
-          description: Invalid request body
+          description: Missing or expired session
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "401":
-          description: Invalid credentials
+          description: Passkey verification failed or wrong account type
           content:
             application/json:
               schema:
@@ -332,10 +477,12 @@ paths:
         "204":
           description: Logged out
 
+  # ── Admin ───────────────────────────────────────────────────────────────────
+
   /api/v1/admins:
     get:
       summary: List admins
-      description: Returns all admin accounts, newest first.
+      description: Returns all admin accounts, oldest first.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
@@ -351,9 +498,9 @@ paths:
                   properties:
                     id:
                       type: integer
-                    email:
+                    unique_id:
                       type: string
-                      format: email
+                      example: "a1b2c3d4"
                     created_at:
                       type: string
                       format: date-time
@@ -367,45 +514,34 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "403":
-          description: Insufficient role (admin required)
+          description: Insufficient role
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
     post:
-      summary: Create admin
-      description: Creates a new admin account.
+      summary: Create admin enrollment token
+      description: |
+        Generates a 24-hour single-use enrollment token. Share the token with the new admin
+        so they can call `POST /admin/enroll/{token}` to create their account and register
+        their passkey. The admin account is created at enrollment time, not here.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/CreateUserRequest"
-            example:
-              email: "newadmin@ic3.dev"
-              password: "password123"
       responses:
         "201":
-          description: Admin created
+          description: Enrollment token created
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  id:
-                    type: integer
-                  email:
+                  enrollment_token:
                     type: string
-                    format: email
-        "400":
-          description: Validation error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+                    example: "a3f8b2c1d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1"
+                  enrollment_expires:
+                    type: string
+                    format: date-time
         "401":
           description: Missing or invalid token
           content:
@@ -413,13 +549,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "403":
-          description: Insufficient role (admin required)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "409":
-          description: Email already exists
+          description: Insufficient role
           content:
             application/json:
               schema:
@@ -428,7 +558,7 @@ paths:
   /api/v1/users:
     get:
       summary: List users
-      description: Returns all user accounts, newest first.
+      description: Returns all user accounts, oldest first.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
@@ -447,9 +577,6 @@ paths:
                     unique_id:
                       type: string
                       example: "a1b2c3d4"
-                    email:
-                      type: string
-                      format: email
                     created_at:
                       type: string
                       format: date-time
@@ -463,35 +590,76 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "403":
-          description: Insufficient role (admin required)
+          description: Insufficient role
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  # ── Admin — Passkeys ────────────────────────────────────────────────────────
+
+  /api/v1/admin/passkeys/register/begin:
     post:
-      summary: Create user
-      description: Creates a new user account.
-      tags: [Admin]
+      summary: Begin admin passkey registration
+      description: |
+        Returns WebAuthn credential creation options. Pass `options.publicKey` to
+        `startRegistration()`. Existing credentials are automatically excluded.
+      tags: [Admin — Passkeys]
       security:
         - CookieAuthAdmin: []
+      responses:
+        "200":
+          description: WebAuthn creation options
+          content:
+            application/json:
+              schema:
+                type: object
+                description: "Pass directly to startRegistration({ optionsJSON: options.publicKey })"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/admin/passkeys/register/complete:
+    post:
+      summary: Complete admin passkey registration
+      description: |
+        Send the `RegistrationResponseJSON` returned by `startRegistration()`.
+        Optionally provide `?name=` to label the passkey. Defaults to "Passkey".
+      tags: [Admin — Passkeys]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - name: name
+          in: query
+          required: false
+          schema:
+            type: string
+          example: "MacBook Touch ID"
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/CreateUserRequest"
-            example:
-              email: "user@ic3.dev"
-              password: "password"
+              type: object
+              description: Raw `RegistrationResponseJSON` from `startRegistration()`
       responses:
         "201":
-          description: User created
+          description: Passkey registered
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CreateUserResponse"
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  name:
+                    type: string
+                    example: "MacBook Touch ID"
         "400":
-          description: Validation error
+          description: Session expired or verification failed
           content:
             application/json:
               schema:
@@ -502,76 +670,48 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "403":
-          description: Insufficient role (admin required)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "409":
-          description: Email already exists
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
 
-  /api/v1/admin/password:
-    put:
-      summary: Change admin password
-      description: Allows the authenticated admin to change their own password. Requires the current password for verification.
-      tags: [Admin]
+  /api/v1/admin/passkeys:
+    get:
+      summary: List admin passkeys
+      description: Returns all passkeys registered by the authenticated admin.
+      tags: [Admin — Passkeys]
       security:
         - CookieAuthAdmin: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                current_password:
-                  type: string
-                  example: "oldpassword"
-                new_password:
-                  type: string
-                  minLength: 8
-                  example: "newpassword123"
-              required: [current_password, new_password]
       responses:
         "200":
-          description: Password updated
+          description: List of passkeys
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                    example: password updated
-        "400":
-          description: Validation error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: integer
+                    name:
+                      type: string
+                      example: "MacBook Touch ID"
+                    created_at:
+                      type: string
+                      format: date-time
+                    last_used_at:
+                      type: string
+                      format: date-time
+                      nullable: true
         "401":
-          description: Missing/invalid token or wrong current password
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "403":
-          description: Insufficient role (admin required)
+          description: Missing or invalid token
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /api/v1/users/{id}/password:
-    put:
-      summary: Reset user password
-      description: Allows an admin to reset a user's password without requiring the current password.
-      tags: [Admin]
+  /api/v1/admin/passkeys/{id}:
+    delete:
+      summary: Delete admin passkey
+      description: Removes a specific admin passkey.
+      tags: [Admin — Passkeys]
       security:
         - CookieAuthAdmin: []
       parameters:
@@ -580,32 +720,11 @@ paths:
           required: true
           schema:
             type: integer
-          description: User ID
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                new_password:
-                  type: string
-                  minLength: 8
-                  example: "newpassword123"
-              required: [new_password]
       responses:
-        "200":
-          description: Password updated
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                    example: password updated
+        "204":
+          description: Passkey deleted
         "400":
-          description: Validation error
+          description: Invalid ID
           content:
             application/json:
               schema:
@@ -616,76 +735,20 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "403":
-          description: Insufficient role (admin required)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
         "404":
-          description: User not found
+          description: Passkey not found
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /api/v1/user/password:
-    put:
-      summary: Change user password
-      description: Allows the authenticated user to change their own password. Requires the current password for verification.
-      tags: [User]
-      security:
-        - CookieAuthUser: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                current_password:
-                  type: string
-                  example: "oldpassword"
-                new_password:
-                  type: string
-                  minLength: 8
-                  example: "newpassword123"
-              required: [current_password, new_password]
-      responses:
-        "200":
-          description: Password updated
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                    example: password updated
-        "400":
-          description: Validation error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "401":
-          description: Missing/invalid token or wrong current password
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "403":
-          description: Insufficient role (user required)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+  # ── Admin — Invitations ─────────────────────────────────────────────────────
 
   /api/v1/invitations:
     post:
       summary: Create invitation link
       description: Generates a single-use invitation link valid for 24 hours.
-      tags: [Admin - Invitations]
+      tags: [Admin — Invitations]
       security:
         - CookieAuthAdmin: []
       responses:
@@ -711,13 +774,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "403":
-          description: Insufficient role (admin required)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "500":
-          description: Could not generate invitation
+          description: Insufficient role
           content:
             application/json:
               schema:
@@ -725,7 +782,7 @@ paths:
     get:
       summary: List invitation links
       description: Returns all invitation links, newest first.
-      tags: [Admin - Invitations]
+      tags: [Admin — Invitations]
       security:
         - CookieAuthAdmin: []
       responses:
@@ -761,7 +818,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "403":
-          description: Insufficient role (admin required)
+          description: Insufficient role
           content:
             application/json:
               schema:
@@ -770,8 +827,8 @@ paths:
   /api/v1/invitations/{token}:
     get:
       summary: "(public) Validate invitation token"
-      description: Checks whether the invitation token is valid (not expired, not already used). No authentication required.
-      tags: [Admin - Invitations]
+      description: Checks whether the invitation token is valid (not expired, not already used).
+      tags: [Admin — Invitations]
       parameters:
         - name: token
           in: path
@@ -809,53 +866,33 @@ paths:
     post:
       summary: "(public) Register via invitation"
       description: |
-        Creates a new user account using a valid invitation token. No authentication required.
-        The token is single-use — it is marked as used after successful registration.
-        The new user can then log in via `POST /api/v1/auth/user/login`.
-      tags: [Admin - Invitations]
+        Creates a new user account using a valid invitation token. The token is single-use.
+        On success sets the `cipher_user` cookie so the user is immediately authenticated
+        and can proceed to register their passkey.
+      tags: [Admin — Invitations]
       parameters:
         - name: token
           in: path
           required: true
           schema:
             type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                email:
-                  type: string
-                  format: email
-                  example: newuser@example.com
-                password:
-                  type: string
-                  minLength: 8
-                  example: "mysecretpassword"
-              required: [email, password]
       responses:
         "201":
-          description: User registered successfully
+          description: User registered and logged in — cipher_user cookie is set
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CreateUserResponse"
-        "400":
-          description: Validation error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  unique_id:
+                    type: string
+                  token:
+                    type: string
+                    description: JWT for non-browser clients
         "404":
           description: Invitation not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "409":
-          description: Email already exists
           content:
             application/json:
               schema:
@@ -866,6 +903,154 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  # ── User — Passkeys ─────────────────────────────────────────────────────────
+
+  /api/v1/user/passkeys/register/begin:
+    post:
+      summary: Begin user passkey registration
+      description: |
+        Returns WebAuthn credential creation options. Pass `options.publicKey` to
+        `startRegistration()`. Existing credentials are automatically excluded.
+      tags: [User — Passkeys]
+      security:
+        - CookieAuthUser: []
+      responses:
+        "200":
+          description: WebAuthn creation options
+          content:
+            application/json:
+              schema:
+                type: object
+                description: "Pass directly to startRegistration({ optionsJSON: options.publicKey })"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/user/passkeys/register/complete:
+    post:
+      summary: Complete user passkey registration
+      description: |
+        Send the `RegistrationResponseJSON` returned by `startRegistration()`.
+        Optionally provide `?name=` to label the passkey. Defaults to "Passkey".
+      tags: [User — Passkeys]
+      security:
+        - CookieAuthUser: []
+      parameters:
+        - name: name
+          in: query
+          required: false
+          schema:
+            type: string
+          example: "MacBook Touch ID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Raw `RegistrationResponseJSON` from `startRegistration()`
+      responses:
+        "201":
+          description: Passkey registered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  name:
+                    type: string
+                    example: "MacBook Touch ID"
+        "400":
+          description: Session expired or verification failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/user/passkeys:
+    get:
+      summary: List user passkeys
+      description: Returns all passkeys registered by the authenticated user.
+      tags: [User — Passkeys]
+      security:
+        - CookieAuthUser: []
+      responses:
+        "200":
+          description: List of passkeys
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: integer
+                    name:
+                      type: string
+                      example: "MacBook Touch ID"
+                    created_at:
+                      type: string
+                      format: date-time
+                    last_used_at:
+                      type: string
+                      format: date-time
+                      nullable: true
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/user/passkeys/{id}:
+    delete:
+      summary: Delete user passkey
+      description: Removes a specific passkey belonging to the authenticated user.
+      tags: [User — Passkeys]
+      security:
+        - CookieAuthUser: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Passkey deleted
+        "400":
+          description: Invalid ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Passkey not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ── User ────────────────────────────────────────────────────────────────────
 
   /api/v1/setup/validate:
     post:
@@ -1067,7 +1252,6 @@ paths:
           required: true
           schema:
             type: integer
-          description: Setup session ID
       responses:
         "204":
           description: Session deleted
@@ -1124,7 +1308,6 @@ paths:
           schema:
             type: string
             enum: [setup, import-did, vta]
-          description: Explicitly select log source regardless of session status
       responses:
         "200":
           description: SSE log stream
@@ -1132,7 +1315,6 @@ paths:
             text/event-stream:
               schema:
                 type: string
-                description: Newline-delimited SSE events
         "401":
           description: Missing or invalid token
           content:
@@ -1226,4 +1408,3 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-

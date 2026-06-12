@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
 	"github.com/ic3software/cipherportal-api/internal/middleware"
@@ -18,11 +17,14 @@ import (
 const defaultInvitationTTL = 24 * time.Hour
 
 type InvitationHandler struct {
-	db *gorm.DB
+	db           *gorm.DB
+	jwtSecret    string
+	cookieDomain string
+	cookieSecure bool
 }
 
-func NewInvitationHandler(db *gorm.DB) *InvitationHandler {
-	return &InvitationHandler{db: db}
+func NewInvitationHandler(db *gorm.DB, jwtSecret, cookieDomain string, cookieSecure bool) *InvitationHandler {
+	return &InvitationHandler{db: db, jwtSecret: jwtSecret, cookieDomain: cookieDomain, cookieSecure: cookieSecure}
 }
 
 func generateInviteToken() (string, error) {
@@ -118,12 +120,9 @@ func (h *InvitationHandler) Validate(c *gin.Context) {
 	})
 }
 
-type registerViaInvitationRequest struct {
-	Email    string `json:"email"    binding:"required,email"`
-	Password string `json:"password" binding:"required,min=8"`
-}
-
-// Register — public: self-register using an invitation token.
+// Register — public: self-register using an invitation token. No request body needed.
+// On success the user is automatically logged in via the cipher_user cookie
+// so they can proceed to set up their passkey without a separate login step.
 func (h *InvitationHandler) Register(c *gin.Context) {
 	token := c.Param("token")
 
@@ -141,22 +140,7 @@ func (h *InvitationHandler) Register(c *gin.Context) {
 		return
 	}
 
-	var req registerViaInvitationRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not hash password"})
-		return
-	}
-
-	user := model.User{
-		Email:    req.Email,
-		Password: string(hash),
-	}
+	var user model.User
 	const maxAttempts = 5
 	var createErr error
 	for range maxAttempts {
@@ -170,11 +154,7 @@ func (h *InvitationHandler) Register(c *gin.Context) {
 		}
 	}
 	if createErr != nil {
-		if strings.Contains(createErr.Error(), "idx_users_email") {
-			c.JSON(http.StatusConflict, gin.H{"error": "email already exists"})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create user"})
-		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create user"})
 		return
 	}
 
@@ -184,9 +164,18 @@ func (h *InvitationHandler) Register(c *gin.Context) {
 		return
 	}
 
+	// Auto-login: set cipher_user cookie so the user can immediately register their passkey.
+	jwtToken, err := middleware.GenerateToken(user.ID, model.RoleUser, h.jwtSecret)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not generate token"})
+		return
+	}
+	c.SetSameSite(http.SameSiteStrictMode)
+	c.SetCookie(middleware.CookieUser, jwtToken, cookieMaxAge, "/", h.cookieDomain, h.cookieSecure, true)
+
 	c.JSON(http.StatusCreated, gin.H{
 		"id":        user.ID,
 		"unique_id": user.UniqueId,
-		"email":     user.Email,
+		"token":     jwtToken,
 	})
 }
