@@ -132,7 +132,10 @@ func (h *PasskeyHandler) RegisterBegin(c *gin.Context) {
 		})
 	}
 
-	opts, session, err := h.wa.BeginRegistration(waUser, webauthn.WithExclusions(exclusions))
+	opts, session, err := h.wa.BeginRegistration(waUser,
+		webauthn.WithExclusions(exclusions),
+		webauthn.WithResidentKeyRequirement(protocol.ResidentKeyRequirementRequired),
+	)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not begin registration"})
 		return
