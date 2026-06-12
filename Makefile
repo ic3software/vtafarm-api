@@ -8,7 +8,7 @@ DEPLOY_ENV   ?= production
 INGRESS_HOST ?=
 
 .PHONY: build gen-keypair tidy dev \
-        migrate migrate-down migrate-new seed enroll \
+        migrate migrate-down migrate-new enroll enroll-prod \
         up down reset \
         image-build image-push \
         deploy
@@ -43,11 +43,11 @@ migrate:
 migrate-down:
 	go run ./cmd/migrate down
 
-seed:
-	go run ./seed
-
 enroll:
 	go run ./cmd/enroll
+
+enroll-prod:
+	kubectl exec -n $(NAMESPACE) deploy/$(NAME) -- ./enroll
 
 # ─── Docker Compose (DB only) ─────────────────────────────────────────────────
 up:
