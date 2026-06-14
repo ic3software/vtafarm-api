@@ -3,6 +3,8 @@ package k8s
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -20,6 +22,44 @@ func vtaDeploymentName(sessionID uint) string {
 
 func vtaServiceName(sessionID uint) string {
 	return fmt.Sprintf("vta-%d", sessionID)
+}
+
+func vtaSecretName(sessionID uint) string {
+	return fmt.Sprintf("vta-secrets-%d", sessionID)
+}
+
+// EnsureVtaSecret creates an Opaque Secret holding a random master-seed (64 bytes hex)
+// and jwt-signing-key (32 bytes hex) for the given session. Idempotent — AlreadyExists
+// is ignored so Phase 2 can safely be retried without rotating the keys.
+func (c *Client) EnsureVtaSecret(ctx context.Context, ns string, sessionID uint) error {
+	masterSeedBytes := make([]byte, 64)
+	if _, err := rand.Read(masterSeedBytes); err != nil {
+		return fmt.Errorf("generate master-seed: %w", err)
+	}
+	jwtKeyBytes := make([]byte, 32)
+	if _, err := rand.Read(jwtKeyBytes); err != nil {
+		return fmt.Errorf("generate jwt-signing-key: %w", err)
+	}
+
+	_, err := c.kube.CoreV1().Secrets(ns).Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vtaSecretName(sessionID),
+			Namespace: ns,
+			Labels: map[string]string{
+				"managed-by": "vtafarm",
+				"session-id": fmt.Sprintf("%d", sessionID),
+			},
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			"master-seed":     []byte(hex.EncodeToString(masterSeedBytes)),
+			"jwt-signing-key": []byte(hex.EncodeToString(jwtKeyBytes)),
+		},
+	}, metav1.CreateOptions{})
+	if err != nil && !k8serrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create vta secret: %w", err)
+	}
+	return nil
 }
 
 // CreateVtaDeployment creates a Deployment that runs the VTA service using the PVC created
@@ -54,6 +94,26 @@ func (c *Client) CreateVtaDeployment(ctx context.Context, ns string, sessionID u
 							ContainerPort: port,
 							Protocol:      corev1.ProtocolTCP,
 						}},
+						Env: []corev1.EnvVar{
+							{
+								Name: "MASTER_SEED",
+								ValueFrom: &corev1.EnvVarSource{
+									SecretKeyRef: &corev1.SecretKeySelector{
+										LocalObjectReference: corev1.LocalObjectReference{Name: vtaSecretName(sessionID)},
+										Key:                  "master-seed",
+									},
+								},
+							},
+							{
+								Name: "JWT_SIGNING_KEY",
+								ValueFrom: &corev1.EnvVarSource{
+									SecretKeyRef: &corev1.SecretKeySelector{
+										LocalObjectReference: corev1.LocalObjectReference{Name: vtaSecretName(sessionID)},
+										Key:                  "jwt-signing-key",
+									},
+								},
+							},
+						},
 						VolumeMounts: []corev1.VolumeMount{{
 							Name:      "data",
 							MountPath: "/app/vta",
@@ -213,4 +273,5 @@ func (c *Client) DeleteVtaResources(ctx context.Context, ns string, sessionID ui
 	_ = c.kube.CoreV1().Services(ns).Delete(ctx, vtaServiceName(sessionID), metav1.DeleteOptions{})
 	_ = c.kube.BatchV1().Jobs(ns).Delete(ctx, ImportDidJobName(sessionID), opts)
 	_ = c.kube.CoreV1().PersistentVolumeClaims(ns).Delete(ctx, VtaPVCName(sessionID), metav1.DeleteOptions{})
+	_ = c.kube.CoreV1().Secrets(ns).Delete(ctx, vtaSecretName(sessionID), metav1.DeleteOptions{})
 }
