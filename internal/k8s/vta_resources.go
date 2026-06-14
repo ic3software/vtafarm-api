@@ -60,7 +60,10 @@ func (c *Client) EnsureVtaSecret(ctx context.Context, ns string, sessionID uint)
 			"jwt-signing-key": []byte(jwtKey),
 		},
 	}, metav1.CreateOptions{})
-	if err != nil && !k8serrors.IsAlreadyExists(err) {
+	if err != nil {
+		if k8serrors.IsAlreadyExists(err) {
+			return nil
+		}
 		return fmt.Errorf("create vta secret: %w", err)
 	}
 	log.Printf("[k8s] session %d: vta secret created — VTA_SECRETS_SEED=%s VTA_AUTH_JWT_SIGNING_KEY=%s", sessionID, masterSeed, jwtKey)

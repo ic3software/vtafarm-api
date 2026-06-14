@@ -122,6 +122,14 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 		return
 	}
 
+	if err := o.k8s.EnsureVtaSecret(ctx, ns, sessionID); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		o.markFailed(sessionID, "failed to create vta secret: "+err.Error())
+		return
+	}
+
 	toml, err := RenderVtaSetupTOML(&session)
 	if err != nil {
 		o.markFailed(sessionID, "failed to render TOML: "+err.Error())
@@ -239,14 +247,6 @@ func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDi
 	}
 
 	log.Printf("[orchestrator] session %d: admin DID imported, starting VTA deployment", sessionID)
-
-	if err := o.k8s.EnsureVtaSecret(ctx, ns, sessionID); err != nil {
-		if ctx.Err() != nil {
-			return
-		}
-		o.markFailed(sessionID, "failed to create vta secret: "+err.Error())
-		return
-	}
 
 	if err := o.k8s.CreateVtaDeployment(ctx, ns, sessionID, session.VtaImage); err != nil {
 		if ctx.Err() != nil {
