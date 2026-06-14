@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -41,6 +42,9 @@ func (c *Client) EnsureVtaSecret(ctx context.Context, ns string, sessionID uint)
 		return fmt.Errorf("generate jwt-signing-key: %w", err)
 	}
 
+	masterSeed := hex.EncodeToString(masterSeedBytes)
+	jwtKey := hex.EncodeToString(jwtKeyBytes)
+
 	_, err := c.kube.CoreV1().Secrets(ns).Create(ctx, &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      vtaSecretName(sessionID),
@@ -52,13 +56,14 @@ func (c *Client) EnsureVtaSecret(ctx context.Context, ns string, sessionID uint)
 		},
 		Type: corev1.SecretTypeOpaque,
 		Data: map[string][]byte{
-			"master-seed":     []byte(hex.EncodeToString(masterSeedBytes)),
-			"jwt-signing-key": []byte(hex.EncodeToString(jwtKeyBytes)),
+			"master-seed":     []byte(masterSeed),
+			"jwt-signing-key": []byte(jwtKey),
 		},
 	}, metav1.CreateOptions{})
 	if err != nil && !k8serrors.IsAlreadyExists(err) {
 		return fmt.Errorf("create vta secret: %w", err)
 	}
+	log.Printf("[k8s] session %d: vta secret created — VTA_SECRETS_SEED=%s VTA_AUTH_JWT_SIGNING_KEY=%s", sessionID, masterSeed, jwtKey)
 	return nil
 }
 
@@ -96,7 +101,7 @@ func (c *Client) CreateVtaDeployment(ctx context.Context, ns string, sessionID u
 						}},
 						Env: []corev1.EnvVar{
 							{
-								Name: "MASTER_SEED",
+								Name: "VTA_SECRETS_SEED",
 								ValueFrom: &corev1.EnvVarSource{
 									SecretKeyRef: &corev1.SecretKeySelector{
 										LocalObjectReference: corev1.LocalObjectReference{Name: vtaSecretName(sessionID)},
@@ -105,7 +110,7 @@ func (c *Client) CreateVtaDeployment(ctx context.Context, ns string, sessionID u
 								},
 							},
 							{
-								Name: "JWT_SIGNING_KEY",
+								Name: "VTA_AUTH_JWT_SIGNING_KEY",
 								ValueFrom: &corev1.EnvVarSource{
 									SecretKeyRef: &corev1.SecretKeySelector{
 										LocalObjectReference: corev1.LocalObjectReference{Name: vtaSecretName(sessionID)},
