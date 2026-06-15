@@ -122,6 +122,7 @@ func (c *Client) CreateARecord(ctx context.Context, name, ip string) (string, er
 }
 
 // DeleteRecord removes the DNS record with the given Cloudflare record ID.
+// Returns nil if the record does not exist (idempotent).
 func (c *Client) DeleteRecord(ctx context.Context, recordID string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
 		fmt.Sprintf("%s/zones/%s/dns_records/%s", baseURL, c.zoneID, recordID), nil)
@@ -134,9 +135,17 @@ func (c *Client) DeleteRecord(ctx context.Context, recordID string) error {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+
 	var result apiResponse[json.RawMessage]
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return err
+	}
+	// Cloudflare error 81044 = "DNS record does not exist" — treat as success.
+	if !result.Success && len(result.Errors) > 0 && result.Errors[0].Code == 81044 {
+		return nil
 	}
 	return cfError(result.Success, result.Errors)
 }

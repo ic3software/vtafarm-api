@@ -122,15 +122,15 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 		return
 	}
 
-	if err := o.k8s.EnsureVtaSecret(ctx, ns, sessionID); err != nil {
+	if err := o.k8s.EnsureVtaSecretRBAC(ctx, ns, sessionID); err != nil {
 		if ctx.Err() != nil {
 			return
 		}
-		o.markFailed(sessionID, "failed to create vta secret: "+err.Error())
+		o.markFailed(sessionID, "failed to create vta secret rbac: "+err.Error())
 		return
 	}
 
-	toml, err := RenderVtaSetupTOML(&session)
+	toml, err := RenderVtaSetupTOML(&session, ns, k8s.VtaSecretName(sessionID))
 	if err != nil {
 		o.markFailed(sessionID, "failed to render TOML: "+err.Error())
 		return

@@ -3,15 +3,13 @@ package k8s
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
-	"log"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -25,48 +23,54 @@ func vtaServiceName(sessionID uint) string {
 	return fmt.Sprintf("vta-%d", sessionID)
 }
 
-func vtaSecretName(sessionID uint) string {
+func VtaSecretName(sessionID uint) string {
 	return fmt.Sprintf("vta-secrets-%d", sessionID)
 }
 
-// EnsureVtaSecret creates an Opaque Secret holding a random master-seed (64 bytes hex)
-// and jwt-signing-key (32 bytes hex) for the given session. Idempotent — AlreadyExists
-// is ignored so Phase 2 can safely be retried without rotating the keys.
-func (c *Client) EnsureVtaSecret(ctx context.Context, ns string, sessionID uint) error {
-	masterSeedBytes := make([]byte, 64)
-	if _, err := rand.Read(masterSeedBytes); err != nil {
-		return fmt.Errorf("generate master-seed: %w", err)
-	}
-	jwtKeyBytes := make([]byte, 32)
-	if _, err := rand.Read(jwtKeyBytes); err != nil {
-		return fmt.Errorf("generate jwt-signing-key: %w", err)
-	}
+func vtaSecretRoleName(sessionID uint) string {
+	return fmt.Sprintf("vta-seed-%d", sessionID)
+}
 
-	masterSeed := hex.EncodeToString(masterSeedBytes)
-	jwtKey := hex.EncodeToString(jwtKeyBytes)
+// EnsureVtaSecretRBAC creates a Role and RoleBinding that allow the namespace's
+// default ServiceAccount to create and read/update the session's seed Secret.
+// VTA's k8s-secrets backend creates the Secret itself during `vta setup`; the
+// RBAC must exist before the setup job runs. Idempotent — AlreadyExists ignored.
+//
+// `create` is a collection-level verb and cannot be scoped by resourceNames;
+// `get` and `update` are name-scoped to the session's specific secret.
+func (c *Client) EnsureVtaSecretRBAC(ctx context.Context, ns string, sessionID uint) error {
+	roleName := vtaSecretRoleName(sessionID)
+	secretName := VtaSecretName(sessionID)
 
-	_, err := c.kube.CoreV1().Secrets(ns).Create(ctx, &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      vtaSecretName(sessionID),
-			Namespace: ns,
-			Labels: map[string]string{
-				"managed-by": "vtafarm",
-				"session-id": fmt.Sprintf("%d", sessionID),
+	_, err := c.kube.RbacV1().Roles(ns).Create(ctx, &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{Name: roleName, Namespace: ns},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{""},
+				Resources: []string{"secrets"},
+				Verbs:     []string{"create"},
+			},
+			{
+				APIGroups:     []string{""},
+				Resources:     []string{"secrets"},
+				Verbs:         []string{"get", "update"},
+				ResourceNames: []string{secretName},
 			},
 		},
-		Type: corev1.SecretTypeOpaque,
-		Data: map[string][]byte{
-			"master-seed":     []byte(masterSeed),
-			"jwt-signing-key": []byte(jwtKey),
-		},
 	}, metav1.CreateOptions{})
-	if err != nil {
-		if k8serrors.IsAlreadyExists(err) {
-			return nil
-		}
-		return fmt.Errorf("create vta secret: %w", err)
+	if err != nil && !k8serrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create vta seed role: %w", err)
 	}
-	log.Printf("[k8s] session %d: vta secret created — VTA_SECRETS_SEED=%s VTA_AUTH_JWT_SIGNING_KEY=%s", sessionID, masterSeed, jwtKey)
+
+	_, err = c.kube.RbacV1().RoleBindings(ns).Create(ctx, &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: roleName, Namespace: ns},
+		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "default", Namespace: ns}},
+		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: roleName},
+	}, metav1.CreateOptions{})
+	if err != nil && !k8serrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create vta seed rolebinding: %w", err)
+	}
+
 	return nil
 }
 
@@ -102,26 +106,6 @@ func (c *Client) CreateVtaDeployment(ctx context.Context, ns string, sessionID u
 							ContainerPort: port,
 							Protocol:      corev1.ProtocolTCP,
 						}},
-						Env: []corev1.EnvVar{
-							{
-								Name: "VTA_SECRETS_SEED",
-								ValueFrom: &corev1.EnvVarSource{
-									SecretKeyRef: &corev1.SecretKeySelector{
-										LocalObjectReference: corev1.LocalObjectReference{Name: vtaSecretName(sessionID)},
-										Key:                  "master-seed",
-									},
-								},
-							},
-							{
-								Name: "VTA_AUTH_JWT_SIGNING_KEY",
-								ValueFrom: &corev1.EnvVarSource{
-									SecretKeyRef: &corev1.SecretKeySelector{
-										LocalObjectReference: corev1.LocalObjectReference{Name: vtaSecretName(sessionID)},
-										Key:                  "jwt-signing-key",
-									},
-								},
-							},
-						},
 						VolumeMounts: []corev1.VolumeMount{{
 							Name:      "data",
 							MountPath: "/app/vta",
@@ -281,5 +265,7 @@ func (c *Client) DeleteVtaResources(ctx context.Context, ns string, sessionID ui
 	_ = c.kube.CoreV1().Services(ns).Delete(ctx, vtaServiceName(sessionID), metav1.DeleteOptions{})
 	_ = c.kube.BatchV1().Jobs(ns).Delete(ctx, ImportDidJobName(sessionID), opts)
 	_ = c.kube.CoreV1().PersistentVolumeClaims(ns).Delete(ctx, VtaPVCName(sessionID), metav1.DeleteOptions{})
-	_ = c.kube.CoreV1().Secrets(ns).Delete(ctx, vtaSecretName(sessionID), metav1.DeleteOptions{})
+	_ = c.kube.CoreV1().Secrets(ns).Delete(ctx, VtaSecretName(sessionID), metav1.DeleteOptions{})
+	_ = c.kube.RbacV1().RoleBindings(ns).Delete(ctx, vtaSecretRoleName(sessionID), metav1.DeleteOptions{})
+	_ = c.kube.RbacV1().Roles(ns).Delete(ctx, vtaSecretRoleName(sessionID), metav1.DeleteOptions{})
 }

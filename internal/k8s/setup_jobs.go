@@ -93,26 +93,6 @@ func (c *Client) CreateSetupResources(ctx context.Context, ns string, sessionID 
 						// orchestrator can extract it from job logs without a reader pod.
 						Command:    []string{"sh", "-c", "vta setup --from /config/vta-setup.toml && echo '---DID_LOG_START---' && cat /app/vta/data/vta/did-logs/VTA-did.jsonl"},
 						WorkingDir: "/app/vta",
-						Env: []corev1.EnvVar{
-							{
-								Name: "VTA_SECRETS_SEED",
-								ValueFrom: &corev1.EnvVarSource{
-									SecretKeyRef: &corev1.SecretKeySelector{
-										LocalObjectReference: corev1.LocalObjectReference{Name: vtaSecretName(sessionID)},
-										Key:                  "master-seed",
-									},
-								},
-							},
-							{
-								Name: "VTA_AUTH_JWT_SIGNING_KEY",
-								ValueFrom: &corev1.EnvVarSource{
-									SecretKeyRef: &corev1.SecretKeySelector{
-										LocalObjectReference: corev1.LocalObjectReference{Name: vtaSecretName(sessionID)},
-										Key:                  "jwt-signing-key",
-									},
-								},
-							},
-						},
 						VolumeMounts: []corev1.VolumeMount{
 							{Name: "config", MountPath: "/config"},
 							{Name: "data", MountPath: "/app/vta"},
@@ -270,26 +250,6 @@ func (c *Client) CreateImportDidJob(ctx context.Context, ns string, sessionID ui
 						Image:      image,
 						Command:    []string{"vta", "import-did", "--did", adminDid, "--role", "admin"},
 						WorkingDir: "/app/vta",
-						Env: []corev1.EnvVar{
-							{
-								Name: "VTA_SECRETS_SEED",
-								ValueFrom: &corev1.EnvVarSource{
-									SecretKeyRef: &corev1.SecretKeySelector{
-										LocalObjectReference: corev1.LocalObjectReference{Name: vtaSecretName(sessionID)},
-										Key:                  "master-seed",
-									},
-								},
-							},
-							{
-								Name: "VTA_AUTH_JWT_SIGNING_KEY",
-								ValueFrom: &corev1.EnvVarSource{
-									SecretKeyRef: &corev1.SecretKeySelector{
-										LocalObjectReference: corev1.LocalObjectReference{Name: vtaSecretName(sessionID)},
-										Key:                  "jwt-signing-key",
-									},
-								},
-							},
-						},
 						VolumeMounts: []corev1.VolumeMount{{
 							Name:      "data",
 							MountPath: "/app/vta",

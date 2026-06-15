@@ -5,7 +5,7 @@ tmp_dir = "tmp"
 cmd = "go build -o ./tmp/api ./main.go"
 bin = "./tmp/api"
 include_ext = ["go", "yaml"]
-exclude_dir = ["tmp", "vendor", "migrations", "testdata", "seed", "docs", "helm"]
+exclude_dir = ["tmp", "vendor", "migrations", "testdata", "seed", "docs", "helm", "data"]
 delay = 500
 
 [log]

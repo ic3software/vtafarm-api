@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -319,8 +320,8 @@ func (h *SetupHandler) Delete(c *gin.Context) {
 			path = strings.TrimPrefix(u.Path, "/")
 		}
 		if err := h.didHosting.DeleteDid(c.Request.Context(), path); err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to delete DID from hosting: " + err.Error()})
-			return
+			// Log but don't block: DID may already be gone or hosting service unreachable.
+			log.Printf("[setup] warn: failed to delete DID from hosting for session %d: %v", session.ID, err)
 		}
 	}
 

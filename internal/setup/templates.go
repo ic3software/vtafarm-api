@@ -25,7 +25,10 @@ level  = "info"
 format = "text"
 
 [secrets]
-backend = "plaintext"
+backend     = "kubernetes"
+secret_name = "{{ .SecretName }}"
+namespace   = "{{ .Namespace }}"
+secret_key  = "seed"
 
 [messaging]
 kind = "existing"
@@ -45,9 +48,11 @@ type vtaSetupData struct {
 	VtaDidUrl        string
 	Portable         bool
 	PreRotationCount int
+	SecretName       string
+	Namespace        string
 }
 
-func RenderVtaSetupTOML(s *model.SetupSession) (string, error) {
+func RenderVtaSetupTOML(s *model.SetupSession, ns, secretName string) (string, error) {
 	var buf bytes.Buffer
 	err := vtaSetupTmpl.Execute(&buf, vtaSetupData{
 		VtaName:          s.VtaName,
@@ -56,6 +61,8 @@ func RenderVtaSetupTOML(s *model.SetupSession) (string, error) {
 		VtaDidUrl:        s.VtaDidUrl,
 		Portable:         s.Portable,
 		PreRotationCount: s.PreRotationCount,
+		SecretName:       secretName,
+		Namespace:        ns,
 	})
 	return buf.String(), err
 }
