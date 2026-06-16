@@ -160,6 +160,9 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 		return
 	}
 	if !succeeded {
+		if jobLogs, logsErr := o.k8s.JobLogs(ctx, ns, jobName); logsErr == nil && jobLogs != "" {
+			failMsg = failMsg + "\n\n--- Job Logs ---\n" + jobLogs
+		}
 		o.markFailed(sessionID, failMsg)
 		return
 	}
@@ -242,7 +245,13 @@ func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDi
 		return
 	}
 	if !succeeded {
-		o.markFailed(sessionID, "import-did job failed: "+failMsg)
+		importJobName := k8s.ImportDidJobName(sessionID)
+		if jobLogs, logsErr := o.k8s.JobLogs(ctx, ns, importJobName); logsErr == nil && jobLogs != "" {
+			failMsg = "import-did job failed: " + failMsg + "\n\n--- Job Logs ---\n" + jobLogs
+		} else {
+			failMsg = "import-did job failed: " + failMsg
+		}
+		o.markFailed(sessionID, failMsg)
 		return
 	}
 
