@@ -36,7 +36,6 @@ k8s:
   namespacePrefix: vtafarm-user
 
 cluster:
-  ingressIP: "95.217.184.144"
   domain: "firstperson.dev"
 
 github:
