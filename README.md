@@ -246,16 +246,64 @@ following repository secrets:
 
 ### Production Kubernetes RBAC
 
-The API server pod needs a `ClusterRole` with these permissions:
+When deploying via Helm (`make deploy`), both ClusterRoles below are created automatically. For **test clusters or manual setups**, apply them by hand.
+
+#### Step 1 — Create the `vtafarm-vta-secret-manager` ClusterRole
+
+This ClusterRole grants VTA setup pods the ability to manage their own seed Secret via the k8s-secrets backend. It must exist before any VTA setup session runs.
+
+```bash
+kubectl apply -f helm/vtafarm-api/templates/vtafarm-api/clusterrole-vta-secret-manager.yaml
+```
+
+Or inline:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vtafarm-vta-secret-manager
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update"]
+```
+
+#### Step 2 — Grant vtafarm-api the required permissions
+
+The API server pod needs a `ClusterRole` with these permissions (managed by the Helm chart as `{{ .Values.name }}`):
 
 ```yaml
 rules:
 - apiGroups: [""]
-  resources: ["namespaces", "serviceaccounts", "pods", "pods/log", "pods/exec",
-              "configmaps", "persistentvolumeclaims", "services"]
-  verbs: ["get", "list", "create", "update", "delete", "watch"]
+  resources: ["namespaces", "serviceaccounts"]
+  verbs: ["get", "list", "create", "delete"]
+- apiGroups: [""]
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list", "watch", "create", "delete"]
+- apiGroups: [""]
+  resources: ["pods/exec"]
+  verbs: ["create"]
 - apiGroups: ["rbac.authorization.k8s.io"]
   resources: ["roles", "rolebindings"]
+  verbs: ["get", "list", "create", "delete"]
+# Required to bind vtafarm-vta-secret-manager to VTA pod SAs
+# without vtafarm-api holding secrets permissions itself.
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["clusterroles"]
+  resourceNames: ["vtafarm-vta-secret-manager"]
+  verbs: ["bind"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["delete"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "create", "delete"]
+- apiGroups: [""]
+  resources: ["persistentvolumeclaims"]
+  verbs: ["get", "list", "create", "delete", "watch"]
+- apiGroups: [""]
+  resources: ["services"]
   verbs: ["get", "list", "create", "delete"]
 - apiGroups: ["batch"]
   resources: ["jobs"]
