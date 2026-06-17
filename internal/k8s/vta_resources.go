@@ -31,44 +31,21 @@ func vtaSecretRoleName(sessionID uint) string {
 	return fmt.Sprintf("vta-seed-%d", sessionID)
 }
 
-// EnsureVtaSecretRBAC creates a Role and RoleBinding that allow the namespace's
-// default ServiceAccount to create and read/update the session's seed Secret.
-// VTA's k8s-secrets backend creates the Secret itself during `vta setup`; the
-// RBAC must exist before the setup job runs. Idempotent — AlreadyExists ignored.
-//
-// `create` is a collection-level verb and cannot be scoped by resourceNames;
-// `get` and `update` are name-scoped to the session's specific secret.
+// EnsureVtaSecretRBAC creates a RoleBinding in ns that grants the namespace's
+// default ServiceAccount the vtafarm-vta-secret-manager ClusterRole (secrets
+// get/create/update). VTA's k8s-secrets backend creates the Secret itself during
+// `vta setup`; this binding must exist before the setup job runs.
+// Idempotent — AlreadyExists is ignored.
 func (c *Client) EnsureVtaSecretRBAC(ctx context.Context, ns string, sessionID uint) error {
-	roleName := vtaSecretRoleName(sessionID)
-	secretName := VtaSecretName(sessionID)
+	bindingName := vtaSecretRoleName(sessionID)
 
-	_, err := c.kube.RbacV1().Roles(ns).Create(ctx, &rbacv1.Role{
-		ObjectMeta: metav1.ObjectMeta{Name: roleName, Namespace: ns},
-		Rules: []rbacv1.PolicyRule{
-			{
-				APIGroups: []string{""},
-				Resources: []string{"secrets"},
-				Verbs:     []string{"create"},
-			},
-			{
-				APIGroups:     []string{""},
-				Resources:     []string{"secrets"},
-				Verbs:         []string{"get", "update"},
-				ResourceNames: []string{secretName},
-			},
-		},
-	}, metav1.CreateOptions{})
-	if err != nil && !k8serrors.IsAlreadyExists(err) {
-		return fmt.Errorf("create vta seed role: %w", err)
-	}
-
-	_, err = c.kube.RbacV1().RoleBindings(ns).Create(ctx, &rbacv1.RoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: roleName, Namespace: ns},
+	_, err := c.kube.RbacV1().RoleBindings(ns).Create(ctx, &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: bindingName, Namespace: ns},
 		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "default", Namespace: ns}},
-		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: roleName},
+		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "vtafarm-vta-secret-manager"},
 	}, metav1.CreateOptions{})
 	if err != nil && !k8serrors.IsAlreadyExists(err) {
-		return fmt.Errorf("create vta seed rolebinding: %w", err)
+		return fmt.Errorf("create vta secret rolebinding: %w", err)
 	}
 
 	return nil
