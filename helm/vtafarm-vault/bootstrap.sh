@@ -124,10 +124,10 @@ cat <<MSG
   VAULT_SECRET_ID  = ${SECRET_ID}
 
  DO NOT commit these. Store them as a Kubernetes Secret in the
- vtafarm-api namespace:
+ vtafarm-api namespace (default shown — change -n if you run the API elsewhere):
 
    kubectl create secret generic vtafarm-api-vault \\
-     -n <vtafarm-api-namespace> \\
+     -n default \\
      --from-literal=role-id='${ROLE_ID}' \\
      --from-literal=secret-id='${SECRET_ID}'
 

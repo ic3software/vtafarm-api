@@ -109,7 +109,6 @@ The Vault pods mount the `vault-tls` secret on startup, so it must exist
 **before** install. Apply the CA chain and wait for the leaf cert:
 
 ```bash
-kubectl create namespace vault
 kubectl apply -n vault -f helm/vtafarm-vault/tls/cert-manager.yaml
 kubectl wait -n vault --for=condition=Ready certificate/vault-tls --timeout=120s
 ```
@@ -151,7 +150,8 @@ three peers:
 ```bash
 kubectl get pods -n vault
 kubectl exec -n vault vault-0 -- vault status
-kubectl exec -n vault vault-0 -- vault operator raft list-peers   # needs VAULT_TOKEN set in-pod
+# raft list-peers needs the root token (single node just shows vault-0 — optional):
+kubectl exec -n vault vault-0 -- env VAULT_TOKEN='<root-token>' vault operator raft list-peers
 ```
 
 ### 5. Run the one-time bootstrap
@@ -182,7 +182,7 @@ From the bootstrap output:
 
 ```bash
 kubectl create secret generic vtafarm-api-vault \
-  -n <vtafarm-api-namespace> \
+  -n default \
   --from-literal=role-id='<VAULT_ROLE_ID>' \
   --from-literal=secret-id='<VAULT_SECRET_ID>'
 ```
@@ -190,20 +190,25 @@ kubectl create secret generic vtafarm-api-vault \
 These are what vtafarm-api uses to authenticate and provision per-user
 policies/roles at runtime. **Never commit them.**
 
-### 7. Verify (after the app side is wired)
+### Done
 
-The application-side change (config, `internal/vault`, the `vta` SA, the
-template `[secrets]` block) is a separate task. Note the VTA `[secrets]` block
-must set **`vault_skip_verify = true`** for now — TLS encrypts the traffic, but
-the VTA client can't yet be given the CA (no `vault_ca_cert` config field). Once
-it's in, a successful `vta setup` should:
+Steps 1–6 complete the Vault infrastructure: the farm Vault is running,
+auto-unsealed via transit, and ready for vtafarm-api to use. ✅
+
+### Verify later — after you create a VTA
+
+There's nothing to verify here yet. End-to-end verification happens **once you
+create a VTA through the vtafarm interface** — that triggers `vta setup`, which
+writes the VTA's master seed into Vault. (This requires the app side wired to
+Vault first; the VTA `[secrets]` block must set `vault_skip_verify = true` for
+now, since the client can't yet be given the CA.)
+
+After creating a VTA, confirm the seed landed and the pod authenticated:
 
 ```bash
-# the seed should exist at the session path (metadata is readable to admin)
 vault kv get secret/vta/user-<userID>/session-<sessionID>/master-seed
+# and the VTA pod logs should show: authenticated to Vault
 ```
-
-and the VTA pod logs should show `authenticated to Vault`.
 
 ---
 
@@ -248,23 +253,6 @@ At runtime, on session/user create, the API (`internal/vault`) will:
 `vta setup` (running in the tenant pod) then **creates** the seed at its
 session path. On teardown the API deletes the seed and, for full user removal,
 the policy + role.
-
----
-
-## Troubleshooting
-
-| Symptom | Cause / Fix |
-| --- | --- |
-| Vault pods `0/1`, never ready (prod) | Sealed. Auto-unseal not configured or KMS creds missing → do step 4 / fix the `seal` block + pod credentials. |
-| Pods `Pending`/`ContainerCreating`, can't mount `vault-tls` | The cert secret doesn't exist yet. Run step 2 (apply `tls/cert-manager.yaml`) and `kubectl wait` for `certificate/vault-tls` before installing. |
-| Pod log: `tls: failed to verify` / Raft peers won't join | Cert SAN mismatch. Resource names must be `vault*` (install release name `vault`; `fullnameOverride: vault` is set). SANs live in `tls/cert-manager.yaml`. |
-| VTA pod: `x509: certificate signed by unknown authority` | Expected with option B — set `vault_skip_verify = true` in the VTA `[secrets]` config. (Full verification is option C: needs a `vault_ca_cert` field in the VTA.) |
-| `CrashLoopBackOff`, kubernetes auth error in VTA pod | The pod's SA name/namespace doesn't match the role's `bound_service_account_*`. The VTA pod must run as SA `vta` in `vtafarm-user-<id>`. |
-| `permission denied` calling TokenReview | `server.authDelegator.enabled` false, or the `system:auth-delegator` binding missing. Re-check the chart value. |
-| `Secret not found` but it's clearly in Vault | Stray `/data/` in `vault_secret_path`. Config uses `vault_secret_path = "vta/..."` + `vault_kv_mount = "secret"`; the **policy** uses `secret/data/...` and `secret/metadata/...`. Don't mix them. |
-| Reads an old / wrong seed | `vault_secret_key` defaults to `seed`; if the field name differs, set it to match. |
-| `invalid issuer (iss) claim` on k8s login | Older Vault + k8s ≥1.21 bound-token issuer mismatch. Set `disable_iss_validation=true` on the auth config, or upgrade Vault. |
-| API gets `permission denied` writing a policy | `vtafarm-api-admin` too narrow, or the API used the wrong AppRole creds. Re-run `bootstrap.sh` and refresh the `vtafarm-api-vault` Secret. |
 
 ---
 

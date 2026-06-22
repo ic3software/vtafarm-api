@@ -28,3 +28,4 @@ k8s/secret.yaml
 
 # Transit Vault secrets
 transit-init.json
+vault-init.json

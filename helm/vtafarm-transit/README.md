@@ -122,3 +122,21 @@ auto-unseal.
   is the offline unseal keys + root token.
 - **UI:** `kubectl port-forward -n vault-transit svc/vault-transit-ui 8210:8200`
   → `https://127.0.0.1:8210/ui/`.
+
+## Cleanup (after bootstrap)
+
+The port-forward from step 4 runs in the background (`&`) and is no longer
+needed once the token secret exists — the farm Vault reaches transit in-cluster
+via `vault-transit.vault-transit.svc`, not through your local port-forward.
+
+```bash
+# same terminal: list background jobs, then kill by number
+jobs
+kill %1                                   # use the port-forward's job number
+
+# confirm nothing is listening on 8210
+lsof -i :8210
+
+# the local CA copy was only for the bootstrap CLI — safe to remove
+rm -f /tmp/transit-ca.crt
+```

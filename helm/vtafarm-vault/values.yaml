@@ -77,8 +77,10 @@ vault:
       path: "/v1/sys/health?standbyok=true"
       initialDelaySeconds: 60
 
-    # Pod anti-affinity (one Vault pod per node) is ON by default in the chart,
-    # matching the guide — not overridden here.
+    # Pod anti-affinity: left at the chart default (HARD — one Vault pod per
+    # node), which is what real HA wants. Irrelevant at replicas=1 (one pod).
+    # When you scale back to replicas=3, run it on a MULTI-NODE cluster — a
+    # single node can't satisfy the hard rule (extra pods would stay Pending).
 
     # Mount the cert-manager-issued TLS material (secret `vault-tls`, created by
     # tls/cert-manager.yaml). The Raft config below references these files.
@@ -113,7 +115,11 @@ vault:
     # High availability with integrated storage (Raft). No external Consul.
     ha:
       enabled: true
-      replicas: 3
+      # Testing phase: single node, so 1 replica. The retry_join stanzas below
+      # still list vault-0/1/2 — harmless with 1 replica (the missing peers are
+      # just retried in the background). Set back to 3 for real HA once you have
+      # a multi-node cluster.
+      replicas: 1
       raft:
         enabled: true
         setNodeId: true
