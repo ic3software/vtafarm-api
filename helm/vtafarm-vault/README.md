@@ -1,0 +1,285 @@
+# vtafarm-vault
+
+HashiCorp Vault for the VTA Farm. Stores each VTA's **master seed** (the root
+of all its DIDs/keys) in Vault's KV v2 engine instead of a Kubernetes Secret.
+
+This is **shared infrastructure**: one Vault cluster serves every vtafarm user.
+Multi-tenancy is enforced with per-user policies + Kubernetes-auth roles, not
+one-Vault-per-user. See the isolation model below.
+
+This setup follows HashiCorp's official guidance:
+
+- **Run Vault on Kubernetes:** <https://developer.hashicorp.com/vault/docs/deploy/kubernetes>
+- **Vault on Kubernetes deployment guide:** <https://developer.hashicorp.com/vault/tutorials/kubernetes/kubernetes-raft-deployment-guide>
+
+Where this chart deviates from the guide it is deliberate and noted inline
+(e.g. 3 replicas, resources right-sized down for an early farm,
+Agent Injector disabled because VTA reads its seed natively).
+
+---
+
+## Contents
+
+```text
+helm/vtafarm-vault/
+├── Chart.yaml              # umbrella chart; pins hashicorp/vault 0.33.0 as a dependency
+├── values.yaml             # HA + Raft + TLS + auto-unseal
+├── tls/cert-manager.yaml   # self-signed CA + server cert (vault-tls secret); apply before install
+├── bootstrap.sh            # one-time Vault config (run once per cluster after install)
+└── README.md               # this file
+```
+
+Both the **dev** and **production** clusters are real clusters and use the
+**same `values.yaml`** — the deployment is identical across environments. Each
+cluster runs its own in-cluster transit Vault (`helm/vtafarm-transit`) for
+auto-unseal; nothing in this `values.yaml` differs per cluster.
+
+## How it fits together
+
+```text
+namespace: vault                         ← this chart (1 shared HA Vault)
+   └── vault-0/1/2  (SA: vault)
+
+namespace: vtafarm-user-abc123           ← tenant namespace (created by the API)
+   └── VTA pod (SA: vta) ──┐
+namespace: vtafarm-user-def456           │ cross-namespace k8s auth
+   └── VTA pod (SA: vta) ──┴──► https://vault.vault.svc:8200
+```
+
+Each VTA pod authenticates to Vault with its ServiceAccount JWT. Vault's
+Kubernetes-auth role binds `bound_service_account_namespaces` to the tenant's
+namespace, and the attached policy scopes it to that tenant's seed paths only.
+
+### Isolation model (decided)
+
+- **One policy + one k8s-auth role per user namespace** — `vta-user-<userID>`.
+- **One seed path per session** — `secret/data/vta/user-<userID>/session-<sessionID>/master-seed`.
+- The policy uses a glob so all of a user's sessions share the role but live at
+  distinct paths:
+
+  ```hcl
+  # policy: vta-user-abc123  (created at runtime by vtafarm-api)
+  path "secret/data/vta/user-abc123/*"     { capabilities = ["read","create","update","delete"] }
+  path "secret/metadata/vta/user-abc123/*" { capabilities = ["read","delete"] }
+  ```
+
+> Vault object count is O(users), not O(sessions). Cross-tenant isolation is
+> enforced by Vault (namespace-bound auth). A user's own sessions share a trust
+> domain, so distinct paths under one policy are enough.
+
+---
+
+## Step-by-step
+
+> One identical flow per cluster. Run it once on **dev**, once on **production**
+> — same chart, same `values.yaml`. Each cluster gets its own init/unseal and
+> its own `bootstrap.sh` run (Vault state is per-cluster, not shared).
+
+### 0. Prerequisites
+
+- `helm` and `kubectl` pointed at the target cluster (repeat per cluster).
+- `vault` CLI installed locally (for `bootstrap.sh`).
+- **cert-manager installed** in the cluster (used to issue Vault's internal TLS
+  cert — option B). No public issuer needed; `tls/cert-manager.yaml` stands up
+  its own self-signed CA.
+- **The transit Vault must be deployed + bootstrapped first** (see
+  `helm/vtafarm-transit`). It provides auto-unseal for this farm Vault, so its
+  `vault-transit-token` secret must exist in the `vault` namespace before you
+  install/upgrade here. **Do not run the farm without auto-unseal** — every pod
+  restart would otherwise block on manual unsealing. (To switch to cloud KMS
+  later, swap the `seal` stanza in `values.yaml` — see the comment there.)
+
+> Install with release name **`vault`** (the namespace is also `vault`). The
+> chart pins resource names via `fullnameOverride: vault`, so the service is
+> `vault.vault.svc` and the Raft peers are `vault-0.vault-internal` — matching
+> the cert SANs and `retry_join` config.
+
+### 1. Pull the dependency chart
+
+```bash
+helm dependency update helm/vtafarm-vault
+```
+
+This downloads `hashicorp/vault` (0.33.0) into `charts/` and writes `Chart.lock`
+(commit the lock; `charts/` is gitignored).
+
+### 2. Issue the internal TLS cert (cert-manager)
+
+The Vault pods mount the `vault-tls` secret on startup, so it must exist
+**before** install. Apply the CA chain and wait for the leaf cert:
+
+```bash
+kubectl create namespace vault
+kubectl apply -n vault -f helm/vtafarm-vault/tls/cert-manager.yaml
+kubectl wait -n vault --for=condition=Ready certificate/vault-tls --timeout=120s
+```
+
+This creates a long-lived self-signed CA (`vault-ca`, 10y) and the auto-renewing
+server cert (`vault-tls`, 90d). The CA is stable so a later move to full client
+verification (option C) reuses it — no re-issue.
+
+### 3. Install Vault
+
+Make sure the transit Vault is already up and the `vault-transit-token` secret
+exists in the `vault` namespace (see `helm/vtafarm-transit`). Then:
+
+```bash
+helm install vault helm/vtafarm-vault -n vault -f helm/vtafarm-vault/values.yaml
+```
+
+Pods start **sealed and not ready** until step 4.
+
+### 4. Initialize + unseal
+
+```bash
+# Initialize on the first pod. With auto-unseal this returns RECOVERY keys.
+kubectl exec -n vault vault-0 -- vault operator init -format=json > vault-init.json
+```
+
+⚠️ `vault-init.json` holds your recovery keys and initial root token.
+**Store it offline / in a secret manager and delete the local copy.** It is
+gitignored, but never commit it anywhere. Each cluster has its own keys.
+
+Peers **auto-join** via the `retry_join` config — no manual
+`vault operator raft join` needed. With auto-unseal they also unseal themselves
+once the leader is initialized. (Without auto-unseal — not recommended — unseal
+each pod manually: `vault operator unseal <key>` ×3 per pod.)
+
+Confirm all three pods are `Running` and `READY 1/1`, and the Raft cluster has
+three peers:
+
+```bash
+kubectl get pods -n vault
+kubectl exec -n vault vault-0 -- vault status
+kubectl exec -n vault vault-0 -- vault operator raft list-peers   # needs VAULT_TOKEN set in-pod
+```
+
+### 5. Run the one-time bootstrap
+
+Port-forward and export credentials, then run the script (once per cluster).
+Vault now serves **https**, so point `VAULT_CACERT` at the CA from the secret:
+
+```bash
+kubectl port-forward -n vault svc/vault 8200:8200 >/dev/null 2>&1 &
+
+# Pull the CA the cert was signed with, so the local CLI trusts Vault.
+kubectl get secret -n vault vault-tls -o jsonpath='{.data.ca\.crt}' | base64 -d > /tmp/vault-ca.crt
+
+export VAULT_ADDR=https://127.0.0.1:8200
+export VAULT_CACERT=/tmp/vault-ca.crt
+export VAULT_TOKEN=<root-token-from-vault-init.json>
+
+chmod +x helm/vtafarm-vault/bootstrap.sh
+helm/vtafarm-vault/bootstrap.sh
+```
+
+This enables KV v2 + Kubernetes auth + AppRole, writes the `vtafarm-api-admin`
+policy, and prints the API's `VAULT_ROLE_ID` / `VAULT_SECRET_ID`.
+
+### 6. Store the API's Vault credentials
+
+From the bootstrap output:
+
+```bash
+kubectl create secret generic vtafarm-api-vault \
+  -n <vtafarm-api-namespace> \
+  --from-literal=role-id='<VAULT_ROLE_ID>' \
+  --from-literal=secret-id='<VAULT_SECRET_ID>'
+```
+
+These are what vtafarm-api uses to authenticate and provision per-user
+policies/roles at runtime. **Never commit them.**
+
+### 7. Verify (after the app side is wired)
+
+The application-side change (config, `internal/vault`, the `vta` SA, the
+template `[secrets]` block) is a separate task. Note the VTA `[secrets]` block
+must set **`vault_skip_verify = true`** for now — TLS encrypts the traffic, but
+the VTA client can't yet be given the CA (no `vault_ca_cert` config field). Once
+it's in, a successful `vta setup` should:
+
+```bash
+# the seed should exist at the session path (metadata is readable to admin)
+vault kv get secret/vta/user-<userID>/session-<sessionID>/master-seed
+```
+
+and the VTA pod logs should show `authenticated to Vault`.
+
+---
+
+## Accessing the Vault UI
+
+`ui = true` serves the web UI on the same HTTPS listener (port 8200, path
+`/ui/`). The chart's `vault-ui` Service is **ClusterIP** — intentionally *not*
+exposed outside the cluster. Reach it with a port-forward:
+
+```bash
+kubectl port-forward -n vault svc/vault-ui 8200:8200
+# then open:  https://127.0.0.1:8200/ui/
+```
+
+- The cert is signed by the self-signed `vault-ca`, so the browser shows a
+  "not trusted" warning — click through, or import `vault-ca`'s `ca.crt` into
+  your OS/browser trust store to silence it:
+
+  ```bash
+  kubectl get secret -n vault vault-tls -o jsonpath='{.data.ca\.crt}' | base64 -d > vault-ca.crt
+  ```
+
+- **Log in with a token** — the root token from `vault-init.json`, or any token
+  you mint later. (Avoid using the root token for day-to-day work.)
+
+> Don't expose the UI via LoadBalancer/NodePort. If a team needs it, put it
+> behind an internal ingress with your own auth — never publish a secrets
+> store's UI to the internet.
+
+---
+
+## What the API does at runtime (reference, not a step)
+
+`bootstrap.sh` only grants vtafarm-api the *ability* to provision tenants.
+At runtime, on session/user create, the API (`internal/vault`) will:
+
+1. `PUT sys/policies/acl/vta-user-<id>` — the per-user seed policy (glob above).
+2. `POST auth/kubernetes/role/vta-user-<id>` — bound to
+   `bound_service_account_names=vta`, `bound_service_account_namespaces=vtafarm-user-<id>`,
+   `policies=vta-user-<id>`, `ttl=1h`.
+
+`vta setup` (running in the tenant pod) then **creates** the seed at its
+session path. On teardown the API deletes the seed and, for full user removal,
+the policy + role.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause / Fix |
+| --- | --- |
+| Vault pods `0/1`, never ready (prod) | Sealed. Auto-unseal not configured or KMS creds missing → do step 4 / fix the `seal` block + pod credentials. |
+| Pods `Pending`/`ContainerCreating`, can't mount `vault-tls` | The cert secret doesn't exist yet. Run step 2 (apply `tls/cert-manager.yaml`) and `kubectl wait` for `certificate/vault-tls` before installing. |
+| Pod log: `tls: failed to verify` / Raft peers won't join | Cert SAN mismatch. Resource names must be `vault*` (install release name `vault`; `fullnameOverride: vault` is set). SANs live in `tls/cert-manager.yaml`. |
+| VTA pod: `x509: certificate signed by unknown authority` | Expected with option B — set `vault_skip_verify = true` in the VTA `[secrets]` config. (Full verification is option C: needs a `vault_ca_cert` field in the VTA.) |
+| `CrashLoopBackOff`, kubernetes auth error in VTA pod | The pod's SA name/namespace doesn't match the role's `bound_service_account_*`. The VTA pod must run as SA `vta` in `vtafarm-user-<id>`. |
+| `permission denied` calling TokenReview | `server.authDelegator.enabled` false, or the `system:auth-delegator` binding missing. Re-check the chart value. |
+| `Secret not found` but it's clearly in Vault | Stray `/data/` in `vault_secret_path`. Config uses `vault_secret_path = "vta/..."` + `vault_kv_mount = "secret"`; the **policy** uses `secret/data/...` and `secret/metadata/...`. Don't mix them. |
+| Reads an old / wrong seed | `vault_secret_key` defaults to `seed`; if the field name differs, set it to match. |
+| `invalid issuer (iss) claim` on k8s login | Older Vault + k8s ≥1.21 bound-token issuer mismatch. Set `disable_iss_validation=true` on the auth config, or upgrade Vault. |
+| API gets `permission denied` writing a policy | `vtafarm-api-admin` too narrow, or the API used the wrong AppRole creds. Re-run `bootstrap.sh` and refresh the `vtafarm-api-vault` Secret. |
+
+---
+
+## Operations notes
+
+- **Lifecycle is decoupled from the app.** Do **not** wire this chart into the
+  vtafarm-api CD pipeline. Deploy/upgrade it deliberately and rarely. A routine
+  API deploy must never touch Vault's stateful resources.
+- **Upgrades:** bump `dependencies[].version` in `Chart.yaml`, run
+  `helm dependency update`, review the upstream changelog, then
+  `helm upgrade vault helm/vtafarm-vault -n vault -f values.yaml`.
+  Raft + auto-unseal makes the rolling restart non-disruptive.
+- **Backups:** snapshot Raft regularly —
+  `vault operator raft snapshot save snap.snap`. Keep recovery keys offline.
+- **Secret-id rotation:** `bootstrap.sh` issues a non-expiring secret_id by
+  default. To rotate, re-run it (generates a new one) and update the
+  `vtafarm-api-vault` Secret; use `SKIP_SECRET_ID=1` to update policy/role
+  without rotating.

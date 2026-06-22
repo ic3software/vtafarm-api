@@ -1,0 +1,10 @@
+# Vendored subchart archives pulled by `helm dependency update`.
+# Chart.lock is committed (pins the resolved version); the .tgz is not.
+charts/
+*.tgz
+
+# Anything that might capture init output / unseal keys / app role creds.
+# These must never be committed — store them in your secret manager instead.
+*.init
+vault-init*.json
+*-creds.txt

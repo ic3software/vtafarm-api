@@ -1,0 +1,19 @@
+apiVersion: v2
+name: vtafarm-vault
+description: >-
+  HashiCorp Vault for the VTA Farm — stores each VTA's master seed.
+  Wraps the official hashicorp/vault chart as a pinned dependency so we
+  own the version lock and value overrides while HashiCorp maintains the
+  templates. Deployed and upgraded independently of vtafarm-api (Vault is
+  long-lived, stateful infrastructure; the API is a stateless app).
+type: application
+version: 0.1.0
+# Tracks the Vault appVersion shipped by the pinned subchart below.
+appVersion: "2.0.2"
+
+dependencies:
+  - name: vault
+    # Pin the chart version. Bump deliberately; never float.
+    # Check releases: https://github.com/hashicorp/vault-helm/releases
+    version: "0.33.0"
+    repository: "https://helm.releases.hashicorp.com"
