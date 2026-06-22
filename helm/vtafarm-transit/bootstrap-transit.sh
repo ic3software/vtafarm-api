@@ -37,6 +37,9 @@ EOF
 echo "==> Minting orphan + periodic token for the farm Vault"
 TOKEN="$(vault token create -orphan -policy=autounseal -period=24h -field=token)"
 
+echo "==> Ensuring namespace ${FARM_NS} exists"
+kubectl create namespace "${FARM_NS}" --dry-run=client -o yaml | kubectl apply -f -
+
 echo "==> Storing it as secret/${TOKEN_SECRET} in namespace ${FARM_NS}"
 kubectl create secret generic "${TOKEN_SECRET}" -n "${FARM_NS}" \
   --from-literal=token="${TOKEN}" \
