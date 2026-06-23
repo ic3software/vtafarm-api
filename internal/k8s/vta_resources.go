@@ -58,6 +58,15 @@ func (c *Client) CreateVtaDeployment(ctx context.Context, ns string, sessionID u
 					Containers: []corev1.Container{{
 						Name:  "vta",
 						Image: image,
+						// Disable ANSI colour codes in the VTA's tracing logs so
+						// streamed/captured output (provision --follow, kubectl
+						// logs, log stores) stays plain text instead of leaking
+						// escape sequences. NO_COLOR is the cross-tool standard;
+						// CLICOLOR=0 covers tools that honour that convention too.
+						Env: []corev1.EnvVar{
+							{Name: "NO_COLOR", Value: "1"},
+							{Name: "CLICOLOR", Value: "0"},
+						},
 						Ports: []corev1.ContainerPort{{
 							ContainerPort: port,
 							Protocol:      corev1.ProtocolTCP,
