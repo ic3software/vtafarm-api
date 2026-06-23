@@ -39,10 +39,14 @@ helm/vtafarm-transit/
 ## Prerequisites
 
 - `helm` and `kubectl` pointed at the cluster.
-- **`vault` CLI installed locally** (used by `bootstrap-transit.sh`). macOS:
-  `brew tap hashicorp/tap && brew install hashicorp/tap/vault`. Otherwise see
-  <https://developer.hashicorp.com/vault/install>.
 - **cert-manager installed** in the cluster (issues the transit TLS cert).
+- **`vault` CLI installed locally** (used by `bootstrap-transit.sh`). On macOS:
+
+  ```bash
+  brew tap hashicorp/tap && brew install hashicorp/tap/vault
+  ```
+
+  Otherwise see <https://developer.hashicorp.com/vault/install>.
 
 ## Deployment order (important)
 

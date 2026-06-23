@@ -179,15 +179,15 @@ Each VTA's master seed is stored in HashiCorp Vault. Deploy it **before** the
 API — the API needs the `vtafarm-api-vault` Secret that Vault's bootstrap
 produces. Order matters: **transit Vault first, then the farm Vault.**
 
-1. **`helm/vtafarm-transit`** — the in-cluster transit Vault that auto-unseals
-   the farm Vault. Deploy, init + manually unseal, and bootstrap it. This
-   creates the `vault-transit-token` Secret the farm Vault needs.
-   See `helm/vtafarm-transit/README.md`.
+1. **[`helm/vtafarm-transit`](helm/vtafarm-transit/README.md)** — the in-cluster
+   transit Vault that auto-unseals the farm Vault. Deploy, init + manually
+   unseal, and bootstrap it. This creates the `vault-transit-token` Secret the
+   farm Vault needs.
 
-2. **`helm/vtafarm-vault`** — the farm Vault that holds the seeds. Deploy, init,
-   and run its bootstrap to enable KV v2 + Kubernetes auth + the AppRole, then
-   create the `vtafarm-api-vault` Secret from the printed role-id/secret-id.
-   See `helm/vtafarm-vault/README.md`.
+2. **[`helm/vtafarm-vault`](helm/vtafarm-vault/README.md)** — the farm Vault that
+   holds the seeds. Deploy, init, and run its bootstrap to enable KV v2 +
+   Kubernetes auth + the AppRole, then create the `vtafarm-api-vault` Secret from
+   the printed role-id/secret-id.
 
 > Each chart's README has the full step-by-step. Don't deploy the farm Vault
 > before transit is up and bootstrapped, or it will stay sealed.
