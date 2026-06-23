@@ -35,6 +35,14 @@ postgresql:
 k8s:
   namespacePrefix: vtafarm-user
 
+vault:
+  addr: "https://vault.vault.svc:8200"
+  kvMount: "secret"
+  k8sAuthMount: "kubernetes"
+  appRoleMount: "approle"
+  skipVerify: "true"
+  existingSecret: "vtafarm-api-vault"
+
 cluster:
   domain: "firstperson.dev"
 

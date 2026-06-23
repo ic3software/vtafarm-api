@@ -25,10 +25,13 @@ level  = "info"
 format = "text"
 
 [secrets]
-backend     = "kubernetes"
-secret_name = "{{ .SecretName }}"
-namespace   = "{{ .Namespace }}"
-secret_key  = "seed"
+vault_addr        = "{{ .Vault.Addr }}"
+vault_secret_path = "{{ .Vault.SecretPath }}"
+vault_kv_mount    = "{{ .Vault.KVMount }}"
+vault_secret_key  = "seed"
+vault_auth_method = "kubernetes"
+vault_k8s_role    = "{{ .Vault.K8sRole }}"
+vault_skip_verify = {{ .Vault.SkipVerify }}
 
 [messaging]
 kind = "existing"
@@ -41,6 +44,17 @@ portable           = {{ .Portable }}
 pre_rotation_count = {{ .PreRotationCount }}
 `))
 
+// VaultSecrets carries the per-session [secrets] values for the VTA config.
+// The seed lives in HashiCorp Vault; the VTA pod authenticates with its
+// ServiceAccount JWT via the kubernetes auth role the API provisioned.
+type VaultSecrets struct {
+	Addr       string // https://vault.vault.svc:8200
+	SecretPath string // vta/user-<id>/session-<id>/master-seed
+	KVMount    string // KV v2 mount, e.g. "secret"
+	K8sRole    string // kubernetes-auth role, e.g. "vta-user-<id>"
+	SkipVerify bool   // self-signed in-cluster CA → true for now
+}
+
 type vtaSetupData struct {
 	VtaName          string
 	PublicURL        string
@@ -48,11 +62,10 @@ type vtaSetupData struct {
 	VtaDidUrl        string
 	Portable         bool
 	PreRotationCount int
-	SecretName       string
-	Namespace        string
+	Vault            VaultSecrets
 }
 
-func RenderVtaSetupTOML(s *model.SetupSession, ns, secretName string) (string, error) {
+func RenderVtaSetupTOML(s *model.SetupSession, vault VaultSecrets) (string, error) {
 	var buf bytes.Buffer
 	err := vtaSetupTmpl.Execute(&buf, vtaSetupData{
 		VtaName:          s.VtaName,
@@ -61,8 +74,7 @@ func RenderVtaSetupTOML(s *model.SetupSession, ns, secretName string) (string, e
 		VtaDidUrl:        s.VtaDidUrl,
 		Portable:         s.Portable,
 		PreRotationCount: s.PreRotationCount,
-		SecretName:       secretName,
-		Namespace:        ns,
+		Vault:            vault,
 	})
 	return buf.String(), err
 }

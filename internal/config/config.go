@@ -19,6 +19,19 @@ type Config struct {
 	GHCR             GHCRConfig
 	DidHosting       DidHostingConfig
 	WebAuthn         WebAuthnConfig
+	Vault            VaultConfig
+}
+
+// VaultConfig configures the farm's HashiCorp Vault. RoleID/SecretID come from
+// the vtafarm-api-vault Secret created by helm/vtafarm-vault/bootstrap.sh.
+type VaultConfig struct {
+	Addr         string // e.g. https://vault.vault.svc:8200
+	RoleID       string // AppRole role_id (from the vtafarm-api-vault Secret)
+	SecretID     string // AppRole secret_id (from the vtafarm-api-vault Secret)
+	KVMount      string // KV v2 mount, default "secret"
+	K8sAuthMount string // kubernetes auth mount, default "kubernetes"
+	AppRoleMount string // approle auth mount, default "approle"
+	SkipVerify   bool   // skip TLS verification (self-signed in-cluster CA)
 }
 
 type WebAuthnConfig struct {
@@ -120,6 +133,26 @@ func Load() *Config {
 			RPOrigins:     splitComma(getEnv("WEBAUTHN_RP_ORIGINS", "http://localhost:5173")),
 			RPDisplayName: getEnv("WEBAUTHN_RP_DISPLAY_NAME", "VTA Farm"),
 		},
+		Vault: VaultConfig{
+			Addr:         getEnv("VAULT_ADDR", ""),
+			RoleID:       getEnv("VAULT_ROLE_ID", ""),
+			SecretID:     getEnv("VAULT_SECRET_ID", ""),
+			KVMount:      getEnv("VAULT_KV_MOUNT", "secret"),
+			K8sAuthMount: getEnv("VAULT_K8S_AUTH_MOUNT", "kubernetes"),
+			AppRoleMount: getEnv("VAULT_APPROLE_MOUNT", "approle"),
+			SkipVerify:   getEnvBool("VAULT_SKIP_VERIFY", true),
+		},
+	}
+}
+
+func getEnvBool(key string, defaultVal bool) bool {
+	switch strings.ToLower(os.Getenv(key)) {
+	case "1", "true", "yes":
+		return true
+	case "0", "false", "no":
+		return false
+	default:
+		return defaultVal
 	}
 }
 

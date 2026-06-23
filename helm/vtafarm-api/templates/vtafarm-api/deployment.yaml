@@ -46,6 +46,16 @@ spec:
                   name: {{ .Values.name }}-db
                   key: DB_PASSWORD
                   {{- end }}
+            - name: VAULT_ROLE_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.vault.existingSecret }}
+                  key: role-id
+            - name: VAULT_SECRET_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.vault.existingSecret }}
+                  key: secret-id
           readinessProbe:
             httpGet:
               path: /health
