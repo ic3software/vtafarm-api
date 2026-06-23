@@ -91,11 +91,11 @@ kubectl exec -n vault-transit vault-transit-0 -- vault operator unseal <key-3>
 ### 4. Bootstrap (enable transit + mint the farm token)
 
 ```bash
-kubectl port-forward -n vault-transit svc/vault-transit 8210:8200 >/dev/null 2>&1 &
+kubectl port-forward -n vault-transit svc/vault-transit 8200:8200 >/dev/null 2>&1 &
 
 kubectl get secret -n vault-transit vault-transit-tls -o jsonpath='{.data.ca\.crt}' | base64 -d > /tmp/transit-ca.crt
 
-export VAULT_ADDR=https://127.0.0.1:8210
+export VAULT_ADDR=https://127.0.0.1:8200
 export VAULT_CACERT=/tmp/transit-ca.crt
 export VAULT_TOKEN=<root-token-from-transit-init.json>
 
@@ -124,8 +124,8 @@ auto-unseal.
 - **Backups:** `kubectl exec ... vault operator raft snapshot save` is N/A for
   file storage; back up the PVC. There's little state (one key) — what matters
   is the offline unseal keys + root token.
-- **UI:** `kubectl port-forward -n vault-transit svc/vault-transit-ui 8210:8200`
-  → `https://127.0.0.1:8210/ui/`.
+- **UI:** `kubectl port-forward -n vault-transit svc/vault-transit-ui 8200:8200`
+  → `https://127.0.0.1:8200/ui/`.
 
 ## Cleanup (after bootstrap)
 
@@ -138,8 +138,8 @@ via `vault-transit.vault-transit.svc`, not through your local port-forward.
 jobs
 kill %1                                   # use the port-forward's job number
 
-# confirm nothing is listening on 8210
-lsof -i :8210
+# confirm nothing is listening on 8200
+lsof -i :8200
 
 # the local CA copy was only for the bootstrap CLI — safe to remove
 rm -f /tmp/transit-ca.crt

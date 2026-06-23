@@ -130,8 +130,9 @@ Pods start **sealed and not ready** until step 4.
 
 ### 4. Initialize + unseal
 
+Initialize on the first pod (with auto-unseal this returns recovery keys):
+
 ```bash
-# Initialize on the first pod. With auto-unseal this returns RECOVERY keys.
 kubectl exec -n vault vault-0 -- vault operator init -format=json > vault-init.json
 ```
 
@@ -150,8 +151,13 @@ three peers:
 ```bash
 kubectl get pods -n vault
 kubectl exec -n vault vault-0 -- vault status
-# raft list-peers needs the root token (single node just shows vault-0 — optional):
-kubectl exec -n vault vault-0 -- env VAULT_TOKEN='<root-token>' vault operator raft list-peers
+```
+
+`raft list-peers` needs the root token (single node just shows `vault-0` — optional):
+
+```bash
+TOKEN=        # paste the root token from vault-init.json
+kubectl exec -n vault vault-0 -- env VAULT_TOKEN="$TOKEN" vault operator raft list-peers
 ```
 
 ### 5. Run the one-time bootstrap
@@ -162,14 +168,13 @@ Vault now serves **https**, so point `VAULT_CACERT` at the CA from the secret:
 ```bash
 kubectl port-forward -n vault svc/vault 8200:8200 >/dev/null 2>&1 &
 
-# Pull the CA the cert was signed with, so the local CLI trusts Vault.
 kubectl get secret -n vault vault-tls -o jsonpath='{.data.ca\.crt}' | base64 -d > /tmp/vault-ca.crt
 
 export VAULT_ADDR=https://127.0.0.1:8200
 export VAULT_CACERT=/tmp/vault-ca.crt
-export VAULT_TOKEN=<root-token-from-vault-init.json>
-
 chmod +x helm/vtafarm-vault/bootstrap.sh
+
+export VAULT_TOKEN=        # paste the root token from vault-init.json
 helm/vtafarm-vault/bootstrap.sh
 ```
 
@@ -207,7 +212,26 @@ After creating a VTA, confirm the seed landed and the pod authenticated:
 
 ```bash
 vault kv get secret/vta/user-<userID>/session-<sessionID>/master-seed
-# and the VTA pod logs should show: authenticated to Vault
+```
+
+The VTA pod logs should also show: `authenticated to Vault`.
+
+## Cleanup (after bootstrap)
+
+The port-forward from step 5 runs in the background (`&`) and is no longer
+needed once setup is done — vtafarm-api reaches Vault via its own address
+(`VAULT_ADDR`), not your local port-forward.
+
+```bash
+# same terminal: list background jobs, then kill by number
+jobs
+kill %1                                   # use the port-forward's job number
+
+# confirm nothing is listening on 8200
+lsof -i :8200
+
+# the local CA copy was only for the bootstrap CLI — safe to remove
+rm -f /tmp/vault-ca.crt
 ```
 
 ---
