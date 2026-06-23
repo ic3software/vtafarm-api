@@ -25,7 +25,8 @@ type Config struct {
 // VaultConfig configures the farm's HashiCorp Vault. RoleID/SecretID come from
 // the vtafarm-api-vault Secret created by helm/vtafarm-vault/bootstrap.sh.
 type VaultConfig struct {
-	Addr         string // e.g. https://vault.vault.svc:8200
+	Addr         string // how THIS API reaches Vault (port-forward locally, svc in-cluster)
+	VTAAddr      string // address rendered into VTA pod configs — always in-cluster svc DNS
 	RoleID       string // AppRole role_id (from the vtafarm-api-vault Secret)
 	SecretID     string // AppRole secret_id (from the vtafarm-api-vault Secret)
 	KVMount      string // KV v2 mount, default "secret"
@@ -135,6 +136,7 @@ func Load() *Config {
 		},
 		Vault: VaultConfig{
 			Addr:         getEnv("VAULT_ADDR", ""),
+			VTAAddr:      getEnv("VAULT_VTA_ADDR", "https://vault.vault.svc:8200"),
 			RoleID:       getEnv("VAULT_ROLE_ID", ""),
 			SecretID:     getEnv("VAULT_SECRET_ID", ""),
 			KVMount:      getEnv("VAULT_KV_MOUNT", "secret"),

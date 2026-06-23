@@ -25,7 +25,7 @@ type Orchestrator struct {
 	db         *gorm.DB
 	k8s        *k8s.Client
 	vault      *vault.Client      // nil when VAULT_ADDR not configured
-	vaultAddr  string             // value rendered into the VTA [secrets] block
+	vaultAddr  string             // in-cluster Vault addr rendered into the VTA [secrets] block
 	didHosting *didhosting.Client // nil when DID_HOSTING_CONTROL_URL not configured
 	mu         sync.Mutex
 	cancels    map[uint]context.CancelFunc

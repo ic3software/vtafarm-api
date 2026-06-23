@@ -25,13 +25,14 @@ level  = "info"
 format = "text"
 
 [secrets]
-vault_addr        = "{{ .Vault.Addr }}"
-vault_secret_path = "{{ .Vault.SecretPath }}"
-vault_kv_mount    = "{{ .Vault.KVMount }}"
-vault_secret_key  = "seed"
-vault_auth_method = "kubernetes"
-vault_k8s_role    = "{{ .Vault.K8sRole }}"
-vault_skip_verify = {{ .Vault.SkipVerify }}
+backend     = "vault"
+addr        = "{{ .Vault.Addr }}"
+secret_path = "{{ .Vault.SecretPath }}"
+kv_mount    = "{{ .Vault.KVMount }}"
+secret_key  = "seed"
+auth_method = "kubernetes"
+k8s_role    = "{{ .Vault.K8sRole }}"
+skip_verify = {{ .Vault.SkipVerify }}
 
 [messaging]
 kind = "existing"
