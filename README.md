@@ -173,7 +173,26 @@ RKE2 will reconcile the change and restart the ingress controller automatically.
 After this, every VTA Ingress gets HTTPS automatically — no `tls:` block or
 cert-manager annotation required on individual Ingress resources.
 
-### 2. Create the API Secrets (one-time)
+### 2. HashiCorp Vault (one-time, before the API)
+
+Each VTA's master seed is stored in HashiCorp Vault. Deploy it **before** the
+API — the API needs the `vtafarm-api-vault` Secret that Vault's bootstrap
+produces. Order matters: **transit Vault first, then the farm Vault.**
+
+1. **`helm/vtafarm-transit`** — the in-cluster transit Vault that auto-unseals
+   the farm Vault. Deploy, init + manually unseal, and bootstrap it. This
+   creates the `vault-transit-token` Secret the farm Vault needs.
+   See `helm/vtafarm-transit/README.md`.
+
+2. **`helm/vtafarm-vault`** — the farm Vault that holds the seeds. Deploy, init,
+   and run its bootstrap to enable KV v2 + Kubernetes auth + the AppRole, then
+   create the `vtafarm-api-vault` Secret from the printed role-id/secret-id.
+   See `helm/vtafarm-vault/README.md`.
+
+> Each chart's README has the full step-by-step. Don't deploy the farm Vault
+> before transit is up and bootstrapped, or it will stay sealed.
+
+### 3. Create the API Secrets (one-time)
 
 Copy the example secret manifest and fill in real values:
 
@@ -199,7 +218,7 @@ kubectl apply -f k8s/secret.yaml
 
 > **Note:** `k8s/secret.yaml` is listed in `.gitignore` — never commit it.
 
-### 3. Create the PostgreSQL Secret (one-time)
+### 4. Create the PostgreSQL Secret (one-time)
 
 ```bash
 kubectl create secret generic vtafarm-api-postgresql \
@@ -207,7 +226,7 @@ kubectl create secret generic vtafarm-api-postgresql \
   --namespace=default
 ```
 
-### 4. Deploy with Helm
+### 5. Deploy with Helm
 
 ```bash
 make deploy \
@@ -230,14 +249,14 @@ make deploy \
 helm uninstall vtafarm
 ```
 
-### 5. Run Migrations in the Cluster
+### 6. Run Migrations in the Cluster
 
 ```bash
 kubectl exec -it deployment/vtafarm \
   -n <namespace> -- go run ./cmd/migrate up
 ```
 
-### 6. CI/CD (GitHub Actions)
+### 7. CI/CD (GitHub Actions)
 
 `scripts/deploy.sh` automates the deploy step in CI. It expects the
 following repository secrets:
