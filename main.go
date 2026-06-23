@@ -14,6 +14,7 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/router"
 	"github.com/ic3software/vtafarm-api/internal/setup"
+	"github.com/ic3software/vtafarm-api/internal/vault"
 )
 
 func main() {
@@ -61,9 +62,31 @@ func main() {
 		log.Printf("warn: DID_HOSTING_CONTROL_URL/DID/PRIVATE_KEY not set — DID auto-upload disabled")
 	}
 
+	// Vault client provisions per-user secret isolation; setup requires it.
+	var vaultClient *vault.Client
+	if cfg.Vault.Addr != "" {
+		vc, vErr := vault.New(vault.Config{
+			Addr:         cfg.Vault.Addr,
+			RoleID:       cfg.Vault.RoleID,
+			SecretID:     cfg.Vault.SecretID,
+			KVMount:      cfg.Vault.KVMount,
+			K8sAuthMount: cfg.Vault.K8sAuthMount,
+			AppRoleMount: cfg.Vault.AppRoleMount,
+			SkipVerify:   cfg.Vault.SkipVerify,
+		})
+		if vErr != nil {
+			log.Printf("warn: Vault client init failed: %v — vta setup disabled", vErr)
+		} else {
+			vaultClient = vc
+			log.Printf("Vault client initialised (%s)", cfg.Vault.Addr)
+		}
+	} else {
+		log.Printf("warn: VAULT_ADDR not set — vta setup disabled")
+	}
+
 	var orch *setup.Orchestrator
 	if k8sClient != nil {
-		orch = setup.NewOrchestrator(db, k8sClient, dhClient)
+		orch = setup.NewOrchestrator(db, k8sClient, vaultClient, cfg.Vault.VTAAddr, dhClient)
 		orch.Resume(context.Background())
 	}
 

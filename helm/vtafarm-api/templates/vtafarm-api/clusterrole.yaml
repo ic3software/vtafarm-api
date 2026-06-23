@@ -18,16 +18,9 @@ rules:
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["roles", "rolebindings"]
     verbs: ["get", "list", "create", "delete"]
-  # Allow vtafarm-api to bind vtafarm-vta-secret-manager to the VTA pod's SA
-  # without holding secrets permissions itself (Kubernetes bind escalation bypass).
-  - apiGroups: ["rbac.authorization.k8s.io"]
-    resources: ["clusterroles"]
-    resourceNames: ["vtafarm-vta-secret-manager"]
-    verbs: ["bind"]
-  # VTA setup wizard: config injection, storage, networking, jobs, deployments
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["delete"]
+  # VTA setup wizard: config injection, storage, networking, jobs, deployments.
+  # The master seed lives in HashiCorp Vault (not a K8s Secret), so vtafarm-api
+  # no longer needs secrets permissions or the secret-manager ClusterRole bind.
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "create", "delete"]

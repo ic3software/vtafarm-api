@@ -9,7 +9,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -23,33 +22,12 @@ func vtaServiceName(sessionID uint) string {
 	return fmt.Sprintf("vta-%d", sessionID)
 }
 
-func VtaSecretName(sessionID uint) string {
-	return fmt.Sprintf("vta-secrets-%d", sessionID)
-}
-
-func vtaSecretRoleName(sessionID uint) string {
-	return fmt.Sprintf("vta-seed-%d", sessionID)
-}
-
-// EnsureVtaSecretRBAC creates a RoleBinding in ns that grants the namespace's
-// default ServiceAccount the vtafarm-vta-secret-manager ClusterRole (secrets
-// get/create/update). VTA's k8s-secrets backend creates the Secret itself during
-// `vta setup`; this binding must exist before the setup job runs.
-// Idempotent — AlreadyExists is ignored.
-func (c *Client) EnsureVtaSecretRBAC(ctx context.Context, ns string, sessionID uint) error {
-	bindingName := vtaSecretRoleName(sessionID)
-
-	_, err := c.kube.RbacV1().RoleBindings(ns).Create(ctx, &rbacv1.RoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: bindingName, Namespace: ns},
-		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "default", Namespace: ns}},
-		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "vtafarm-vta-secret-manager"},
-	}, metav1.CreateOptions{})
-	if err != nil && !k8serrors.IsAlreadyExists(err) {
-		return fmt.Errorf("create vta secret rolebinding: %w", err)
-	}
-
-	return nil
-}
+// VtaServiceAccount is the ServiceAccount the VTA setup/import-did jobs and the
+// VTA Deployment run as. The farm Vault's per-user kubernetes-auth role is bound
+// to this SA name + the user namespace, so the VTA can authenticate to Vault and
+// read/write only its own seed paths. The master seed lives in Vault — there is
+// no per-session Kubernetes Secret anymore.
+const VtaServiceAccount = "vta"
 
 // CreateVtaDeployment creates a Deployment that runs the VTA service using the PVC created
 // during setup. The PVC is mounted at /app/vta, so VTA reads config.toml from
@@ -76,9 +54,19 @@ func (c *Client) CreateVtaDeployment(ctx context.Context, ns string, sessionID u
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
+					ServiceAccountName: VtaServiceAccount,
 					Containers: []corev1.Container{{
 						Name:  "vta",
 						Image: image,
+						// Disable ANSI colour codes in the VTA's tracing logs so
+						// streamed/captured output (provision --follow, kubectl
+						// logs, log stores) stays plain text instead of leaking
+						// escape sequences. NO_COLOR is the cross-tool standard;
+						// CLICOLOR=0 covers tools that honour that convention too.
+						Env: []corev1.EnvVar{
+							{Name: "NO_COLOR", Value: "1"},
+							{Name: "CLICOLOR", Value: "0"},
+						},
 						Ports: []corev1.ContainerPort{{
 							ContainerPort: port,
 							Protocol:      corev1.ProtocolTCP,
@@ -242,7 +230,4 @@ func (c *Client) DeleteVtaResources(ctx context.Context, ns string, sessionID ui
 	_ = c.kube.CoreV1().Services(ns).Delete(ctx, vtaServiceName(sessionID), metav1.DeleteOptions{})
 	_ = c.kube.BatchV1().Jobs(ns).Delete(ctx, ImportDidJobName(sessionID), opts)
 	_ = c.kube.CoreV1().PersistentVolumeClaims(ns).Delete(ctx, VtaPVCName(sessionID), metav1.DeleteOptions{})
-	_ = c.kube.CoreV1().Secrets(ns).Delete(ctx, VtaSecretName(sessionID), metav1.DeleteOptions{})
-	_ = c.kube.RbacV1().RoleBindings(ns).Delete(ctx, vtaSecretRoleName(sessionID), metav1.DeleteOptions{})
-	_ = c.kube.RbacV1().Roles(ns).Delete(ctx, vtaSecretRoleName(sessionID), metav1.DeleteOptions{})
 }

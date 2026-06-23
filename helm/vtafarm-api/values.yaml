@@ -35,6 +35,17 @@ postgresql:
 k8s:
   namespacePrefix: vtafarm-user
 
+vault:
+  addr: "https://vault.vault.svc:8200"
+  # vtaAddr: address baked into VTA pod configs. Defaults to addr (in-cluster the
+  # API and pods reach Vault at the same svc DNS). Override only if they differ.
+  # vtaAddr: "https://vault.vault.svc:8200"
+  kvMount: "secret"
+  k8sAuthMount: "kubernetes"
+  appRoleMount: "approle"
+  skipVerify: "true"
+  existingSecret: "vtafarm-api-vault"
+
 cluster:
   domain: "firstperson.dev"
 

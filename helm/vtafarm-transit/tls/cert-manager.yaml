@@ -1,0 +1,68 @@
+# Internal TLS for the transit Vault, issued by cert-manager (self-contained CA).
+# Apply BEFORE installing the chart, and wait for the cert:
+#   kubectl apply -n vault-transit -f helm/vtafarm-transit/tls/cert-manager.yaml
+#   kubectl wait -n vault-transit --for=condition=Ready certificate/vault-transit-tls --timeout=120s
+#
+# The farm Vault's `seal "transit"` uses tls_skip_verify=true, so it doesn't need
+# this CA — TLS here just encrypts the decrypt traffic on the pod network.
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: vault-transit-selfsigned
+  namespace: vault-transit
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: vault-transit-ca
+  namespace: vault-transit
+spec:
+  isCA: true
+  commonName: vtafarm-vault-transit-ca
+  secretName: vault-transit-ca
+  duration: 87600h    # 10 years
+  renewBefore: 2160h
+  privateKey:
+    algorithm: RSA
+    size: 2048
+  issuerRef:
+    name: vault-transit-selfsigned
+    kind: Issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: vault-transit-ca-issuer
+  namespace: vault-transit
+spec:
+  ca:
+    secretName: vault-transit-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: vault-transit-tls
+  namespace: vault-transit
+spec:
+  secretName: vault-transit-tls
+  duration: 2160h     # 90 days
+  renewBefore: 360h
+  privateKey:
+    algorithm: RSA
+    size: 2048
+    rotationPolicy: Always
+  issuerRef:
+    name: vault-transit-ca-issuer
+    kind: Issuer
+  commonName: vault-transit.vault-transit.svc.cluster.local
+  ipAddresses:
+    - 127.0.0.1
+  dnsNames:
+    - localhost
+    - vault-transit
+    - vault-transit.vault-transit
+    - vault-transit.vault-transit.svc
+    - vault-transit.vault-transit.svc.cluster.local

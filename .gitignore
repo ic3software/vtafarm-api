@@ -25,3 +25,7 @@ build-errors.log
 
 # Kubernetes secrets (never commit — copy from k8s/secret.yaml.example)
 k8s/secret.yaml
+
+# Transit Vault secrets
+transit-init.json
+vault-init.json

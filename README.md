@@ -46,7 +46,15 @@ networking workarounds.
    The API is now available at `http://localhost:8080`.
    API docs: `http://localhost:8080/docs`
 
-3. (Optional) Generate a DID hosting keypair (required only if DID hosting is enabled):
+3. Port-forward Vault so the locally-running API can reach it — required for
+   VTA setup (the API provisions per-user Vault policies/roles). Run in a
+   separate terminal and keep it open:
+
+   ```bash
+   kubectl port-forward -n vault svc/vault 8200:8200
+   ```
+
+4. (Optional) Generate a DID hosting keypair (required only if DID hosting is enabled):
 
    ```bash
    make gen-keypair
@@ -55,7 +63,7 @@ networking workarounds.
    Copy the two output lines (`DID_HOSTING_PRIVATE_KEY` and `DID_HOSTING_DID`) into your `.env`,
    then register the DID in the did-hosting service Access Control with **role=Service**.
 
-4. Create the first admin enrollment token — run in a separate terminal while the API is running:
+5. Create the first admin enrollment token — run in a separate terminal while the API is running:
 
    ```bash
    make enroll
@@ -165,7 +173,26 @@ RKE2 will reconcile the change and restart the ingress controller automatically.
 After this, every VTA Ingress gets HTTPS automatically — no `tls:` block or
 cert-manager annotation required on individual Ingress resources.
 
-### 2. Create the API Secrets (one-time)
+### 2. HashiCorp Vault (one-time, before the API)
+
+Each VTA's master seed is stored in HashiCorp Vault. Deploy it **before** the
+API — the API needs the `vtafarm-api-vault` Secret that Vault's bootstrap
+produces. Order matters: **transit Vault first, then the farm Vault.**
+
+1. **[`helm/vtafarm-transit`](helm/vtafarm-transit/README.md)** — the in-cluster
+   transit Vault that auto-unseals the farm Vault. Deploy, init + manually
+   unseal, and bootstrap it. This creates the `vault-transit-token` Secret the
+   farm Vault needs.
+
+2. **[`helm/vtafarm-vault`](helm/vtafarm-vault/README.md)** — the farm Vault that
+   holds the seeds. Deploy, init, and run its bootstrap to enable KV v2 +
+   Kubernetes auth + the AppRole, then create the `vtafarm-api-vault` Secret from
+   the printed role-id/secret-id.
+
+> Each chart's README has the full step-by-step. Don't deploy the farm Vault
+> before transit is up and bootstrapped, or it will stay sealed.
+
+### 3. Create the API Secrets (one-time)
 
 Copy the example secret manifest and fill in real values:
 
@@ -191,7 +218,7 @@ kubectl apply -f k8s/secret.yaml
 
 > **Note:** `k8s/secret.yaml` is listed in `.gitignore` — never commit it.
 
-### 3. Create the PostgreSQL Secret (one-time)
+### 4. Create the PostgreSQL Secret (one-time)
 
 ```bash
 kubectl create secret generic vtafarm-api-postgresql \
@@ -199,7 +226,7 @@ kubectl create secret generic vtafarm-api-postgresql \
   --namespace=default
 ```
 
-### 4. Deploy with Helm
+### 5. Deploy with Helm
 
 ```bash
 make deploy \
@@ -222,14 +249,14 @@ make deploy \
 helm uninstall vtafarm
 ```
 
-### 5. Run Migrations in the Cluster
+### 6. Run Migrations in the Cluster
 
 ```bash
 kubectl exec -it deployment/vtafarm \
   -n <namespace> -- go run ./cmd/migrate up
 ```
 
-### 6. CI/CD (GitHub Actions)
+### 7. CI/CD (GitHub Actions)
 
 `scripts/deploy.sh` automates the deploy step in CI. It expects the
 following repository secrets:
@@ -246,30 +273,12 @@ following repository secrets:
 
 ### Production Kubernetes RBAC
 
-When deploying via Helm (`make deploy`), both ClusterRoles below are created automatically. For **test clusters or manual setups**, apply them by hand.
+When deploying via Helm (`make deploy`), the ClusterRole below is created
+automatically. For **test clusters or manual setups**, apply it by hand.
 
-#### Step 1 — Create the `vtafarm-vta-secret-manager` ClusterRole
-
-This ClusterRole grants VTA setup pods the ability to manage their own seed Secret via the k8s-secrets backend. It must exist before any VTA setup session runs.
-
-```bash
-kubectl apply -f helm/vtafarm-api/templates/vtafarm-api/clusterrole-vta-secret-manager.yaml
-```
-
-Or inline:
-
-```yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: vtafarm-vta-secret-manager
-rules:
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get", "create", "update"]
-```
-
-#### Step 2 — Grant vtafarm-api the required permissions
+The master seed is stored in HashiCorp Vault (see `helm/vtafarm-vault`), not a
+Kubernetes Secret, so vtafarm-api needs no secrets permissions and there is no
+`vtafarm-vta-secret-manager` ClusterRole.
 
 The API server pod needs a `ClusterRole` with these permissions (managed by the Helm chart as `{{ .Values.name }}`):
 
@@ -287,15 +296,6 @@ rules:
 - apiGroups: ["rbac.authorization.k8s.io"]
   resources: ["roles", "rolebindings"]
   verbs: ["get", "list", "create", "delete"]
-# Required to bind vtafarm-vta-secret-manager to VTA pod SAs
-# without vtafarm-api holding secrets permissions itself.
-- apiGroups: ["rbac.authorization.k8s.io"]
-  resources: ["clusterroles"]
-  resourceNames: ["vtafarm-vta-secret-manager"]
-  verbs: ["bind"]
-- apiGroups: [""]
-  resources: ["secrets"]
-  verbs: ["delete"]
 - apiGroups: [""]
   resources: ["configmaps"]
   verbs: ["get", "list", "create", "delete"]

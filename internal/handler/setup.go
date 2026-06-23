@@ -331,6 +331,11 @@ func (h *SetupHandler) Delete(c *gin.Context) {
 		h.k8s.DeleteVtaResources(c.Request.Context(), ns, session.ID)
 	}
 
+	// Delete this session's master seed from Vault (best-effort).
+	if h.orch != nil {
+		h.orch.TeardownVaultSeed(c.Request.Context(), session.UserID, session.ID)
+	}
+
 	if err := h.db.Delete(&session).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete session"})
 		return
@@ -341,6 +346,10 @@ func (h *SetupHandler) Delete(c *gin.Context) {
 		h.db.Model(&model.SetupSession{}).Where("user_id = ?", session.UserID).Count(&remaining)
 		if remaining == 0 {
 			_ = h.k8s.DeleteNamespace(c.Request.Context(), fmt.Sprintf("%d", session.UserID))
+			// Last session for this user → remove their Vault policy + k8s role.
+			if h.orch != nil {
+				h.orch.TeardownVaultUserAccess(c.Request.Context(), session.UserID)
+			}
 		}
 	}
 

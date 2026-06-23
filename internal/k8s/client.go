@@ -97,6 +97,16 @@ func (c *Client) EnsureUserEnvironment(ctx context.Context, userID string) error
 		return fmt.Errorf("create service account: %w", err)
 	}
 
+	// 2b. ServiceAccount "vta" — the identity the VTA setup/import jobs and
+	// Deployment run as. Vault's kubernetes-auth role for this user is bound to
+	// this SA name + namespace, so the VTA can read/write only its own seeds.
+	_, err = c.kube.CoreV1().ServiceAccounts(ns).Create(ctx, &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Name: VtaServiceAccount, Namespace: ns},
+	}, metav1.CreateOptions{})
+	if err != nil && !k8serrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create vta service account: %w", err)
+	}
+
 	// 3. Role — scoped to this namespace only
 	roleName := "pod-manager"
 	_, err = c.kube.RbacV1().Roles(ns).Create(ctx, &rbacv1.Role{

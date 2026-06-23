@@ -169,8 +169,26 @@ Every user gets their own namespace: `vtafarm-user-{userID}`.
 
 1. **Namespace** labelled `managed-by=vtafarm`
 2. **ServiceAccount** `pod-operator`
-3. **Role** `pod-manager` — grants `pods`, `pods/log`, `pods/exec`
-4. **RoleBinding** — binds the SA to the Role
+3. **ServiceAccount** `vta` — identity the VTA jobs/Deployment run as; the
+   farm Vault's per-user kubernetes-auth role is bound to this SA
+4. **Role** `pod-manager` — grants `pods`, `pods/log`, `pods/exec`
+5. **RoleBinding** — binds the SA to the Role
+
+### Secret Storage (HashiCorp Vault)
+
+Each VTA's master seed is stored in **HashiCorp Vault** (KV v2), not a
+Kubernetes Secret. See `helm/vtafarm-vault` (farm Vault) and
+`helm/vtafarm-transit` (in-cluster auto-unseal).
+
+- `internal/vault` provisions, per user, a Vault **policy** + **kubernetes-auth
+  role** (`vta-user-<userID>`) scoped to `secret/{data,metadata}/vta/user-<id>/*`.
+- The VTA pod authenticates to Vault with its `vta` ServiceAccount JWT and
+  reads/writes its seed at `vta/user-<id>/session-<id>/master-seed`.
+- vtafarm-api authenticates to Vault via **AppRole** (`VAULT_ROLE_ID` /
+  `VAULT_SECRET_ID` from the `vtafarm-api-vault` Secret). It manages policies/
+  roles and deletes seeds on teardown — it never reads seeds.
+- The VTA `[secrets]` config block is rendered in `internal/setup/templates.go`
+  with `vault_skip_verify = true` (self-signed in-cluster CA).
 
 ### API Server Permissions (Production)
 

@@ -85,7 +85,8 @@ func (c *Client) CreateSetupResources(ctx context.Context, ns string, sessionID 
 			ActiveDeadlineSeconds:   &deadline,
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyNever,
+					RestartPolicy:      corev1.RestartPolicyNever,
+					ServiceAccountName: VtaServiceAccount,
 					Containers: []corev1.Container{{
 						Name:  "vta-setup",
 						Image: vtaImage,
@@ -244,7 +245,8 @@ func (c *Client) CreateImportDidJob(ctx context.Context, ns string, sessionID ui
 			ActiveDeadlineSeconds:   &deadline,
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyNever,
+					RestartPolicy:      corev1.RestartPolicyNever,
+					ServiceAccountName: VtaServiceAccount,
 					Containers: []corev1.Container{{
 						Name:       "vta-import",
 						Image:      image,

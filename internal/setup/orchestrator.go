@@ -14,6 +14,7 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/didhosting"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/vault"
 )
 
 // Orchestrator drives a setup session through its full lifecycle.
@@ -23,15 +24,19 @@ import (
 type Orchestrator struct {
 	db         *gorm.DB
 	k8s        *k8s.Client
+	vault      *vault.Client      // nil when VAULT_ADDR not configured
+	vaultAddr  string             // in-cluster Vault addr rendered into the VTA [secrets] block
 	didHosting *didhosting.Client // nil when DID_HOSTING_CONTROL_URL not configured
 	mu         sync.Mutex
 	cancels    map[uint]context.CancelFunc
 }
 
-func NewOrchestrator(db *gorm.DB, k8sClient *k8s.Client, dhClient *didhosting.Client) *Orchestrator {
+func NewOrchestrator(db *gorm.DB, k8sClient *k8s.Client, vaultClient *vault.Client, vaultAddr string, dhClient *didhosting.Client) *Orchestrator {
 	return &Orchestrator{
 		db:         db,
 		k8s:        k8sClient,
+		vault:      vaultClient,
+		vaultAddr:  vaultAddr,
 		didHosting: dhClient,
 		cancels:    make(map[uint]context.CancelFunc),
 	}
@@ -70,6 +75,29 @@ func (o *Orchestrator) launch(sessionID uint, fn func(context.Context)) {
 		}()
 		fn(ctx)
 	}()
+}
+
+// TeardownVaultSeed deletes a session's master seed from Vault (best-effort).
+// Called by the Delete handler. No-op when Vault isn't configured.
+func (o *Orchestrator) TeardownVaultSeed(ctx context.Context, userID, sessionID uint) {
+	if o.vault == nil {
+		return
+	}
+	if err := o.vault.DeleteSeed(ctx, vault.SeedPath(userID, sessionID)); err != nil {
+		log.Printf("[orchestrator] warn: delete vault seed (user %d session %d): %v", userID, sessionID, err)
+	}
+}
+
+// TeardownVaultUserAccess removes a user's Vault policy + kubernetes-auth role
+// (best-effort). Call only when the user has no remaining sessions. No-op when
+// Vault isn't configured.
+func (o *Orchestrator) TeardownVaultUserAccess(ctx context.Context, userID uint) {
+	if o.vault == nil {
+		return
+	}
+	if err := o.vault.DeleteUserAccess(ctx, userID); err != nil {
+		log.Printf("[orchestrator] warn: delete vault user access (user %d): %v", userID, err)
+	}
 }
 
 // Cancel stops the goroutine for sessionID (called by Delete handler).
@@ -122,15 +150,27 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 		return
 	}
 
-	if err := o.k8s.EnsureVtaSecretRBAC(ctx, ns, sessionID); err != nil {
+	// Provision the user's Vault policy + kubernetes-auth role so the VTA pod
+	// (running as the "vta" SA) can read/write only its own seed paths.
+	if o.vault == nil {
+		o.markFailed(sessionID, "vault not configured: set VAULT_ADDR/VAULT_ROLE_ID/VAULT_SECRET_ID")
+		return
+	}
+	if err := o.vault.EnsureUserAccess(ctx, session.UserID, ns, k8s.VtaServiceAccount); err != nil {
 		if ctx.Err() != nil {
 			return
 		}
-		o.markFailed(sessionID, "failed to create vta secret rbac: "+err.Error())
+		o.markFailed(sessionID, "failed to provision vault access: "+err.Error())
 		return
 	}
 
-	toml, err := RenderVtaSetupTOML(&session, ns, k8s.VtaSecretName(sessionID))
+	toml, err := RenderVtaSetupTOML(&session, VaultSecrets{
+		Addr:       o.vaultAddr,
+		SecretPath: vault.SeedPath(session.UserID, sessionID),
+		KVMount:    o.vault.KVMount(),
+		K8sRole:    vault.UserName(session.UserID),
+		SkipVerify: true,
+	})
 	if err != nil {
 		o.markFailed(sessionID, "failed to render TOML: "+err.Error())
 		return
