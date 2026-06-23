@@ -16,6 +16,7 @@ data:
   DB_SSLMODE:           {{ .Values.db.sslmode | quote }}
   K8S_NAMESPACE_PREFIX: {{ .Values.k8s.namespacePrefix | quote }}
   VAULT_ADDR:           {{ .Values.vault.addr | quote }}
+  VAULT_VTA_ADDR:       {{ .Values.vault.vtaAddr | default .Values.vault.addr | quote }}
   VAULT_KV_MOUNT:       {{ .Values.vault.kvMount | quote }}
   VAULT_K8S_AUTH_MOUNT: {{ .Values.vault.k8sAuthMount | quote }}
   VAULT_APPROLE_MOUNT:  {{ .Values.vault.appRoleMount | quote }}
