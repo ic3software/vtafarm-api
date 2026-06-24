@@ -229,47 +229,6 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 	})
 	log.Printf("[orchestrator] session %d: setup complete, VTA DID=%s", sessionID, vtaDID)
 
-	if o.didHosting != nil {
-		// Grant the VTA DID owner-level access in the hosting control plane so it
-		// can register and update its own DID entries directly.
-		aclLabel := fmt.Sprintf("VTA user-%d session-%d", session.UserID, sessionID)
-		if err := o.didHosting.CreateAcl(ctx, vtaDID, "service", aclLabel); err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			o.markFailed(sessionID, "failed to add VTA DID to hosting ACL: "+err.Error())
-			return
-		}
-		log.Printf("[orchestrator] session %d: VTA DID added to hosting ACL", sessionID)
-
-		// Link VTA to the did-hosting control server so it knows where to push
-		// DID updates.
-		didMgmtJobName := k8s.DidMgmtServersAddJobName(sessionID)
-		if err := o.k8s.CreateDidMgmtServersAddJob(ctx, ns, sessionID, session.VtaImage, o.didHosting.ServerDid()); err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			o.markFailed(sessionID, "failed to create did-mgmt servers add job: "+err.Error())
-			return
-		}
-		succeeded, failMsg, err := o.k8s.WaitForJob(ctx, ns, didMgmtJobName)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			o.markFailed(sessionID, "did-mgmt servers add job watch error: "+err.Error())
-			return
-		}
-		if !succeeded {
-			if jobLogs, logsErr := o.k8s.JobLogs(ctx, ns, didMgmtJobName); logsErr == nil && jobLogs != "" {
-				failMsg = failMsg + "\n\n--- Job Logs ---\n" + jobLogs
-			}
-			o.markFailed(sessionID, "did-mgmt servers add job failed: "+failMsg)
-			return
-		}
-		log.Printf("[orchestrator] session %d: vta did-mgmt servers add completed", sessionID)
-	}
-
 	if o.didHosting != nil && didLog != "" && session.VtaDidUrl != "" {
 		// Extract path from the full URL e.g. https://dids.fpp2.ic3.dev/abc123/pvta → abc123/pvta
 		path := session.VtaDidUrl
@@ -336,7 +295,50 @@ func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDi
 		return
 	}
 
-	log.Printf("[orchestrator] session %d: admin DID imported, starting VTA deployment", sessionID)
+	log.Printf("[orchestrator] session %d: admin DID imported", sessionID)
+
+	if o.didHosting != nil {
+		// Add the VTA DID to the hosting control plane ACL so the VTA instance
+		// can register and update its own DID entries directly.
+		aclLabel := fmt.Sprintf("VTA user-%d session-%d", session.UserID, sessionID)
+		if err := o.didHosting.CreateAcl(ctx, session.VtaDid, "service", aclLabel); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			o.markFailed(sessionID, "failed to add VTA DID to hosting ACL: "+err.Error())
+			return
+		}
+		log.Printf("[orchestrator] session %d: VTA DID added to hosting ACL", sessionID)
+
+		// Link VTA to the did-hosting control server so it knows where to push
+		// DID updates.
+		didMgmtJobName := k8s.DidMgmtServersAddJobName(sessionID)
+		if err := o.k8s.CreateDidMgmtServersAddJob(ctx, ns, sessionID, session.VtaImage, o.didHosting.ServerDid()); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			o.markFailed(sessionID, "failed to create did-mgmt servers add job: "+err.Error())
+			return
+		}
+		succeeded, failMsg, err := o.k8s.WaitForJob(ctx, ns, didMgmtJobName)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			o.markFailed(sessionID, "did-mgmt servers add job watch error: "+err.Error())
+			return
+		}
+		if !succeeded {
+			if jobLogs, logsErr := o.k8s.JobLogs(ctx, ns, didMgmtJobName); logsErr == nil && jobLogs != "" {
+				failMsg = failMsg + "\n\n--- Job Logs ---\n" + jobLogs
+			}
+			o.markFailed(sessionID, "did-mgmt servers add job failed: "+failMsg)
+			return
+		}
+		log.Printf("[orchestrator] session %d: vta did-mgmt servers add completed", sessionID)
+	}
+
+	log.Printf("[orchestrator] session %d: starting VTA deployment", sessionID)
 
 	if err := o.k8s.CreateVtaDeployment(ctx, ns, sessionID, session.VtaImage); err != nil {
 		if ctx.Err() != nil {
