@@ -28,14 +28,10 @@ func VtaPVCName(sessionID uint) string {
 	return fmt.Sprintf("vta-data-%d", sessionID)
 }
 
-// ImportDidJobName returns the K8s Job name for the import-did phase.
-func ImportDidJobName(sessionID uint) string {
-	return fmt.Sprintf("vta-import-%d", sessionID)
-}
-
-// DidMgmtServersAddJobName returns the K8s Job name for the did-mgmt servers add step.
-func DidMgmtServersAddJobName(sessionID uint) string {
-	return fmt.Sprintf("vta-did-mgmt-%d", sessionID)
+// ProvisionJobName returns the K8s Job name for the combined provision phase
+// (import-did + optional did-mgmt servers add).
+func ProvisionJobName(sessionID uint) string {
+	return fmt.Sprintf("vta-provision-%d", sessionID)
 }
 
 
@@ -232,11 +228,19 @@ wait:
 	return scanner.Err()
 }
 
-// CreateImportDidJob creates a K8s Job that runs `vta import-did --did <adminDid> --role admin`
-// using the session PVC (workingDir /app/vta). Idempotent on AlreadyExists.
-func (c *Client) CreateImportDidJob(ctx context.Context, ns string, sessionID uint, image, adminDid string) error {
-	jobName := ImportDidJobName(sessionID)
+// CreateProvisionJob creates a K8s Job that runs:
+//  1. `vta import-did --did <adminDid> --role admin`
+//  2. if controlDid != "": `vta did-mgmt servers add --id control --did <controlDid> --label "DID Hosting Control Plane"`
+//
+// Both steps run in a single container using the session PVC. Idempotent on AlreadyExists.
+func (c *Client) CreateProvisionJob(ctx context.Context, ns string, sessionID uint, image, adminDid, controlDid string) error {
+	jobName := ProvisionJobName(sessionID)
 	pvcName := VtaPVCName(sessionID)
+
+	cmd := fmt.Sprintf("vta import-did --did %s --role admin", adminDid)
+	if controlDid != "" {
+		cmd += fmt.Sprintf(" && vta did-mgmt servers add --id control --did %s --label 'DID Hosting Control Plane'", controlDid)
+	}
 
 	backoff := int32(0)
 	ttl := int32(3600)
@@ -253,9 +257,9 @@ func (c *Client) CreateImportDidJob(ctx context.Context, ns string, sessionID ui
 					RestartPolicy:      corev1.RestartPolicyNever,
 					ServiceAccountName: VtaServiceAccount,
 					Containers: []corev1.Container{{
-						Name:       "vta-import",
+						Name:       "vta-provision",
 						Image:      image,
-						Command:    []string{"vta", "import-did", "--did", adminDid, "--role", "admin"},
+						Command:    []string{"sh", "-c", cmd},
 						WorkingDir: "/app/vta",
 						VolumeMounts: []corev1.VolumeMount{{
 							Name:      "data",
@@ -275,63 +279,7 @@ func (c *Client) CreateImportDidJob(ctx context.Context, ns string, sessionID ui
 		},
 	}, metav1.CreateOptions{})
 	if err != nil && !k8serrors.IsAlreadyExists(err) {
-		return fmt.Errorf("create import-did job: %w", err)
-	}
-	return nil
-}
-
-// CreateDidMgmtServersAddJob creates a K8s Job that runs:
-//
-//	vta did-mgmt servers add --id control --did <controlDid> --label "Production WebVH Control Plane"
-//
-// using the session PVC (workingDir /app/vta). Idempotent on AlreadyExists.
-func (c *Client) CreateDidMgmtServersAddJob(ctx context.Context, ns string, sessionID uint, image, controlDid string) error {
-	jobName := DidMgmtServersAddJobName(sessionID)
-	pvcName := VtaPVCName(sessionID)
-
-	backoff := int32(0)
-	ttl := int32(3600)
-	deadline := int64(120)
-
-	_, err := c.kube.BatchV1().Jobs(ns).Create(ctx, &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: ns},
-		Spec: batchv1.JobSpec{
-			BackoffLimit:            &backoff,
-			TTLSecondsAfterFinished: &ttl,
-			ActiveDeadlineSeconds:   &deadline,
-			Template: corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					RestartPolicy:      corev1.RestartPolicyNever,
-					ServiceAccountName: VtaServiceAccount,
-					Containers: []corev1.Container{{
-						Name:  "vta-did-mgmt",
-						Image: image,
-						Command: []string{
-							"vta", "did-mgmt", "servers", "add",
-							"--id", "control",
-							"--did", controlDid,
-							"--label", "DID Hosting Control Plane",
-						},
-						WorkingDir: "/app/vta",
-						VolumeMounts: []corev1.VolumeMount{{
-							Name:      "data",
-							MountPath: "/app/vta",
-						}},
-					}},
-					Volumes: []corev1.Volume{{
-						Name: "data",
-						VolumeSource: corev1.VolumeSource{
-							PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-								ClaimName: pvcName,
-							},
-						},
-					}},
-				},
-			},
-		},
-	}, metav1.CreateOptions{})
-	if err != nil && !k8serrors.IsAlreadyExists(err) {
-		return fmt.Errorf("create did-mgmt servers add job: %w", err)
+		return fmt.Errorf("create provision job: %w", err)
 	}
 	return nil
 }

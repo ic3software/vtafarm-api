@@ -1284,12 +1284,12 @@ paths:
       description: |
         Server-Sent Events (SSE) stream.
 
-        **Optional query param** `?source=setup|import-did|vta` — explicitly select the log source
+        **Optional query param** `?source=setup|provision|vta` — explicitly select the log source
         regardless of session status. Holds the connection open until the pod is ready, then streams.
 
         Without `?source`, the source is chosen by session status:
         - `vta_setup_running` — live output from the vta-setup K8s Job
-        - `provisioning` — live output from the vta-import-did K8s Job
+        - `provisioning` — live output from the vta-provision K8s Job (import-did + did-mgmt servers add)
         - `running` — live output from the running VTA pod
         - `vta_setup_complete` — replays buffered vta-setup job output then closes
         - `failed` — replays the last job's output then closes
@@ -1311,7 +1311,7 @@ paths:
           required: false
           schema:
             type: string
-            enum: [setup, import-did, vta]
+            enum: [setup, provision, vta]
       responses:
         "200":
           description: SSE log stream

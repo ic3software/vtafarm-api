@@ -273,40 +273,12 @@ func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDi
 	})
 	log.Printf("[orchestrator] session %d: provisioning, importing admin DID %s", sessionID, adminDid)
 
-	// Run `vta import-did --did <adminDid> --role admin` as a K8s Job.
-	if err := o.k8s.CreateImportDidJob(ctx, ns, sessionID, session.VtaImage, adminDid); err != nil {
-		if ctx.Err() != nil {
-			return
-		}
-		o.markFailed(sessionID, "failed to create import-did job: "+err.Error())
-		return
-	}
-
-	succeeded, failMsg, err := o.k8s.WaitForJob(ctx, ns, k8s.ImportDidJobName(sessionID))
-	if err != nil {
-		if ctx.Err() != nil {
-			return
-		}
-		o.markFailed(sessionID, "import-did job watch error: "+err.Error())
-		return
-	}
-	if !succeeded {
-		importJobName := k8s.ImportDidJobName(sessionID)
-		if jobLogs, logsErr := o.k8s.JobLogs(ctx, ns, importJobName); logsErr == nil && jobLogs != "" {
-			failMsg = "import-did job failed: " + failMsg + "\n\n--- Job Logs ---\n" + jobLogs
-		} else {
-			failMsg = "import-did job failed: " + failMsg
-		}
-		o.markFailed(sessionID, failMsg)
-		return
-	}
-
-	log.Printf("[orchestrator] session %d: admin DID imported", sessionID)
-
+	// If did-hosting is configured: create the ACL entry first, then run the
+	// combined provision job (import-did + did-mgmt servers add). The ACL must
+	// exist before the VTA pod starts pushing DID updates.
+	var controlDid string
 	log.Printf("[orchestrator] session %d: did-hosting configured=%v vta_did=%q", sessionID, o.didHosting != nil, session.VtaDid)
 	if o.didHosting != nil {
-		// Add the VTA DID to the hosting control plane ACL so the VTA instance
-		// can register and update its own DID entries directly.
 		aclLabel := fmt.Sprintf("VTA user-%d session-%d", session.UserID, sessionID)
 		log.Printf("[orchestrator] session %d: adding VTA DID to hosting ACL (did=%s label=%s)", sessionID, session.VtaDid, aclLabel)
 		if err := o.didHosting.CreateAcl(ctx, session.VtaDid, "service", aclLabel); err != nil {
@@ -317,38 +289,37 @@ func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDi
 			return
 		}
 		log.Printf("[orchestrator] session %d: VTA DID added to hosting ACL", sessionID)
-
-		// Link VTA to the did-hosting control server so it knows where to push
-		// DID updates.
-		log.Printf("[orchestrator] session %d: creating did-mgmt servers add job (control-did=%s)", sessionID, o.didHosting.ServerDid())
-		didMgmtJobName := k8s.DidMgmtServersAddJobName(sessionID)
-		if err := o.k8s.CreateDidMgmtServersAddJob(ctx, ns, sessionID, session.VtaImage, o.didHosting.ServerDid()); err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			o.markFailed(sessionID, "failed to create did-mgmt servers add job: "+err.Error())
-			return
-		}
-		log.Printf("[orchestrator] session %d: waiting for did-mgmt servers add job %s", sessionID, didMgmtJobName)
-		succeeded, failMsg, err := o.k8s.WaitForJob(ctx, ns, didMgmtJobName)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			o.markFailed(sessionID, "did-mgmt servers add job watch error: "+err.Error())
-			return
-		}
-		if !succeeded {
-			if jobLogs, logsErr := o.k8s.JobLogs(ctx, ns, didMgmtJobName); logsErr == nil && jobLogs != "" {
-				failMsg = failMsg + "\n\n--- Job Logs ---\n" + jobLogs
-			}
-			o.markFailed(sessionID, "did-mgmt servers add job failed: "+failMsg)
-			return
-		}
-		log.Printf("[orchestrator] session %d: vta did-mgmt servers add completed", sessionID)
+		controlDid = o.didHosting.ServerDid()
 	} else {
 		log.Printf("[orchestrator] session %d: skipping did-hosting steps (DID_HOSTING_CONTROL_URL not configured)", sessionID)
 	}
+
+	provisionJobName := k8s.ProvisionJobName(sessionID)
+	log.Printf("[orchestrator] session %d: creating provision job (controlDid=%q)", sessionID, controlDid)
+	if err := o.k8s.CreateProvisionJob(ctx, ns, sessionID, session.VtaImage, adminDid, controlDid); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		o.markFailed(sessionID, "failed to create provision job: "+err.Error())
+		return
+	}
+
+	succeeded, failMsg, err := o.k8s.WaitForJob(ctx, ns, provisionJobName)
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		o.markFailed(sessionID, "provision job watch error: "+err.Error())
+		return
+	}
+	if !succeeded {
+		if jobLogs, logsErr := o.k8s.JobLogs(ctx, ns, provisionJobName); logsErr == nil && jobLogs != "" {
+			failMsg = failMsg + "\n\n--- Job Logs ---\n" + jobLogs
+		}
+		o.markFailed(sessionID, "provision job failed: "+failMsg)
+		return
+	}
+	log.Printf("[orchestrator] session %d: provision job completed", sessionID)
 
 	log.Printf("[orchestrator] session %d: starting VTA deployment", sessionID)
 

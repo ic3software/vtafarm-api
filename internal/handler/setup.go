@@ -314,14 +314,20 @@ func (h *SetupHandler) Delete(c *gin.Context) {
 		}
 	}
 
-	if h.didHosting != nil && session.VtaDidUrl != "" {
-		path := session.VtaDidUrl
-		if u, err := url.Parse(path); err == nil {
-			path = strings.TrimPrefix(u.Path, "/")
+	if h.didHosting != nil {
+		if session.VtaDidUrl != "" {
+			path := session.VtaDidUrl
+			if u, err := url.Parse(path); err == nil {
+				path = strings.TrimPrefix(u.Path, "/")
+			}
+			if err := h.didHosting.DeleteDid(c.Request.Context(), path); err != nil {
+				log.Printf("[setup] warn: failed to delete DID from hosting for session %d: %v", session.ID, err)
+			}
 		}
-		if err := h.didHosting.DeleteDid(c.Request.Context(), path); err != nil {
-			// Log but don't block: DID may already be gone or hosting service unreachable.
-			log.Printf("[setup] warn: failed to delete DID from hosting for session %d: %v", session.ID, err)
+		if session.VtaDid != "" {
+			if err := h.didHosting.DeleteAcl(c.Request.Context(), session.VtaDid); err != nil {
+				log.Printf("[setup] warn: failed to delete ACL entry for session %d: %v", session.ID, err)
+			}
 		}
 	}
 
@@ -404,8 +410,8 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 			}); err != nil && c.Request.Context().Err() == nil {
 				sseError(err)
 			}
-		case "import-did":
-			if err := h.k8s.StreamJobLogs(c.Request.Context(), ns, k8s.ImportDidJobName(session.ID), func(line string) {
+		case "provision":
+			if err := h.k8s.StreamJobLogs(c.Request.Context(), ns, k8s.ProvisionJobName(session.ID), func(line string) {
 				fmt.Fprintf(c.Writer, "data: %s\n\n", line)
 				c.Writer.Flush()
 			}); err != nil && c.Request.Context().Err() == nil {
@@ -443,7 +449,7 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 			c.Writer.Flush()
 		}
 	case "provisioning":
-		if err := h.k8s.StreamJobLogs(c.Request.Context(), ns, k8s.ImportDidJobName(session.ID), func(line string) {
+		if err := h.k8s.StreamJobLogs(c.Request.Context(), ns, k8s.ProvisionJobName(session.ID), func(line string) {
 			fmt.Fprintf(c.Writer, "data: %s\n\n", line)
 			c.Writer.Flush()
 		}); err != nil && c.Request.Context().Err() == nil {
@@ -472,7 +478,7 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 		}
 		c.Writer.Flush()
 	default: // failed — replay import job if it exists, else setup job
-		jobName := k8s.ImportDidJobName(session.ID)
+		jobName := k8s.ProvisionJobName(session.ID)
 		logs, err := h.k8s.JobLogs(c.Request.Context(), ns, jobName)
 		if err != nil {
 			logs, err = h.k8s.JobLogs(c.Request.Context(), ns, k8s.SetupJobName(session.ID))
