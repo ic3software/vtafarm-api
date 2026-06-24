@@ -297,10 +297,12 @@ func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDi
 
 	log.Printf("[orchestrator] session %d: admin DID imported", sessionID)
 
+	log.Printf("[orchestrator] session %d: did-hosting configured=%v vta_did=%q", sessionID, o.didHosting != nil, session.VtaDid)
 	if o.didHosting != nil {
 		// Add the VTA DID to the hosting control plane ACL so the VTA instance
 		// can register and update its own DID entries directly.
 		aclLabel := fmt.Sprintf("VTA user-%d session-%d", session.UserID, sessionID)
+		log.Printf("[orchestrator] session %d: adding VTA DID to hosting ACL (did=%s label=%s)", sessionID, session.VtaDid, aclLabel)
 		if err := o.didHosting.CreateAcl(ctx, session.VtaDid, "service", aclLabel); err != nil {
 			if ctx.Err() != nil {
 				return
@@ -312,6 +314,7 @@ func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDi
 
 		// Link VTA to the did-hosting control server so it knows where to push
 		// DID updates.
+		log.Printf("[orchestrator] session %d: creating did-mgmt servers add job (control-did=%s)", sessionID, o.didHosting.ServerDid())
 		didMgmtJobName := k8s.DidMgmtServersAddJobName(sessionID)
 		if err := o.k8s.CreateDidMgmtServersAddJob(ctx, ns, sessionID, session.VtaImage, o.didHosting.ServerDid()); err != nil {
 			if ctx.Err() != nil {
@@ -320,6 +323,7 @@ func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDi
 			o.markFailed(sessionID, "failed to create did-mgmt servers add job: "+err.Error())
 			return
 		}
+		log.Printf("[orchestrator] session %d: waiting for did-mgmt servers add job %s", sessionID, didMgmtJobName)
 		succeeded, failMsg, err := o.k8s.WaitForJob(ctx, ns, didMgmtJobName)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -336,6 +340,8 @@ func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDi
 			return
 		}
 		log.Printf("[orchestrator] session %d: vta did-mgmt servers add completed", sessionID)
+	} else {
+		log.Printf("[orchestrator] session %d: skipping did-hosting steps (DID_HOSTING_CONTROL_URL not configured)", sessionID)
 	}
 
 	log.Printf("[orchestrator] session %d: starting VTA deployment", sessionID)
