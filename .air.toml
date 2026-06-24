@@ -7,6 +7,8 @@ bin = "./tmp/api"
 include_ext = ["go", "yaml"]
 exclude_dir = ["tmp", "vendor", "migrations", "testdata", "seed", "docs", "helm", "data"]
 delay = 500
+send_interrupt = true
+kill_delay = "2s"
 
 [log]
 time = true
