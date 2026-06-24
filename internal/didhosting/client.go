@@ -32,6 +32,10 @@ type Client struct {
 	hc        *http.Client
 }
 
+// ServerDid returns the DID of the did-hosting-control server, fetched from
+// /api/server-info at construction time.
+func (c *Client) ServerDid() string { return c.serverDid }
+
 // New constructs a Client. privKeyB64 is the base64 (StdEncoding) of the
 // 32-byte Ed25519 seed produced by `make gen-keypair`. clientDid is the
 // corresponding did:key. Fetches the server DID from /api/server-info at
@@ -213,6 +217,57 @@ func (c *Client) buildAuthEnvelope(sessionId, challenge string) (string, error) 
 	}
 	result, err := json.Marshal(envelope)
 	return string(result), err
+}
+
+// CreateAcl adds did to the hosting service's ACL with the given role and label.
+// Returns nil if the entry already exists (409 Conflict is treated as success).
+func (c *Client) CreateAcl(ctx context.Context, did, role, label string) error {
+	token, err := c.authenticate(ctx)
+	if err != nil {
+		return fmt.Errorf("did-hosting authenticate: %w", err)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"did":   did,
+		"role":  role,
+		"label": label,
+	})
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/acl", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("acl create request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusConflict {
+		return nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("acl create response %d: %s", resp.StatusCode, respBody)
+	}
+	return nil
+}
+
+// DeleteAcl removes did from the hosting service's ACL.
+// Returns nil if the entry does not exist (404 is treated as success).
+func (c *Client) DeleteAcl(ctx context.Context, did string) error {
+	token, err := c.authenticate(ctx)
+	if err != nil {
+		return fmt.Errorf("did-hosting authenticate: %w", err)
+	}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/api/acl/"+did, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("acl delete request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	respBody, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("acl delete response %d: %s", resp.StatusCode, respBody)
 }
 
 // DeleteDid deletes the DID at path from the hosting service.
