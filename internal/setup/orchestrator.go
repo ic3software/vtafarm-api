@@ -229,17 +229,23 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 	})
 	log.Printf("[orchestrator] session %d: setup complete, VTA DID=%s", sessionID, vtaDID)
 
+	log.Printf("[orchestrator] session %d: did-hosting=%v didLog_len=%d vtaDidUrl=%q",
+		sessionID, o.didHosting != nil, len(didLog), session.VtaDidUrl)
 	if o.didHosting != nil && didLog != "" && session.VtaDidUrl != "" {
 		// Extract path from the full URL e.g. https://dids.fpp2.ic3.dev/abc123/pvta → abc123/pvta
 		path := session.VtaDidUrl
 		if u, err := url.Parse(path); err == nil {
 			path = strings.TrimPrefix(u.Path, "/")
 		}
+		log.Printf("[orchestrator] session %d: uploading DID log to hosting service (path=%s)", sessionID, path)
 		if err := o.didHosting.RegisterDid(ctx, path, didLog); err != nil {
-			log.Printf("[orchestrator] session %d: warning: DID upload failed: %v", sessionID, err)
+			log.Printf("[orchestrator] session %d: DID upload FAILED: %v", sessionID, err)
 		} else {
 			log.Printf("[orchestrator] session %d: DID log uploaded to hosting service", sessionID)
 		}
+	} else if o.didHosting != nil {
+		log.Printf("[orchestrator] session %d: skipping DID upload — didLog_empty=%v vtaDidUrl_empty=%v",
+			sessionID, didLog == "", session.VtaDidUrl == "")
 	}
 
 	// Auto-trigger Phase 2 if admin_did was provided at session creation time.
