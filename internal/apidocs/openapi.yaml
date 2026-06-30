@@ -135,6 +135,10 @@ components:
           type: string
           description: Full image URL selected from GET /setup/images.
           example: "ghcr.io/ic3software/vta:0.5.0"
+        admin_did:
+          type: string
+          description: Optional — the user's local `pnm setup` admin DID. When present, Phase 2 (import-did + Deployment) auto-runs after setup.
+          example: "did:key:z6Mk..."
         portable:
           type: boolean
           default: true
@@ -162,12 +166,17 @@ components:
           example: "https://fpp-abc12345.example.com"
         vta_name:
           type: string
+        vta_image:
+          type: string
         vta_did:
           type: string
           description: Populated after vta setup completes
         mediator_did:
           type: string
-          description: Populated after vta setup completes
+          description: Shared MEDIATOR_DID (vta_only)
+        vta_did_url:
+          type: string
+          description: Derived DID-hosting URL — {DID_HOSTING_SERVER_URL}/{unique_id}/{vta_name}
         error_msg:
           type: string
           description: Present only when status is `failed`
@@ -199,6 +208,11 @@ components:
         url:
           type: string
           example: "https://fpp-abc12345.example.com"
+        vta_image:
+          type: string
+        vta_did:
+          type: string
+          description: Populated after vta setup completes
         error_msg:
           type: string
           description: Present only when status is `failed`
@@ -221,6 +235,9 @@ components:
         status:
           type: string
           example: "dns_provisioned"
+        vta_image:
+          type: string
+          example: "ghcr.io/ic3software/vta:0.9.0"
 
 paths:
   /health:
@@ -1224,7 +1241,8 @@ paths:
           in: path
           required: true
           schema:
-            type: integer
+            type: string
+            example: "ab12cd34"
       responses:
         "200":
           description: Session state
@@ -1246,7 +1264,7 @@ paths:
                 $ref: "#/components/schemas/Error"
     delete:
       summary: Delete setup session
-      description: Removes the Cloudflare DNS record and deletes the session.
+      description: Cancels the session goroutine and tears down the Cloudflare DNS record, K8s resources, and the session's Vault seed.
       tags: [User]
       security:
         - CookieAuthUser: []
@@ -1255,7 +1273,8 @@ paths:
           in: path
           required: true
           schema:
-            type: integer
+            type: string
+            example: "ab12cd34"
       responses:
         "204":
           description: Session deleted
@@ -1305,7 +1324,8 @@ paths:
           in: path
           required: true
           schema:
-            type: integer
+            type: string
+            example: "ab12cd34"
         - name: source
           in: query
           required: false
@@ -1358,7 +1378,8 @@ paths:
           in: path
           required: true
           schema:
-            type: integer
+            type: string
+            example: "ab12cd34"
       requestBody:
         required: true
         content:
