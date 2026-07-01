@@ -154,6 +154,7 @@ the next starts), a plain `ReadWriteOnce` PVC is never mounted by two pods at on
 | --- | --- | --- |
 | `step_mediator_reprov` | `/work/vta` + `/work/mediator` | reads `/work/mediator/bootstrap-request.json`, writes `/work/mediator/bundle.armor` |
 | `step_dids_provision` | `/work/vta` + `/work/dids` | reads `/work/dids/bootstrap-request.json`, writes `/work/dids/bundle.armor` |
+| `step_dids_load_did` | `/work/vta` + `/work/dids` | reads `/work/vta/data/vta/did-logs/{VTA,mediator}-did.jsonl`, loads both into the dids daemon's local store |
 
 All other setup Jobs mount only their own component's PVC. The recipes use **relative
 paths** for on-PVC files (`config.toml`, `data/vta`, `conf/mediator.toml`, …) exactly as
@@ -161,11 +162,12 @@ the reference does; with `workingDir = /work/<component>` they resolve identical
 home-dir layout, so the recipe bodies are essentially verbatim. (The mediator's
 `[secrets].storage` is the exception — a `vault://` URL, not a PVC path.)
 
-> The VTA's two DID logs (`VTA-did.jsonl`, `mediator-did.jsonl`) still need to reach the
-> running daemon for the upload step ([§6](#step-step_upload_didlogs--control-api-call-no-job)).
-> The orchestrator captures them from the `step_vta_setup` Job's stdout via the
-> existing `---DID_LOG_START---`/`---ARTIFACT:…---` marker trick, so it doesn't have to
-> re-mount the VTA PVC later.
+> The VTA's two DID logs (`VTA-did.jsonl`, `mediator-did.jsonl`) are loaded into the dids
+> daemon's local store **offline**, before it ever starts — `step_dids_load_did`
+> ([§6](#step-step_dids_load_did--dids-job)) mounts the vta PVC alongside the dids PVC and
+> reads them straight off disk (`did-hosting-daemon load-did`), the same way
+> `step_mediator_reprov`/`step_dids_provision` above mount two PVCs at once. No marker
+> trick or in-memory round-trip through the orchestrator needed.
 
 ---
 
@@ -184,25 +186,28 @@ pending
   → step_dids_provision   vta bootstrap provision-integration      → dids/bundle.armor, 3a digest
   → step_dids_p2          did-hosting-daemon setup (offline-complete)→ 3b admin DID, 3c admin priv key, 3d daemon DID
   → step_dids_invite      did-hosting-daemon invite --role admin   → 3e dids admin-enroll URL (returned to user)
+  → step_dids_load_did    did-hosting-daemon load-did (mediator + VTA DID logs, offline, into the dids local store)
   → deploy_dids           Deployment dids-daemon (start it)
-  → step_upload_didlogs   register mediator + VTA DID logs on the running daemon (control API)
   → deploy_mediator       Deployment mediator (start it)
   → awaiting_admin_did    ⏸ gate: wait for user's PNM admin DID (skip if admin_did given at POST /setup)
   → step_import_admin_did vta import-did --role admin --label pnm-bootstrap --did {{admin_did}}
   → deploy_vta            Deployment vta (start it)
-  → completed             return 3 URLs + 1a VTA DID + 3e dids admin-enroll URL
+  → running               return 3 URLs + 1a VTA DID + 3e dids admin-enroll URL
         ↓ (any step)
      failed
 ```
 
 **Why this order.** Setup/config order is VTA → mediator → dids (each later recipe
 consumes a DID or bundle the earlier one produced). But the *start* order is **dids
-first, then mediator, then VTA** — exactly as the reference: the DID logs must be
-uploaded to a *running* daemon, the mediator must be reachable before the VTA boots, and
-the VTA must have the admin DID imported before it starts. The `vta contexts reprovision`,
-`vta bootstrap provision-integration`, and `vta import-did` commands are **CLI operations
-against the VTA's PVC**, not HTTP calls, so they run as Jobs without the VTA server
-running.
+first, then mediator, then VTA** — exactly as the reference: the dids daemon must already
+have the VTA's and mediator's DIDs loaded into its local store *before* it starts serving
+(`step_dids_load_did` runs offline, right before `deploy_dids`), so that when the mediator
+and VTA boot and resolve their own `did:webvh:...` identities against `dids.{domain}`, the
+documents are already there — otherwise their first-boot DID resolution 404s. The mediator
+must also be reachable before the VTA boots, and the VTA must have the admin DID imported
+before it starts. The `vta contexts reprovision`, `vta bootstrap provision-integration`,
+and `vta import-did` commands are **CLI operations against the VTA's PVC**, not HTTP
+calls, so they run as Jobs without the VTA server running.
 
 **PNM binding is user-local — exactly as `vta_only`.** The orchestrator never runs `pnm
 setup` or `pnm setup continue`; those happen on the user's own machine. The only
@@ -219,8 +224,9 @@ Each `step_*` is a `WaitForJob` + `JobLogs` + parse cycle exactly like today's
 in-flight steps on restart (extend the existing `Resume` queries to the new statuses).
 
 **Shared steps with `vta_only`.** `dns_provision`, `step_vta_setup`, `awaiting_admin_did`,
-`step_import_admin_did`, `deploy_vta`, and `completed` are the **same steps, same names** as
-the VTA-Only machine (`vta-setup-design.md`, Mode A). `full_stack` only adds the mediator/dids
+`step_import_admin_did`, `deploy_vta`, and the terminal `running` status are the **same
+steps, same names** as the VTA-Only machine (`vta-setup-design.md`, Mode A). `full_stack`
+only adds the mediator/dids
 steps between `step_vta_setup` and the gate, and splits `env_provision` / `k8s_provision` out
 of `step_vta_setup` (three components to provision instead of one). In `vta_only` those shared
 names map onto the implemented DB statuses `dns_provisioned` / `vta_setup_running` →
@@ -344,36 +350,36 @@ did-hosting-daemon invite --role admin --did {{3b}}
 
 It opens the local store directly, so it must run **before** `deploy_dids` (while no
 daemon holds the PVC). Parse **3e** from the output and return it to the user as a
-**required** output ([§12](#12-api-surface)) — not optional. The automated DID-log upload
-(`step_upload_didlogs`) removes the *functional* need to log in, but this URL is what lets
-the user reach the dids admin web UI afterward. It is single-use; regenerate via the
+**required** output ([§12](#12-api-surface)) — not optional. The automated DID-log load
+(`step_dids_load_did`, next) removes the *functional* need to log in, but this URL is what
+lets the user reach the dids admin web UI afterward. It is single-use; regenerate via the
 reissue endpoint.
+
+### Step `step_dids_load_did` — DIDS Job (mounts `/work/vta` + `/work/dids`, workingDir `/work/dids`)
+
+Loads the VTA's and mediator's DID logs into the dids daemon's local store **offline**,
+reading them straight off the vta PVC where `step_vta_setup` wrote them — no round-trip
+through the orchestrator, no HTTP control-API call, no running daemon required:
+
+```sh
+did-hosting-daemon load-did --path mediator --did-log /work/vta/data/vta/did-logs/mediator-did.jsonl \
+  && did-hosting-daemon load-did --path vta --did-log /work/vta/data/vta/did-logs/VTA-did.jsonl
+```
+
+Like `step_dids_invite`, it opens the local store directly, so it must run **before**
+`deploy_dids` — while no daemon pod holds the dids PVC. This is what makes both `dids` and
+`mediator` able to resolve their own `did:webvh:...` identities successfully on their very
+first boot: by the time either process starts, the documents are already in the store.
+(An earlier draft of this design tried registering the DID logs over the daemon's control
+API *after* `deploy_dids` — that requires the daemon to already be running and reachable,
+which is backwards: the mediator/dids themselves need the DIDs resolvable *before* they
+start, not after.) Nothing to parse — success is just exit code 0.
 
 ### `deploy_dids` — start the daemon Deployment
 
 Deployment with `workingDir = /work/dids`, command `["did-hosting-daemon"]`, mounting
 the dids PVC, plus the Service + Ingress for `dids.{domain}` (created in
 `k8s_provision`, now backed by a running pod). Wait for Ready.
-
-### Step `step_upload_didlogs` — control-API call (no Job)
-
-Replaces the **manual browser upload** in the reference (the "Upload DID logs" UI step).
-The orchestrator constructs a per-session `didhosting.Client` pointed at the daemon's
-**in-cluster** control URL (`http://dids-{sid}.{ns}.svc:8534`) authenticated with the
-captured admin DID/key (**3b**/**3c**), then calls `RegisterDid` twice:
-
-```text
-RegisterDid(path="mediator", didLog=<mediator-did.jsonl from step_vta_setup>)
-RegisterDid(path="vta",      didLog=<VTA-did.jsonl from step_vta_setup>)
-```
-
-> **Implementation note:** the existing `didhosting.New` expects a base64 32-byte
-> Ed25519 seed, but **3c** is multibase (`z3u2…`). Add a constructor that decodes the
-> multibase admin key. Talking to the ClusterIP avoids waiting on public DNS/TLS.
->
-> **Fallback = keep it manual:** if per-session control auth isn't wired yet, surface
-> `dids.{domain}` + the enrollment URL (**3e**) and the two DID-log blobs to the user
-> and let them upload via the admin UI, exactly as the verified flow does.
 
 ### `deploy_mediator` — start the mediator Deployment
 
@@ -723,7 +729,7 @@ on `POST /api/v1/setup` selects this path.
 | `POST` | `/setup` | accept `mode=full_stack`, optional `mediator_image`/`dids_image`, optional `admin_did` (user's local PNM admin DID — when present, auto-runs import + `deploy_vta`); create 3 DNS records; start the §5 machine |
 | `POST` | `/setup/:id/admin` | **reused from `vta_only`** — supply the user's PNM `admin_did` once the stack is up (`awaiting_admin_did`); triggers `vta import-did` + `deploy_vta` |
 | `GET` | `/setup/:id` | return the three URLs + **VTA DID (1a)** + **dids admin-enroll URL (3e)** + per-step status + (once) the admin keys |
-| `GET` | `/setup/:id/logs` | `?source=` gains `mediator_p1\|mediator_p2\|dids_p1\|dids_p2\|dids_invite\|import_admin_did\|mediator\|dids` |
+| `GET` | `/setup/:id/logs` | `?source=` gains `mediator_p1\|mediator_p2\|dids_p1\|dids_p2\|dids_invite\|dids_load_did\|import_admin_did\|mediator\|dids` |
 | `DELETE` | `/setup/:id` | tear down all 3 DNS records + all component resources |
 | `POST` | `/setup/:id/dids/reissue-enroll` *(new, optional)* | regenerate the single-use dids admin enrollment URL (`did-hosting-daemon invite`) |
 
@@ -733,7 +739,7 @@ on `POST /api/v1/setup` selects this path.
 {
   "id": "ab12cd34",
   "mode": "full_stack",
-  "status": "completed",
+  "status": "running",
   "urls": {
     "vta":      "https://vta.example.com",
     "mediator": "https://mediator.example.com",
@@ -798,15 +804,16 @@ The chain is fully automatable **except** these user-local touchpoints:
    setup continue`. This is a genuine gate: if `admin_did` is not supplied at `POST
    /setup`, the machine pauses at `awaiting_admin_did` until the user POSTs it to
    `/setup/:id/admin`.
-2. **DIDS admin-panel passkey enrollment (`3e`).** Programmatic DID-log upload (§6
-   `step_upload_didlogs`) removes the *functional* need to log in, but the user still gets
+2. **DIDS admin-panel passkey enrollment (`3e`).** The offline DID load (§6
+   `step_dids_load_did`) removes the *functional* need to log in, but the user still gets
    the single-use enrollment URL (always minted in `step_dids_invite`) to register a
    passkey for the dids admin UI. Surfaced under `action_required.dids_admin_enroll_url`;
    single-use and regenerable via the reissue endpoint.
 3. **Reveal-once secrets (`2c`, `3c`).** The mediator + webvh admin private keys are shown
    to the user once for offline backup.
 
-Only (1) gates the VTA from starting; (2) and (3) are post-`completed` conveniences.
+Only (1) gates the VTA from starting; (2) and (3) are conveniences once the session
+reaches the terminal `running` status.
 
 ---
 
@@ -819,15 +826,16 @@ Only (1) gates the VTA from starting; (2) and (3) are post-`completed` convenien
    existing Vault `[secrets]` block) + mediator (fjall message store, **Vault `vault://`
    secrets**) + webvh (p1/p3, plaintext) renderers; add `Vault.HostPort` +
    `Vault.MediatorPrefix` to the render data.
-4. `internal/setup/parser.go` — regexes from §8 (incl. `3e` enroll-URL) + multibase key
-   decode. (`4a` is a user input, not parsed.)
+4. `internal/setup/parser.go` — regexes from §8 (incl. `3e` enroll-URL). (`4a` is a user
+   input, not parsed.)
 5. `internal/k8s/` — generic `CreateComponentSetupJob` (image, command, one-or-two PVC
    mounts at `/work/<c>`, workingDir, SA, recipe ConfigMap, optional `VAULT_TOKEN`
    `secretKeyRef` + `VAULT_SKIP_VERIFY` env); mediator + dids Deployment/Service/Ingress
    helpers (generalize the VTA ones to a `/work/<c>` mount); create the per-session
    `mediator-vault-token-{sid}` Secret. **ClusterRole += `secrets`.**
-6. `internal/didhosting/` — per-session client constructor accepting a multibase admin
-   key + an in-cluster base URL.
+6. ~~`internal/didhosting/` per-session client constructor~~ — not needed. DID logs are
+   loaded offline via `step_dids_load_did` (`did-hosting-daemon load-did`, §6) instead of
+   an HTTP control-API call, so there's no per-session `didhosting.Client` at all.
 7. `internal/vault/` — extend the per-user policy to grant
    `secret/{data,metadata}/mediator/user-<id>/session-<id>/*`; add `MediatorPrefix(userID, sid)`,
    `MintMediatorToken` (periodic, scoped), and teardown (delete mediator secrets + revoke token).
@@ -892,8 +900,11 @@ home-dir / `nohup` mechanics. Both the **VTA and the Mediator** store secrets in
 - **PNM binding is user-local** — the user runs `pnm setup` / `pnm setup continue`
   themselves; the API only runs `vta import-did` with the supplied admin DID, before the
   VTA starts (exactly as `vta_only`). → §5, §6, §14.
-- **DID logs are uploaded to a *running* daemon** (reference: via the admin UI). →
-  automated in §6 `step_upload_didlogs`, with the manual UI upload as the fallback.
+- **DID logs reach the dids daemon** (reference: manual browser upload to a *running*
+  daemon, via the admin UI). The K8s mapping does this **offline instead** — §6
+  `step_dids_load_did` loads both DID logs into the local store *before* the daemon ever
+  starts, which is what lets the daemon (and the mediator) resolve their own DIDs
+  successfully on first boot, rather than requiring a running daemon to upload to.
 - **The DIDS enrollment URL is single-use** — regenerate by stopping the daemon and
   re-running `did-hosting-daemon invite`. → §14, reissue endpoint.
 

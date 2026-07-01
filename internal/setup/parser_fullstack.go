@@ -16,9 +16,19 @@ var (
 	webvhAdminDIDRe      = regexp.MustCompile(`Generated admin did:key:\s+(did:\S+)`)
 	webvhAdminKeyRe      = regexp.MustCompile(`Private key \(save now, not re-shown\):\s+(\S+)`)
 	serverDidRe          = regexp.MustCompile(`server_did\s*=\s*"([^"]+)"`)
-	didsEnrollURLRe      = regexp.MustCompile(`(https?://\S+/enroll/\S+)`)
+	didsEnrollURLRe      = regexp.MustCompile(`(https?://\S+/enroll\S*)`)
 	artifactMarkerLineRe = regexp.MustCompile(`(?m)^---ARTIFACT:[^\n]*?---\s*$`)
+	ansiEscapeRe         = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 )
+
+// stripANSI removes ANSI/CSI escape sequences (color codes, cursor moves)
+// from CLI output. Some full_stack binaries colorize stdout even when piped
+// to a Job's log (not a real TTY), which can leak a trailing "\x1b[0m" reset
+// straight into a \S+-captured value (e.g. onto the end of an admin key).
+// Applied to every Job's logs before parsing — see orchestrator_fullstack.go.
+func stripANSI(s string) string {
+	return ansiEscapeRe.ReplaceAllString(s, "")
+}
 
 // ParseMediatorDID extracts the mediator DID (1b) from `vta setup` output.
 func ParseMediatorDID(output string) (string, error) {

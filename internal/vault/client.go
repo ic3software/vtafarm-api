@@ -167,9 +167,11 @@ func (c *Client) DeleteMediatorSecrets(ctx context.Context, userID, sessionID ui
 // feature). Minting a child token whose policies aren't a subset of the
 // caller's own policies requires a Vault token role with
 // allowed_policies_glob — see helm/vtafarm-vault/bootstrap.sh
-// (vtafarm-mediator-token). The token is periodic (renewable indefinitely
-// within its period) since the mediator Deployment re-reads secrets on every
-// pod restart.
+// (vtafarm-mediator-token). That role already bakes in period=720h and
+// orphan=true, so the token comes out periodic/orphan automatically —
+// requesting "period"/"no_parent" explicitly here would make Vault demand
+// root/sudo on the caller (a non-privileged AppRole token can only inherit
+// those from the role, not set them itself).
 func (c *Client) MintMediatorToken(ctx context.Context, userID, sessionID uint) (string, error) {
 	token, err := c.login(ctx)
 	if err != nil {
@@ -183,9 +185,6 @@ func (c *Client) MintMediatorToken(ctx context.Context, userID, sessionID uint) 
 	body := map[string]any{
 		"policies":     []string{UserName(userID)},
 		"display_name": fmt.Sprintf("mediator-user-%d-session-%d", userID, sessionID),
-		"period":       "720h",
-		"renewable":    true,
-		"no_parent":    true,
 	}
 	path := fmt.Sprintf("/v1/auth/token/create/%s", c.cfg.MediatorTokenRole)
 	if err := c.do(ctx, http.MethodPost, path, token, body, &out); err != nil {

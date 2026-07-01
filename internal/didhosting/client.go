@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/big"
 	"net/http"
 	"strings"
 	"time"
@@ -49,23 +48,7 @@ func New(baseURL, clientDid, privKeyB64 string) (*Client, error) {
 	if len(seed) != 32 {
 		return nil, fmt.Errorf("DID_HOSTING_PRIVATE_KEY: expected 32-byte seed, got %d", len(seed))
 	}
-	return newClient(baseURL, clientDid, seed)
-}
 
-// NewFromMultibaseKey constructs a Client like New, but decodes a multibase
-// (base58btc, 'z'-prefixed) Ed25519 seed instead of base64. full_stack
-// captures a dids daemon's admin private key in that format (design §6/§8,
-// value 3c/2c) and uses it to talk to the per-session, in-cluster daemon —
-// distinct from the shared external host New() talks to for vta_only.
-func NewFromMultibaseKey(baseURL, clientDid, adminKeyMultibase string) (*Client, error) {
-	seed, err := decodeMultibaseEd25519Seed(adminKeyMultibase)
-	if err != nil {
-		return nil, fmt.Errorf("decode admin private key: %w", err)
-	}
-	return newClient(baseURL, clientDid, seed)
-}
-
-func newClient(baseURL, clientDid string, seed []byte) (*Client, error) {
 	// kid = "<did:key>#<multibase>" where multibase is the z6Mk… part.
 	// Matches did-hosting-client/src/auth/message.rs ed25519_did_key().
 	multibase := strings.TrimPrefix(clientDid, "did:key:")
@@ -86,73 +69,6 @@ func newClient(baseURL, clientDid string, seed []byte) (*Client, error) {
 		privKey:   ed25519.NewKeyFromSeed(seed),
 		hc:        hc,
 	}, nil
-}
-
-// base58Alphabet is the Bitcoin/IPFS base58 alphabet used by multibase's
-// 'z' (base58btc) prefix.
-const base58Alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-
-// decodeBase58 decodes a base58btc string (no multibase prefix) to bytes,
-// preserving leading zero bytes (each leading '1' decodes to one 0x00 byte).
-// Hand-rolled rather than pulling in a multibase/base58 dependency for this
-// one call site — see internal/vault/client.go's similar "small surface,
-// plain net/http" rationale.
-func decodeBase58(s string) ([]byte, error) {
-	result := new(big.Int)
-	base := big.NewInt(58)
-	digit := new(big.Int)
-	for _, r := range s {
-		idx := strings.IndexRune(base58Alphabet, r)
-		if idx < 0 {
-			return nil, fmt.Errorf("invalid base58 character %q", r)
-		}
-		result.Mul(result, base)
-		result.Add(result, digit.SetInt64(int64(idx)))
-	}
-	decoded := result.Bytes()
-
-	leadingZeros := 0
-	for _, r := range s {
-		if r != '1' {
-			break
-		}
-		leadingZeros++
-	}
-	out := make([]byte, leadingZeros+len(decoded))
-	copy(out[leadingZeros:], decoded)
-	return out, nil
-}
-
-// ed25519PrivMulticodecPrefix is the 2-byte varint encoding of the
-// ed25519-priv multicodec (0x1300), prepended to some multibase-encoded
-// Ed25519 private keys per the did:key spec.
-var ed25519PrivMulticodecPrefix = []byte{0x80, 0x26}
-
-// decodeMultibaseEd25519Seed decodes a multibase string (e.g. "z3u2…") to a
-// raw 32-byte Ed25519 seed. Only base58btc ('z' prefix) is supported — the
-// only encoding the VTI binaries are documented to emit for admin keys.
-// Accepts either a bare 32-byte seed or a 34-byte ed25519-priv
-// multicodec-prefixed value, since the design doc doesn't pin down which the
-// real binaries produce; unverified against a live binary.
-func decodeMultibaseEd25519Seed(s string) ([]byte, error) {
-	if len(s) < 2 || s[0] != 'z' {
-		return nil, fmt.Errorf("unsupported multibase encoding in %q: only base58btc ('z' prefix) is supported", s)
-	}
-	decoded, err := decodeBase58(s[1:])
-	if err != nil {
-		return nil, fmt.Errorf("decode multibase payload: %w", err)
-	}
-	switch len(decoded) {
-	case 32:
-		return decoded, nil
-	case 34:
-		if decoded[0] == ed25519PrivMulticodecPrefix[0] && decoded[1] == ed25519PrivMulticodecPrefix[1] {
-			return decoded[2:], nil
-		}
-		return nil, fmt.Errorf("decode multibase payload: 34-byte value is not ed25519-priv multicodec-prefixed")
-	default:
-		return nil, fmt.Errorf("decode multibase payload: expected 32 or 34 bytes, got %d", len(decoded))
-	}
 }
 
 func fetchServerDid(baseURL string, hc *http.Client) (string, error) {

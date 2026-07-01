@@ -10,7 +10,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/ic3software/vtafarm-api/internal/didhosting"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/model"
 	"github.com/ic3software/vtafarm-api/internal/vault"
@@ -30,10 +29,23 @@ func fsLabels(component string, sessionID uint) map[string]string {
 	return map[string]string{"app": "fs-" + component, "session-id": fmt.Sprintf("%d", sessionID)}
 }
 
-// fsMediatorVaultEnv is the VAULT_TOKEN + VAULT_SKIP_VERIFY env shared by
-// every mediator Job/Deployment (design §9).
-func (o *Orchestrator) fsMediatorVaultEnv(sessionID uint) []corev1.EnvVar {
+// fsNoColorEnv disables ANSI color codes so every full_stack Job/Deployment's
+// streamed and captured logs stay plain text — some of the binaries
+// colorize stdout even when piped (not a real TTY), which can otherwise
+// corrupt regex-captured values (see stripANSI, the parsing-side safety
+// net). Set on every full_stack Job and Deployment, not just the ones whose
+// output gets parsed.
+func fsNoColorEnv() []corev1.EnvVar {
 	return []corev1.EnvVar{
+		{Name: "NO_COLOR", Value: "1"},
+		{Name: "CLICOLOR", Value: "0"},
+	}
+}
+
+// fsMediatorVaultEnv is fsNoColorEnv plus the VAULT_TOKEN + VAULT_SKIP_VERIFY
+// env shared by every mediator Job/Deployment (design §9).
+func (o *Orchestrator) fsMediatorVaultEnv(sessionID uint) []corev1.EnvVar {
+	return append(fsNoColorEnv(), []corev1.EnvVar{
 		{
 			Name: "VAULT_TOKEN",
 			ValueFrom: &corev1.EnvVarSource{
@@ -44,7 +56,7 @@ func (o *Orchestrator) fsMediatorVaultEnv(sessionID uint) []corev1.EnvVar {
 			},
 		},
 		{Name: "VAULT_SKIP_VERIFY", Value: "true"},
-	}
+	}...)
 }
 
 // vaultHostPort strips the scheme from a Vault address for the mediator's
@@ -74,10 +86,21 @@ func (o *Orchestrator) fsSetStatus(sessionID uint, status string) {
 // fsJobFailErr builds an error for a failed Job, appending its logs when
 // available — mirrors the inline pattern in runSetup/runProvision.
 func (o *Orchestrator) fsJobFailErr(ctx context.Context, ns, jobName, failMsg string) error {
-	if jobLogs, logsErr := o.k8s.JobLogs(ctx, ns, jobName); logsErr == nil && jobLogs != "" {
+	if jobLogs, logsErr := o.fsJobLogs(ctx, ns, jobName); logsErr == nil && jobLogs != "" {
 		failMsg = failMsg + "\n\n--- Job Logs ---\n" + jobLogs
 	}
 	return fmt.Errorf("%s", failMsg)
+}
+
+// fsJobLogs reads a Job's logs and strips ANSI escape sequences before
+// they're regex-parsed — some full_stack binaries colorize stdout even when
+// piped (not a real TTY), which can otherwise corrupt \S+-captured values.
+func (o *Orchestrator) fsJobLogs(ctx context.Context, ns, jobName string) (string, error) {
+	logs, err := o.k8s.JobLogs(ctx, ns, jobName)
+	if err != nil {
+		return "", err
+	}
+	return stripANSI(logs), nil
 }
 
 // ── Phase 1: env_provision … deploy_mediator ────────────────────────────────
@@ -132,7 +155,7 @@ func (o *Orchestrator) runFullStack(ctx context.Context, sessionID uint) {
 
 	// step_vta_setup
 	o.fsSetStatus(sessionID, "step_vta_setup")
-	vtaDid, mediatorDid, vtaDidLog, mediatorDidLog, err := o.fsStepVtaSetup(ctx, ns, s)
+	vtaDid, mediatorDid, err := o.fsStepVtaSetup(ctx, ns, s)
 	if fail("vta setup failed", err) {
 		return
 	}
@@ -200,17 +223,23 @@ func (o *Orchestrator) runFullStack(ctx context.Context, sessionID uint) {
 	s.DidsEnrollURL = enrollURL
 	o.db.Model(&model.SetupSession{}).Where("id = ?", sessionID).Update("dids_enroll_url", enrollURL)
 
+	// step_dids_load_did — loads the VTA + mediator DID logs into the dids
+	// daemon's local store directly (did-hosting-daemon load-did). Must also
+	// run before deploy_dids, same reason as step_dids_invite: it opens the
+	// local store directly, so no daemon pod can be holding the PVC yet.
+	// Loading offline like this (instead of registering over the daemon's
+	// control API after it's up) is what lets both the dids daemon and the
+	// mediator resolve these DIDs successfully on their very first boot.
+	o.fsSetStatus(sessionID, "step_dids_load_did")
+	if fail("dids load-did failed", o.fsStepDidsLoadDid(ctx, ns, s)) {
+		return
+	}
+
 	// deploy_dids
 	o.fsSetStatus(sessionID, "deploy_dids")
 	if fail("failed to deploy dids daemon", o.fsDeployDids(ctx, ns, s)) {
 		return
 	}
-
-	// step_upload_didlogs — best-effort; manual upload via the dids admin UI
-	// is the documented fallback (design §6/§14), so failures here don't
-	// fail the whole machine.
-	o.fsSetStatus(sessionID, "step_upload_didlogs")
-	o.fsUploadDidLogs(ctx, ns, s, vtaDidLog, mediatorDidLog)
 
 	// deploy_mediator
 	o.fsSetStatus(sessionID, "deploy_mediator")
@@ -260,9 +289,9 @@ func (o *Orchestrator) fsK8sProvision(ctx context.Context, ns string, s *model.S
 }
 
 // fsStepVtaSetup runs `vta setup` with [messaging] kind=create_mediator,
-// capturing the VTA DID (1a), mediator DID (1b), and both DID-log artifacts
-// for the later step_upload_didlogs call.
-func (o *Orchestrator) fsStepVtaSetup(ctx context.Context, ns string, s *model.SetupSession) (vtaDid, mediatorDid, vtaDidLog, mediatorDidLog string, err error) {
+// capturing the VTA DID (1a) and mediator DID (1b). Their DID-log files stay
+// on the vta PVC for fsStepDidsLoadDid to read directly later.
+func (o *Orchestrator) fsStepVtaSetup(ctx context.Context, ns string, s *model.SetupSession) (vtaDid, mediatorDid string, err error) {
 	toml, err := RenderFullStackVtaSetupTOML(s, VaultSecrets{
 		Addr:       o.vaultAddr,
 		SecretPath: vault.SeedPath(s.UserID, s.ID),
@@ -271,13 +300,15 @@ func (o *Orchestrator) fsStepVtaSetup(ctx context.Context, ns string, s *model.S
 		SkipVerify: true,
 	})
 	if err != nil {
-		return "", "", "", "", fmt.Errorf("render vta-setup.toml: %w", err)
+		return "", "", fmt.Errorf("render vta-setup.toml: %w", err)
 	}
 
+	// data/vta/did-logs/{VTA,mediator}-did.jsonl are left on the vta PVC —
+	// fsStepDidsLoadDid reads them directly from there, mounted read-only
+	// alongside the dids PVC, instead of round-tripping them through the
+	// orchestrator.
 	jobName := k8s.FSJobVtaSetup(s.ID)
-	cmd := "vta setup --from /config/vta-setup.toml" +
-		" && echo '---ARTIFACT:VTA-did.jsonl---' && cat data/vta/did-logs/VTA-did.jsonl" +
-		" && echo '---ARTIFACT:mediator-did.jsonl---' && cat data/vta/did-logs/mediator-did.jsonl"
+	cmd := "vta setup --from /config/vta-setup.toml"
 
 	if err := o.k8s.CreateComponentJob(ctx, ns, k8s.ComponentJobSpec{
 		Name:           jobName,
@@ -289,33 +320,32 @@ func (o *Orchestrator) fsStepVtaSetup(ctx context.Context, ns string, s *model.S
 		ConfigMapName:  jobName,
 		ConfigMapKey:   "vta-setup.toml",
 		ConfigMapData:  toml,
+		Env:            fsNoColorEnv(),
 	}); err != nil {
-		return "", "", "", "", fmt.Errorf("create job: %w", err)
+		return "", "", fmt.Errorf("create job: %w", err)
 	}
 
 	succeeded, failMsg, err := o.k8s.WaitForJob(ctx, ns, jobName)
 	if err != nil {
-		return "", "", "", "", err
+		return "", "", err
 	}
 	if !succeeded {
-		return "", "", "", "", o.fsJobFailErr(ctx, ns, jobName, failMsg)
+		return "", "", o.fsJobFailErr(ctx, ns, jobName, failMsg)
 	}
-	logs, err := o.k8s.JobLogs(ctx, ns, jobName)
+	logs, err := o.fsJobLogs(ctx, ns, jobName)
 	if err != nil {
-		return "", "", "", "", fmt.Errorf("read job logs: %w", err)
+		return "", "", fmt.Errorf("read job logs: %w", err)
 	}
 
 	vtaDid, err = ParseVtaDID(logs)
 	if err != nil {
-		return "", "", "", "", err
+		return "", "", err
 	}
 	mediatorDid, err = ParseMediatorDID(logs)
 	if err != nil {
-		return "", "", "", "", err
+		return "", "", err
 	}
-	vtaDidLog = ParseArtifact(logs, "VTA-did.jsonl")
-	mediatorDidLog = ParseArtifact(logs, "mediator-did.jsonl")
-	return vtaDid, mediatorDid, vtaDidLog, mediatorDidLog, nil
+	return vtaDid, mediatorDid, nil
 }
 
 // fsStepMediatorP1 runs `mediator-setup` phase 1, writing
@@ -373,6 +403,7 @@ func (o *Orchestrator) fsStepMediatorReprov(ctx context.Context, ns string, s *m
 			{Name: "vta-data", ClaimName: k8s.FSVtaName(s.ID), MountPath: "/work/vta"},
 			{Name: "mediator-data", ClaimName: k8s.FSMediatorName(s.ID), MountPath: "/work/mediator"},
 		},
+		Env: fsNoColorEnv(),
 	}); err != nil {
 		return "", "", fmt.Errorf("create job: %w", err)
 	}
@@ -384,7 +415,7 @@ func (o *Orchestrator) fsStepMediatorReprov(ctx context.Context, ns string, s *m
 	if !succeeded {
 		return "", "", o.fsJobFailErr(ctx, ns, jobName, failMsg)
 	}
-	logs, err := o.k8s.JobLogs(ctx, ns, jobName)
+	logs, err := o.fsJobLogs(ctx, ns, jobName)
 	if err != nil {
 		return "", "", fmt.Errorf("read job logs: %w", err)
 	}
@@ -437,7 +468,7 @@ func (o *Orchestrator) fsStepMediatorP2(ctx context.Context, ns string, s *model
 	if !succeeded {
 		return "", o.fsJobFailErr(ctx, ns, jobName, failMsg)
 	}
-	logs, err := o.k8s.JobLogs(ctx, ns, jobName)
+	logs, err := o.fsJobLogs(ctx, ns, jobName)
 	if err != nil {
 		return "", fmt.Errorf("read job logs: %w", err)
 	}
@@ -467,6 +498,7 @@ func (o *Orchestrator) fsStepDidsP1(ctx context.Context, ns string, s *model.Set
 		ConfigMapName:  jobName,
 		ConfigMapKey:   "webvh-recipe.toml",
 		ConfigMapData:  recipe,
+		Env:            fsNoColorEnv(),
 	}); err != nil {
 		return fmt.Errorf("create job: %w", err)
 	}
@@ -497,6 +529,7 @@ func (o *Orchestrator) fsStepDidsProvision(ctx context.Context, ns string, s *mo
 			{Name: "vta-data", ClaimName: k8s.FSVtaName(s.ID), MountPath: "/work/vta"},
 			{Name: "dids-data", ClaimName: k8s.FSDidsName(s.ID), MountPath: "/work/dids"},
 		},
+		Env: fsNoColorEnv(),
 	}); err != nil {
 		return "", fmt.Errorf("create job: %w", err)
 	}
@@ -508,7 +541,7 @@ func (o *Orchestrator) fsStepDidsProvision(ctx context.Context, ns string, s *mo
 	if !succeeded {
 		return "", o.fsJobFailErr(ctx, ns, jobName, failMsg)
 	}
-	logs, err := o.k8s.JobLogs(ctx, ns, jobName)
+	logs, err := o.fsJobLogs(ctx, ns, jobName)
 	if err != nil {
 		return "", fmt.Errorf("read job logs: %w", err)
 	}
@@ -541,6 +574,7 @@ func (o *Orchestrator) fsStepDidsP2(ctx context.Context, ns string, s *model.Set
 		ConfigMapName:  jobName,
 		ConfigMapKey:   "webvh-recipe.toml",
 		ConfigMapData:  recipe,
+		Env:            fsNoColorEnv(),
 	}); err != nil {
 		return "", "", "", fmt.Errorf("create job: %w", err)
 	}
@@ -552,7 +586,7 @@ func (o *Orchestrator) fsStepDidsP2(ctx context.Context, ns string, s *model.Set
 	if !succeeded {
 		return "", "", "", o.fsJobFailErr(ctx, ns, jobName, failMsg)
 	}
-	logs, err := o.k8s.JobLogs(ctx, ns, jobName)
+	logs, err := o.fsJobLogs(ctx, ns, jobName)
 	if err != nil {
 		return "", "", "", fmt.Errorf("read job logs: %w", err)
 	}
@@ -586,6 +620,7 @@ func (o *Orchestrator) fsStepDidsInvite(ctx context.Context, ns string, s *model
 		WorkingDir:     "/work/dids",
 		ServiceAccount: k8s.PodOperatorServiceAccount,
 		PVCMounts:      []k8s.PVCMount{{Name: "dids-data", ClaimName: k8s.FSDidsName(s.ID), MountPath: "/work/dids"}},
+		Env:            fsNoColorEnv(),
 	}); err != nil {
 		return "", fmt.Errorf("create job: %w", err)
 	}
@@ -597,7 +632,7 @@ func (o *Orchestrator) fsStepDidsInvite(ctx context.Context, ns string, s *model
 	if !succeeded {
 		return "", o.fsJobFailErr(ctx, ns, jobName, failMsg)
 	}
-	logs, err := o.k8s.JobLogs(ctx, ns, jobName)
+	logs, err := o.fsJobLogs(ctx, ns, jobName)
 	if err != nil {
 		return "", fmt.Errorf("read job logs: %w", err)
 	}
@@ -606,6 +641,44 @@ func (o *Orchestrator) fsStepDidsInvite(ctx context.Context, ns string, s *model
 		return "", err
 	}
 	return enrollURL, nil
+}
+
+// fsStepDidsLoadDid loads the VTA + mediator DID logs directly into the dids
+// daemon's local store (did-hosting-daemon load-did), reading them straight
+// off the vta PVC where step_vta_setup wrote them. Must run before
+// fsDeployDids — same reason as fsStepDidsInvite: it opens the local store
+// directly, so no daemon pod can be holding the dids PVC yet. Loading these
+// offline (rather than registering them over the daemon's control API after
+// it's already running) is what lets the dids daemon and the mediator both
+// resolve their own DIDs successfully on first boot.
+func (o *Orchestrator) fsStepDidsLoadDid(ctx context.Context, ns string, s *model.SetupSession) error {
+	jobName := k8s.FSJobDidsLoadDid(s.ID)
+	cmd := "did-hosting-daemon load-did --path mediator --did-log /work/vta/data/vta/did-logs/mediator-did.jsonl" +
+		" && did-hosting-daemon load-did --path vta --did-log /work/vta/data/vta/did-logs/VTA-did.jsonl"
+
+	if err := o.k8s.CreateComponentJob(ctx, ns, k8s.ComponentJobSpec{
+		Name:           jobName,
+		Image:          s.DidsImage,
+		Command:        []string{"sh", "-c", cmd},
+		WorkingDir:     "/work/dids",
+		ServiceAccount: k8s.PodOperatorServiceAccount,
+		PVCMounts: []k8s.PVCMount{
+			{Name: "vta-data", ClaimName: k8s.FSVtaName(s.ID), MountPath: "/work/vta"},
+			{Name: "dids-data", ClaimName: k8s.FSDidsName(s.ID), MountPath: "/work/dids"},
+		},
+		Env: fsNoColorEnv(),
+	}); err != nil {
+		return fmt.Errorf("create job: %w", err)
+	}
+
+	succeeded, failMsg, err := o.k8s.WaitForJob(ctx, ns, jobName)
+	if err != nil {
+		return err
+	}
+	if !succeeded {
+		return o.fsJobFailErr(ctx, ns, jobName, failMsg)
+	}
+	return nil
 }
 
 // fsDeployDids starts the dids daemon Deployment.
@@ -618,36 +691,10 @@ func (o *Orchestrator) fsDeployDids(ctx context.Context, ns string, s *model.Set
 		WorkingDir:     "/work/dids",
 		ServiceAccount: k8s.PodOperatorServiceAccount,
 		PVCMounts:      []k8s.PVCMount{{Name: "dids-data", ClaimName: name, MountPath: "/work/dids"}},
+		Env:            fsNoColorEnv(),
 		Port:           8534,
 		Labels:         fsLabels("dids", s.ID),
 	})
-}
-
-// fsUploadDidLogs registers the mediator + VTA DID logs on the now-running
-// dids daemon via its in-cluster control API. Best-effort: per design §6/§14
-// the documented fallback is for the user to upload manually via the dids
-// admin UI, so failures here are logged, not fatal.
-func (o *Orchestrator) fsUploadDidLogs(ctx context.Context, ns string, s *model.SetupSession, vtaDidLog, mediatorDidLog string) {
-	if s.DIDHostingAdminDid == "" || s.WebvhAdminKey == "" {
-		log.Printf("[orchestrator] fs session %d: skipping DID log upload — missing dids admin credentials", s.ID)
-		return
-	}
-	controlURL := fmt.Sprintf("http://%s.%s.svc:8534", k8s.FSDidsName(s.ID), ns)
-	client, err := didhosting.NewFromMultibaseKey(controlURL, s.DIDHostingAdminDid, s.WebvhAdminKey)
-	if err != nil {
-		log.Printf("[orchestrator] fs session %d: DID log upload skipped — client init failed (manual fallback via dids admin UI): %v", s.ID, err)
-		return
-	}
-	if mediatorDidLog != "" {
-		if err := client.RegisterDid(ctx, "mediator", mediatorDidLog); err != nil {
-			log.Printf("[orchestrator] fs session %d: mediator DID log upload FAILED (manual fallback via dids admin UI): %v", s.ID, err)
-		}
-	}
-	if vtaDidLog != "" {
-		if err := client.RegisterDid(ctx, "vta", vtaDidLog); err != nil {
-			log.Printf("[orchestrator] fs session %d: VTA DID log upload FAILED (manual fallback via dids admin UI): %v", s.ID, err)
-		}
-	}
 }
 
 // fsDeployMediator starts the mediator Deployment.
@@ -666,7 +713,7 @@ func (o *Orchestrator) fsDeployMediator(ctx context.Context, ns string, s *model
 	})
 }
 
-// ── Phase 2: step_import_admin_did → deploy_vta → completed ────────────────
+// ── Phase 2: step_import_admin_did → deploy_vta → running ──────────────────
 
 // runFullStackFinish mirrors runProvision: import the user's PNM admin DID
 // then start the VTA Deployment. Called both from runFullStack's auto-
@@ -695,6 +742,7 @@ func (o *Orchestrator) runFullStackFinish(ctx context.Context, sessionID uint, a
 		WorkingDir:     "/work/vta",
 		ServiceAccount: k8s.VtaServiceAccount,
 		PVCMounts:      []k8s.PVCMount{{Name: "vta-data", ClaimName: k8s.FSVtaName(sessionID), MountPath: "/work/vta"}},
+		Env:            fsNoColorEnv(),
 	}); err != nil {
 		if ctx.Err() != nil {
 			return
@@ -726,12 +774,9 @@ func (o *Orchestrator) runFullStackFinish(ctx context.Context, sessionID uint, a
 		WorkingDir:     "/work/vta",
 		ServiceAccount: k8s.VtaServiceAccount,
 		PVCMounts:      []k8s.PVCMount{{Name: "vta-data", ClaimName: name, MountPath: "/work/vta"}},
-		Env: []corev1.EnvVar{
-			{Name: "NO_COLOR", Value: "1"},
-			{Name: "CLICOLOR", Value: "0"},
-		},
-		Port:   8100,
-		Labels: fsLabels("vta", sessionID),
+		Env:            fsNoColorEnv(),
+		Port:           8100,
+		Labels:         fsLabels("vta", sessionID),
 	}); err != nil {
 		if ctx.Err() != nil {
 			return
@@ -740,8 +785,8 @@ func (o *Orchestrator) runFullStackFinish(ctx context.Context, sessionID uint, a
 		return
 	}
 
-	o.fsSetStatus(sessionID, "completed")
-	log.Printf("[orchestrator] fs session %d: completed", sessionID)
+	o.fsSetStatus(sessionID, "running")
+	log.Printf("[orchestrator] fs session %d: running at %s", sessionID, s.PublicURL())
 }
 
 // ── Resume ───────────────────────────────────────────────────────────────────
@@ -755,7 +800,7 @@ func (o *Orchestrator) resumeFullStack() {
 		"dns_provision", "env_provision", "k8s_provision", "step_vta_setup",
 		"step_mediator_p1", "step_mediator_reprov", "step_mediator_p2",
 		"step_dids_p1", "step_dids_provision", "step_dids_p2", "step_dids_invite",
-		"deploy_dids", "step_upload_didlogs", "deploy_mediator",
+		"step_dids_load_did", "deploy_dids", "deploy_mediator",
 	}
 	var inFlight []model.SetupSession
 	if err := o.db.Where("mode = ? AND status IN ?", model.ModeFullStack, preGate).Find(&inFlight).Error; err != nil {
