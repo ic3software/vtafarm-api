@@ -518,9 +518,9 @@ type SetupSession struct {
 }
 ```
 
-> Full Stack's additive columns (three subdomains/records, `mediator_admin_did`,
-> `webvh_admin_did`, per-component images, etc.) are **design-only** — see
-> [`full-stack-setup-design.md` §10](full-stack-setup-design.md). They are not in the model yet.
+> Full Stack's additive columns (mediator/dids subdomains/records, `mediator_admin_did`,
+> `did_hosting_admin_did`, per-component images, etc.) are implemented — see
+> [`full-stack-setup-design.md` §10](full-stack-setup-design.md).
 
 ---
 

@@ -70,7 +70,7 @@ func RenderFullStackVtaSetupTOML(s *model.SetupSession, vault VaultSecrets) (str
 	var buf bytes.Buffer
 	err := fullStackVtaSetupTmpl.Execute(&buf, fullStackVtaSetupData{
 		VtaName:          s.VtaName,
-		VtaPublicURL:     "https://" + s.VtaFQDN(),
+		VtaPublicURL:     s.PublicURL(),
 		MediatorURL:      "https://" + s.MediatorFQDN() + "/mediator/v1",
 		MediatorWebvhURL: "https://" + s.DidsFQDN() + "/mediator",
 		VtaDidWebvhURL:   "https://" + s.DidsFQDN() + "/vta",

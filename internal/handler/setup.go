@@ -296,7 +296,7 @@ func (h *SetupHandler) List(c *gin.Context) {
 		}
 		if s.Mode == model.ModeFullStack {
 			it.URLs = gin.H{
-				"vta":      "https://" + s.VtaFQDN(),
+				"vta":      s.PublicURL(),
 				"mediator": "https://" + s.MediatorFQDN(),
 				"dids":     "https://" + s.DidsFQDN(),
 			}

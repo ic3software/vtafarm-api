@@ -26,6 +26,16 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// strVal dereferences a nullable model field, returning "" for nil — the
+// full_stack output/image columns are *string (NULL until set; see
+// model.SetupSession).
+func strVal(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
 // createFullStack handles POST /api/v1/setup for mode=full_stack — creates
 // three Cloudflare A-records (vta/mediator/dids) up front, persists the
 // session, and starts the orchestrator's full_stack state machine.
@@ -88,16 +98,17 @@ func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest) {
 	}
 
 	session := model.SetupSession{
-		UserID:            userID,
-		Mode:              model.ModeFullStack,
-		Status:            "dns_provision",
-		Domain:            h.clusterDomain,
-		VtaSubdomain:      vtaSub,
+		UserID: userID,
+		Mode:   model.ModeFullStack,
+		Status: "dns_provision",
+		Domain: h.clusterDomain,
+		// VTA reuses Subdomain/CFRecordID — same fields vta_only uses.
+		Subdomain:         vtaSub,
+		CFRecordID:        recordVta,
 		MediatorSubdomain: mediatorSub,
 		DidsSubdomain:     didsSub,
-		CFRecordVta:       recordVta,
-		CFRecordMediator:  recordMediator,
-		CFRecordDids:      recordDids,
+		CFRecordMediator:  &recordMediator,
+		CFRecordDids:      &recordDids,
 		VtaName:           req.VtaName,
 		VtaImage:          req.VtaImage,
 		MediatorImage:     req.MediatorImage,
@@ -147,16 +158,16 @@ func (h *SetupHandler) getFullStack(c *gin.Context, session *model.SetupSession)
 		"mode":   session.Mode,
 		"status": session.Status,
 		"urls": gin.H{
-			"vta":      "https://" + session.VtaFQDN(),
+			"vta":      session.PublicURL(),
 			"mediator": "https://" + session.MediatorFQDN(),
 			"dids":     "https://" + session.DidsFQDN(),
 		},
 		"collected": gin.H{
-			"vta_did":            session.VtaDid,
-			"mediator_did":       session.MediatorDid,
-			"dids_daemon_did":    session.DidsDaemonDid,
-			"mediator_admin_did": session.MediatorAdminDid,
-			"webvh_admin_did":    session.WebvhAdminDid,
+			"vta_did":               session.VtaDid,
+			"mediator_did":          session.MediatorDid,
+			"did_hosting_did":       session.DIDHostingDid,
+			"mediator_admin_did":    session.MediatorAdminDid,
+			"did_hosting_admin_did": session.DIDHostingAdminDid,
 		},
 		"created_at": session.CreatedAt,
 		"updated_at": session.UpdatedAt,
@@ -192,7 +203,7 @@ func (h *SetupHandler) deleteFullStack(c *gin.Context, session *model.SetupSessi
 	ctx := c.Request.Context()
 
 	if h.cf != nil {
-		for label, rec := range map[string]string{"vta": session.CFRecordVta, "mediator": session.CFRecordMediator, "dids": session.CFRecordDids} {
+		for label, rec := range map[string]string{"vta": session.CFRecordID, "mediator": strVal(session.CFRecordMediator), "dids": strVal(session.CFRecordDids)} {
 			if rec == "" {
 				continue
 			}
@@ -358,7 +369,7 @@ func (h *SetupHandler) ReissueDidsEnroll(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "reissue-enroll is only available for full_stack sessions"})
 		return
 	}
-	if session.WebvhAdminDid == "" {
+	if session.DIDHostingAdminDid == "" {
 		c.JSON(http.StatusConflict, gin.H{"error": "dids daemon not provisioned yet"})
 		return
 	}
@@ -372,7 +383,7 @@ func (h *SetupHandler) ReissueDidsEnroll(c *gin.Context) {
 	jobName := k8s.FSJobDidsInvite(session.ID)
 	h.k8s.DeleteComponentJob(ctx, ns, jobName) // clear a previous (TTL'd) run if still present
 
-	cmd := fmt.Sprintf("did-hosting-daemon invite --role admin --did %s", shellQuote(session.WebvhAdminDid))
+	cmd := fmt.Sprintf("did-hosting-daemon invite --role admin --did %s", shellQuote(session.DIDHostingAdminDid))
 	if err := h.k8s.CreateComponentJob(ctx, ns, k8s.ComponentJobSpec{
 		Name:           jobName,
 		Image:          session.DidsImage,

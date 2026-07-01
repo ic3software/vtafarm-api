@@ -632,33 +632,45 @@ already in Vault; the dids key (3c) lives only in the dids plaintext backend.
 Extend `SetupSession` (additive columns; new migration `000009_full_stack_fields`):
 
 ```go
-// Three subdomains instead of one (Subdomain stays for vta_only back-compat).
-VtaSubdomain      string
+// full_stack's VTA component reuses Subdomain/CFRecordID as-is — same fields
+// vta_only already uses — rather than getting its own vta_subdomain/
+// cf_record_vta columns. Only mediator/dids need their own subdomains, and
+// they follow Subdomain's own `NOT NULL DEFAULT ''` convention:
 MediatorSubdomain string
 DidsSubdomain     string
 
-// One Cloudflare record id per host (CFRecordID stays for vta_only).
-CFRecordVta      string
-CFRecordMediator string
-CFRecordDids     string
+// Cloudflare record ids for mediator/dids — nullable, matching CFRecordID's
+// own convention (the one column in the original schema that's genuinely
+// nullable rather than NOT NULL DEFAULT '').
+CFRecordMediator *string
+CFRecordDids     *string
 
-// Per-component images (VtaImage exists today).
+// Per-component images (VtaImage exists today). Empty ('') until the
+// full_stack session picks one (required request fields, not env defaults) —
+// same convention as VtaImage.
 MediatorImage string
 DidsImage     string
 
 // Collected outputs (VtaDid, AdminDid exist today). AdminDid already holds the
 // user-supplied PNM admin DID (4a) in vta_only — full_stack reuses it as-is (no new
-// column, no parsing). full_stack adds exactly two more admin DIDs:
-MediatorDid      string  // 1b  (NB: today this column holds the *shared* mediator DID for vta_only)
-MediatorAdminDid string  // 2b  → json: mediator_admin_did
-WebvhAdminDid    string  // 3b  → json: webvh_admin_did
-DidsDaemonDid    string  // 3d
+// column, no parsing). full_stack adds exactly two more admin DIDs. Empty ('')
+// until the corresponding setup step completes, same convention as VtaDid:
+MediatorDid        string  // 1b  (NB: today this column holds the *shared* mediator DID for vta_only)
+MediatorAdminDid   string  // 2b  → json: mediator_admin_did
+DIDHostingAdminDid string  // 3b  → json: did_hosting_admin_did
+DIDHostingDid      string  // 3d  → json: did_hosting_did
 
 // Admin private keys, returned to the user once (2c, 3c); plaintext, like the PVCs.
 MediatorAdminKey string  // 2c
 WebvhAdminKey    string  // 3c
 DidsEnrollURL    string  // 3e dids admin-enroll URL — REQUIRED output, single-use (regenerable)
 ```
+
+Every new column matches its closest analog in the original schema precisely: `TEXT
+NOT NULL DEFAULT ''` for output/optional TEXT columns (same as `vta_image`/`vta_did`/
+`admin_did`), `VARCHAR(100) NOT NULL DEFAULT ''` for the subdomains (same family as
+`subdomain`), and nullable with no default only for `cf_record_mediator`/`cf_record_dids`
+(matching `cf_record_id`, the sole nullable column in the original schema).
 
 **Transient values are not columns.** The bundle digests (`2a`, `3a`), the `*.armor`
 bundles, and the `bootstrap-request.json` files are consumed by the very next step and
@@ -730,9 +742,9 @@ on `POST /api/v1/setup` selects this path.
   "collected": {
     "vta_did": "did:webvh:…:dids.example.com:vta",     // 1a — REQUIRED: user feeds it to `pnm setup continue --vta-did`
     "mediator_did": "did:webvh:…:dids.example.com:mediator",
-    "dids_daemon_did": "did:webvh:…:dids.example.com",
+    "did_hosting_did": "did:webvh:…:dids.example.com",
     "mediator_admin_did": "did:key:z6Mk…",
-    "webvh_admin_did": "did:key:z6Mk…"
+    "did_hosting_admin_did": "did:key:z6Mk…"
   },
   "action_required": {
     "dids_admin_enroll_url": "https://dids.example.com/enroll/…",  // 3e — REQUIRED output, single-use, visit to set a passkey
@@ -758,7 +770,7 @@ tag (per the API Docs Rule in CLAUDE.md).
 `DELETE /setup/:id` for `full_stack`, in order:
 
 1. `orch.Cancel(sid)` — stop the goroutine.
-2. Delete 3 Cloudflare records (`CFRecordVta/Mediator/Dids`).
+2. Delete 3 Cloudflare records (`CFRecordID/Mediator/Dids`).
 3. Delete component resources: Deployments, Services, Ingresses, PVCs for
    vta/mediator/dids, all setup Jobs/ConfigMaps, and the `mediator-vault-token-{sid}` Secret.
 4. Delete Vault material: `TeardownVaultSeed` (VTA master seed) **and** the mediator's

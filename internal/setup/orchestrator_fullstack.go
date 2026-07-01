@@ -181,14 +181,14 @@ func (o *Orchestrator) runFullStack(ctx context.Context, sessionID uint) {
 
 	// step_dids_p2
 	o.fsSetStatus(sessionID, "step_dids_p2")
-	webvhAdminDid, webvhAdminKey, daemonDid, err := o.fsStepDidsP2(ctx, ns, s, digest3a)
+	didHostingAdminDid, didHostingAdminKey, didHostingDid, err := o.fsStepDidsP2(ctx, ns, s, digest3a)
 	if fail("dids setup (offline-complete) failed", err) {
 		return
 	}
-	s.WebvhAdminDid, s.WebvhAdminKey, s.DidsDaemonDid = webvhAdminDid, webvhAdminKey, daemonDid
+	s.DIDHostingAdminDid, s.WebvhAdminKey, s.DIDHostingDid = didHostingAdminDid, didHostingAdminKey, didHostingDid
 	o.db.Model(&model.SetupSession{}).Where("id = ?", sessionID).Updates(map[string]any{
-		"webvh_admin_did": webvhAdminDid, "webvh_admin_key": webvhAdminKey,
-		"dids_daemon_did": daemonDid, "updated_at": time.Now(),
+		"did_hosting_admin_did": didHostingAdminDid, "webvh_admin_key": didHostingAdminKey,
+		"did_hosting_did": didHostingDid, "updated_at": time.Now(),
 	})
 
 	// step_dids_invite — must run before deploy_dids, while no daemon pod holds the PVC.
@@ -244,7 +244,7 @@ func (o *Orchestrator) fsK8sProvision(ctx context.Context, ns string, s *model.S
 		labels     map[string]string
 	}
 	svcs := []svc{
-		{k8s.FSVtaName(s.ID), s.VtaFQDN(), 8100, fsLabels("vta", s.ID)},
+		{k8s.FSVtaName(s.ID), s.FQDN(), 8100, fsLabels("vta", s.ID)},
 		{k8s.FSMediatorName(s.ID), s.MediatorFQDN(), 7037, fsLabels("mediator", s.ID)},
 		{k8s.FSDidsName(s.ID), s.DidsFQDN(), 8534, fsLabels("dids", s.ID)},
 	}
@@ -577,7 +577,7 @@ func (o *Orchestrator) fsStepDidsP2(ctx context.Context, ns string, s *model.Set
 // can be holding the PVC yet.
 func (o *Orchestrator) fsStepDidsInvite(ctx context.Context, ns string, s *model.SetupSession) (enrollURL string, err error) {
 	jobName := k8s.FSJobDidsInvite(s.ID)
-	cmd := fmt.Sprintf("did-hosting-daemon invite --role admin --did %s", shellQuote(s.WebvhAdminDid))
+	cmd := fmt.Sprintf("did-hosting-daemon invite --role admin --did %s", shellQuote(s.DIDHostingAdminDid))
 
 	if err := o.k8s.CreateComponentJob(ctx, ns, k8s.ComponentJobSpec{
 		Name:           jobName,
@@ -628,12 +628,12 @@ func (o *Orchestrator) fsDeployDids(ctx context.Context, ns string, s *model.Set
 // the documented fallback is for the user to upload manually via the dids
 // admin UI, so failures here are logged, not fatal.
 func (o *Orchestrator) fsUploadDidLogs(ctx context.Context, ns string, s *model.SetupSession, vtaDidLog, mediatorDidLog string) {
-	if s.WebvhAdminDid == "" || s.WebvhAdminKey == "" {
+	if s.DIDHostingAdminDid == "" || s.WebvhAdminKey == "" {
 		log.Printf("[orchestrator] fs session %d: skipping DID log upload — missing dids admin credentials", s.ID)
 		return
 	}
 	controlURL := fmt.Sprintf("http://%s.%s.svc:8534", k8s.FSDidsName(s.ID), ns)
-	client, err := didhosting.NewFromMultibaseKey(controlURL, s.WebvhAdminDid, s.WebvhAdminKey)
+	client, err := didhosting.NewFromMultibaseKey(controlURL, s.DIDHostingAdminDid, s.WebvhAdminKey)
 	if err != nil {
 		log.Printf("[orchestrator] fs session %d: DID log upload skipped — client init failed (manual fallback via dids admin UI): %v", s.ID, err)
 		return

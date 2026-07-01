@@ -265,11 +265,11 @@ components:
               description: 1a — REQUIRED, the user feeds it to `pnm setup continue --vta-did`.
             mediator_did:
               type: string
-            dids_daemon_did:
+            did_hosting_did:
               type: string
             mediator_admin_did:
               type: string
-            webvh_admin_did:
+            did_hosting_admin_did:
               type: string
         action_required:
           type: object
