@@ -122,7 +122,7 @@ POST /api/v1/admin/passkeys/register/begin
 POST /api/v1/admin/passkeys/register/complete?name=MyKey
 ```
 
-To create additional admins, an authenticated admin calls `POST /api/v1/admins`, which returns a new enrollment token.
+To create additional admins, an authenticated admin calls `POST /api/v1/admin/admins`, which returns a new enrollment token.
 
 ### Auth
 
@@ -137,16 +137,38 @@ To create additional admins, an authenticated admin calls `POST /api/v1/admins`,
 
 | Method | Path | Role | Description |
 | --- | --- | --- | --- |
-| `POST` | `/api/v1/admins` | admin | Create admin + return enrollment token |
-| `POST` | `/api/v1/users` | admin | Create a user account |
+| `POST` | `/api/v1/admin/admins` | admin | Create admin + return enrollment token |
+| `GET` | `/api/v1/admin/users` | admin | List user accounts (includes `beta_access`) |
+| `PUT` | `/api/v1/admin/users/:id/beta-access` | admin | Grant/revoke a user's beta access — the only way it's ever changed |
+| `POST` | `/api/v1/admin/invitations` | admin | Create a user invitation link |
+| `GET` | `/api/v1/admin/invitations` | admin | List invitation links |
+
+Every route an authenticated admin calls lives under `/api/v1/admin/...` — that
+prefix is the signal that the route requires the admin role, regardless of
+what resource it operates on.
+
+User accounts themselves aren't created by admin directly — an admin creates an
+invitation link (`POST /api/v1/admin/invitations`) and the user self-registers
+with `POST /api/v1/invitations/:token/register` (public, token-based — not
+under `/admin/`, since the caller isn't authenticated as an admin).
 
 ### User — VTA Setup Wizard
 
 | Method | Path | Role | Description |
 | --- | --- | --- | --- |
+| `GET` | `/api/v1/user/me` | user | Get own profile, incl. `beta_access` (read-only) |
 | `POST` | `/api/v1/setup/validate` | user | Check Cloudflare connectivity |
-| `POST` | `/api/v1/setup` | user | Create session + provision DNS |
+| `POST` | `/api/v1/setup` | user | Create session + provision DNS (`mode=full_stack` requires `beta_access`) |
 | `DELETE` | `/api/v1/setup/:id` | user | Cancel session + tear down DNS |
+
+## Beta Access
+
+`users.beta_access` (bool, default `false`) gates access to features still in
+beta — currently just `mode=full_stack` on `POST /setup`. It's a plain on/off
+switch, not a tier: only an admin can flip it (`PUT /api/v1/admin/users/:id/beta-access`),
+never the user themselves. `GET /api/v1/user/me` lets the frontend check the
+caller's own value fresh (not from the JWT, which doesn't carry it) so it can
+decide whether to offer the `full_stack` option at all.
 
 ## API Docs Rule
 

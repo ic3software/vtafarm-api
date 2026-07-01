@@ -80,7 +80,7 @@ networking workarounds.
    POST /api/v1/admin/passkeys/register/complete?name=MyKey
    ```
 
-   To create additional admins, an authenticated admin calls `POST /api/v1/admins`, which returns a new enrollment token.
+   To create additional admins, an authenticated admin calls `POST /api/v1/admin/admins`, which returns a new enrollment token.
 
 ### Environment Variables
 

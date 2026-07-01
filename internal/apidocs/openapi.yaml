@@ -580,7 +580,7 @@ paths:
 
   # ── Admin ───────────────────────────────────────────────────────────────────
 
-  /api/v1/admins:
+  /api/v1/admin/admins:
     get:
       summary: List admins
       description: Returns all admin accounts, oldest first.
@@ -656,7 +656,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /api/v1/users:
+  /api/v1/admin/users:
     get:
       summary: List users
       description: Returns all user accounts, oldest first.
@@ -678,6 +678,9 @@ paths:
                     unique_id:
                       type: string
                       example: "a1b2c3d4"
+                    beta_access:
+                      type: boolean
+                      description: Whether this user can create full_stack setup sessions.
                     created_at:
                       type: string
                       format: date-time
@@ -692,6 +695,71 @@ paths:
                 $ref: "#/components/schemas/Error"
         "403":
           description: Insufficient role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/admin/users/{id}/beta-access:
+    put:
+      summary: Set a user's beta access
+      description: |
+        Grants or revokes a user's access to features still in beta (currently:
+        `mode=full_stack` on `POST /setup`). Admin-only — there is no user-facing
+        way to self-enable this.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The user's 8-char `unique_id` (not the numeric PK).
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [beta_access]
+              properties:
+                beta_access:
+                  type: boolean
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    example: "a1b2c3d4"
+                  beta_access:
+                    type: boolean
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: User not found
           content:
             application/json:
               schema:
@@ -845,7 +913,7 @@ paths:
 
   # ── Admin — Invitations ─────────────────────────────────────────────────────
 
-  /api/v1/invitations:
+  /api/v1/admin/invitations:
     post:
       summary: Create invitation link
       description: Generates a single-use invitation link valid for 24 hours.
@@ -1153,6 +1221,41 @@ paths:
 
   # ── User ────────────────────────────────────────────────────────────────────
 
+  /api/v1/user/me:
+    get:
+      summary: Get the caller's own profile
+      description: |
+        Returns the logged-in user's own `beta_access` state, fetched fresh from
+        the database (not from the JWT, which doesn't carry it — an admin can
+        flip it at any time without the user needing to log in again). The
+        frontend uses this to decide whether to offer `mode=full_stack` on the
+        setup wizard.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      responses:
+        "200":
+          description: Caller's profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    example: "a1b2c3d4"
+                  beta_access:
+                    type: boolean
+                  created_at:
+                    type: string
+                    format: date-time
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/v1/setup/validate:
     post:
       summary: Validate setup prerequisites
@@ -1270,7 +1373,9 @@ paths:
         full_stack: derives three random-prefixed hostnames (fpp-xxxx / mediator-xxxx /
         dids-xxxx under CLUSTER_DOMAIN, sharing one random ID), creates all three Cloudflare
         DNS A records up front, stores the session, and begins the async VTA + Mediator +
-        DID-hosting daemon state machine.
+        DID-hosting daemon state machine. **`mode=full_stack` requires the caller's
+        `beta_access` to be `true`** (see `GET /user/me`); an admin grants this via
+        `PUT /admin/users/{id}/beta-access`.
       tags: [User]
       security:
         - CookieAuthUser: []
@@ -1295,6 +1400,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "401":
           description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: mode=full_stack requested but the caller doesn't have beta_access
           content:
             application/json:
               schema:

@@ -166,7 +166,19 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		return
 	}
 
+	userID := c.MustGet(middleware.ContextUserID).(uint)
+
+	var user model.User
+	if err := h.db.First(&user, userID).Error; err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
+		return
+	}
+
 	if req.Mode == model.ModeFullStack {
+		if !user.BetaAccess {
+			c.JSON(http.StatusForbidden, gin.H{"error": "full_stack mode is in beta — ask an admin to enable beta access for your account"})
+			return
+		}
 		h.createFullStack(c, req)
 		return
 	}
@@ -181,13 +193,6 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	preRotationCount := 1
 	if req.PreRotationCount != nil {
 		preRotationCount = *req.PreRotationCount
-	}
-	userID := c.MustGet(middleware.ContextUserID).(uint)
-
-	var user model.User
-	if err := h.db.First(&user, userID).Error; err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
-		return
 	}
 
 	var existing int64
