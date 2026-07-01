@@ -83,54 +83,30 @@ From the code (`internal/setup/orchestrator.go`, `internal/handler/setup.go`):
 
 ### Mode B — Full Stack
 
-> **Superseded.** The Full Stack design below predates the verified Ubuntu flow and is
-> kept only for context. The authoritative, up-to-date design — three URLs
-> (`vta`/`mediator`/`dids.{domain}`), in-cluster mediator (fjall) + DID-hosting daemon,
-> plaintext secrets (no Vault), and the full state machine — lives in
-> [`full-stack-setup-design.md`](full-stack-setup-design.md).
+> **Full state machine, recipes, and API surface live in
+> [`full-stack-setup-design.md`](full-stack-setup-design.md).** Don't copy the state
+> machine from this section — a previous copy kept here went stale (it still showed an
+> abandoned `step_upload_didlogs` design, later replaced by the offline
+> `step_dids_load_did` approach; see `full-stack-setup-design.md` §4/§6/Appendix A for
+> why). This section is just a pointer + the shape of the mode.
 
 VTA Farm deploys and wires all three components.
 
 ```text
 User provides:
-  domain  → creates  vta.{domain}       (VTA)
-                     mediator.{domain}  (DIDComm Mediator)
-                     dids.{domain}      (WebVH DID Hosting Daemon)
+  domain  → creates  fpp-xxxx.{domain}       (VTA)
+                     mediator-xxxx.{domain}  (DIDComm Mediator)
+                     dids-xxxx.{domain}      (WebVH DID Hosting Daemon)
 ```
 
-**State machine (Full Stack)** — authoritative copy in
-[`full-stack-setup-design.md` §5](full-stack-setup-design.md). The shared steps
-(`dns_provision`, `step_vta_setup`, `awaiting_admin_did`, `step_import_admin_did`,
-`deploy_vta`, `completed`) are the **same steps, same names** as VTA Only above; Full Stack
-only inserts the mediator/dids steps and the staggered deploys:
-
-```text
-pending
-  → dns_provision          create 3 Cloudflare A-records
-  → env_provision          EnsureUserEnvironment + EnsureUserAccess (Vault policy/role; mint mediator token)
-  → k8s_provision          PVCs, Services, Ingresses for vta/mediator/dids
-  → step_vta_setup         vta setup --from vta-setup.toml             → 1a VTA DID, 1b Mediator DID, DID logs
-  → step_mediator_p1       mediator-setup (phase 1)                    → bootstrap-request.json
-  → step_mediator_reprov   vta contexts reprovision                    → bundle.armor, 2a digest, 2b admin DID
-  → step_mediator_p2       mediator-setup --bundle --digest            → 2c admin priv key
-  → step_dids_p1           did-hosting-daemon setup (offline-prepare)  → bootstrap-request.json
-  → step_dids_provision    vta bootstrap provision-integration         → bundle.armor, 3a digest
-  → step_dids_p2           did-hosting-daemon setup (offline-complete) → 3b admin DID, 3c priv key, 3d daemon DID
-  → step_dids_invite       did-hosting-daemon invite --role admin      → 3e dids admin-enroll URL
-  → deploy_dids            Deployment dids-daemon
-  → step_upload_didlogs    register mediator + VTA DID logs (control API)
-  → deploy_mediator        Deployment mediator
-  → awaiting_admin_did     ⏸ gate: wait for the user's PNM admin DID (skip if given at POST /setup)
-  → step_import_admin_did  vta import-did --role admin --did <admin_did>
-  → deploy_vta             Deployment vta
-  → completed              return 3 URLs + 1a VTA DID + 3e dids admin-enroll URL
-         ↓ (any step)
-      failed
-```
-
-Unlike the earlier draft, Full Stack has **no `vta bootstrap provision-integration` manual
-gate** — `step_dids_provision` runs it automatically as a Job. The only gate is
-`awaiting_admin_did` (the user's PNM admin DID), exactly as in VTA Only.
+**State machine (Full Stack)** — see
+[`full-stack-setup-design.md` §5](full-stack-setup-design.md) for the authoritative,
+up-to-date step list. The shared steps (`dns_provision`, `step_vta_setup`,
+`awaiting_admin_did`, `step_import_admin_did`, `deploy_vta`, and the terminal `running`
+status) are the **same steps, same names** as VTA Only above; Full Stack additionally
+splits `env_provision` / `k8s_provision` out of `step_vta_setup` (three components to
+provision instead of one) and inserts the mediator/dids steps between `step_vta_setup`
+and the `awaiting_admin_did` gate.
 
 ---
 
@@ -147,8 +123,10 @@ gate** — `step_dids_provision` runs it automatically as a Job. The only gate i
 
 > There is **no `domain`, `did_hosting_url`, `*_port`, or `log_level` form field** in the
 > implemented `vta_only` flow: the domain comes from `CLUSTER_DOMAIN`, the DID-hosting URL is
-> derived (below), and ports / log-level are fixed in the rendered TOML. (Full Stack may add
-> `mediator_image` / `dids_image` — design-only.)
+> derived (below), and ports / log-level are fixed in the rendered TOML (`log_level` is
+> hardcoded to `"info"` in both modes). Full Stack has its own required `mediator_image` /
+> `dids_image` request fields — implemented, see
+> [`full-stack-setup-design.md`](full-stack-setup-design.md) §11/§12.
 
 **Backend-derived values** (not form inputs):
 
@@ -188,9 +166,9 @@ A   {fpp-xxxx}.{CLUSTER_DOMAIN}  →  {CLUSTER_INGRESS_IP}   proxied=true
 For **Full Stack** mode:
 
 ```text
-A   vta.{domain}       →  {CLUSTER_INGRESS_IP}   proxied=true
-A   mediator.{domain}  →  {CLUSTER_INGRESS_IP}   proxied=true
-A   dids.{domain}      →  {CLUSTER_INGRESS_IP}   proxied=true
+A   fpp-xxxx.{domain}       →  {CLUSTER_INGRESS_IP}   proxied=true
+A   mediator-xxxx.{domain}  →  {CLUSTER_INGRESS_IP}   proxied=true
+A   dids-xxxx.{domain}      →  {CLUSTER_INGRESS_IP}   proxied=true
 ```
 
 ### Cloudflare Client — `internal/cloudflare/client.go`
@@ -275,6 +253,11 @@ The API server's ClusterRole must include:
 - apiGroups: ["batch"]
   resources: ["jobs"]
   verbs: ["get", "list", "create", "delete", "watch"]
+# full_stack: per-session Secret holding the mediator's minted VAULT_TOKEN. The
+# VTA seed and the mediator's own secrets live in Vault, not here.
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "create", "delete"]
 ```
 
 ---

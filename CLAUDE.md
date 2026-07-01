@@ -130,7 +130,7 @@ To create additional admins, an authenticated admin calls `POST /api/v1/admins`,
 | --- | --- | --- | --- |
 | `POST` | `/api/v1/auth/passkey/begin` | public | Begin passkey login (admin or user) |
 | `POST` | `/api/v1/auth/passkey/complete` | public | Complete passkey login → JWT + cookie |
-| `GET`  | `/api/v1/admin/enroll/:token` | public | Validate admin enrollment token |
+| `GET` | `/api/v1/admin/enroll/:token` | public | Validate admin enrollment token |
 | `POST` | `/api/v1/admin/enroll/:token` | public | Consume token → auto-login as admin |
 
 ### Admin
@@ -192,14 +192,33 @@ Kubernetes Secret. See `helm/vtafarm-vault` (farm Vault) and
 
 ### API Server Permissions (Production)
 
+Mirrors `helm/vtafarm-api/templates/vtafarm-api/clusterrole.yaml` exactly — keep both in sync.
+
 ```yaml
 rules:
 - apiGroups: [""]
-  resources: ["namespaces", "serviceaccounts", "pods", "pods/log", "pods/exec",
-              "configmaps", "persistentvolumeclaims", "services"]
-  verbs: ["get", "list", "create", "update", "delete", "watch"]
+  resources: ["namespaces"]
+  verbs: ["get", "list", "create", "delete"]
+- apiGroups: [""]
+  resources: ["serviceaccounts"]
+  verbs: ["get", "list", "create", "delete"]
+- apiGroups: [""]
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list", "watch", "create", "delete"]
+- apiGroups: [""]
+  resources: ["pods/exec"]
+  verbs: ["create"]
 - apiGroups: ["rbac.authorization.k8s.io"]
   resources: ["roles", "rolebindings"]
+  verbs: ["get", "list", "create", "delete"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "create", "delete"]
+- apiGroups: [""]
+  resources: ["persistentvolumeclaims"]
+  verbs: ["get", "list", "create", "delete", "watch"]
+- apiGroups: [""]
+  resources: ["services"]
   verbs: ["get", "list", "create", "delete"]
 - apiGroups: ["batch"]
   resources: ["jobs"]
@@ -210,4 +229,9 @@ rules:
 - apiGroups: ["networking.k8s.io"]
   resources: ["ingresses"]
   verbs: ["get", "list", "create", "update", "delete", "watch"]
+# full_stack: per-session Secret holding the mediator's minted VAULT_TOKEN. The
+# VTA seed and the mediator's own secrets live in Vault, not here.
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "create", "delete"]
 ```

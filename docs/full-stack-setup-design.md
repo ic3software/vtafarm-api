@@ -5,9 +5,9 @@ self-contained VTI stack — **VTA + DIDComm Mediator + WebVH DID Hosting daemon
 inside one user namespace, wired together, and returns three live URLs:
 
 ```text
-https://vta.{domain}        ← VTA REST + DIDComm
-https://mediator.{domain}   ← DIDComm Mediator
-https://dids.{domain}       ← WebVH DID Hosting daemon (admin panel + DID resolution)
+https://fpp-xxxx.{domain}        ← VTA REST + DIDComm
+https://mediator-xxxx.{domain}   ← DIDComm Mediator
+https://dids-xxxx.{domain}       ← WebVH DID Hosting daemon (admin panel + DID resolution)
 ```
 
 This is the K8s/API automation of the manual single-host flow verified on Ubuntu
@@ -70,32 +70,37 @@ the mediator's KV prefix, and the orchestrator mints a `VAULT_TOKEN` for the med
 
 ```text
 namespace: vtafarm-user-{userID}
-┌──────────────────────────────────────────────────────────────────────────┐
-│    services & ingresses (created up front; 503 until pods come up)         │
-│   ┌────────────┐   ┌────────────────┐   ┌────────────────┐                 │
-│   │ vta-{sid}  │   │ mediator-{sid} │   │ dids-{sid}     │                 │
-│   │ :8100      │   │ :7037          │   │ :8534          │                 │
-│   └─────┬──────┘   └──────┬─────────┘   └──────┬─────────┘                 │
-│  Ingress│vta.{d}   Ingress│mediator.{d} Ingress│dids.{d}                   │
-│         │                 │                    │                           │
-│   ┌─────▼──────┐   ┌──────▼─────────┐   ┌──────▼─────────┐                 │
-│   │ Deployment │   │ Deployment     │   │ Deployment     │                 │
-│   │ vta        │   │ mediator       │   │ dids-daemon    │                 │
-│   │ PVC vta    │   │ PVC mediator   │   │ PVC dids       │                 │
-│   │ /work/vta  │   │ /work/mediator │   │ /work/dids     │                 │
-│   └────────────┘   └────────────────┘   └────────────────┘                 │
-│                                                                            │
-│   Setup Jobs mount whichever PVC(s) they touch; cross-component steps      │
-│   mount two PVCs at once (e.g. /work/vta + /work/mediator). Steps run      │
-│   strictly in sequence, so plain RWO PVCs are never mounted concurrently.  │
-└──────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│   services & ingresses (created up front; 503 until pods come up)            │
+│   ┌────────────────────┐   ┌────────────────────┐   ┌────────────────────┐   │
+│   │ fs-{sid}-vta       │   │ fs-{sid}-mediator  │   │ fs-{sid}-dids      │   │
+│   │ :8100              │   │ :7037              │   │ :8534              │   │
+│   └──────────┬─────────┘   └──────────┬─────────┘   └──────────┬─────────┘   │
+│              │ Ingress                │ Ingress                │ Ingress     │
+│              │                        │                        │             │
+│   ┌──────────▼─────────┐   ┌──────────▼─────────┐   ┌──────────▼─────────┐   │
+│   │ Deployment         │   │ Deployment         │   │ Deployment         │   │
+│   │ fs-{sid}-vta       │   │ fs-{sid}-mediator  │   │ fs-{sid}-dids      │   │
+│   │ /work/vta          │   │ /work/mediator     │   │ /work/dids         │   │
+│   └────────────────────┘   └────────────────────┘   └────────────────────┘   │
+│                                                                              │
+│   Setup Jobs mount whichever PVC(s) they touch; cross-component steps        │
+│   mount two PVCs at once (e.g. /work/vta + /work/mediator). Steps run        │
+│   strictly in sequence, so plain RWO PVCs are never mounted concurrently.    │
+│   Ingress host is the session's randomized subdomain — fpp-xxxx /            │
+│   mediator-xxxx / dids-xxxx.{domain} (see §3) — not the literal              │
+│   component name shown above.                                                │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
+
+Each component's PVC, Service, Ingress, and Deployment all share **one name**:
+`fs-{sid}-vta` / `fs-{sid}-mediator` / `fs-{sid}-dids` (`internal/k8s/fullstack_names.go`).
 
 | Component | Port | Public URL | Storage | Notes |
 | --- | --- | --- | --- | --- |
-| VTA | 8100 | `vta.{domain}` | PVC `vta-data-{sid}` + **Vault** seed | reuses today's VTA resources + Vault path (mounted at `/work/vta`) |
-| Mediator | 7037 | `mediator.{domain}` | secrets in **Vault** (`vault://`); config + `fjall` message store on PVC `mediator-data-{sid}` | token auth via injected `VAULT_TOKEN`; no Redis/Valkey |
-| DID Hosting daemon | 8534 | `dids.{domain}` | PVC `dids-data-{sid}` (`plaintext` secrets) | standard (integrated) topology |
+| VTA | 8100 | `fpp-xxxx.{domain}` | PVC `fs-{sid}-vta` + **Vault** seed | reuses today's VTA resources + Vault path (mounted at `/work/vta`) |
+| Mediator | 7037 | `mediator-xxxx.{domain}` | secrets in **Vault** (`vault://`); config + `fjall` message store on PVC `fs-{sid}-mediator` | token auth via injected `VAULT_TOKEN`; no Redis/Valkey |
+| DID Hosting daemon | 8534 | `dids-xxxx.{domain}` | PVC `fs-{sid}-dids` (`plaintext` secrets) | standard (integrated) topology |
 
 Each component is one PVC + one Deployment + one Service + one Ingress. Nothing is
 shared between them at runtime — the cross-component file handoffs happen only during
@@ -164,7 +169,7 @@ home-dir layout, so the recipe bodies are essentially verbatim. (The mediator's
 
 > The VTA's two DID logs (`VTA-did.jsonl`, `mediator-did.jsonl`) are loaded into the dids
 > daemon's local store **offline**, before it ever starts — `step_dids_load_did`
-> ([§6](#step-step_dids_load_did--dids-job)) mounts the vta PVC alongside the dids PVC and
+> ([§6](#6-per-step-jobs), `step_dids_load_did`) mounts the vta PVC alongside the dids PVC and
 > reads them straight off disk (`did-hosting-daemon load-did`), the same way
 > `step_mediator_reprov`/`step_dids_provision` above mount two PVCs at once. No marker
 > trick or in-memory round-trip through the orchestrator needed.
@@ -202,7 +207,7 @@ consumes a DID or bundle the earlier one produced). But the *start* order is **d
 first, then mediator, then VTA** — exactly as the reference: the dids daemon must already
 have the VTA's and mediator's DIDs loaded into its local store *before* it starts serving
 (`step_dids_load_did` runs offline, right before `deploy_dids`), so that when the mediator
-and VTA boot and resolve their own `did:webvh:...` identities against `dids.{domain}`, the
+and VTA boot and resolve their own `did:webvh:...` identities against `dids-xxxx.{domain}`, the
 documents are already there — otherwise their first-boot DID resolution 404s. The mediator
 must also be reachable before the VTA boots, and the VTA must have the admin DID imported
 before it starts. The `vta contexts reprovision`, `vta bootstrap provision-integration`,
@@ -378,7 +383,7 @@ start, not after.) Nothing to parse — success is just exit code 0.
 ### `deploy_dids` — start the daemon Deployment
 
 Deployment with `workingDir = /work/dids`, command `["did-hosting-daemon"]`, mounting
-the dids PVC, plus the Service + Ingress for `dids.{domain}` (created in
+the dids PVC, plus the Service + Ingress for `dids-xxxx.{domain}` (created in
 `k8s_provision`, now backed by a running pod). Wait for Ready.
 
 ### `deploy_mediator` — start the mediator Deployment
@@ -388,7 +393,7 @@ mediator PVC (it reads `conf/mediator.toml` and the `fjall` message store from t
 Env: `VAULT_TOKEN` (`secretKeyRef` → the per-session token Secret) + `VAULT_SKIP_VERIFY`
 — the mediator reads its secrets from Vault at startup and *probes* (write→read→delete a
 sentinel), so the token's policy must allow all four. Service + Ingress for
-`mediator.{domain}`. No Redis/Valkey dependency.
+`mediator-xxxx.{domain}`. No Redis/Valkey dependency.
 
 > **Token lifetime:** the Deployment is long-running and re-reads secrets on every pod
 > restart, so the injected token must be **periodic/renewable or long-TTL** — a
@@ -419,7 +424,7 @@ which is why the **VTA DID (`1a`)** must be returned to them ([§12](#12-api-sur
 ### `deploy_vta` — start the VTA Deployment
 
 Deployment with `workingDir = /work/vta`, command `["vta"]`, mounting the vta PVC, plus
-Service + Ingress for `vta.{domain}` (generalize today's `CreateVtaDeployment` /
+Service + Ingress for `fpp-xxxx.{domain}` (generalize today's `CreateVtaDeployment` /
 `CreateVtaService` / `CreateVtaIngress` to the `/work/vta` mount path).
 
 ---
@@ -429,13 +434,15 @@ Service + Ingress for `vta.{domain}` (generalize today's `CreateVtaDeployment` /
 PVCs mount at `/work/<component>` with matching `workingDir`, so the recipes keep the
 reference's **relative paths verbatim**. Templated fields in `{{…}}`.
 
+<!-- markdownlint-disable MD033 -->
+
 <details><summary><b>vta-setup.toml</b> (full_stack)</summary>
 
 ```toml
 config_path = "config.toml"
 data_dir    = "data/vta"
 vta_name    = "{{ .VtaName }}"
-public_url  = "https://vta.{{ .Domain }}"
+public_url  = "{{ .VtaPublicURL }}"        # https://fpp-xxxx.{domain} — session's VTA FQDN
 
 [services]
 rest    = true
@@ -446,7 +453,7 @@ host = "0.0.0.0"
 port = 8100
 
 [log]
-level  = "{{ .LogLevel }}"
+level  = "info"
 format = "text"
 
 [secrets]                              # identical to vta_only — the VTA seed lives in Vault
@@ -462,15 +469,16 @@ skip_verify = {{ .Vault.SkipVerify }}
 [messaging]                            # ← full_stack: CREATE the mediator (vta_only uses kind="existing")
 kind      = "create_mediator"
 context   = "mediator"
-url       = "https://mediator.{{ .Domain }}/mediator/v1"
-webvh_url = "https://dids.{{ .Domain }}/mediator"
+url       = "{{ .MediatorURL }}"           # https://mediator-xxxx.{domain}/mediator/v1
+webvh_url = "{{ .MediatorWebvhURL }}"      # https://dids-xxxx.{domain}/mediator
 
 [vta_did]
 kind               = "create_webvh"
-url                = "https://dids.{{ .Domain }}/vta"
+url                = "{{ .VtaDidWebvhURL }}" # https://dids-xxxx.{domain}/vta
 portable           = {{ .Portable }}
 pre_rotation_count = {{ .PreRotationCount }}
 ```
+
 </details>
 
 <details><summary><b>mediator-recipe.toml</b></summary>
@@ -508,6 +516,7 @@ data_dir = "./data/mediator"    # file-backed store on the mediator PVC
 config_path    = "conf/mediator.toml"
 listen_address = "0.0.0.0:7037"
 ```
+
 </details>
 
 <details><summary><b>webvh-recipe.toml</b> (phase 1 → phase 3 differs only in <code>[deployment].vta_mode</code> and the <code>[vta]</code> block)</summary>
@@ -523,13 +532,13 @@ config_path = "config.toml"
 [server]
 host       = "0.0.0.0"
 port       = 8534
-log_level  = "{{ .LogLevel }}"
+log_level  = "info"
 log_format = "text"
 data_dir   = "data/daemon"
 
 [identity]
-public_url   = "https://dids.{{ .Domain }}"
-mediator_did = "{{ .MediatorDID }}"   # 1b
+public_url   = "{{ .PublicURL }}"      # https://dids-xxxx.{domain}
+mediator_did = "{{ .MediatorDid }}"    # 1b
 
 [vta]
 request_path  = "bootstrap-request.json"   # phase 1 only
@@ -553,7 +562,10 @@ mode = "generate"
 [reprovision]
 force = false
 ```
+
 </details>
+
+<!-- markdownlint-enable MD033 -->
 
 ---
 
@@ -614,6 +626,7 @@ per session:
      capabilities = ["read", "list", "delete"]
    }
    ```
+
 3. **Mint a token** attached to that policy (the API already holds an AppRole session, so
    it can create a child token). Make it **periodic/renewable or long-TTL** — the mediator
    Deployment re-reads secrets on every restart, so a short-TTL token would strand it.
@@ -670,6 +683,12 @@ DIDHostingDid      string  // 3d  → json: did_hosting_did
 MediatorAdminKey string  // 2c
 WebvhAdminKey    string  // 3c
 DidsEnrollURL    string  // 3e dids admin-enroll URL — REQUIRED output, single-use (regenerable)
+
+// DidsEnrollUsed is set by POST /setup/:id/dids/enroll-ack once the user opens
+// DidsEnrollURL — single-use at the daemon level, so this just stops the UI from
+// re-offering a link that will fail if clicked again. Added later, in migration
+// 000010_dids_enroll_used (not part of the original 000009_full_stack_fields above).
+DidsEnrollUsed bool
 ```
 
 Every new column matches its closest analog in the original schema precisely: `TEXT
@@ -742,19 +761,19 @@ on `POST /api/v1/setup` selects this path.
   "mode": "full_stack",
   "status": "running",
   "urls": {
-    "vta":      "https://vta.example.com",
-    "mediator": "https://mediator.example.com",
-    "dids":     "https://dids.example.com"
+    "vta":      "https://fpp-a1b2c3d4.example.com",
+    "mediator": "https://mediator-a1b2c3d4.example.com",
+    "dids":     "https://dids-a1b2c3d4.example.com"
   },
   "collected": {
-    "vta_did": "did:webvh:…:dids.example.com:vta",     // 1a — REQUIRED: user feeds it to `pnm setup continue --vta-did`
-    "mediator_did": "did:webvh:…:dids.example.com:mediator",
-    "did_hosting_did": "did:webvh:…:dids.example.com",
+    "vta_did": "did:webvh:…:dids-a1b2c3d4.example.com:vta",     // 1a — REQUIRED: user feeds it to `pnm setup continue --vta-did`
+    "mediator_did": "did:webvh:…:dids-a1b2c3d4.example.com:mediator",
+    "did_hosting_did": "did:webvh:…:dids-a1b2c3d4.example.com",
     "mediator_admin_did": "did:key:z6Mk…",
     "did_hosting_admin_did": "did:key:z6Mk…"
   },
   "action_required": {
-    "dids_admin_enroll_url": "https://dids.example.com/enroll/…",  // 3e — REQUIRED output, single-use, visit to set a passkey
+    "dids_admin_enroll_url": "https://dids-a1b2c3d4.example.com/enroll/…",  // 3e — REQUIRED output, single-use, visit to set a passkey
     "reveal_keys_once": true                                       // 2c / 3c shown once
   }
 }
@@ -931,6 +950,7 @@ home-dir / `nohup` mechanics. Both the **VTA and the Mediator** store secrets in
   path "secret/metadata/mediator/*" { capabilities = ["read","list","delete"] }
   path "secret/metadata/mediator"   { capabilities = ["read","list"] }
   ```
+
 - **Unchanged:** VTA + dids backends, PNM, and `[database]`/`[storage]` — Vault stores
   only mediator secrets, not the fjall message store.
 
