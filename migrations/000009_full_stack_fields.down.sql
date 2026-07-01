@@ -1,0 +1,15 @@
+ALTER TABLE setup_sessions
+    DROP COLUMN IF EXISTS vta_subdomain,
+    DROP COLUMN IF EXISTS mediator_subdomain,
+    DROP COLUMN IF EXISTS dids_subdomain,
+    DROP COLUMN IF EXISTS cf_record_vta,
+    DROP COLUMN IF EXISTS cf_record_mediator,
+    DROP COLUMN IF EXISTS cf_record_dids,
+    DROP COLUMN IF EXISTS mediator_image,
+    DROP COLUMN IF EXISTS dids_image,
+    DROP COLUMN IF EXISTS mediator_admin_did,
+    DROP COLUMN IF EXISTS webvh_admin_did,
+    DROP COLUMN IF EXISTS dids_daemon_did,
+    DROP COLUMN IF EXISTS mediator_admin_key,
+    DROP COLUMN IF EXISTS webvh_admin_key,
+    DROP COLUMN IF EXISTS dids_enroll_url;

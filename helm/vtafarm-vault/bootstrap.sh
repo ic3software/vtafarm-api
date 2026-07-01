@@ -8,6 +8,7 @@
 #   3. AppRole auth method       (vtafarm-api authenticates to manage policies/roles)
 #   4. vtafarm-api-admin policy   (lets the API create per-user policies + k8s roles)
 #   5. vtafarm-api AppRole        (prints role_id + secret_id for the API's Secret)
+#   6. vtafarm-mediator-token role (lets the API mint full_stack mediator VAULT_TOKENs)
 #
 # It does NOT create per-user policies/roles or write any seed — those are done
 # at runtime by vtafarm-api (internal/vault) and by `vta setup` respectively.
@@ -29,6 +30,7 @@ K8S_AUTH_MOUNT="${K8S_AUTH_MOUNT:-kubernetes}"
 APPROLE_MOUNT="${APPROLE_MOUNT:-approle}"
 API_ROLE_NAME="${API_ROLE_NAME:-vtafarm-api}"
 API_POLICY_NAME="${API_POLICY_NAME:-vtafarm-api-admin}"
+MEDIATOR_TOKEN_ROLE="${MEDIATOR_TOKEN_ROLE:-vtafarm-mediator-token}"
 
 : "${VAULT_ADDR:?set VAULT_ADDR (e.g. https://127.0.0.1:8200) + VAULT_CACERT}"
 : "${VAULT_TOKEN:?set VAULT_TOKEN (root or admin token)}"
@@ -75,7 +77,9 @@ fi
 # "read" on secret data — only the lifecycle operations it actually performs.
 echo "==> Writing policy '${API_POLICY_NAME}'"
 vault policy write "${API_POLICY_NAME}" - <<EOF
-# Manage one ACL policy per user namespace (vta-user-<userID>)
+# Manage one ACL policy per user namespace (vta-user-<userID>). full_stack
+# extends this same policy to also cover the user's mediator KV prefix
+# (secret/{data,metadata}/mediator/user-<id>/*) — see internal/vault.EnsureUserAccess.
 path "sys/policies/acl/vta-user-*" {
   capabilities = ["create", "read", "update", "delete"]
 }
@@ -92,7 +96,39 @@ path "${KV_MOUNT}/data/vta/*" {
 path "${KV_MOUNT}/metadata/vta/*" {
   capabilities = ["delete"]
 }
+
+# full_stack: clean up mediator secrets on teardown. No "read" here either.
+path "${KV_MOUNT}/data/mediator/*" {
+  capabilities = ["delete"]
+}
+path "${KV_MOUNT}/metadata/mediator/*" {
+  capabilities = ["delete"]
+}
+
+# full_stack: mint + revoke the mediator's periodic VAULT_TOKEN. Token
+# creation goes through the ${MEDIATOR_TOKEN_ROLE} token role (below) since
+# this policy's own policies aren't a superset of vta-user-* (Vault requires
+# a token role's allowed_policies_glob to mint child tokens like that).
+path "auth/token/create/${MEDIATOR_TOKEN_ROLE}" {
+  capabilities = ["create", "update"]
+}
+path "auth/token/revoke" {
+  capabilities = ["update"]
+}
 EOF
+
+# 4b. vtafarm-mediator-token role -----------------------------------------------
+# Lets vtafarm-api mint tokens scoped to any vta-user-* policy even though its
+# own AppRole token doesn't hold that policy. Periodic (no expiry as long as
+# it's renewed) since the mediator Deployment re-reads its secrets on every
+# pod restart, and the API doesn't run a renewal loop — see
+# internal/vault.MintMediatorToken.
+echo "==> Writing token role '${MEDIATOR_TOKEN_ROLE}'"
+vault write "auth/token/roles/${MEDIATOR_TOKEN_ROLE}" \
+  allowed_policies_glob="vta-user-*" \
+  orphan=true \
+  renewable=true \
+  period=720h
 
 # 5. vtafarm-api AppRole -------------------------------------------------------
 echo "==> Writing AppRole '${API_ROLE_NAME}'"

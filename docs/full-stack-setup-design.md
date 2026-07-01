@@ -49,8 +49,8 @@ mediator and the DID host**:
 | --- | --- | --- |
 | Mediator | **Shared**, external. VTA points at `MEDIATOR_DID` via `[messaging] kind = "existing"`. | **Per-deployment**, in-cluster. VTA *creates* it via `[messaging] kind = "create_mediator"`, then the mediator is provisioned + run in the same namespace. |
 | DID host | **Shared**, external (`DID_HOSTING_SERVER_URL`). API uploads the VTA DID log to it via the control client. | **Per-deployment**, in-cluster. A fresh `did-hosting-daemon` is provisioned + run in the same namespace; the VTA + mediator DID logs are uploaded to *it*. |
-| URLs returned | 1 (`fpp-xxxx.{domain}`) | 3 (`vta`/`mediator`/`dids.{domain}`) |
-| Subdomain | random `fpp-xxxx` prefix | three named hosts (see [§3](#3-urls--dns)) |
+| URLs returned | 1 (`fpp-xxxx.{domain}`) | 3 (`fpp-xxxx`/`mediator-xxxx`/`dids-xxxx.{domain}`) |
+| Subdomain | random `fpp-xxxx` prefix | three random-prefixed hosts sharing one ID (see [§3](#3-urls--dns)) |
 | Secret backend | HashiCorp Vault (`[secrets] backend = "vault"`) | **VTA: Vault** (k8s auth, same as `vta_only`). **Mediator: Vault** (token auth, `vault://`). **dids: plaintext** on its PVC |
 | Mediator storage | n/a (shared) | secrets in **Vault**; messages in **fjall** (file-backed, on the mediator PVC) — no Redis/Valkey |
 | K8s resources / session | 1 PVC + Deployment + Service + Ingress | 3× (PVC + Deployment + Service + Ingress) |
@@ -105,21 +105,27 @@ setup ([§4](#4-cross-component-file-handoffs)).
 
 ## 3. URLs & DNS
 
-The user supplies a base `domain`; the backend derives three hostnames. Two naming
-strategies, chosen by an env flag (see [§11](#11-config--env-additions)):
+`domain` is always `CLUSTER_DOMAIN` (never a request field, mirroring `vta_only`). The
+backend derives three random-prefixed hostnames sharing one ID, so multiple full_stack
+VTIs can coexist under the same cluster domain (`internal/setup.FullStackHosts`):
 
-| Strategy | Hosts | When |
-| --- | --- | --- |
-| **Named** (default for a dedicated VTI) | `vta.{domain}`, `mediator.{domain}`, `dids.{domain}` | one stack per domain — the three URLs you asked for |
-| **Prefixed** (multi-tenant farm) | `fpp-xxxx.{domain}`, `mediator-xxxxx.{domain}`, `dids-xxxxx.{domain}` | many stacks under one shared farm domain; reuses `GenerateSubdomain` |
+```text
+fpp-xxxx.{domain}        (vta — back-compat with vta_only's bare "fpp-xxxx" naming)
+mediator-xxxx.{domain}
+dids-xxxx.{domain}
+```
+
+In development (`APP_ENV=development`) each gets a `-local-` infix —
+`fpp-local-xxxx`, `mediator-local-xxxx`, `dids-local-xxxx` — matching
+`GenerateSubdomain`'s existing dev-vs-prod distinction.
 
 Three Cloudflare A-records are created **before any Job runs**, all pointing at
 `CLUSTER_INGRESS_IP`, `proxied=true`:
 
 ```text
-A   vta.{domain}        →  {CLUSTER_INGRESS_IP}
-A   mediator.{domain}   →  {CLUSTER_INGRESS_IP}
-A   dids.{domain}       →  {CLUSTER_INGRESS_IP}
+A   fpp-xxxx.{domain}        →  {CLUSTER_INGRESS_IP}
+A   mediator-xxxx.{domain}   →  {CLUSTER_INGRESS_IP}
+A   dids-xxxx.{domain}       →  {CLUSTER_INGRESS_IP}
 ```
 
 DNS must exist first because the rendered recipes embed the final `https://…` URLs
@@ -670,9 +676,9 @@ new columns nullable/defaulted so existing `vta_only` rows are unaffected.
 
 | Var | Purpose |
 | --- | --- |
-| `MEDIATOR_IMAGE` | default mediator image — **must be built with the `secrets-vault` feature** (`--features "didcomm,redis-backend,fjall-backend,secrets-vault"`) |
-| `DIDS_IMAGE` | default image for the did-hosting-daemon |
-| `FULL_STACK_HOST_STRATEGY` | `named` (→ `vta.{domain}`) \| `prefixed` (→ `fpp-xxxx-vta.{domain}`) |
+| `GITHUB_MEDIATOR_PACKAGE_NAME` | GHCR package for `GET /setup/images?component=mediator` (default `mediator`) |
+| `GITHUB_DID_HOSTING_DAEMON_PACKAGE_NAME` | GHCR package for `GET /setup/images?component=dids` (default `did-hosting-daemon`) |
+| `VAULT_MEDIATOR_TOKEN_ROLE` | Vault token role used to mint the mediator's per-session `VAULT_TOKEN` (default `vtafarm-mediator-token`; see `helm/vtafarm-vault/bootstrap.sh`) |
 
 Reuse existing: `CLUSTER_INGRESS_IP`, `CLUSTER_DOMAIN`, `CLOUDFLARE_*`, and all
 `VAULT_*`. Both the VTA seed and the mediator secrets are Vault-backed; the mediator's
@@ -680,6 +686,11 @@ Reuse existing: `CLUSTER_INGRESS_IP`, `CLUSTER_DOMAIN`, `CLOUDFLARE_*`, and all
 its KV prefix is `mediator/user-<id>/session-<id>` under `VAULT_KV_MOUNT`.
 `MEDIATOR_DID` and `DID_HOSTING_*` remain **only** for `vta_only`; `full_stack` ignores
 them (it grows its own mediator + dids — mediator on Vault, dids plaintext).
+
+`GITHUB_MEDIATOR_PACKAGE_NAME`/`GITHUB_DID_HOSTING_DAEMON_PACKAGE_NAME` reuse the same
+`GITHUB_PACKAGE_OWNER`/`GITHUB_TOKEN` as the VTA's GHCR listing. `mediator_image`/
+`dids_image` are **required** request fields on `POST /setup` (same as `vta_image`),
+selected from `GET /setup/images?component=vta|mediator|dids`.
 
 The existing ClusterRole covers most of this mode (namespaces, SAs, pods, pods/log,
 configmaps, pvcs, services, roles, rolebindings, jobs, deployments, ingresses) per
@@ -790,8 +801,8 @@ Only (1) gates the VTA from starting; (2) and (3) are post-`completed` convenien
 ## 15. Implementation checklist
 
 1. Migration `000009_full_stack_fields` — additive columns (§10).
-2. `model.SetupSession` — new fields + `MediatorFQDN()` / `DidsFQDN()` + host-strategy
-   helper.
+2. `model.SetupSession` — new fields + `MediatorFQDN()` / `DidsFQDN()` +
+   `setup.FullStackHosts()` helper.
 3. `internal/setup/templates.go` — `create_mediator` VTA template variant (reuses the
    existing Vault `[secrets]` block) + mediator (fjall message store, **Vault `vault://`
    secrets**) + webvh (p1/p3, plaintext) renderers; add `Vault.HostPort` +
