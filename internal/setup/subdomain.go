@@ -8,16 +8,37 @@ import (
 const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
 const idLength = 8
 
-// GenerateSubdomain returns a random subdomain prefix using an 8-char alphanumeric ID.
-// In development it uses "fpp-local-<id>" to distinguish local DNS records from production.
-func GenerateSubdomain(env string) string {
+// GenerateID returns a random 8-char alphanumeric ID, with no prefix.
+func GenerateID() string {
 	id := make([]byte, idLength)
 	for i := range id {
 		n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
 		id[i] = alphabet[n.Int64()]
 	}
+	return string(id)
+}
+
+// GenerateSubdomain returns a random subdomain prefix using an 8-char alphanumeric ID.
+// In development it uses "fpp-local-<id>" to distinguish local DNS records from production.
+func GenerateSubdomain(env string) string {
+	id := GenerateID()
 	if env == "development" {
-		return "fpp-local-" + string(id)
+		return "fpp-local-" + id
 	}
-	return "fpp-" + string(id)
+	return "fpp-" + id
+}
+
+// FullStackHosts derives the three full_stack subdomains (vta, mediator,
+// dids) under domain: fpp[-local]-xxxx / mediator[-local]-xxxx /
+// dids[-local]-xxxx, reusing the same random ID across all three so they're
+// recognizable as one session and multiple full_stack VTIs can share the
+// same cluster domain. In development each gets a "-local-" infix (matching
+// GenerateSubdomain) to distinguish local DNS records from production.
+func FullStackHosts(env string) (vtaSub, mediatorSub, didsSub string) {
+	id := GenerateID()
+	mid := "-"
+	if env == "development" {
+		mid = "-local-"
+	}
+	return "fpp" + mid + id, "mediator" + mid + id, "dids" + mid + id
 }

@@ -26,11 +26,15 @@ type SetupHandler struct {
 	ingressIP      string
 	clusterDomain  string
 	mediatorDid    string
-	didHostingBase string // DID_HOSTING_SERVER_URL — public server URL used to build vta_did_url
+	didHostingBase string             // DID_HOSTING_SERVER_URL — public server URL used to build vta_did_url
 	didHosting     *didhosting.Client // nil when not configured
 	k8s            *k8s.Client
 	orch           *setup.Orchestrator
 	ghcr           *ghcr.Client // nil when not configured
+
+	// full_stack mode
+	mediatorGhcr *ghcr.Client // nil when not configured
+	didsGhcr     *ghcr.Client // nil when not configured
 }
 
 func NewSetupHandler(
@@ -41,6 +45,8 @@ func NewSetupHandler(
 	k8sClient *k8s.Client,
 	orch *setup.Orchestrator,
 	ghcrClient *ghcr.Client,
+	mediatorGhcrClient *ghcr.Client,
+	didsGhcrClient *ghcr.Client,
 ) *SetupHandler {
 	return &SetupHandler{
 		db:             db,
@@ -54,6 +60,9 @@ func NewSetupHandler(
 		k8s:            k8sClient,
 		orch:           orch,
 		ghcr:           ghcrClient,
+
+		mediatorGhcr: mediatorGhcrClient,
+		didsGhcr:     didsGhcrClient,
 	}
 }
 
@@ -84,7 +93,9 @@ func (h *SetupHandler) Validate(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"cloudflare": "ok"})
 }
 
-// GET /api/v1/setup/images
+// GET /api/v1/setup/images?component=vta|mediator|dids
+// component defaults to "vta" (vta_only's existing behavior, unchanged).
+// mediator/dids are full_stack-only — same GHCR-package-tags pattern as vta.
 func (h *SetupHandler) Images(c *gin.Context) {
 	type imageOption struct {
 		Tag    string `json:"tag"`
@@ -92,12 +103,26 @@ func (h *SetupHandler) Images(c *gin.Context) {
 		Latest bool   `json:"latest,omitempty"`
 	}
 
-	if h.ghcr == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "image source not configured"})
+	component := c.DefaultQuery("component", "vta")
+	var client *ghcr.Client
+	switch component {
+	case "vta":
+		client = h.ghcr
+	case "mediator":
+		client = h.mediatorGhcr
+	case "dids":
+		client = h.didsGhcr
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown component " + component + " (expected vta, mediator, or dids)"})
 		return
 	}
 
-	tags, err := h.ghcr.ListTags(c.Request.Context())
+	if client == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "image source not configured for " + component})
+		return
+	}
+
+	tags, err := client.ListTags(c.Request.Context())
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch images: " + err.Error()})
 		return
@@ -119,6 +144,9 @@ type createSetupRequest struct {
 	// Advanced — optional, defaults: portable=true, pre_rotation_count=1
 	Portable         *bool `json:"portable"`
 	PreRotationCount *int  `json:"pre_rotation_count"`
+	// full_stack only — optional, default from MEDIATOR_IMAGE/DIDS_IMAGE env.
+	MediatorImage string `json:"mediator_image"`
+	DidsImage     string `json:"dids_image"`
 }
 
 // POST /api/v1/setup
@@ -138,6 +166,23 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		return
 	}
 
+	userID := c.MustGet(middleware.ContextUserID).(uint)
+
+	var user model.User
+	if err := h.db.First(&user, userID).Error; err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
+		return
+	}
+
+	if req.Mode == model.ModeFullStack {
+		if !user.BetaAccess {
+			c.JSON(http.StatusForbidden, gin.H{"error": "full_stack mode is in beta — ask an admin to enable beta access for your account"})
+			return
+		}
+		h.createFullStack(c, req)
+		return
+	}
+
 	if req.VtaName == "" {
 		req.VtaName = "personal-vta"
 	}
@@ -148,13 +193,6 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	preRotationCount := 1
 	if req.PreRotationCount != nil {
 		preRotationCount = *req.PreRotationCount
-	}
-	userID := c.MustGet(middleware.ContextUserID).(uint)
-
-	var user model.User
-	if err := h.db.First(&user, userID).Error; err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
-		return
 	}
 
 	var existing int64
@@ -234,7 +272,8 @@ func (h *SetupHandler) List(c *gin.Context) {
 		ID          string `json:"id"`
 		Status      string `json:"status"`
 		Mode        string `json:"mode"`
-		URL         string `json:"url"`
+		URL         string `json:"url,omitempty"`
+		URLs        gin.H  `json:"urls,omitempty"` // full_stack only
 		VtaName     string `json:"vta_name"`
 		VtaImage    string `json:"vta_image,omitempty"`
 		MediatorDid string `json:"mediator_did"`
@@ -247,11 +286,10 @@ func (h *SetupHandler) List(c *gin.Context) {
 
 	result := make([]item, len(sessions))
 	for i, s := range sessions {
-		result[i] = item{
+		it := item{
 			ID:          s.UniqueId,
 			Status:      s.Status,
 			Mode:        s.Mode,
-			URL:         s.PublicURL(),
 			VtaName:     s.VtaName,
 			VtaImage:    s.VtaImage,
 			MediatorDid: s.MediatorDid,
@@ -261,6 +299,16 @@ func (h *SetupHandler) List(c *gin.Context) {
 			CreatedAt:   s.CreatedAt,
 			UpdatedAt:   s.UpdatedAt,
 		}
+		if s.Mode == model.ModeFullStack {
+			it.URLs = gin.H{
+				"vta":      s.PublicURL(),
+				"mediator": "https://" + s.MediatorFQDN(),
+				"dids":     "https://" + s.DidsFQDN(),
+			}
+		} else {
+			it.URL = s.PublicURL()
+		}
+		result[i] = it
 	}
 	c.JSON(http.StatusOK, result)
 }
@@ -273,6 +321,11 @@ func (h *SetupHandler) Get(c *gin.Context) {
 	var session model.SetupSession
 	if err := h.db.Where("unique_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+		return
+	}
+
+	if session.Mode == model.ModeFullStack {
+		h.getFullStack(c, &session)
 		return
 	}
 
@@ -305,6 +358,11 @@ func (h *SetupHandler) Delete(c *gin.Context) {
 
 	if h.orch != nil {
 		h.orch.Cancel(session.ID)
+	}
+
+	if session.Mode == model.ModeFullStack {
+		h.deleteFullStack(c, &session)
+		return
 	}
 
 	if h.cf != nil && session.CFRecordID != "" {
@@ -375,6 +433,11 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 
 	if h.k8s == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "k8s not configured"})
+		return
+	}
+
+	if session.Mode == model.ModeFullStack {
+		h.logsFullStack(c, &session)
 		return
 	}
 
@@ -508,8 +571,12 @@ func (h *SetupHandler) ProvisionAdmin(c *gin.Context) {
 		return
 	}
 
-	if session.Status != "vta_setup_complete" {
-		c.JSON(http.StatusConflict, gin.H{"error": "session must be in vta_setup_complete status"})
+	readyStatus := "vta_setup_complete"
+	if session.Mode == model.ModeFullStack {
+		readyStatus = "awaiting_admin_did"
+	}
+	if session.Status != readyStatus {
+		c.JSON(http.StatusConflict, gin.H{"error": "session must be in " + readyStatus + " status"})
 		return
 	}
 

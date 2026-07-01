@@ -28,6 +28,8 @@ func Setup(
 	k8sClient *k8s.Client,
 	orch *setup.Orchestrator,
 	ghcrClient *ghcr.Client,
+	mediatorGhcrClient *ghcr.Client,
+	didsGhcrClient *ghcr.Client,
 	dhClient *didhosting.Client,
 	cfg *config.Config,
 ) *gin.Engine {
@@ -52,6 +54,7 @@ func Setup(
 	sh := handler.NewSetupHandler(
 		db, cfClient, cfg.AppEnv, cfg.ClusterIngressIP, cfg.ClusterDomain,
 		cfg.MediatorDid, cfg.DidHosting.ServerUrl, dhClient, k8sClient, orch, ghcrClient,
+		mediatorGhcrClient, didsGhcrClient,
 	)
 
 	v1 := r.Group("/api/v1")
@@ -92,15 +95,16 @@ func Setup(
 	ih := handler.NewInvitationHandler(db, cfg.JWTSecret, cfg.CookieSecure())
 	{
 		adminH := handler.NewAdminHandler(db)
-		adminAuth.GET("/admins", adminH.List)
-		adminAuth.POST("/admins", adminH.Create)
-		adminAuth.GET("/users", uh.List)
+		adminAuth.GET("/admin/admins", adminH.List)
+		adminAuth.POST("/admin/admins", adminH.Create)
+		adminAuth.GET("/admin/users", uh.List)
+		adminAuth.PUT("/admin/users/:id/beta-access", uh.SetBetaAccess)
 		adminAuth.POST("/admin/passkeys/register/begin", pkh.RegisterBegin)
 		adminAuth.POST("/admin/passkeys/register/complete", pkh.RegisterComplete)
 		adminAuth.GET("/admin/passkeys", pkh.List)
 		adminAuth.DELETE("/admin/passkeys/:id", pkh.Delete)
-		adminAuth.POST("/invitations", ih.Create)
-		adminAuth.GET("/invitations", ih.List)
+		adminAuth.POST("/admin/invitations", ih.Create)
+		adminAuth.GET("/admin/invitations", ih.List)
 	}
 
 	// Public invitation routes (no auth required)
@@ -113,6 +117,7 @@ func Setup(
 		middleware.RequireRole(model.RoleUser),
 	)
 	{
+		userAuth.GET("/user/me", uh.Me)
 		userAuth.POST("/user/passkeys/register/begin", pkh.RegisterBegin)
 		userAuth.POST("/user/passkeys/register/complete", pkh.RegisterComplete)
 		userAuth.GET("/user/passkeys", pkh.List)
@@ -125,6 +130,8 @@ func Setup(
 		userAuth.DELETE("/setup/:id", sh.Delete)
 		userAuth.GET("/setup/:id/logs", sh.Logs)
 		userAuth.POST("/setup/:id/admin", sh.ProvisionAdmin)
+		userAuth.POST("/setup/:id/dids/reissue-enroll", sh.ReissueDidsEnroll)
+		userAuth.POST("/setup/:id/dids/enroll-ack", sh.AckDidsEnroll)
 	}
 
 	return r

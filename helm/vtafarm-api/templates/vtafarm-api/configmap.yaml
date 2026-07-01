@@ -20,10 +20,13 @@ data:
   VAULT_KV_MOUNT:       {{ .Values.vault.kvMount | quote }}
   VAULT_K8S_AUTH_MOUNT: {{ .Values.vault.k8sAuthMount | quote }}
   VAULT_APPROLE_MOUNT:  {{ .Values.vault.appRoleMount | quote }}
+  VAULT_MEDIATOR_TOKEN_ROLE: {{ .Values.vault.mediatorTokenRole | quote }}
   VAULT_SKIP_VERIFY:    {{ .Values.vault.skipVerify | quote }}
   CLUSTER_DOMAIN:       {{ .Values.cluster.domain | quote }}
   GITHUB_PACKAGE_OWNER:      {{ .Values.github.packageOwner | quote }}
   GITHUB_PACKAGE_NAME:       {{ .Values.github.packageName | quote }}
+  GITHUB_MEDIATOR_PACKAGE_NAME: {{ .Values.github.mediatorPackageName | quote }}
+  GITHUB_DID_HOSTING_DAEMON_PACKAGE_NAME: {{ .Values.github.didHostingDaemonPackageName | quote }}
   WEBAUTHN_RP_ID:            {{ .Values.webauthn.rpID | quote }}
   WEBAUTHN_RP_ORIGINS:       {{ .Values.webauthn.rpOrigins | quote }}
   WEBAUTHN_RP_DISPLAY_NAME:  {{ .Values.webauthn.rpDisplayName | quote }}

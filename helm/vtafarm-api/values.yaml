@@ -43,6 +43,9 @@ vault:
   kvMount: "secret"
   k8sAuthMount: "kubernetes"
   appRoleMount: "approle"
+  # full_stack — token role used to mint the mediator's per-session VAULT_TOKEN
+  # (see helm/vtafarm-vault/bootstrap.sh).
+  mediatorTokenRole: "vtafarm-mediator-token"
   skipVerify: "true"
   existingSecret: "vtafarm-api-vault"
 
@@ -52,6 +55,8 @@ cluster:
 github:
   packageOwner: ic3software
   packageName: vta
+  mediatorPackageName: mediator
+  didHostingDaemonPackageName: did-hosting-daemon
 
 webauthn:
   rpID: "vtafarm.firstperson.dev"

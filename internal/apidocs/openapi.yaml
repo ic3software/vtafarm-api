@@ -135,6 +135,10 @@ components:
           type: string
           description: Full image URL selected from GET /setup/images.
           example: "ghcr.io/ic3software/vta:0.5.0"
+        admin_did:
+          type: string
+          description: Optional — the user's local `pnm setup` admin DID. When present, Phase 2 (import-did + Deployment) auto-runs after setup.
+          example: "did:key:z6Mk..."
         portable:
           type: boolean
           default: true
@@ -143,6 +147,18 @@ components:
           type: integer
           default: 1
           description: Advanced — number of pre-rotation keys. Defaults to 1 if omitted.
+        mediator_image:
+          type: string
+          description: |
+            Required for full_stack. Full image URL selected from
+            GET /setup/images?component=mediator. Must be built with the `secrets-vault` feature.
+          example: "ghcr.io/ic3software/mediator:0.15.5"
+        dids_image:
+          type: string
+          description: |
+            Required for full_stack. Full image URL selected from
+            GET /setup/images?component=dids.
+          example: "ghcr.io/ic3software/did-hosting-daemon:0.7.0"
       required: [mode, vta_image]
 
     SetupSessionItem:
@@ -153,21 +169,40 @@ components:
           example: "a1b2c3d4"
         status:
           type: string
-          enum: [dns_provisioned, vta_setup_running, vta_setup_complete, provisioning, running, failed]
+          description: |
+            State-machine value. vta_only: dns_provisioned, vta_setup_running, vta_setup_complete,
+            provisioning, running, failed. full_stack: dns_provision, env_provision, k8s_provision,
+            step_vta_setup, step_mediator_p1, step_mediator_reprov, step_mediator_p2, step_dids_p1,
+            step_dids_provision, step_dids_p2, step_dids_invite, step_dids_load_did, deploy_dids,
+            deploy_mediator, awaiting_admin_did, step_import_admin_did, deploy_vta, running, failed.
+          example: "running"
         mode:
           type: string
           enum: [vta_only, full_stack]
         url:
           type: string
+          description: vta_only only.
           example: "https://fpp-abc12345.example.com"
+        urls:
+          type: object
+          description: full_stack only.
+          properties:
+            vta: { type: string, example: "https://vta.example.com" }
+            mediator: { type: string, example: "https://mediator.example.com" }
+            dids: { type: string, example: "https://dids.example.com" }
         vta_name:
+          type: string
+        vta_image:
           type: string
         vta_did:
           type: string
           description: Populated after vta setup completes
         mediator_did:
           type: string
-          description: Populated after vta setup completes
+          description: Shared MEDIATOR_DID (vta_only)
+        vta_did_url:
+          type: string
+          description: Derived DID-hosting URL — {DID_HOSTING_SERVER_URL}/{unique_id}/{vta_name}
         error_msg:
           type: string
           description: Present only when status is `failed`
@@ -180,25 +215,31 @@ components:
 
     GetSetupSessionResponse:
       type: object
+      description: |
+        Response shape differs by `mode`. vta_only uses the flat fields below
+        (`url`, `vta_image`, `vta_did`). full_stack instead uses `urls`,
+        `collected`, and `action_required` — see the full_stack-only fields.
       properties:
         id:
           type: string
           example: "a1b2c3d4"
         status:
           type: string
-          enum:
-            - dns_provisioned
-            - vta_setup_running
-            - vta_setup_complete
-            - provisioning
-            - running
-            - failed
+          description: See SetupSessionItem.status for the full per-mode value list.
+          example: "running"
         mode:
           type: string
           enum: [vta_only, full_stack]
         url:
           type: string
+          description: vta_only only.
           example: "https://fpp-abc12345.example.com"
+        vta_image:
+          type: string
+          description: vta_only only.
+        vta_did:
+          type: string
+          description: vta_only only. Populated after vta setup completes.
         error_msg:
           type: string
           description: Present only when status is `failed`
@@ -208,19 +249,79 @@ components:
         updated_at:
           type: string
           format: date-time
+        urls:
+          type: object
+          description: full_stack only.
+          properties:
+            vta: { type: string, example: "https://vta.example.com" }
+            mediator: { type: string, example: "https://mediator.example.com" }
+            dids: { type: string, example: "https://dids.example.com" }
+        collected:
+          type: object
+          description: full_stack only.
+          properties:
+            vta_did:
+              type: string
+              description: 1a — REQUIRED, the user feeds it to `pnm setup continue --vta-did`.
+            mediator_did:
+              type: string
+            did_hosting_did:
+              type: string
+            mediator_admin_did:
+              type: string
+            did_hosting_admin_did:
+              type: string
+        action_required:
+          type: object
+          description: full_stack only. Present once there's something for the user to act on.
+          properties:
+            dids_admin_enroll_url:
+              type: string
+              description: 3e — REQUIRED output, single-use. Visit to register a passkey for the dids admin UI.
+            reveal_keys_once:
+              type: boolean
+              description: True when mediator_admin_key/webvh_admin_key are present in this response.
+        dids_enroll_used:
+          type: boolean
+          description: |
+            full_stack only. True once the frontend has called
+            `POST /setup/{id}/dids/enroll-ack` for the current `dids_admin_enroll_url`.
+            While true, `action_required.dids_admin_enroll_url` is omitted — the URL is
+            single-use, so call `POST /setup/{id}/dids/reissue-enroll` for a fresh one.
+        mediator_admin_key:
+          type: string
+          description: full_stack only. 2c — shown once for offline backup.
+        webvh_admin_key:
+          type: string
+          description: full_stack only. 3c — shown once for offline backup.
 
     CreateSetupResponse:
       type: object
+      description: |
+        `url`/`vta_image` are populated for `mode=vta_only`; `urls` is
+        populated for `mode=full_stack` instead.
       properties:
         id:
           type: string
           example: "a1b2c3d4"
         url:
           type: string
+          description: vta_only only.
           example: "https://abc123.example.com"
         status:
           type: string
           example: "dns_provisioned"
+        vta_image:
+          type: string
+          description: vta_only only.
+          example: "ghcr.io/ic3software/vta:0.9.0"
+        urls:
+          type: object
+          description: full_stack only.
+          properties:
+            vta: { type: string, example: "https://vta.example.com" }
+            mediator: { type: string, example: "https://mediator.example.com" }
+            dids: { type: string, example: "https://dids.example.com" }
 
 paths:
   /health:
@@ -479,7 +580,7 @@ paths:
 
   # ── Admin ───────────────────────────────────────────────────────────────────
 
-  /api/v1/admins:
+  /api/v1/admin/admins:
     get:
       summary: List admins
       description: Returns all admin accounts, oldest first.
@@ -555,7 +656,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /api/v1/users:
+  /api/v1/admin/users:
     get:
       summary: List users
       description: Returns all user accounts, oldest first.
@@ -577,6 +678,9 @@ paths:
                     unique_id:
                       type: string
                       example: "a1b2c3d4"
+                    beta_access:
+                      type: boolean
+                      description: Whether this user can create full_stack setup sessions.
                     created_at:
                       type: string
                       format: date-time
@@ -591,6 +695,71 @@ paths:
                 $ref: "#/components/schemas/Error"
         "403":
           description: Insufficient role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/admin/users/{id}/beta-access:
+    put:
+      summary: Set a user's beta access
+      description: |
+        Grants or revokes a user's access to features still in beta (currently:
+        `mode=full_stack` on `POST /setup`). Admin-only — there is no user-facing
+        way to self-enable this.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The user's 8-char `unique_id` (not the numeric PK).
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [beta_access]
+              properties:
+                beta_access:
+                  type: boolean
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    example: "a1b2c3d4"
+                  beta_access:
+                    type: boolean
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: User not found
           content:
             application/json:
               schema:
@@ -744,7 +913,7 @@ paths:
 
   # ── Admin — Invitations ─────────────────────────────────────────────────────
 
-  /api/v1/invitations:
+  /api/v1/admin/invitations:
     post:
       summary: Create invitation link
       description: Generates a single-use invitation link valid for 24 hours.
@@ -1052,10 +1221,48 @@ paths:
 
   # ── User ────────────────────────────────────────────────────────────────────
 
+  /api/v1/user/me:
+    get:
+      summary: Get the caller's own profile
+      description: |
+        Returns the logged-in user's own `beta_access` state, fetched fresh from
+        the database (not from the JWT, which doesn't carry it — an admin can
+        flip it at any time without the user needing to log in again). The
+        frontend uses this to decide whether to offer `mode=full_stack` on the
+        setup wizard.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      responses:
+        "200":
+          description: Caller's profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    example: "a1b2c3d4"
+                  beta_access:
+                    type: boolean
+                  created_at:
+                    type: string
+                    format: date-time
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/v1/setup/validate:
     post:
       summary: Validate setup prerequisites
-      description: Verifies Cloudflare connectivity.
+      description: |
+        Verifies Cloudflare connectivity and that CLUSTER_INGRESS_IP is configured.
+        Applies to both modes — full_stack additionally needs all three hostnames
+        (vta/mediator/dids) to be creatable, which the same Cloudflare zone check covers.
       tags: [User]
       security:
         - CookieAuthUser: []
@@ -1093,14 +1300,24 @@ paths:
 
   /api/v1/setup/images:
     get:
-      summary: List available VTA images
+      summary: List available component images
       description: |
-        Returns available VTA container image tags fetched from GHCR.
-        Use this to populate the image version dropdown before creating a session.
-        Falls back to the server default image if GHCR is not configured.
+        Returns available container image tags fetched from GHCR, for the component
+        selected by `?component=`. Use this to populate the image version dropdown
+        before creating a session — `vta_image` (both modes) and, for full_stack,
+        `mediator_image`/`dids_image` on `POST /setup`.
       tags: [User]
       security:
         - CookieAuthUser: []
+      parameters:
+        - name: component
+          in: query
+          required: false
+          description: Which component's image tags to list.
+          schema:
+            type: string
+            enum: [vta, mediator, dids]
+            default: vta
       responses:
         "200":
           description: List of available image versions
@@ -1121,6 +1338,12 @@ paths:
                       type: boolean
                       description: True on the versioned tag that "latest" currently points to. Absent on all other tags. This entry is always first in the list.
                       example: true
+        "400":
+          description: Unknown component value
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "401":
           description: Missing or invalid token
           content:
@@ -1134,7 +1357,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "503":
-          description: Image source not configured on server
+          description: Image source not configured for the requested component
           content:
             application/json:
               schema:
@@ -1143,7 +1366,16 @@ paths:
   /api/v1/setup:
     post:
       summary: Create setup session
-      description: Generates a random subdomain, creates a Cloudflare DNS A record, stores the session, and begins async VTA setup.
+      description: |
+        vta_only: generates a random subdomain, creates a Cloudflare DNS A record, stores the
+        session, and begins async VTA setup.
+
+        full_stack: derives three random-prefixed hostnames (fpp-xxxx / mediator-xxxx /
+        dids-xxxx under CLUSTER_DOMAIN, sharing one random ID), creates all three Cloudflare
+        DNS A records up front, stores the session, and begins the async VTA + Mediator +
+        DID-hosting daemon state machine. **`mode=full_stack` requires the caller's
+        `beta_access` to be `true`** (see `GET /user/me`); an admin grants this via
+        `PUT /admin/users/{id}/beta-access`.
       tags: [User]
       security:
         - CookieAuthUser: []
@@ -1168,6 +1400,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "401":
           description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: mode=full_stack requested but the caller doesn't have beta_access
           content:
             application/json:
               schema:
@@ -1224,7 +1462,8 @@ paths:
           in: path
           required: true
           schema:
-            type: integer
+            type: string
+            example: "ab12cd34"
       responses:
         "200":
           description: Session state
@@ -1246,7 +1485,11 @@ paths:
                 $ref: "#/components/schemas/Error"
     delete:
       summary: Delete setup session
-      description: Removes the Cloudflare DNS record and deletes the session.
+      description: |
+        Cancels the session goroutine and tears down its resources.
+        vta_only: the Cloudflare DNS record, K8s resources, and the session's Vault seed.
+        full_stack: all three Cloudflare DNS records, all three components' K8s resources,
+        the mediator's Vault token + secrets, and the VTA's Vault seed.
       tags: [User]
       security:
         - CookieAuthUser: []
@@ -1255,7 +1498,8 @@ paths:
           in: path
           required: true
           schema:
-            type: integer
+            type: string
+            example: "ab12cd34"
       responses:
         "204":
           description: Session deleted
@@ -1284,16 +1528,23 @@ paths:
       description: |
         Server-Sent Events (SSE) stream.
 
-        **Optional query param** `?source=setup|provision|vta` — explicitly select the log source
-        regardless of session status. Holds the connection open until the pod is ready, then streams.
+        **Optional query param `?source=`** explicitly selects the log source regardless
+        of session status. Holds the connection open until the pod is ready, then streams.
 
-        Without `?source`, the source is chosen by session status:
+        **vta_only**: `setup | provision | vta`. Without `?source`, the source is chosen
+        by session status:
         - `vta_setup_running` — live output from the vta-setup K8s Job
         - `provisioning` — live output from the vta-provision K8s Job (import-did + did-mgmt servers add)
         - `running` — live output from the running VTA pod
         - `vta_setup_complete` — replays buffered vta-setup job output then closes
         - `failed` — replays the last job's output then closes
         - `dns_provisioned` — returns 409 (not started yet)
+
+        **full_stack**: `vta_setup | mediator_p1 | mediator_reprov | mediator_p2 | dids_p1 |
+        dids_provision | dids_p2 | dids_invite | dids_load_did | import_admin_did | vta |
+        mediator | dids` (the first ten stream a one-off setup Job's logs; the last three
+        stream the corresponding running pod). Without `?source`, the source is derived
+        from the session's current step status.
 
         Each event is a plain log line: `data: <line>\n\n`.
         A final `event: done` signals the end of the stream.
@@ -1305,13 +1556,29 @@ paths:
           in: path
           required: true
           schema:
-            type: integer
+            type: string
+            example: "ab12cd34"
         - name: source
           in: query
           required: false
           schema:
             type: string
-            enum: [setup, provision, vta]
+            enum:
+              - setup
+              - provision
+              - vta
+              - mediator
+              - dids
+              - vta_setup
+              - mediator_p1
+              - mediator_reprov
+              - mediator_p2
+              - dids_p1
+              - dids_provision
+              - dids_p2
+              - dids_invite
+              - dids_load_did
+              - import_admin_did
       responses:
         "200":
           description: SSE log stream
@@ -1349,7 +1616,8 @@ paths:
       summary: Provision admin DID
       description: |
         Phase 2 of setup: imports an admin DID into the VTA, then creates the VTA Deployment and Service.
-        Session must be in `vta_setup_complete` status before calling this.
+        Session must be in `vta_setup_complete` status (vta_only) or `awaiting_admin_did` status
+        (full_stack) before calling this — same endpoint, shared PNM admin-DID handshake for both modes.
       tags: [User]
       security:
         - CookieAuthUser: []
@@ -1358,7 +1626,8 @@ paths:
           in: path
           required: true
           schema:
-            type: integer
+            type: string
+            example: "ab12cd34"
       requestBody:
         required: true
         content:
@@ -1401,13 +1670,136 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: Session not in vta_setup_complete status
+          description: Session not in the mode-appropriate ready status (vta_setup_complete / awaiting_admin_did)
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "503":
           description: K8s not configured on server
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/setup/{id}/dids/reissue-enroll:
+    post:
+      summary: Reissue dids admin enrollment URL
+      description: |
+        full_stack only. Regenerates the single-use dids admin-panel enrollment URL
+        (re-runs `did-hosting-daemon invite --role admin`) — useful if the original URL
+        (returned once from `step_dids_invite` / `GET /setup/{id}`) was lost or already
+        consumed. Scales the dids Deployment to 0 and waits for its pod to terminate
+        (releasing the exclusive lock on the daemon's local store), runs the invite Job,
+        then scales the daemon back to 1 — the daemon is restarted even if the job
+        itself fails. On success, resets `dids_enroll_used` to false.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "ab12cd34"
+      responses:
+        "200":
+          description: New enrollment URL minted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dids_admin_enroll_url:
+                    type: string
+                    example: "https://dids.example.com/enroll/abc123"
+        "400":
+          description: Session is not a full_stack session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: dids daemon not provisioned yet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Reissue job failed or its output could not be parsed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: K8s not configured on server
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/setup/{id}/dids/enroll-ack:
+    post:
+      summary: Acknowledge dids admin enrollment URL as used
+      description: |
+        full_stack only. Called by the frontend the moment the user opens
+        `action_required.dids_admin_enroll_url` — marks `dids_enroll_used` true so
+        `GET /setup/{id}` stops offering that (single-use) URL. Call
+        `POST /setup/{id}/dids/reissue-enroll` to mint a fresh one afterwards.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "ab12cd34"
+      responses:
+        "200":
+          description: Marked as used
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dids_enroll_used:
+                    type: boolean
+                    example: true
+        "400":
+          description: Session is not a full_stack session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: No dids enrollment URL has been issued yet
           content:
             application/json:
               schema:

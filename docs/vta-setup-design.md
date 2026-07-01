@@ -26,82 +26,119 @@ VTA source & architecture: `verifiable-trust-infrastructure/docs/`
 User provides their own DID hosting endpoint. VTA Farm deploys only the VTA service.
 
 ```text
-User provides:
-  domain            → creates  vta.{domain}   (DNS + Ingress + TLS)
-  did_hosting_url   → e.g. https://dids.example.com/vta  (external WebVH host)
+User provides (form):
+  vta_name    → unique name per user (default "personal-vta")
+  vta_image   → full image URL chosen from GET /setup/images
+  admin_did   → optional; the user's local `pnm setup` admin DID
+  portable, pre_rotation_count → optional advanced VTA-DID knobs
+
+Backend derives (not user input):
+  subdomain        → random "fpp-xxxx" ("fpp-local-xxxx" in dev), under CLUSTER_DOMAIN
+  vta public URL   → https://{subdomain}.{CLUSTER_DOMAIN}
+  did_hosting_url  → {DID_HOSTING_SERVER_URL}/{user_unique_id}/{vta_name}   (external shared host)
+  mediator         → the shared external mediator MEDIATOR_DID
 
 VTA TOML uses:
+  [secrets]
+  backend = "vault"            ← master seed in HashiCorp Vault (kubernetes auth), not plaintext
+
+  [messaging]
+  kind = "existing"            ← points at the shared external mediator
+  did  = "{MEDIATOR_DID}"
+
   [vta_did]
   kind = "create_webvh"
   url  = "{did_hosting_url}"
-
-  [messaging]
-  kind = "skip"               ← no in-cluster mediator
 ```
 
-**State machine (VTA Only):**
+**State machine (VTA Only)** — step names below match the code; the shared steps reuse the
+**same names** in Full Stack (Mode B). The implemented DB `status` value for each step is in
+parentheses:
 
 ```text
-pending → dns_provision → k8s_provision → step_vta → deploy → completed
-                                                            ↓ (any step)
-                                                         failed
+pending
+  → dns_provision          POST /setup: create the Cloudflare A-record + persist session   (status: dns_provisioned)
+  → step_vta_setup         EnsureUserEnvironment + EnsureUserAccess + render TOML, then the
+                           `vta setup` Job; parse VTA DID (1a) + upload DID log to the host  (status: vta_setup_running → vta_setup_complete)
+  → awaiting_admin_did     gate: wait for the user's PNM admin DID
+                           (auto-skipped when admin_did was supplied at POST /setup)         (status: stays at vta_setup_complete)
+  → step_import_admin_did  create the hosting ACL + the `vta import-did` Job                 (status: provisioning)
+  → deploy_vta             create the VTA Deployment + Service + Ingress                      (status: provisioning → running)
+  → completed                                                                                 (status: running)
+        ↓ (any step)
+     failed
 ```
 
+From the code (`internal/setup/orchestrator.go`, `internal/handler/setup.go`):
+
+- **`admin_did` is a user input** — supplied at `POST /setup` (`runSetup` then auto-triggers
+  the import right after `step_vta_setup`) **or** later at `POST /setup/:id/admin` (which
+  triggers `Provision` out of `vta_setup_complete`). The API only ever runs `vta import-did`;
+  it never runs `pnm setup` / `pnm setup continue` — those are the user's local commands.
+- **`env_provision` + `k8s_provision` are folded into `step_vta_setup`** (they run inside the
+  setup goroutine before the Job, while `status` is still `dns_provisioned`). Full Stack
+  breaks them out as their own steps because it provisions three components.
+- There is **no separate `deploy_vta` status**: `runProvision` creates the Deployment / Service
+  / Ingress while still `provisioning`, then flips straight to the terminal `running`.
+
 ### Mode B — Full Stack
+
+> **Full state machine, recipes, and API surface live in
+> [`full-stack-setup-design.md`](full-stack-setup-design.md).** Don't copy the state
+> machine from this section — a previous copy kept here went stale (it still showed an
+> abandoned `step_upload_didlogs` design, later replaced by the offline
+> `step_dids_load_did` approach; see `full-stack-setup-design.md` §4/§6/Appendix A for
+> why). This section is just a pointer + the shape of the mode.
 
 VTA Farm deploys and wires all three components.
 
 ```text
 User provides:
-  domain  → creates  vta.{domain}       (VTA)
-                     mediator.{domain}  (DIDComm Mediator)
-                     dids.{domain}      (WebVH DID Hosting Daemon)
+  domain  → creates  fpp-xxxx.{domain}       (VTA)
+                     mediator-xxxx.{domain}  (DIDComm Mediator)
+                     dids-xxxx.{domain}      (WebVH DID Hosting Daemon)
 ```
 
-**State machine (Full Stack):**
-
-```text
-pending
-  → dns_provision          create 3 Cloudflare DNS records
-  → k8s_provision          create PVCs, Services, Ingresses for all 3 components
-  → step_vta               vta setup --from vta-setup.toml
-  → step_mediator_p1       mediator-setup --from mediator-recipe.toml (phase 1)
-  → step_mediator_vta      vta contexts reprovision … --out bundle.armor
-  → step_mediator_p2       mediator-setup --from … --bundle … --digest … (phase 2)
-  → step_dids_p1           did-hosting-daemon setup --from webvh-recipe.toml (phase 1)
-  → step_dids_vta_admin    ← MANUAL GATE: operator runs vta bootstrap provision-integration
-  → step_dids_p2           did-hosting-daemon setup (offline-complete)
-  → step_pnm               pnm setup + vta import-did + pnm setup continue
-  → deploy                 create Deployments for all 3 components
-  → completed
-         ↓ (any step)
-      failed
-```
-
-`step_dids_vta_admin` is the only manual gate. The operator provides the SHA-256 digest via `POST /setup/:id/advance`.
+**State machine (Full Stack)** — see
+[`full-stack-setup-design.md` §5](full-stack-setup-design.md) for the authoritative,
+up-to-date step list. The shared steps (`dns_provision`, `step_vta_setup`,
+`awaiting_admin_did`, `step_import_admin_did`, `deploy_vta`, and the terminal `running`
+status) are the **same steps, same names** as VTA Only above; Full Stack additionally
+splits `env_provision` / `k8s_provision` out of `step_vta_setup` (three components to
+provision instead of one) and inserts the mediator/dids steps between `step_vta_setup`
+and the `awaiting_admin_did` gate.
 
 ---
 
 ## Frontend Form Fields
 
-| Field | Mode | Required | Default | Validation |
+| Field | Mode | Required | Default | Notes |
 | --- | --- | --- | --- | --- |
 | `mode` | both | yes | — | `vta_only` \| `full_stack` |
-| `domain` | both | yes | — | valid FQDN, no `https://` prefix, no trailing slash |
-| `did_hosting_url` | vta_only | yes | — | valid HTTPS URL ending with DID path segment |
-| `vta_name` | both | yes | `personal-vta` | `[a-z0-9-]`, 1–64 chars |
-| `vta_port` | both | no | `8100` | 1024–65535 |
-| `mediator_port` | full_stack | no | `7037` | 1024–65535, unique |
-| `dids_port` | full_stack | no | `8534` | 1024–65535, unique |
-| `log_level` | both | no | `info` | `info` \| `debug` \| `warn` \| `error` |
+| `vta_name` | both | no | `personal-vta` | unique per user; becomes the DID-hosting path `{unique_id}/{vta_name}` |
+| `vta_image` | both | yes | — | full image URL chosen from `GET /setup/images` |
+| `admin_did` | both | no | — | the user's local `pnm setup` admin DID; when present, Phase 2 (import + deploy) auto-runs |
+| `portable` | both | no | `true` | advanced — VTA-DID portability |
+| `pre_rotation_count` | both | no | `1` | advanced — number of pre-rotation keys |
 
-**Derived subdomain URLs** (backend computes):
+> There is **no `domain`, `did_hosting_url`, `*_port`, or `log_level` form field** in the
+> implemented `vta_only` flow: the domain comes from `CLUSTER_DOMAIN`, the DID-hosting URL is
+> derived (below), and ports / log-level are fixed in the rendered TOML (`log_level` is
+> hardcoded to `"info"` in both modes). Full Stack has its own required `mediator_image` /
+> `dids_image` request fields — implemented, see
+> [`full-stack-setup-design.md`](full-stack-setup-design.md) §11/§12.
 
-| Subdomain | Pattern | Used for |
+**Backend-derived values** (not form inputs):
+
+| Value | How it's derived | `vta_only` example |
 | --- | --- | --- |
-| `vta.{domain}` | `https://vta.{domain}` | VTA public URL + VTA REST endpoint |
-| `mediator.{domain}` | `https://mediator.{domain}/mediator/v1` | Mediator DIDComm URL *(full_stack only)* |
-| `dids.{domain}` | `https://dids.{domain}` | WebVH DID hosting base URL *(full_stack only)* |
+| VTA subdomain | random `fpp-xxxx` via `GenerateSubdomain` (`fpp-local-xxxx` in dev) | `fpp-a1b2c3d4` |
+| VTA public URL | `https://{subdomain}.{CLUSTER_DOMAIN}` | `https://fpp-a1b2c3d4.example.com` |
+| DID hosting URL | `{DID_HOSTING_SERVER_URL}/{user_unique_id}/{vta_name}` | `https://dids.example.com/ab12cd34/personal-vta` |
+| Mediator DID | the shared `MEDIATOR_DID` env value | `did:webvh:…:mediator` |
+
+(Full Stack instead derives three named hosts and grows its own mediator + dids — see
+[`full-stack-setup-design.md`](full-stack-setup-design.md).)
 
 ---
 
@@ -116,21 +153,22 @@ The backend calls the Cloudflare API to create DNS records **before** running an
 | `CLOUDFLARE_API_TOKEN` | Cloudflare API token with `Zone:DNS:Edit` permission |
 | `CLOUDFLARE_ZONE_ID` | Zone ID for the user's root domain (from Cloudflare dashboard) |
 | `CLUSTER_INGRESS_IP` | External IP of the cluster's Nginx/Ingress-NGINX LoadBalancer |
+| `CLUSTER_DOMAIN` | Root domain the generated subdomain is appended to (e.g. `example.com`) |
 
 ### DNS Records Created
 
-For **VTA Only** mode:
+For **VTA Only** mode (one record — the generated subdomain):
 
 ```text
-A   vta.{domain}  →  {CLUSTER_INGRESS_IP}   proxied=true
+A   {fpp-xxxx}.{CLUSTER_DOMAIN}  →  {CLUSTER_INGRESS_IP}   proxied=true
 ```
 
 For **Full Stack** mode:
 
 ```text
-A   vta.{domain}       →  {CLUSTER_INGRESS_IP}   proxied=true
-A   mediator.{domain}  →  {CLUSTER_INGRESS_IP}   proxied=true
-A   dids.{domain}      →  {CLUSTER_INGRESS_IP}   proxied=true
+A   fpp-xxxx.{domain}       →  {CLUSTER_INGRESS_IP}   proxied=true
+A   mediator-xxxx.{domain}  →  {CLUSTER_INGRESS_IP}   proxied=true
+A   dids-xxxx.{domain}      →  {CLUSTER_INGRESS_IP}   proxied=true
 ```
 
 ### Cloudflare Client — `internal/cloudflare/client.go`
@@ -139,55 +177,63 @@ A   dids.{domain}      →  {CLUSTER_INGRESS_IP}   proxied=true
 type Client struct {
     apiToken string
     zoneID   string
+    http     *http.Client
 }
 
-func (c *Client) CreateARecord(ctx context.Context, name, ip string) error
-func (c *Client) DeleteRecord(ctx context.Context, name string) error
-func (c *Client) ListRecords(ctx context.Context, name string) ([]DNSRecord, error)
+// CreateARecord creates a proxied A record and returns its Cloudflare record ID.
+func (c *Client) CreateARecord(ctx context.Context, name, ip string) (string, error)
+// DeleteRecord removes a record by its Cloudflare record ID (idempotent).
+func (c *Client) DeleteRecord(ctx context.Context, recordID string) error
+// VerifyZone checks the API token can read the configured zone.
+func (c *Client) VerifyZone(ctx context.Context) error
 ```
+
+The returned record ID is stored on the session (`CFRecordID`) and used for teardown.
 
 ---
 
 ## Kubernetes Resource Provisioning
 
-All resources are created in the user's isolated namespace (`vtafarm-user-{userID}`) before setup Jobs run. Ingress resources rely on cert-manager (already in the cluster) for automatic TLS.
+All resources are created in the user's isolated namespace (`vtafarm-user-{userID}`). TLS is
+served by the cluster-wide **wildcard default-ssl-certificate** on nginx-ingress — there is no
+cert-manager and no per-host `tls:` block.
 
-### Resources per component
+### Resources (VTA Only)
 
-| Resource | Name pattern | Purpose |
+| Resource | `vta_only` name | Purpose |
 | --- | --- | --- |
-| `PersistentVolumeClaim` | `{component}-data` | Persistent storage for config + data dir |
-| `Service` | `{component}` | ClusterIP, exposes component port |
-| `Ingress` | `{component}` | nginx ingress with cert-manager TLS annotation |
-| `Job` (setup) | `{component}-setup-{sessionID}` | Runs one-off setup command |
-| `Deployment` (server) | `{component}` | Long-running server, starts after setup Jobs complete |
+| `PersistentVolumeClaim` | `vta-data-{sessionID}` | 1Gi RWO; persists `config.toml` + `data/vta/` into the Deployment |
+| `ConfigMap` (setup input) | `vta-setup-{sessionID}` | holds the rendered `vta-setup.toml` |
+| `Job` (setup) | `vta-setup-{sessionID}` | runs `vta setup --from …` |
+| `Job` (provision) | `vta-provision-{sessionID}` | runs `vta import-did` (+ `did-mgmt servers add`) |
+| `Service` | `vta-{sessionID}` | ClusterIP on 8100 |
+| `Ingress` | `vta-{sessionID}` | nginx ingress (ssl-redirect annotation; wildcard TLS) |
+| `Deployment` (server) | `vta-{sessionID}` | long-running VTA, starts after the provision Job |
 
-### Ingress template (per component)
+### Ingress template
 
 ```yaml
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {component}
+  name: vta-{sessionID}
   namespace: vtafarm-user-{userID}
   annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
 spec:
   ingressClassName: nginx
-  tls:
-    - hosts: [{subdomain}.{domain}]
-      secretName: {component}-tls
   rules:
-    - host: {subdomain}.{domain}
+    - host: {subdomain}.{CLUSTER_DOMAIN}
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: {component}
+                name: vta-{sessionID}
                 port:
-                  number: {port}
+                  number: 8100
+  # no tls: block — wildcard default-ssl-certificate handles it
 ```
 
 ### ClusterRole additions required
@@ -207,6 +253,11 @@ The API server's ClusterRole must include:
 - apiGroups: ["batch"]
   resources: ["jobs"]
   verbs: ["get", "list", "create", "delete", "watch"]
+# full_stack: per-session Secret holding the mediator's minted VAULT_TOKEN. The
+# VTA seed and the mediator's own secrets live in Vault, not here.
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "create", "delete"]
 ```
 
 ---
@@ -229,19 +280,23 @@ Each CLI setup command runs as a K8s Job:
 volumes:
   - name: config
     configMap:
-      name: {component}-setup-config-{sessionID}
+      name: vta-setup-{sessionID}      # key: vta-setup.toml
   - name: data
     persistentVolumeClaim:
-      claimName: {component}-data
+      claimName: vta-data-{sessionID}
 containers:
-  - name: setup
-    image: {component_image}
-    command: ["{binary}", "setup", "--from", "/config/recipe.toml"]
+  - name: vta-setup
+    image: {vta_image}
+    workingDir: /app/vta
+    # cat the DID log after the marker so the orchestrator grabs it from the Job logs
+    command: ["sh", "-c", "vta setup --from /config/vta-setup.toml && echo '---DID_LOG_START---' && cat /app/vta/data/vta/did-logs/VTA-did.jsonl"]
     volumeMounts:
       - name: config
         mountPath: /config
       - name: data
-        mountPath: /data
+        mountPath: /app/vta
+# Job: backoffLimit 0, ttlSecondsAfterFinished 3600, activeDeadlineSeconds 600,
+#      restartPolicy Never, serviceAccountName "vta"
 ```
 
 ### Server phase (persistent Deployments)
@@ -250,66 +305,71 @@ After all setup Jobs succeed, the backend creates Deployments for the running se
 
 ```yaml
 containers:
-  - name: {component}
-    image: {component_image}
-    command: ["{binary}", "--config", "/data/config.toml"]
+  - name: vta
+    image: {vta_image}                 # image default entrypoint — no --config override
+    env:
+      - { name: NO_COLOR, value: "1" }  # keep streamed logs plain-text
+      - { name: CLICOLOR, value: "0" }
     volumeMounts:
       - name: data
-        mountPath: /data
+        mountPath: /app/vta            # config.toml + data/vta/ written by the setup Job
     ports:
-      - containerPort: {port}
+      - containerPort: 8100
+# runs as serviceAccountName "vta" (authenticates to Vault via kubernetes auth)
 ```
 
-The Deployment mounts the same PVC as the setup Job, so `config.toml` and `data/` are already present.
+The Deployment mounts the same PVC as the setup Job at `/app/vta`, so `config.toml` and
+`data/vta/` are already present when the VTA boots.
 
 ---
 
 ## TOML Templates
 
-### vta-setup.toml (both modes)
+### vta-setup.toml (the live `vta_only` template — `internal/setup/templates.go`)
 
 ```toml
-config_path = "/data/config.toml"
-data_dir    = "/data/vta"
-vta_name    = "{{.VTAName}}"
-public_url  = "https://vta.{{.Domain}}"
+config_path = "config.toml"
+data_dir    = "data/vta"
+vta_name    = "{{ .VtaName }}"
+public_url  = "{{ .PublicURL }}"           # https://{subdomain}.{CLUSTER_DOMAIN}
 
 [services]
 rest    = true
-didcomm = {{if eq .Mode "full_stack"}}true{{else}}false{{end}}
+didcomm = true
 
 [server]
 host = "0.0.0.0"
-port = {{.VTAPort}}
+port = 8100
 
 [log]
-level  = "{{.LogLevel}}"
+level  = "info"
 format = "text"
 
-[secrets]
-backend = "plaintext"
+[secrets]                                  # master seed in Vault; pod auth = kubernetes (vta SA)
+backend     = "vault"
+addr        = "{{ .Vault.Addr }}"
+secret_path = "{{ .Vault.SecretPath }}"    # vta/user-<id>/session-<id>/master-seed
+kv_mount    = "{{ .Vault.KVMount }}"
+secret_key  = "seed"
+auth_method = "kubernetes"
+k8s_role    = "{{ .Vault.K8sRole }}"       # vta-user-<id>
+skip_verify = {{ .Vault.SkipVerify }}
 
-{{if eq .Mode "full_stack"}}
-[messaging]
-kind      = "create_mediator"
-context   = "mediator"
-url       = "https://mediator.{{.Domain}}/mediator/v1"
-webvh_url = "https://dids.{{.Domain}}/mediator"
-{{else}}
-[messaging]
-kind = "skip"
-{{end}}
+[messaging]                                # vta_only: the shared external mediator
+kind = "existing"
+did  = "{{ .MediatorDid }}"
 
 [vta_did]
 kind               = "create_webvh"
-{{if eq .Mode "full_stack"}}
-url                = "https://dids.{{.Domain}}/vta"
-{{else}}
-url                = "{{.DIDHostingURL}}"
-{{end}}
-portable           = true
-pre_rotation_count = 1
+url                = "{{ .VtaDidUrl }}"
+portable           = {{ .Portable }}
+pre_rotation_count = {{ .PreRotationCount }}
 ```
+
+> Paths are **relative** (resolved via the Job's `workingDir = /app/vta`), ports/log-level are
+> fixed, and the seed lives in **Vault** (not plaintext). Full Stack swaps `[messaging]` for
+> `kind = "create_mediator"` and points `[vta_did].url` at the in-cluster dids host — see
+> [`full-stack-setup-design.md`](full-stack-setup-design.md).
 
 ### mediator-recipe.toml (full_stack only)
 
@@ -389,57 +449,61 @@ force = false
 
 ## Output Parsing (Regex)
 
-| Step | Extracted value | Regex |
-| --- | --- | --- |
-| `step_vta` | VTA DID (1a) | `VTA DID:\s+(did:\S+)` |
-| `step_vta` | Mediator DID (1b) | `Mediator:\s+(did:\S+)` |
-| `step_mediator_vta` | SHA-256 digest (2a) | `SHA-256 digest:\s+(\S+)` |
-| `step_mediator_vta` | Admin DID (2b) | `Admin DID:\s+(did:\S+)` |
-| `step_dids_vta_admin` | SHA-256 digest (3a) | `SHA-256 digest:\s+(\S+)` |
-| `step_dids_p2` | Admin DID (3b) | `Generated admin did:key:\s+(did:\S+)` |
-| `step_dids_p2` | Daemon DID (3d) | `grep '^server_did' /data/config.toml` |
-| `step_pnm` | PNM Admin DID (4a) | `Admin DID:\s+(did:\S+)` |
+| Mode | Step | Extracted value | Regex / source |
+| --- | --- | --- | --- |
+| **vta_only** | `step_vta_setup` | VTA DID (1a) | `(?i)vta did:\s*(did:\S+)` |
+| **vta_only** | `step_vta_setup` | VTA DID log | everything after the `---DID_LOG_START---` marker (uploaded to the DID host) |
+| full_stack | `step_vta_setup` | Mediator DID (1b) | `(?i)mediator:\s*(did:\S+)` |
+| full_stack | `step_mediator_reprov` | SHA-256 digest (2a) | `SHA-256 digest:\s+(\S+)` |
+| full_stack | `step_mediator_reprov` | Admin DID (2b) | `Admin DID:\s+(did:\S+)` |
+| full_stack | `step_dids_provision` | SHA-256 digest (3a) | `SHA-256 digest:\s+(\S+)` |
+| full_stack | `step_dids_p2` | Admin DID (3b) | `Generated admin did:key:\s+(did:\S+)` |
+| full_stack | `step_dids_p2` | Daemon DID (3d) | `server_did` from `config.toml` |
+| both | `step_import_admin_did` | PNM Admin DID (4a) | n/a — **user input** (local `pnm setup`), not parsed |
+
+In `vta_only` the **Mediator DID is not parsed** — it's the shared `MEDIATOR_DID` env value
+written straight into the config. Only the VTA DID (1a) and its DID log come from the Job
+output (`internal/setup/parser.go`).
 
 ---
 
 ## Data Model: SetupSession
 
+The implemented (`vta_only`) model — `internal/model/setup_session.go`:
+
 ```go
 type SetupSession struct {
-    ID        uint   `gorm:"primaryKey"`
-    UserID    uint   `gorm:"not null;index"`
-    Status    string // state machine value
-    ErrorMsg  string
+    ID       uint   // internal PK
+    UniqueId string // public 8-char id (json "id")
+    UserID   uint
+    Status   string // state-machine value (see Mode A)
+    Mode     string // "vta_only" | "full_stack"
+    ErrorMsg string
 
-    // Form inputs
-    Mode         string // "vta_only" | "full_stack"
-    Domain       string
-    DIDHostingURL string // vta_only mode only
-    VTAName      string
-    VTAPort      int
-    MediatorPort int    // full_stack only
-    DIDsPort     int    // full_stack only
-    LogLevel     string
+    // Inputs
+    Domain           string // = CLUSTER_DOMAIN
+    Subdomain        string // generated "fpp-xxxx"
+    VtaName          string
+    VtaImage         string
+    Portable         bool   // default true
+    PreRotationCount int    // default 1
 
-    // DNS record IDs (for cleanup on failure)
-    CFRecordVTA      string
-    CFRecordMediator string
-    CFRecordDIDs     string
+    // Derived / shared
+    MediatorDid string // shared MEDIATOR_DID (vta_only)
+    VtaDidUrl   string // {DID_HOSTING_SERVER_URL}/{unique_id}/{vta_name}
+    CFRecordID  string // single Cloudflare record id (json "-")
 
-    // Collected outputs
-    VTADID           string // 1a
-    MediatorDID      string // 1b — full_stack only
-    MediatorDigest   string // 2a — full_stack only
-    MediatorAdminDID string // 2b — full_stack only
-    DIDsDigest       string // 3a — full_stack only
-    DIDsAdminDID     string // 3b — full_stack only
-    DIDsDID          string // 3d — full_stack only
-    PNMAdminDID      string // 4a — full_stack only
+    // Outputs
+    VtaDid   string // 1a — parsed from `vta setup`
+    AdminDid string // 4a — user-supplied PNM admin DID (input, not parsed)
 
-    CreatedAt time.Time
-    UpdatedAt time.Time
+    CreatedAt, UpdatedAt time.Time
 }
 ```
+
+> Full Stack's additive columns (mediator/dids subdomains/records, `mediator_admin_did`,
+> `did_hosting_admin_did`, per-component images, etc.) are implemented — see
+> [`full-stack-setup-design.md` §10](full-stack-setup-design.md).
 
 ---
 
@@ -447,62 +511,51 @@ type SetupSession struct {
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `POST` | `/api/v1/setup/validate` | Validate form fields, check Cloudflare connectivity |
-| `POST` | `/api/v1/setup` | Submit form, create session, start async setup |
-| `GET` | `/api/v1/setup/:id` | Poll session state, collected values, service URLs |
-| `POST` | `/api/v1/setup/:id/advance` | Unblock `step_dids_vta_admin` gate (provide `dids_digest`) |
-| `GET` | `/api/v1/setup/:id/logs` | SSE stream of raw step output |
-| `DELETE` | `/api/v1/setup/:id` | Cancel setup + tear down DNS records and K8s resources |
+| `POST` | `/api/v1/setup/validate` | Check Cloudflare connectivity + `CLUSTER_INGRESS_IP` (no body) |
+| `GET` | `/api/v1/setup/images` | List selectable VTA image tags (from GHCR) |
+| `GET` | `/api/v1/setup` | List the caller's sessions (newest first) |
+| `POST` | `/api/v1/setup` | Create session + DNS record, start async setup |
+| `GET` | `/api/v1/setup/:id` | Poll session state |
+| `POST` | `/api/v1/setup/:id/admin` | Phase 2: supply `admin_did` → `vta import-did` + deploy |
+| `GET` | `/api/v1/setup/:id/logs` | SSE stream of step output (`?source=setup\|provision\|vta`) |
+| `DELETE` | `/api/v1/setup/:id` | Tear down DNS + K8s + Vault seed, delete session |
+
+`:id` is the 8-char `unique_id`, **not** the numeric PK.
 
 ### GET /api/v1/setup/:id — response shape
 
 ```json
 {
-  "id": 42,
-  "mode": "full_stack",
-  "status": "step_mediator_p2",
-  "error_message": "",
-  "config": {
-    "domain": "example.com",
-    "vta_name": "personal-vta",
-    "vta_port": 8100,
-    "mediator_port": 7037,
-    "dids_port": 8534
-  },
-  "urls": {
-    "vta": "https://vta.example.com",
-    "mediator": "https://mediator.example.com",
-    "dids": "https://dids.example.com"
-  },
-  "collected": {
-    "vta_did": "did:webvh:...:dids.example.com:vta",
-    "mediator_did": "did:webvh:...:dids.example.com:mediator",
-    "mediator_digest": "abc123...",
-    "mediator_admin_did": "did:key:z6Mk...",
-    "dids_digest": "",
-    "dids_admin_did": "",
-    "dids_did": "",
-    "pnm_admin_did": ""
-  },
+  "id": "ab12cd34",
+  "status": "running",
+  "mode": "vta_only",
+  "url": "https://fpp-a1b2c3d4.example.com",
+  "vta_image": "ghcr.io/ic3software/vta:0.9.0",
+  "vta_did": "did:webvh:...:dids.example.com:ab12cd34:personal-vta",
+  "created_at": "2026-06-03T10:00:00Z",
   "updated_at": "2026-06-03T10:05:00Z"
 }
 ```
 
-When `status = "completed"`, the `urls` block contains the live endpoints the user can connect to.
+`error_msg` is included only when `status = "failed"`. The live URL is reachable once
+`status = "running"`. The list endpoint `GET /setup` additionally returns `vta_name`,
+`mediator_did`, and `vta_did_url` per session.
 
 ---
 
 ## Validation Rules
 
-`POST /api/v1/setup/validate` runs these checks before creating a session:
+`POST /api/v1/setup/validate` is a server-side pre-flight — it takes **no form fields**:
 
-1. `mode`: must be `vta_only` or `full_stack`
-2. `domain`: matches FQDN regex; must not start with `https://`; Cloudflare zone lookup confirms zone ownership
-3. `did_hosting_url` *(vta_only)*: must start with `https://`; must not be empty
-4. `vta_name`: matches `^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$`
-5. `vta_port`, `mediator_port`, `dids_port`: each in `[1024, 65535]`; all three must be distinct
-6. `log_level`: one of `info`, `debug`, `warn`, `error`
-7. Cloudflare: `CLUSTER_INGRESS_IP` env var must be non-empty (server-side check, not a form field)
+1. Cloudflare is configured (`503` if not) and `VerifyZone` succeeds (`502` on failure)
+2. `CLUSTER_INGRESS_IP` is non-empty (`422` if not)
+
+`POST /api/v1/setup` then validates the body:
+
+1. `mode`: required, `vta_only` | `full_stack`
+2. `vta_image`: required
+3. `vta_name`: must be unique for this user (`409` on conflict; defaults to `personal-vta`)
+4. cluster config: `CLUSTER_INGRESS_IP` **and** `CLUSTER_DOMAIN` must be set (`422` if not)
 
 ---
 
@@ -514,7 +567,7 @@ internal/
 ├── cloudflare/
 │   └── client.go             CreateARecord, DeleteRecord, ListRecords
 ├── handler/
-│   └── setup.go              ValidateSetup, CreateSetup, GetSetup, AdvanceSetup, SetupLogs, DeleteSetup
+│   └── setup.go              Validate, Images, Create, List, Get, Delete, Logs, ProvisionAdmin
 ├── model/
 │   └── setup_session.go      SetupSession GORM model
 ├── k8s/

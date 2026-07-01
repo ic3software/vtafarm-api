@@ -72,13 +72,14 @@ func main() {
 	var vaultClient *vault.Client
 	if cfg.Vault.Addr != "" {
 		vc, vErr := vault.New(vault.Config{
-			Addr:         cfg.Vault.Addr,
-			RoleID:       cfg.Vault.RoleID,
-			SecretID:     cfg.Vault.SecretID,
-			KVMount:      cfg.Vault.KVMount,
-			K8sAuthMount: cfg.Vault.K8sAuthMount,
-			AppRoleMount: cfg.Vault.AppRoleMount,
-			SkipVerify:   cfg.Vault.SkipVerify,
+			Addr:              cfg.Vault.Addr,
+			RoleID:            cfg.Vault.RoleID,
+			SecretID:          cfg.Vault.SecretID,
+			KVMount:           cfg.Vault.KVMount,
+			K8sAuthMount:      cfg.Vault.K8sAuthMount,
+			AppRoleMount:      cfg.Vault.AppRoleMount,
+			MediatorTokenRole: cfg.Vault.MediatorTokenRole,
+			SkipVerify:        cfg.Vault.SkipVerify,
 		})
 		if vErr != nil {
 			log.Printf("warn: Vault client init failed: %v — vta setup disabled", vErr)
@@ -96,16 +97,28 @@ func main() {
 		orch.Resume(context.Background())
 	}
 
-	// GHCR client for listing available image tags (optional).
-	var ghcrClient *ghcr.Client
+	// GHCR clients for listing available image tags (optional, one per component).
+	var ghcrClient, mediatorGhcrClient, didsGhcrClient *ghcr.Client
 	if cfg.GHCR.Owner != "" && cfg.GHCR.PackageName != "" {
 		ghcrClient = ghcr.New(cfg.GHCR.Token, cfg.GHCR.Owner, cfg.GHCR.PackageName)
 		log.Printf("GHCR image listing enabled for ghcr.io/%s/%s", cfg.GHCR.Owner, cfg.GHCR.PackageName)
 	} else {
-		log.Printf("warn: GITHUB_PACKAGE_OWNER or GITHUB_PACKAGE_NAME not set — image listing disabled")
+		log.Printf("warn: GITHUB_PACKAGE_OWNER or GITHUB_PACKAGE_NAME not set — vta image listing disabled")
+	}
+	if cfg.GHCR.Owner != "" && cfg.GHCR.MediatorPackageName != "" {
+		mediatorGhcrClient = ghcr.New(cfg.GHCR.Token, cfg.GHCR.Owner, cfg.GHCR.MediatorPackageName)
+		log.Printf("GHCR image listing enabled for ghcr.io/%s/%s", cfg.GHCR.Owner, cfg.GHCR.MediatorPackageName)
+	} else {
+		log.Printf("warn: GITHUB_PACKAGE_OWNER or GITHUB_MEDIATOR_PACKAGE_NAME not set — mediator image listing disabled")
+	}
+	if cfg.GHCR.Owner != "" && cfg.GHCR.DIDHostingDaemonPackageName != "" {
+		didsGhcrClient = ghcr.New(cfg.GHCR.Token, cfg.GHCR.Owner, cfg.GHCR.DIDHostingDaemonPackageName)
+		log.Printf("GHCR image listing enabled for ghcr.io/%s/%s", cfg.GHCR.Owner, cfg.GHCR.DIDHostingDaemonPackageName)
+	} else {
+		log.Printf("warn: GITHUB_PACKAGE_OWNER or GITHUB_DID_HOSTING_DAEMON_PACKAGE_NAME not set — dids image listing disabled")
 	}
 
-	r := router.Setup(db, cfClient, k8sClient, orch, ghcrClient, dhClient, cfg)
+	r := router.Setup(db, cfClient, k8sClient, orch, ghcrClient, mediatorGhcrClient, didsGhcrClient, dhClient, cfg)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.AppPort,

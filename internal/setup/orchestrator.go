@@ -43,17 +43,39 @@ func NewOrchestrator(db *gorm.DB, k8sClient *k8s.Client, vaultClient *vault.Clie
 }
 
 // Start launches Phase 1 for a session. Safe to call from an HTTP handler.
+// Dispatches to the full_stack state machine (orchestrator_fullstack.go) for
+// full_stack sessions; vta_only runs the original runSetup below unchanged.
 func (o *Orchestrator) Start(sessionID uint) {
 	o.launch(sessionID, func(ctx context.Context) {
+		if o.sessionMode(sessionID) == model.ModeFullStack {
+			o.runFullStack(ctx, sessionID)
+			return
+		}
 		o.runSetup(ctx, sessionID)
 	})
 }
 
-// Provision launches Phase 2 for a session. Called after the user provides their admin DID.
+// Provision launches Phase 2 for a session. Called after the user provides
+// their admin DID. Dispatches to full_stack's finishing chain (import-did +
+// deploy_vta) for full_stack sessions.
 func (o *Orchestrator) Provision(sessionID uint, adminDid string) {
 	o.launch(sessionID, func(ctx context.Context) {
+		if o.sessionMode(sessionID) == model.ModeFullStack {
+			o.runFullStackFinish(ctx, sessionID, adminDid)
+			return
+		}
 		o.runProvision(ctx, sessionID, adminDid)
 	})
+}
+
+// sessionMode looks up a session's mode without loading the full row.
+// Returns "" (never equal to a real mode) if the session can't be found.
+func (o *Orchestrator) sessionMode(sessionID uint) string {
+	var session model.SetupSession
+	if err := o.db.Select("mode").First(&session, sessionID).Error; err != nil {
+		return ""
+	}
+	return session.Mode
 }
 
 func (o *Orchestrator) launch(sessionID uint, fn func(context.Context)) {
@@ -129,6 +151,8 @@ func (o *Orchestrator) Resume(ctx context.Context) {
 		log.Printf("[orchestrator] resuming provision session %d", s.ID)
 		o.Provision(s.ID, s.AdminDid)
 	}
+
+	o.resumeFullStack()
 }
 
 // ── Phase 1: vta setup job ────────────────────────────────────────────────────
