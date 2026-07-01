@@ -129,6 +129,7 @@ func Setup(
 		userAuth.GET("/setup/:id/logs", sh.Logs)
 		userAuth.POST("/setup/:id/admin", sh.ProvisionAdmin)
 		userAuth.POST("/setup/:id/dids/reissue-enroll", sh.ReissueDidsEnroll)
+		userAuth.POST("/setup/:id/dids/enroll-ack", sh.AckDidsEnroll)
 	}
 
 	return r

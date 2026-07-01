@@ -1,10 +1,12 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -173,8 +175,10 @@ func (h *SetupHandler) getFullStack(c *gin.Context, session *model.SetupSession)
 		"updated_at": session.UpdatedAt,
 	}
 
+	resp["dids_enroll_used"] = session.DidsEnrollUsed
+
 	actionRequired := gin.H{}
-	if session.DidsEnrollURL != "" {
+	if session.DidsEnrollURL != "" && !session.DidsEnrollUsed {
 		actionRequired["dids_admin_enroll_url"] = session.DidsEnrollURL
 	}
 	if session.MediatorAdminKey != "" || session.WebvhAdminKey != "" {
@@ -354,12 +358,12 @@ func (h *SetupHandler) logsFullStack(c *gin.Context, session *model.SetupSession
 // (design §12, optional endpoint) — regenerates the single-use dids admin
 // enrollment URL by re-running `did-hosting-daemon invite`.
 //
-// CAUTION: like the original step_dids_invite, this opens the dids daemon's
-// local store directly. It does not stop the running dids Deployment first
-// (the design doesn't specify a safe stop/restart sequence for this
-// optional endpoint), so it can fail or race if the daemon pod is
-// concurrently using the same PVC. Accepted operational risk — retry, or
-// scale the dids Deployment to 0 first, if it fails.
+// The dids daemon holds an exclusive lock on its local (Fjall) store for as
+// long as it's running, so the invite Job can't open the same store
+// concurrently (fails with "store error: FjallError: Locked"). This scales
+// the dids Deployment to 0, waits for its pod to actually terminate (the
+// lock isn't released until then), runs the invite Job, then scales back to
+// 1 — via defer, so the daemon comes back up even if the Job itself fails.
 func (h *SetupHandler) ReissueDidsEnroll(c *gin.Context) {
 	publicID := c.Param("id")
 	userID := c.MustGet(middleware.ContextUserID).(uint)
@@ -384,7 +388,33 @@ func (h *SetupHandler) ReissueDidsEnroll(c *gin.Context) {
 
 	ctx := c.Request.Context()
 	ns := h.k8s.UserNamespace(fmt.Sprintf("%d", session.UserID))
+	didsName := k8s.FSDidsName(session.ID)
+	didsSelector := fmt.Sprintf("app=fs-dids,session-id=%d", session.ID)
 	jobName := k8s.FSJobDidsInvite(session.ID)
+
+	if err := h.k8s.ScaleComponentDeployment(ctx, ns, didsName, 0); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to stop dids daemon: " + err.Error()})
+		return
+	}
+	// Restart the daemon on the way out no matter how this handler returns —
+	// a failed reissue shouldn't leave the dids service down.
+	defer func() {
+		restartCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		if err := h.k8s.ScaleComponentDeployment(restartCtx, ns, didsName, 1); err != nil {
+			log.Printf("[setup] error: failed to restart dids daemon for session %d: %v", session.ID, err)
+			return
+		}
+		if err := h.k8s.WaitForComponentDeploymentReady(restartCtx, ns, didsName, 2*time.Minute); err != nil {
+			log.Printf("[setup] warn: dids daemon not ready after reissue for session %d: %v", session.ID, err)
+		}
+	}()
+
+	if err := h.k8s.WaitForComponentPodsGone(ctx, ns, didsSelector, 2*time.Minute); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed waiting for dids daemon to stop: " + err.Error()})
+		return
+	}
+
 	h.k8s.DeleteComponentJob(ctx, ns, jobName) // clear a previous (TTL'd) run if still present
 
 	cmd := fmt.Sprintf("did-hosting-daemon invite --role admin --did %s", shellQuote(session.DIDHostingAdminDid))
@@ -420,6 +450,39 @@ func (h *SetupHandler) ReissueDidsEnroll(c *gin.Context) {
 		return
 	}
 
-	h.db.Model(&model.SetupSession{}).Where("id = ?", session.ID).Update("dids_enroll_url", enrollURL)
+	h.db.Model(&model.SetupSession{}).Where("id = ?", session.ID).Updates(map[string]any{
+		"dids_enroll_url":  enrollURL,
+		"dids_enroll_used": false,
+	})
 	c.JSON(http.StatusOK, gin.H{"dids_admin_enroll_url": enrollURL})
+}
+
+// AckDidsEnroll handles POST /api/v1/setup/:id/dids/enroll-ack — the
+// frontend calls this the instant the user opens the (single-use) dids
+// enrollment URL. The daemon itself already refuses a second use of the
+// same invite; this just lets the UI know not to offer that same link again
+// after a refresh — reissue-enroll is what mints a fresh one.
+func (h *SetupHandler) AckDidsEnroll(c *gin.Context) {
+	publicID := c.Param("id")
+	userID := c.MustGet(middleware.ContextUserID).(uint)
+
+	var session model.SetupSession
+	if err := h.db.Where("unique_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+		return
+	}
+	if session.Mode != model.ModeFullStack {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "enroll-ack is only available for full_stack sessions"})
+		return
+	}
+	if session.DidsEnrollURL == "" {
+		c.JSON(http.StatusConflict, gin.H{"error": "no dids enrollment url has been issued yet"})
+		return
+	}
+
+	if err := h.db.Model(&session).Update("dids_enroll_used", true).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update session"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"dids_enroll_used": true})
 }

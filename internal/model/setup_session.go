@@ -57,6 +57,12 @@ type SetupSession struct {
 	WebvhAdminKey    string `gorm:"column:webvh_admin_key;not null;default:''"    json:"webvh_admin_key,omitempty"`    // 3c
 	DidsEnrollURL    string `gorm:"column:dids_enroll_url;not null;default:''"    json:"dids_enroll_url,omitempty"`    // 3e
 
+	// DidsEnrollUsed is set by the frontend (POST .../dids/enroll-ack) the
+	// moment the user opens DidsEnrollURL — it's single-use at the daemon
+	// level, so this just lets the UI stop offering a link that will fail if
+	// clicked again. Reissue clears it back to false along with the new URL.
+	DidsEnrollUsed bool `gorm:"column:dids_enroll_used;not null;default:false" json:"dids_enroll_used"`
+
 	CreatedAt time.Time `                                       json:"created_at"`
 	UpdatedAt time.Time `                                       json:"updated_at"`
 }

@@ -281,6 +281,13 @@ components:
             reveal_keys_once:
               type: boolean
               description: True when mediator_admin_key/webvh_admin_key are present in this response.
+        dids_enroll_used:
+          type: boolean
+          description: |
+            full_stack only. True once the frontend has called
+            `POST /setup/{id}/dids/enroll-ack` for the current `dids_admin_enroll_url`.
+            While true, `action_required.dids_admin_enroll_url` is omitted — the URL is
+            single-use, so call `POST /setup/{id}/dids/reissue-enroll` for a fresh one.
         mediator_admin_key:
           type: string
           description: full_stack only. 2c — shown once for offline backup.
@@ -1571,8 +1578,10 @@ paths:
         full_stack only. Regenerates the single-use dids admin-panel enrollment URL
         (re-runs `did-hosting-daemon invite --role admin`) — useful if the original URL
         (returned once from `step_dids_invite` / `GET /setup/{id}`) was lost or already
-        consumed. Opens the dids daemon's local store directly; can fail if the running
-        dids Deployment is concurrently using the same PVC.
+        consumed. Scales the dids Deployment to 0 and waits for its pod to terminate
+        (releasing the exclusive lock on the daemon's local store), runs the invite Job,
+        then scales the daemon back to 1 — the daemon is restarted even if the job
+        itself fails. On success, resets `dids_enroll_used` to false.
       tags: [User]
       security:
         - CookieAuthUser: []
@@ -1626,6 +1635,60 @@ paths:
                 $ref: "#/components/schemas/Error"
         "503":
           description: K8s not configured on server
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/setup/{id}/dids/enroll-ack:
+    post:
+      summary: Acknowledge dids admin enrollment URL as used
+      description: |
+        full_stack only. Called by the frontend the moment the user opens
+        `action_required.dids_admin_enroll_url` — marks `dids_enroll_used` true so
+        `GET /setup/{id}` stops offering that (single-use) URL. Call
+        `POST /setup/{id}/dids/reissue-enroll` to mint a fresh one afterwards.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "ab12cd34"
+      responses:
+        "200":
+          description: Marked as used
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dids_enroll_used:
+                    type: boolean
+                    example: true
+        "400":
+          description: Session is not a full_stack session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: No dids enrollment URL has been issued yet
           content:
             application/json:
               schema:

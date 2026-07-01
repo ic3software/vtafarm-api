@@ -728,10 +728,11 @@ on `POST /api/v1/setup` selects this path.
 | `POST` | `/setup/validate` | also assert all three hosts are creatable |
 | `POST` | `/setup` | accept `mode=full_stack`, optional `mediator_image`/`dids_image`, optional `admin_did` (user's local PNM admin DID — when present, auto-runs import + `deploy_vta`); create 3 DNS records; start the §5 machine |
 | `POST` | `/setup/:id/admin` | **reused from `vta_only`** — supply the user's PNM `admin_did` once the stack is up (`awaiting_admin_did`); triggers `vta import-did` + `deploy_vta` |
-| `GET` | `/setup/:id` | return the three URLs + **VTA DID (1a)** + **dids admin-enroll URL (3e)** + per-step status + (once) the admin keys |
+| `GET` | `/setup/:id` | return the three URLs + **VTA DID (1a)** + **dids admin-enroll URL (3e)** + `dids_enroll_used` + per-step status + (once) the admin keys |
 | `GET` | `/setup/:id/logs` | `?source=` gains `mediator_p1\|mediator_p2\|dids_p1\|dids_p2\|dids_invite\|dids_load_did\|import_admin_did\|mediator\|dids` |
 | `DELETE` | `/setup/:id` | tear down all 3 DNS records + all component resources |
-| `POST` | `/setup/:id/dids/reissue-enroll` *(new, optional)* | regenerate the single-use dids admin enrollment URL (`did-hosting-daemon invite`) |
+| `POST` | `/setup/:id/dids/reissue-enroll` *(new, optional)* | regenerate the single-use dids admin enrollment URL (`did-hosting-daemon invite`); scales the dids Deployment to 0, waits for its pod gone, runs the invite Job, then scales back to 1 (always, even on failure) |
+| `POST` | `/setup/:id/dids/enroll-ack` *(new, optional)* | frontend marks `dids_enroll_used = true` once the user opens the enrollment URL, so `GET /setup/:id` stops re-offering a link the daemon will refuse a second time |
 
 `GET /setup/:id` (full_stack) response sketch:
 
@@ -807,8 +808,9 @@ The chain is fully automatable **except** these user-local touchpoints:
 2. **DIDS admin-panel passkey enrollment (`3e`).** The offline DID load (§6
    `step_dids_load_did`) removes the *functional* need to log in, but the user still gets
    the single-use enrollment URL (always minted in `step_dids_invite`) to register a
-   passkey for the dids admin UI. Surfaced under `action_required.dids_admin_enroll_url`;
-   single-use and regenerable via the reissue endpoint.
+   passkey for the dids admin UI. Surfaced under `action_required.dids_admin_enroll_url`
+   until the frontend posts `/setup/:id/dids/enroll-ack` (sets `dids_enroll_used`, which
+   then hides it); single-use and regenerable via the reissue endpoint.
 3. **Reveal-once secrets (`2c`, `3c`).** The mediator + webvh admin private keys are shown
    to the user once for offline backup.
 

@@ -87,6 +87,70 @@ func (c *Client) CreateComponentDeployment(ctx context.Context, ns string, spec 
 	return nil
 }
 
+// ScaleComponentDeployment sets a Deployment's replica count. Used to stop
+// the dids daemon before a Job needs exclusive access to its local (Fjall)
+// store on the shared PVC — the daemon takes a file lock the whole time it's
+// running, so a concurrent Job open fails with "store error: FjallError:
+// Locked" — and to restart it afterwards.
+func (c *Client) ScaleComponentDeployment(ctx context.Context, ns, name string, replicas int32) error {
+	deploy, err := c.kube.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("get deployment %s: %w", name, err)
+	}
+	deploy.Spec.Replicas = &replicas
+	if _, err := c.kube.AppsV1().Deployments(ns).Update(ctx, deploy, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("scale deployment %s to %d: %w", name, replicas, err)
+	}
+	return nil
+}
+
+// WaitForComponentPodsGone polls until no pod matching selector remains.
+// Scaling a Deployment to 0 only stops new scheduling — the outgoing pod
+// keeps its file lock on the PVC until it actually terminates, so callers
+// that need exclusive access (e.g. ReissueDidsEnroll) must wait for this
+// before starting a Job against the same volume.
+func (c *Client) WaitForComponentPodsGone(ctx context.Context, ns, selector string, timeout time.Duration) error {
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		pods, err := c.kube.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: selector})
+		if err == nil && len(pods.Items) == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline:
+			return fmt.Errorf("timeout waiting for pods (selector %q) to terminate", selector)
+		case <-ticker.C:
+		}
+	}
+}
+
+// WaitForComponentDeploymentReady polls until the Deployment reports at
+// least one ready replica. Used after scaling back up so callers can confirm
+// the daemon actually came back, not just that the scale request was
+// accepted.
+func (c *Client) WaitForComponentDeploymentReady(ctx context.Context, ns, name string, timeout time.Duration) error {
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		deploy, err := c.kube.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
+		if err == nil && deploy.Status.ReadyReplicas > 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline:
+			return fmt.Errorf("timeout waiting for deployment %s to become ready", name)
+		case <-ticker.C:
+		}
+	}
+}
+
 // CreateComponentService creates a ClusterIP Service selecting labels on
 // port. Idempotent — AlreadyExists is ignored.
 func (c *Client) CreateComponentService(ctx context.Context, ns, name string, labels map[string]string, port int32) error {
