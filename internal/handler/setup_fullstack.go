@@ -221,14 +221,14 @@ func (h *SetupHandler) deleteFullStack(c *gin.Context, session *model.SetupSessi
 		ns := h.k8s.UserNamespace(fmt.Sprintf("%d", session.UserID))
 
 		if h.orch != nil {
-			h.orch.TeardownMediatorVault(ctx, ns, session.UserID, session.ID)
+			h.orch.TeardownMediatorVault(ctx, session.UserID, session.ID)
+			h.orch.TeardownDidsVault(ctx, session.UserID, session.ID)
 		}
 
 		h.k8s.DeleteAllComponentJobs(ctx, ns, session.ID)
 		h.k8s.DeleteComponentResources(ctx, ns, k8s.FSVtaName(session.ID))
 		h.k8s.DeleteComponentResources(ctx, ns, k8s.FSMediatorName(session.ID))
 		h.k8s.DeleteComponentResources(ctx, ns, k8s.FSDidsName(session.ID))
-		h.k8s.DeleteComponentSecret(ctx, ns, k8s.FSMediatorTokenSecret(session.ID))
 	}
 
 	if h.orch != nil {

@@ -489,50 +489,49 @@ registry. `domain`/`path` are left unset: this dids daemon isn't
 multi-tenant, and an unset `path` lets it auto-assign one, avoiding any
 collision risk (§8).
 
-## 10. Secrets handling — reuses the VTA's Vault mechanism, not the mediator's
+## 10. Secrets handling — a fourth prefix on the same shared policy
 
 VTC natively supports **kubernetes auth** for its Vault backend
 (`vault_auth_method` defaults to `"kubernetes"` — same field names as the
 VTA's, per the config's own doc comment: "Field names mirror the VTA's...
-so the shared Vault builder is reused"). This is simpler than the
-mediator's Vault integration, which needs **token** auth (a minted
-`VAULT_TOKEN` injected via a per-session K8s Secret,
-`fsMediatorVaultEnv`/`MintMediatorToken`/`FSMediatorTokenSecret`) because its
-binary lacks kubernetes-auth support.
+so the shared Vault builder is reused"). By the time this mode ships, the
+mediator and dids daemon have *also* moved to kubernetes auth (see
+[`full-stack-setup-design.md` §9](full-stack-setup-design.md#9-secrets-handling)
+— an earlier mediator design used token auth with a minted `VAULT_TOKEN`;
+that's gone). So VTC isn't a special case here at all — it's simply the
+**fourth** component on the same per-user policy and role, authenticating
+the same way the other three already do.
 
 > **Image build requirement:** `vault-secrets` is **not** a default
 > feature of `vtc-service` (`Cargo.toml`: `vault-secrets =
 > ["vti-secrets/vault-secrets"]`, listed as non-default in
 > `docs/03-vtc/feature-flags.md`). The published VTC image must be built
 > with `--features vault-secrets`, exactly analogous to the mediator's
-> `secrets-vault` build requirement in
-> [`full-stack-setup-design.md` §9](full-stack-setup-design.md#9-secrets-handling).
+> `secrets-vault` and the dids daemon's `vault-secrets` build requirements
+> in [`full-stack-setup-design.md` §9](full-stack-setup-design.md#9-secrets-handling).
 > Without it, `create_secret_store` fails at setup with a
 > feature-not-compiled error.
 
-VTC needs none of the mediator's token machinery:
-
 - **No new ServiceAccount.** Every VTC Job/Deployment that touches Vault
-  runs as the same `vta` ServiceAccount the VTA already uses
-  (`k8s.VtaServiceAccount`), in the same per-user namespace.
+  runs as the same `vta` ServiceAccount the VTA, mediator, and dids daemon
+  already use (`k8s.VtaServiceAccount`), in the same per-user namespace.
 - **No new kubernetes-auth role.** The existing per-user role
   (`vault.UserName(userID)`, bound to SA `vta` + the user's namespace) is
-  reused as-is — only its **policy** needs widening.
-- **No new K8s Secret, no token minting/injection.** Contrast the
-  mediator's `MintMediatorToken`/`CreateComponentSecret`/
-  `TeardownMediatorVault` — none of that machinery is needed here.
+  reused as-is — only its **policy** needs widening, a fourth time.
+- **No K8s Secret, no token minting/injection anywhere in this mode** —
+  same as the mediator and dids daemon.
 
 ```go
 // VtcPrefix is the KV v2 path (under the mount) where a full_stack_with_vtc
 // session's VTC key bundle lives. EnsureUserAccess (below) globs over
-// secret/{data,metadata}/vtc/user-<id>/*, mirroring MediatorPrefix.
+// secret/{data,metadata}/vtc/user-<id>/*, mirroring MediatorPrefix/DidsPrefix.
 func VtcPrefix(userID, sessionID uint) string {
     return fmt.Sprintf("vtc/user-%d/session-%d", userID, sessionID)
 }
 ```
 
 Extend `EnsureUserAccess`'s policy string (`internal/vault/client.go`) with
-two more lines, same capabilities as the existing VTA seed grant:
+two more lines, same capabilities as the existing VTA/mediator/dids grants:
 
 ```text
 path "%[1]s/data/vtc/user-%[2]d/*"     { capabilities = ["read", "create", "update", "delete"] }
@@ -540,9 +539,10 @@ path "%[1]s/metadata/vtc/user-%[2]d/*" { capabilities = ["read", "delete"] }
 ```
 
 Add `DeleteVtcSecrets(ctx, userID, sessionID uint) error`, mirroring
-`DeleteMediatorSecrets` (KV v2 metadata delete of the `vtc/user-*/session-*`
-prefix) — called at teardown alongside `TeardownMediatorVault`, since
-there's no token to revoke for the VTC.
+`DeleteMediatorSecrets`/`DeleteDidsSecrets` (KV v2 metadata delete of the
+`vtc/user-*/session-*` prefix) — called at teardown alongside
+`TeardownMediatorVault`/`TeardownDidsVault`, since there's no token to
+revoke for the VTC either.
 
 `vault_secret_key = "bundle"` (§9) stores the VTC's serialized
 `VtcKeyBundle` bytes under that field name — `vti_secrets`'s generic seed
@@ -593,11 +593,12 @@ func (s *SetupSession) VtcFQDN() string { return s.VtcSubdomain + "." + s.Domain
 Reuse everything else — `CLUSTER_INGRESS_IP`, `CLUSTER_DOMAIN`,
 `CLOUDFLARE_*`, all `VAULT_*` (no new Vault token role needed, §10).
 
-**No new ClusterRole permissions.** The `secrets` verb `full_stack` already
-added (for the mediator's `VAULT_TOKEN` Secret) isn't needed here — `vtc`
-has no equivalent. Everything else the existing rule set already grants
-(namespaces, SAs, pods, pods/log, configmaps, PVCs, services, roles,
-rolebindings, jobs, deployments, ingresses) covers the fourth component too.
+**No new ClusterRole permissions.** `full_stack`'s ClusterRole has no
+`secrets` verb at all — kubernetes auth (the mechanism VTA, mediator, dids,
+and now VTC all share) never needs a per-session K8s Secret for anything.
+The existing rule set (namespaces, SAs, pods, pods/log, configmaps, PVCs,
+services, roles, rolebindings, jobs, deployments, ingresses) already covers
+everything the fourth component needs too.
 
 ## 13. API surface
 
@@ -661,8 +662,9 @@ with:
 - `DeleteComponentResources(ctx, ns, k8s.FSVtcName(sid))` alongside the
   other three; `DeleteAllComponentJobs` already covers the new Job names
   once they're added to the session's job-name list.
-- `vault.DeleteVtcSecrets(ctx, userID, sid)` alongside
-  `TeardownMediatorVault` — no token to revoke for the VTC.
+- `orch.TeardownVtcVault(ctx, userID, sid)` — a new orchestrator wrapper
+  mirroring `TeardownMediatorVault`/`TeardownDidsVault` exactly (best-effort,
+  calls `vault.DeleteVtcSecrets`, no token to revoke for the VTC either).
 
 No de-registration of the `dids` server entry from the VTA's registry is
 needed — the VTA itself is being deleted as part of the same teardown (its
@@ -707,7 +709,9 @@ There is **no** ACL-grant gate — see §5/§7.
    completion-block parser (§8), and the reissue parser for `vtc admin
    invite`'s `Install URL` / `Claim code` lines (§13).
 9. `internal/vault/client.go` — `VtcPrefix`, `DeleteVtcSecrets`, widen
-   `EnsureUserAccess`'s policy string (§10).
+   `EnsureUserAccess`'s policy string (§10). `internal/setup/orchestrator_fullstack_vtc.go`
+   (or alongside `TeardownMediatorVault`/`TeardownDidsVault`) — `TeardownVtcVault`
+   wrapper (§13).
 10. `internal/setup/orchestrator_fullstack_vtc.go` — `runFullStackWithVtc`:
     calls `full_stack`'s existing pre-gate step methods unchanged (through
     `fsStepVtaRegisterDids`); the finish phase (after the `admin_did` gate)

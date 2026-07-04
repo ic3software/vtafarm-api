@@ -42,23 +42,6 @@ func fsNoColorEnv() []corev1.EnvVar {
 	}
 }
 
-// fsMediatorVaultEnv is fsNoColorEnv plus the VAULT_TOKEN + VAULT_SKIP_VERIFY
-// env shared by every mediator Job/Deployment (design §9).
-func (o *Orchestrator) fsMediatorVaultEnv(sessionID uint) []corev1.EnvVar {
-	return append(fsNoColorEnv(), []corev1.EnvVar{
-		{
-			Name: "VAULT_TOKEN",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: k8s.FSMediatorTokenSecret(sessionID)},
-					Key:                  "token",
-				},
-			},
-		},
-		{Name: "VAULT_SKIP_VERIFY", Value: "true"},
-	}...)
-}
-
 // vaultHostPort strips the scheme from a Vault address for the mediator's
 // vault://host:port/... storage URL form.
 func vaultHostPort(addr string) string {
@@ -137,13 +120,6 @@ func (o *Orchestrator) runFullStack(ctx context.Context, sessionID uint) {
 		return
 	}
 	if fail("failed to provision vault access", o.vault.EnsureUserAccess(ctx, s.UserID, ns, k8s.VtaServiceAccount)) {
-		return
-	}
-	mediatorToken, err := o.vault.MintMediatorToken(ctx, s.UserID, sessionID)
-	if fail("failed to mint mediator vault token", err) {
-		return
-	}
-	if fail("failed to store mediator vault token", o.k8s.CreateComponentSecret(ctx, ns, k8s.FSMediatorTokenSecret(sessionID), "token", mediatorToken)) {
 		return
 	}
 
@@ -370,12 +346,14 @@ func (o *Orchestrator) fsStepVtaSetup(ctx context.Context, ns string, s *model.S
 
 // fsStepMediatorP1 runs `mediator-setup` phase 1, writing
 // bootstrap-request.json to the mediator PVC and the ephemeral HPKE seed to
-// Vault (via the injected VAULT_TOKEN).
+// Vault (kubernetes auth — the mediator's own pod ServiceAccount JWT).
 func (o *Orchestrator) fsStepMediatorP1(ctx context.Context, ns string, s *model.SetupSession) error {
 	recipe, err := RenderMediatorRecipeTOML(s, MediatorVaultSecrets{
-		HostPort: vaultHostPort(o.vaultAddr),
-		KVMount:  o.vault.KVMount(),
-		Prefix:   vault.MediatorPrefix(s.UserID, s.ID),
+		HostPort:   vaultHostPort(o.vaultAddr),
+		KVMount:    o.vault.KVMount(),
+		Prefix:     vault.MediatorPrefix(s.UserID, s.ID),
+		K8sRole:    vault.UserName(s.UserID),
+		SkipVerify: true,
 	})
 	if err != nil {
 		return fmt.Errorf("render mediator-recipe.toml: %w", err)
@@ -387,12 +365,12 @@ func (o *Orchestrator) fsStepMediatorP1(ctx context.Context, ns string, s *model
 		Image:          s.MediatorImage,
 		Command:        []string{"sh", "-c", "mediator-setup --from /config/mediator-recipe.toml"},
 		WorkingDir:     "/work/mediator",
-		ServiceAccount: k8s.PodOperatorServiceAccount,
+		ServiceAccount: k8s.VtaServiceAccount,
 		PVCMounts:      []k8s.PVCMount{{Name: "mediator-data", ClaimName: k8s.FSMediatorName(s.ID), MountPath: "/work/mediator"}},
 		ConfigMapName:  jobName,
 		ConfigMapKey:   "mediator-recipe.toml",
 		ConfigMapData:  recipe,
-		Env:            o.fsMediatorVaultEnv(s.ID),
+		Env:            fsNoColorEnv(),
 	}); err != nil {
 		return fmt.Errorf("create job: %w", err)
 	}
@@ -455,9 +433,11 @@ func (o *Orchestrator) fsStepMediatorReprov(ctx context.Context, ns string, s *m
 // conf/atm-functions.lua to the mediator PVC.
 func (o *Orchestrator) fsStepMediatorP2(ctx context.Context, ns string, s *model.SetupSession, digest2a string) (adminKey string, err error) {
 	recipe, err := RenderMediatorRecipeTOML(s, MediatorVaultSecrets{
-		HostPort: vaultHostPort(o.vaultAddr),
-		KVMount:  o.vault.KVMount(),
-		Prefix:   vault.MediatorPrefix(s.UserID, s.ID),
+		HostPort:   vaultHostPort(o.vaultAddr),
+		KVMount:    o.vault.KVMount(),
+		Prefix:     vault.MediatorPrefix(s.UserID, s.ID),
+		K8sRole:    vault.UserName(s.UserID),
+		SkipVerify: true,
 	})
 	if err != nil {
 		return "", fmt.Errorf("render mediator-recipe.toml: %w", err)
@@ -471,12 +451,12 @@ func (o *Orchestrator) fsStepMediatorP2(ctx context.Context, ns string, s *model
 		Image:          s.MediatorImage,
 		Command:        []string{"sh", "-c", cmd},
 		WorkingDir:     "/work/mediator",
-		ServiceAccount: k8s.PodOperatorServiceAccount,
+		ServiceAccount: k8s.VtaServiceAccount,
 		PVCMounts:      []k8s.PVCMount{{Name: "mediator-data", ClaimName: k8s.FSMediatorName(s.ID), MountPath: "/work/mediator"}},
 		ConfigMapName:  jobName,
 		ConfigMapKey:   "mediator-recipe.toml",
 		ConfigMapData:  recipe,
-		Env:            o.fsMediatorVaultEnv(s.ID),
+		Env:            fsNoColorEnv(),
 	}); err != nil {
 		return "", fmt.Errorf("create job: %w", err)
 	}
@@ -499,10 +479,23 @@ func (o *Orchestrator) fsStepMediatorP2(ctx context.Context, ns string, s *model
 	return adminKey, nil
 }
 
+// fsWebvhVaultSecrets builds the dids daemon's Vault [secrets] params —
+// kubernetes auth via the same per-user role the VTA and mediator use.
+func (o *Orchestrator) fsWebvhVaultSecrets(s *model.SetupSession) WebvhVaultSecrets {
+	return WebvhVaultSecrets{
+		Addr:       o.vaultAddr,
+		KVMount:    o.vault.KVMount(),
+		SecretPath: vault.DidsPrefix(s.UserID, s.ID) + "/server-secrets",
+		K8sRole:    vault.UserName(s.UserID),
+		SkipVerify: true,
+	}
+}
+
 // fsStepDidsP1 runs `did-hosting-daemon setup` (offline-prepare), writing
-// bootstrap-request.json to the dids PVC.
+// bootstrap-request.json to the dids PVC and the offline-bootstrap seed to
+// Vault (kubernetes auth).
 func (o *Orchestrator) fsStepDidsP1(ctx context.Context, ns string, s *model.SetupSession) error {
-	recipe, err := RenderWebvhRecipeTOML(s, WebvhPhasePrepare, "")
+	recipe, err := RenderWebvhRecipeTOML(s, WebvhPhasePrepare, "", o.fsWebvhVaultSecrets(s))
 	if err != nil {
 		return fmt.Errorf("render webvh-recipe.toml: %w", err)
 	}
@@ -513,7 +506,7 @@ func (o *Orchestrator) fsStepDidsP1(ctx context.Context, ns string, s *model.Set
 		Image:          s.DidsImage,
 		Command:        []string{"sh", "-c", "did-hosting-daemon setup --from /config/webvh-recipe.toml"},
 		WorkingDir:     "/work/dids",
-		ServiceAccount: k8s.PodOperatorServiceAccount,
+		ServiceAccount: k8s.VtaServiceAccount,
 		PVCMounts:      []k8s.PVCMount{{Name: "dids-data", ClaimName: k8s.FSDidsName(s.ID), MountPath: "/work/dids"}},
 		ConfigMapName:  jobName,
 		ConfigMapKey:   "webvh-recipe.toml",
@@ -575,7 +568,7 @@ func (o *Orchestrator) fsStepDidsProvision(ctx context.Context, ns string, s *mo
 // fsStepDidsP2 runs `did-hosting-daemon setup` (offline-complete), capturing
 // the webvh admin DID (3b), admin private key (3c), and daemon DID (3d).
 func (o *Orchestrator) fsStepDidsP2(ctx context.Context, ns string, s *model.SetupSession, digest3a string) (adminDid, adminKey, daemonDid string, err error) {
-	recipe, err := RenderWebvhRecipeTOML(s, WebvhPhaseComplete, digest3a)
+	recipe, err := RenderWebvhRecipeTOML(s, WebvhPhaseComplete, digest3a, o.fsWebvhVaultSecrets(s))
 	if err != nil {
 		return "", "", "", fmt.Errorf("render webvh-recipe.toml: %w", err)
 	}
@@ -589,7 +582,7 @@ func (o *Orchestrator) fsStepDidsP2(ctx context.Context, ns string, s *model.Set
 		Image:          s.DidsImage,
 		Command:        []string{"sh", "-c", cmd},
 		WorkingDir:     "/work/dids",
-		ServiceAccount: k8s.PodOperatorServiceAccount,
+		ServiceAccount: k8s.VtaServiceAccount,
 		PVCMounts:      []k8s.PVCMount{{Name: "dids-data", ClaimName: k8s.FSDidsName(s.ID), MountPath: "/work/dids"}},
 		ConfigMapName:  jobName,
 		ConfigMapKey:   "webvh-recipe.toml",
@@ -769,7 +762,8 @@ func (o *Orchestrator) fsStepVtaRegisterDids(ctx context.Context, ns string, s *
 	return nil
 }
 
-// fsDeployDids starts the dids daemon Deployment.
+// fsDeployDids starts the dids daemon Deployment. Runs as SA vta — it reads
+// its Vault-backed secrets at every boot.
 func (o *Orchestrator) fsDeployDids(ctx context.Context, ns string, s *model.SetupSession) error {
 	name := k8s.FSDidsName(s.ID)
 	return o.k8s.CreateComponentDeployment(ctx, ns, k8s.ComponentDeploymentSpec{
@@ -777,7 +771,7 @@ func (o *Orchestrator) fsDeployDids(ctx context.Context, ns string, s *model.Set
 		Image:          s.DidsImage,
 		Command:        []string{"did-hosting-daemon"},
 		WorkingDir:     "/work/dids",
-		ServiceAccount: k8s.PodOperatorServiceAccount,
+		ServiceAccount: k8s.VtaServiceAccount,
 		PVCMounts:      []k8s.PVCMount{{Name: "dids-data", ClaimName: name, MountPath: "/work/dids"}},
 		Env:            fsNoColorEnv(),
 		Port:           8534,
@@ -785,7 +779,8 @@ func (o *Orchestrator) fsDeployDids(ctx context.Context, ns string, s *model.Set
 	})
 }
 
-// fsDeployMediator starts the mediator Deployment.
+// fsDeployMediator starts the mediator Deployment. Runs as SA vta — it reads
+// its Vault-backed secrets at every boot (kubernetes auth, same as the VTA).
 func (o *Orchestrator) fsDeployMediator(ctx context.Context, ns string, s *model.SetupSession) error {
 	name := k8s.FSMediatorName(s.ID)
 	return o.k8s.CreateComponentDeployment(ctx, ns, k8s.ComponentDeploymentSpec{
@@ -793,9 +788,9 @@ func (o *Orchestrator) fsDeployMediator(ctx context.Context, ns string, s *model
 		Image:          s.MediatorImage,
 		Command:        []string{"mediator"},
 		WorkingDir:     "/work/mediator",
-		ServiceAccount: k8s.PodOperatorServiceAccount,
+		ServiceAccount: k8s.VtaServiceAccount,
 		PVCMounts:      []k8s.PVCMount{{Name: "mediator-data", ClaimName: name, MountPath: "/work/mediator"}},
-		Env:            o.fsMediatorVaultEnv(s.ID),
+		Env:            fsNoColorEnv(),
 		Port:           7037,
 		Labels:         fsLabels("mediator", s.ID),
 	})
@@ -922,20 +917,25 @@ func (o *Orchestrator) resumeFullStack() {
 
 // ── Teardown ─────────────────────────────────────────────────────────────────
 
-// TeardownMediatorVault revokes the mediator's minted VAULT_TOKEN (read back
-// from its K8s Secret before the caller deletes it) and deletes the
-// mediator's KV secrets. Best-effort, mirrors TeardownVaultSeed. Call before
-// deleting the fs-{sid}-mediator-vault-token Secret.
-func (o *Orchestrator) TeardownMediatorVault(ctx context.Context, ns string, userID, sessionID uint) {
+// TeardownMediatorVault deletes the mediator's KV secrets. Best-effort,
+// mirrors TeardownVaultSeed. No token to revoke — the mediator authenticates
+// via kubernetes auth (design §9), not a minted VAULT_TOKEN.
+func (o *Orchestrator) TeardownMediatorVault(ctx context.Context, userID, sessionID uint) {
 	if o.vault == nil {
 		return
 	}
-	if token, err := o.k8s.GetComponentSecretValue(ctx, ns, k8s.FSMediatorTokenSecret(sessionID), "token"); err == nil && token != "" {
-		if err := o.vault.RevokeToken(ctx, token); err != nil {
-			log.Printf("[orchestrator] warn: revoke mediator token (user %d session %d): %v", userID, sessionID, err)
-		}
-	}
 	if err := o.vault.DeleteMediatorSecrets(ctx, userID, sessionID); err != nil {
 		log.Printf("[orchestrator] warn: delete mediator secrets (user %d session %d): %v", userID, sessionID, err)
+	}
+}
+
+// TeardownDidsVault deletes the dids daemon's KV secrets. Best-effort,
+// mirrors TeardownMediatorVault.
+func (o *Orchestrator) TeardownDidsVault(ctx context.Context, userID, sessionID uint) {
+	if o.vault == nil {
+		return
+	}
+	if err := o.vault.DeleteDidsSecrets(ctx, userID, sessionID); err != nil {
+		log.Printf("[orchestrator] warn: delete dids secrets (user %d session %d): %v", userID, sessionID, err)
 	}
 }

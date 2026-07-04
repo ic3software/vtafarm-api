@@ -251,9 +251,4 @@ rules:
 - apiGroups: ["networking.k8s.io"]
   resources: ["ingresses"]
   verbs: ["get", "list", "create", "update", "delete", "watch"]
-# full_stack: per-session Secret holding the mediator's minted VAULT_TOKEN. The
-# VTA seed and the mediator's own secrets live in Vault, not here.
-- apiGroups: [""]
-  resources: ["secrets"]
-  verbs: ["get", "create", "delete"]
 ```

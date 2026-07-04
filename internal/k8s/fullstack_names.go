@@ -32,12 +32,6 @@ func FSJobImportAdminDid(sessionID uint) string {
 	return fmt.Sprintf("fs-%d-import-admin-did", sessionID)
 }
 
-// FSMediatorTokenSecret is the per-session K8s Secret holding the mediator's
-// minted VAULT_TOKEN (design §9).
-func FSMediatorTokenSecret(sessionID uint) string {
-	return fmt.Sprintf("fs-%d-mediator-vault-token", sessionID)
-}
-
 // allFSJobNames lists every setup Job name for a session — used by teardown
 // to best-effort delete each one (and its ConfigMap, where one exists).
 func allFSJobNames(sessionID uint) []string {

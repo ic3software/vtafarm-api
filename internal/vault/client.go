@@ -25,14 +25,13 @@ import (
 // the VAULT_* env vars (see internal/config) but is its own type so this
 // package doesn't depend on internal/config.
 type Config struct {
-	Addr              string // e.g. https://vault.vault.svc:8200
-	RoleID            string // AppRole role_id for vtafarm-api
-	SecretID          string // AppRole secret_id for vtafarm-api
-	KVMount           string // KV v2 mount, default "secret"
-	K8sAuthMount      string // kubernetes auth mount, default "kubernetes"
-	AppRoleMount      string // approle auth mount, default "approle"
-	MediatorTokenRole string // token role for minting mediator VAULT_TOKENs, default "vtafarm-mediator-token"
-	SkipVerify        bool   // skip TLS verification (self-signed in-cluster CA)
+	Addr         string // e.g. https://vault.vault.svc:8200
+	RoleID       string // AppRole role_id for vtafarm-api
+	SecretID     string // AppRole secret_id for vtafarm-api
+	KVMount      string // KV v2 mount, default "secret"
+	K8sAuthMount string // kubernetes auth mount, default "kubernetes"
+	AppRoleMount string // approle auth mount, default "approle"
+	SkipVerify   bool   // skip TLS verification (self-signed in-cluster CA)
 }
 
 type Client struct {
@@ -54,9 +53,6 @@ func New(cfg Config) (*Client, error) {
 	if cfg.AppRoleMount == "" {
 		cfg.AppRoleMount = "approle"
 	}
-	if cfg.MediatorTokenRole == "" {
-		cfg.MediatorTokenRole = "vtafarm-mediator-token"
-	}
 	tr := &http.Transport{}
 	if cfg.SkipVerify {
 		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
@@ -73,9 +69,9 @@ func SeedPath(userID, sessionID uint) string {
 	return fmt.Sprintf("vta/user-%d/session-%d/master-seed", userID, sessionID)
 }
 
-// UserName is the shared name for a user's Vault policy AND kubernetes-auth role.
-// full_stack also mints the mediator's VAULT_TOKEN against this same policy
-// (extended below to also cover the mediator's KV prefix).
+// UserName is the shared name for a user's Vault policy AND kubernetes-auth
+// role. full_stack's mediator and dids daemon both authenticate as the same
+// SA against this same role (extended below to also cover their KV prefixes).
 func UserName(userID uint) string {
 	return fmt.Sprintf("vta-user-%d", userID)
 }
@@ -87,14 +83,22 @@ func MediatorPrefix(userID, sessionID uint) string {
 	return fmt.Sprintf("mediator/user-%d/session-%d", userID, sessionID)
 }
 
+// DidsPrefix is the KV v2 path (under the mount) where a full_stack session's
+// DID-hosting daemon secrets live. The per-user policy written by
+// EnsureUserAccess globs over secret/{data,metadata}/dids/user-<id>/*.
+func DidsPrefix(userID, sessionID uint) string {
+	return fmt.Sprintf("dids/user-%d/session-%d", userID, sessionID)
+}
+
 // EnsureUserAccess (idempotently) creates the per-user Vault policy and the
 // kubernetes-auth role bound to ServiceAccount `saName` in `namespace`. After
 // this, a VTA pod running as that SA can read/write only its own seed paths.
 //
-// The policy also grants the user's mediator KV prefix (full_stack mode) —
-// the mediator's secrets-vault backend probes write→read→delete at setup and
-// startup, so it needs create/update/read/delete on data and read/list/delete
-// on metadata, mirroring the VTA seed grant above it.
+// The policy also grants the user's mediator and dids KV prefixes (full_stack
+// mode) — the mediator and dids daemon both authenticate to Vault the same
+// way the VTA does (kubernetes auth, same SA, same role), so one shared
+// policy covers all three. Each needs create/update/read/delete on data and
+// read/list/delete on metadata, mirroring the VTA seed grant above it.
 func (c *Client) EnsureUserAccess(ctx context.Context, userID uint, namespace, saName string) error {
 	token, err := c.login(ctx)
 	if err != nil {
@@ -106,7 +110,9 @@ func (c *Client) EnsureUserAccess(ctx context.Context, userID uint, namespace, s
 		`path "%[1]s/data/vta/user-%[2]d/*" { capabilities = ["read", "create", "update", "delete"] }`+"\n"+
 			`path "%[1]s/metadata/vta/user-%[2]d/*" { capabilities = ["read", "delete"] }`+"\n"+
 			`path "%[1]s/data/mediator/user-%[2]d/*" { capabilities = ["create", "update", "read", "delete"] }`+"\n"+
-			`path "%[1]s/metadata/mediator/user-%[2]d/*" { capabilities = ["read", "list", "delete"] }`,
+			`path "%[1]s/metadata/mediator/user-%[2]d/*" { capabilities = ["read", "list", "delete"] }`+"\n"+
+			`path "%[1]s/data/dids/user-%[2]d/*" { capabilities = ["create", "update", "read", "delete"] }`+"\n"+
+			`path "%[1]s/metadata/dids/user-%[2]d/*" { capabilities = ["read", "list", "delete"] }`,
 		c.cfg.KVMount, userID,
 	)
 	if err := c.do(ctx, http.MethodPut, "/v1/sys/policies/acl/"+name, token,
@@ -161,50 +167,15 @@ func (c *Client) DeleteMediatorSecrets(ctx context.Context, userID, sessionID ui
 		fmt.Sprintf("/v1/%s/metadata/%s", c.cfg.KVMount, MediatorPrefix(userID, sessionID)), token, nil, nil)
 }
 
-// MintMediatorToken creates a periodic token scoped to the user's policy
-// (which EnsureUserAccess has already extended to cover the mediator's KV
-// prefix) for the mediator binary's VAULT_TOKEN (token auth, secrets-vault
-// feature). Minting a child token whose policies aren't a subset of the
-// caller's own policies requires a Vault token role with
-// allowed_policies_glob — see helm/vtafarm-vault/bootstrap.sh
-// (vtafarm-mediator-token). That role already bakes in period=720h and
-// orphan=true, so the token comes out periodic/orphan automatically —
-// requesting "period"/"no_parent" explicitly here would make Vault demand
-// root/sudo on the caller (a non-privileged AppRole token can only inherit
-// those from the role, not set them itself).
-func (c *Client) MintMediatorToken(ctx context.Context, userID, sessionID uint) (string, error) {
-	token, err := c.login(ctx)
-	if err != nil {
-		return "", err
-	}
-	var out struct {
-		Auth struct {
-			ClientToken string `json:"client_token"`
-		} `json:"auth"`
-	}
-	body := map[string]any{
-		"policies":     []string{UserName(userID)},
-		"display_name": fmt.Sprintf("mediator-user-%d-session-%d", userID, sessionID),
-	}
-	path := fmt.Sprintf("/v1/auth/token/create/%s", c.cfg.MediatorTokenRole)
-	if err := c.do(ctx, http.MethodPost, path, token, body, &out); err != nil {
-		return "", fmt.Errorf("mint mediator token: %w", err)
-	}
-	if out.Auth.ClientToken == "" {
-		return "", fmt.Errorf("mint mediator token: empty client_token in response")
-	}
-	return out.Auth.ClientToken, nil
-}
-
-// RevokeToken revokes a token minted by MintMediatorToken. Best-effort —
-// called during full_stack teardown.
-func (c *Client) RevokeToken(ctx context.Context, mediatorToken string) error {
+// DeleteDidsSecrets destroys all versions of a full_stack session's dids
+// daemon secrets (KV v2 metadata delete) — mirrors DeleteMediatorSecrets.
+func (c *Client) DeleteDidsSecrets(ctx context.Context, userID, sessionID uint) error {
 	token, err := c.login(ctx)
 	if err != nil {
 		return err
 	}
-	return c.do(ctx, http.MethodPost, "/v1/auth/token/revoke", token,
-		map[string]string{"token": mediatorToken}, nil)
+	return c.do(ctx, http.MethodDelete,
+		fmt.Sprintf("/v1/%s/metadata/%s", c.cfg.KVMount, DidsPrefix(userID, sessionID)), token, nil, nil)
 }
 
 // login exchanges the AppRole role_id/secret_id for a short-lived token. The

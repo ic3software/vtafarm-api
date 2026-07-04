@@ -214,35 +214,6 @@ func (c *Client) CreateComponentIngress(ctx context.Context, ns, name, svcName s
 	return nil
 }
 
-// CreateComponentSecret creates a single-key Opaque Secret — used for the
-// mediator's per-session VAULT_TOKEN (design §9). Idempotent.
-func (c *Client) CreateComponentSecret(ctx context.Context, ns, name, key, value string) error {
-	_, err := c.kube.CoreV1().Secrets(ns).Create(ctx, &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
-		StringData: map[string]string{key: value},
-	}, metav1.CreateOptions{})
-	if err != nil && !k8serrors.IsAlreadyExists(err) {
-		return fmt.Errorf("create secret %s: %w", name, err)
-	}
-	return nil
-}
-
-// GetComponentSecretValue reads one key of a Secret — used to recover the
-// mediator's VAULT_TOKEN at teardown time so it can be revoked in Vault
-// before the Secret itself is deleted.
-func (c *Client) GetComponentSecretValue(ctx context.Context, ns, name, key string) (string, error) {
-	secret, err := c.kube.CoreV1().Secrets(ns).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		return "", fmt.Errorf("get secret %s: %w", name, err)
-	}
-	return string(secret.Data[key]), nil
-}
-
-// DeleteComponentSecret removes a Secret. Best-effort.
-func (c *Client) DeleteComponentSecret(ctx context.Context, ns, name string) {
-	_ = c.kube.CoreV1().Secrets(ns).Delete(ctx, name, metav1.DeleteOptions{})
-}
-
 // StreamComponentPodLogs finds the running pod matching selector and streams
 // its logs line by line. Waits up to 2 minutes for the pod to appear. Mirrors
 // StreamVtaPodLogs (setup_jobs.go is vta_only-specific) but generic over the
