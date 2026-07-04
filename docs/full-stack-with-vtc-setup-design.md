@@ -15,7 +15,7 @@ https://vtc-xxxx.{domain}        ← VTC REST + admin SPA + public website  (new
 ```
 
 > **Status: design only.** No code in this repo implements
-> `full_stack_with_vtc` yet. §4c names one small **upstream** addition needed
+> `full_stack_with_vtc` yet. §4b names one small **upstream** addition needed
 > in `vtc-service` before this can be built; §17 records what was verified
 > against the actual `vtc-service` / `vta-service` / `did-hosting-daemon`
 > sources.
@@ -98,14 +98,17 @@ A   dids-xxxx.{domain}       →  {CLUSTER_INGRESS_IP}
 A   vtc-xxxx.{domain}        →  {CLUSTER_INGRESS_IP}     (new)
 ```
 
-## 4. The three mechanisms this leans on
+## 4. The two mechanisms this leans on
 
-> §4a and §4b were originally designed here, then **implemented directly in
-> `full_stack`** as `step_vta_register_dids` / `step_dids_grant_vta` (see
+> §4a was originally designed here, then **implemented directly in
+> `full_stack`** as `step_vta_register_dids` (see
 > [`full-stack-setup-design.md` §5/§6](full-stack-setup-design.md#5-state-machine)
-> — they close `full_stack`'s wiring-parity gap with `vta_only` regardless
-> of VTC). This mode inherits both and adds nothing on top of them; only
-> §4c remains genuinely new to this mode.
+> — it closes `full_stack`'s registry-parity gap with `vta_only` regardless
+> of VTC). This mode inherits it and adds nothing on top; only §4b remains
+> genuinely new to this mode. (An earlier draft of this section also had a
+> §4b/`step_dids_grant_vta` for authorizing the VTA on its own daemon —
+> gone, see the note at the end of §4a: the daemon does that automatically
+> now, no `full_stack` step involved at all.)
 
 ### 4a. Registering the session's own dids daemon with the VTA — a `full_stack` step, consumed as-is
 
@@ -145,31 +148,25 @@ All this mode adds is the *consumer*: `[webvh] server_id = "dids"` in the
 VTC's setup TOML (§9) points the VTC's `did:webvh` at that registered
 server. Zero new steps, zero upstream changes.
 
-### 4b. Authorizing the VTA on the dids daemon — a `full_stack` step, consumed as-is
+**Authorizing the VTA on the dids daemon — automatic, no `full_stack` step needed.**
+Hosted-mode publication is a **live, authenticated** call: at `step_vtc_setup` time
+the running VTA authenticates to the dids daemon *as its own `vta_did`*
+(challenge-response; `operations/did_webvh/mod.rs::authenticated_server_transport` →
+`load_vta_webvh_signing_identity`) and pushes the VTC's `did.jsonl`
+(`transport.publish_did`). The daemon's ACL is **deny-by-default** —
+`did-hosting-common/src/server/acl.rs::check_acl` returns `Forbidden: DID not in ACL`
+for any DID without an entry — but as of upstream commit "a VTA-provisioned daemon
+trusts its provisioning VTA to publish" (`affinidi-webvh-service`/
+`webvh-build-pipeline` `24ad22d`), `step_dids_p2`'s offline-complete finalizer already
+seeds an idempotent **Admin**-role entry for the provisioning VTA on its own — the same
+mechanism `vta_only` gets from `didHosting.CreateAcl(vtaDid, "service")` against its
+external host, just automatic here instead of a Job. An earlier draft of this design
+added a `step_dids_grant_vta` (`add-acl --role service`) to do this explicitly; it's
+gone — it collided with the daemon's own auto-seeded entry ("ACL entry already exists")
+and `Admin` already covers everything `service` would have. This mode is simply the
+first to actually *exercise* an authorization that was already there for free.
 
-Hosted-mode publication is a **live, authenticated** call: at
-`step_vtc_setup` time the running VTA authenticates to the dids daemon *as
-its own `vta_did`* (challenge-response; `operations/did_webvh/mod.rs::
-authenticated_server_transport` → `load_vta_webvh_signing_identity`) and
-pushes the VTC's `did.jsonl` (`transport.publish_did`). The daemon's ACL is
-**deny-by-default** — `did-hosting-common/src/server/acl.rs::check_acl`
-returns `Forbidden: DID not in ACL` for any DID without an entry — and the
-daemon's recipe setup seeds exactly **one** entry (the recipe admin `3b`).
-
-`full_stack` now closes this itself with `step_dids_grant_vta` (offline,
-before `deploy_dids`, alongside `invite`/`load-did`):
-
-```sh
-did-hosting-daemon add-acl --did {{1a}} --role service --label 'Session VTA'
-```
-
-— the in-session mirror of `vta_only`'s
-`didHosting.CreateAcl(session.VtaDid, "service", …)` against the external
-shared host. This mode is the first to actually *exercise* the grant at
-runtime (nothing in plain `full_stack` authenticates to the daemon after
-setup), but the step itself is inherited, not added here.
-
-### 4c. The VTC's own ephemeral setup-key handshake — still needs one upstream addition
+### 4b. The VTC's own ephemeral setup-key handshake — still needs one upstream addition
 
 Provisioning a VTC authenticates to the VTA with an ephemeral `did:key`
 (`vta_sdk::provision_client::EphemeralSetupKey`) that must already hold an
@@ -224,13 +221,14 @@ this design explicitly dropped — see the note at the top):
 - No scaling any Deployment to 0 first — each offline step lands in a
   window where its target store has never been claimed yet.
 
-The daemon wiring (§4a/§4b) is already placed correctly by `full_stack`
-itself — `step_dids_grant_vta` in the dids-store window (before
-`deploy_dids`), `step_vta_register_dids` after `deploy_dids` but before the
-VTA store is ever claimed. The two steps this mode adds
-(`step_vtc_setup_key` / `step_vtc_acl_grant`, §4c) go in the **post-gate
-VTA-store window** — after `step_import_admin_did`, before `deploy_vta` —
-as one contiguous block right before the components that consume them.
+The daemon wiring (§4a) is already placed correctly by `full_stack` itself —
+`step_vta_register_dids` runs after `deploy_dids` but before the VTA store
+is ever claimed, and the VTA's own authorization on the daemon needs no
+step at all (§4a's note — the daemon auto-seeds it). The two steps this
+mode adds (`step_vtc_setup_key` / `step_vtc_acl_grant`, §4b) go in the
+**post-gate VTA-store window** — after `step_import_admin_did`, before
+`deploy_vta` — as one contiguous block right before the components that
+consume them.
 Placing the grant there (rather than pre-gate) also keeps the ephemeral
 key's `--admin-expires 1h` grant-to-use window at minutes no matter how
 long the gate takes, so the TTL never needs thinking about.
@@ -263,15 +261,14 @@ pending
   → step_dids_invite        → 3e dids admin-enroll URL                     (unchanged)
   → step_dids_load_did      loads VTA + mediator DID logs (not VTC's — it   (unchanged)
                             doesn't have one yet; see §5)
-  → step_dids_grant_vta     add-acl: VTA (1a) gets `service` role on the daemon (§4b) (unchanged)
   → deploy_dids                                                            (unchanged)
   → deploy_mediator                                                        (unchanged)
   → step_vta_register_dids  `servers add --id dids --did {{3d}}` (§4a)      (unchanged)
   → awaiting_admin_did      ⏸ gate: PNM admin DID (skip if supplied upfront) (unchanged)
   → step_import_admin_did                                                  (unchanged)
-  → step_vtc_setup_key      `vtc setup generate-key` → setup_key_did        (§4c)
+  → step_vtc_setup_key      `vtc setup generate-key` → setup_key_did        (§4b)
   → step_vtc_acl_grant      `vta contexts create --id {{vtc_name}} --name "VTC"
-                             --admin-did {{setup_key_did}} --admin-expires 1h` (§4c)
+                             --admin-did {{setup_key_did}} --admin-expires 1h` (§4b)
   → deploy_vta                                                             (unchanged)
   → step_vtc_setup          LIVE `vtc setup --from vtc-setup.toml` (VTA +
                             mediator + dids all reachable now) → vtc_did,
@@ -317,9 +314,8 @@ All Jobs use `internal/k8s/component_jobs.go`'s `ComponentJobSpec` /
 `CreateComponentJob` — no new K8s plumbing, same generic helper
 `full_stack` already uses for its other components.
 
-(`step_dids_grant_vta` and `step_vta_register_dids` are `full_stack` steps
-now — implemented in `orchestrator_fullstack.go` as `fsStepDidsGrantVta` /
-`fsStepVtaRegisterDids`; specs in
+(`step_vta_register_dids` is a `full_stack` step already — implemented in
+`orchestrator_fullstack.go` as `fsStepVtaRegisterDids`; spec in
 [`full-stack-setup-design.md` §6](full-stack-setup-design.md#6-per-step-jobs).)
 
 ### `step_vtc_setup_key` — VTC Job (workingDir `/work/vtc`)
@@ -612,7 +608,7 @@ with a fourth URL and the VTC's collected outputs.
 | `POST` | `/setup/validate` | also assert the vtc host is creatable |
 | `POST` | `/setup` | accept `mode=full_stack_with_vtc`; requires `vtc_image` (like `mediator_image`/`dids_image`); optional `vtc_name` (default `personal-vtc`); creates 4 DNS records |
 | `GET` | `/setup/:id` | fourth URL (`urls.vtc`); `collected.vtc_did`; `action_required.install_url` + `action_required.claim_code` (reveal-once, alongside the existing mediator/webvh admin keys); `vtc_install_used` |
-| `GET` | `/setup/:id/logs` | `?source=` gains `vtc_setup_key\|vtc_acl_grant\|vtc_setup\|vtc` (`dids_grant_vta`/`vta_register_dids` already exist in `full_stack`) |
+| `GET` | `/setup/:id/logs` | `?source=` gains `vtc_setup_key\|vtc_acl_grant\|vtc_setup\|vtc` (`vta_register_dids` already exists in `full_stack`) |
 | `POST` | `/setup/:id/vtc/install-ack` *(new)* | frontend marks `vtc_install_used = true` once the user opens `install_url` — mirrors `AckDidsEnroll` |
 | `POST` | `/setup/:id/vtc/reissue-install` *(new, **required** — the setup-minted token lives only 15 min, §8)* | remints a fresh install URL **and claim code** via `vtc admin invite --did <vtc_admin_did>` — mirrors `ReissueDidsEnroll`: scale `fs-{sid}-vtc` to 0, wait pod gone, run the Job, scale back to 1 (via `defer`, so the VTC restarts even on failure). Parse both the `Install URL (one-shot):` and `Claim code …:` lines from the Job log (the CLI prints them on stderr; K8s captures both streams), update `vtc_install_url` + `vtc_claim_code`, reset `vtc_install_used` |
 | `DELETE` | `/setup/:id` | tear down all 4 DNS records + all 4 components' resources |
@@ -687,9 +683,9 @@ There is **no** ACL-grant gate — see §5/§7.
 ## 16. Implementation checklist
 
 1. **Upstream (`verifiable-trust-infrastructure`):** add
-   `vtc setup generate-key --out <path>` to `vtc-service` (§4c). Nothing
+   `vtc setup generate-key --out <path>` to `vtc-service` (§4b). Nothing
    below can be built end-to-end without this (Go-side fallback noted in
-   §4c if it stalls).
+   §4b if it stalls).
 2. **Image pipeline:** publish the `vtc-service` image built with
    `--features vault-secrets` (non-default — §10) under
    `GITHUB_VTC_PACKAGE_NAME`.
@@ -698,9 +694,8 @@ There is **no** ACL-grant gate — see §5/§7.
    `VtcFQDN()`.
 5. `internal/k8s/fullstack_names.go` — add `FSVtcName`, `FSJobVtcSetupKey`,
    `FSJobVtcAclGrant`, `FSJobVtcSetup` alongside the existing FS* helpers
-   (and to `allFSJobNames` for teardown). (`FSJobDidsGrantVta` /
-   `FSJobVtaRegisterDids` already exist — added with the `full_stack`
-   parity fix, §4.)
+   (and to `allFSJobNames` for teardown). (`FSJobVtaRegisterDids` already
+   exists — added with the `full_stack` parity fix, §4.)
 6. `internal/setup/subdomain.go` — `FullStackWithVtcHosts` (§3).
 7. `internal/setup/templates_fullstack.go` (or a new
    `templates_fullstack_vtc.go`) — `RenderVtcSetupTOML` (§9).
@@ -738,7 +733,7 @@ codebases (`verifiable-trust-infrastructure` for vtc/vta,
 | Claim | Evidence |
 | --- | --- |
 | `vtc setup --from <toml>` exists and is fully non-interactive | `vtc-service/src/setup/from_toml.rs` — parses `VtcWizardInputs`, feeds the same `apply()` as the wizard; terse `key=value` summary incl. `install_url`/`claim_code` |
-| No standalone setup-key generator exists (upstream ask, §4c) | `vtc-service/src/main.rs` — only `Setup{--from}`, `Status`, `CreateDidKey`, `Admin`, `Acl`; `CreateDidKey` writes the VTC store/credential, not the `setup_key_file` JSON |
+| No standalone setup-key generator exists (upstream ask, §4b) | `vtc-service/src/main.rs` — only `Setup{--from}`, `Status`, `CreateDidKey`, `Admin`, `Acl`; `CreateDidKey` writes the VTC store/credential, not the `setup_key_file` JSON |
 | Setup-key JSON shape (Go fallback option) | `vta-sdk/src/provision_client/setup_key.rs::PersistedKey` — `{version: 1, did, private_key_multibase, note}`, 0600 |
 | `[secrets]` field names + defaults + `deny_unknown_fields` | `vtc-service/src/config.rs::SecretsConfig` (mirrors `vti_secrets`; kv_mount `secret`, secret_key `seed`, auth `kubernetes`) |
 | `vault-secrets` is a non-default vtc feature | `vtc-service/Cargo.toml` + `docs/03-vtc/feature-flags.md` |
@@ -748,8 +743,8 @@ codebases (`verifiable-trust-infrastructure` for vtc/vta,
 | `vta import-did --role admin --context <ctx>` as the exists-tolerant regrant | `vta-service/src/main.rs::ImportDid` (`--context Vec<String>`) |
 | `servers add` resolves the DID at add time (placement constraint, §4a) | `vta-service/src/operations/did_webvh/servers.rs::add_webvh_server` → `validate_server_did` (live resolve + `WebVHHosting`/`DIDCommMessaging` service required; Conflict on duplicate id) |
 | Hosted publish = live authed call as `vta_did` | `operations/did_webvh/mod.rs::authenticated_server_transport` + `transport.publish_did` in `create_did_webvh`; provision-integration selects it via `WEBVH_SERVER` (`operations/provision_integration/{mod,webvh}.rs`) |
-| Daemon ACL is deny-by-default; setup seeds only the recipe admin (§4b) | `did-hosting-common/src/server/acl.rs::check_acl` (`Forbidden: DID not in ACL`); `did-hosting-daemon/src/setup_recipe.rs` (single `Role::Admin` entry) |
-| Daemon offline `add-acl` CLI, roles admin/owner/service | `did-hosting-daemon/src/main.rs::Command::AddAcl` → `did-hosting-common/src/server/cli_acl.rs` |
+| Daemon ACL is deny-by-default, but the offline-complete finalizer auto-seeds an idempotent Admin-role entry for the provisioning VTA — no separate grant step needed (§4a) | `did-hosting-common/src/server/acl.rs::check_acl` (`Forbidden: DID not in ACL`); upstream commit "a VTA-provisioned daemon trusts its provisioning VTA to publish" (`24ad22d`, `acl::seed_provisioning_vta_acl`, idempotent, gated on `config.vta.did.is_some()`); **confirmed live** — a real `full_stack` session's `step_dids_p2` log printed `provisioning-VTA ACL entry added for did:webvh:...:vta`, and a follow-up `add-acl` attempt for the same DID 409'd with "ACL entry already exists" |
+| Daemon offline `add-acl` CLI exists (roles admin/owner/service) but isn't used by `full_stack` — the auto-seed above makes it redundant | `did-hosting-daemon/src/main.rs::Command::AddAcl` → `did-hosting-common/src/server/cli_acl.rs` |
 | Hosted register resolves a domain; first boot seeds `public_url` host as default domain | `did-hosting-control/src/routes/did_manage.rs::register_did` → `resolve_request_domain`; `did-hosting-common/src/server/domain/seed.rs` (tier-2 legacy `public_url` seed, sets default) — so no explicit `domain` needed in §9's `[webvh]` |
 | Install token TTL 15 min; `vtc admin invite` remints URL + claim code on a stopped daemon | `vtc-service/src/install/token.rs::INSTALL_TOKEN_DEFAULT_TTL_SECS`; `vtc-service/src/main.rs::run_invite_cli` |
 

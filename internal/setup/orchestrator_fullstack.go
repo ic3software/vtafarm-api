@@ -727,10 +727,14 @@ func (o *Orchestrator) fsStepVtaRegisterDids(ctx context.Context, ns string, s *
 }
 
 // fsDeployDids starts the dids daemon Deployment. Runs as SA vta — it reads
-// its Vault-backed secrets at every boot.
+// its Vault-backed secrets at every boot. Waits for the pod to actually
+// become Ready before returning: step_vta_register_dids (right after
+// deploy_mediator) live-resolves this daemon's DID over HTTPS, so a
+// Deployment object existing isn't enough — without this wait it's a race
+// that 503s until the pod's up and the Service/Ingress endpoint propagates.
 func (o *Orchestrator) fsDeployDids(ctx context.Context, ns string, s *model.SetupSession) error {
 	name := k8s.FSDidsName(s.ID)
-	return o.k8s.CreateComponentDeployment(ctx, ns, k8s.ComponentDeploymentSpec{
+	if err := o.k8s.CreateComponentDeployment(ctx, ns, k8s.ComponentDeploymentSpec{
 		Name:           name,
 		Image:          s.DidsImage,
 		Command:        []string{"did-hosting-daemon"},
@@ -740,14 +744,22 @@ func (o *Orchestrator) fsDeployDids(ctx context.Context, ns string, s *model.Set
 		Env:            fsNoColorEnv(),
 		Port:           8534,
 		Labels:         fsLabels("dids", s.ID),
-	})
+	}); err != nil {
+		return err
+	}
+	return o.k8s.WaitForComponentDeploymentReady(ctx, ns, name, 2*time.Minute)
 }
 
 // fsDeployMediator starts the mediator Deployment. Runs as SA vta — it reads
 // its Vault-backed secrets at every boot (kubernetes auth, same as the VTA).
+// Waits for Ready for the same reason as fsDeployDids — nothing in plain
+// full_stack resolves the mediator over HTTP right after this, but
+// full_stack_with_vtc's step_vtc_setup does (§9 [messaging]), so the
+// invariant "deploy_* returns only once the component is actually up" holds
+// for every component, not just the one known to need it today.
 func (o *Orchestrator) fsDeployMediator(ctx context.Context, ns string, s *model.SetupSession) error {
 	name := k8s.FSMediatorName(s.ID)
-	return o.k8s.CreateComponentDeployment(ctx, ns, k8s.ComponentDeploymentSpec{
+	if err := o.k8s.CreateComponentDeployment(ctx, ns, k8s.ComponentDeploymentSpec{
 		Name:           name,
 		Image:          s.MediatorImage,
 		Command:        []string{"mediator"},
@@ -757,7 +769,10 @@ func (o *Orchestrator) fsDeployMediator(ctx context.Context, ns string, s *model
 		Env:            fsNoColorEnv(),
 		Port:           7037,
 		Labels:         fsLabels("mediator", s.ID),
-	})
+	}); err != nil {
+		return err
+	}
+	return o.k8s.WaitForComponentDeploymentReady(ctx, ns, name, 2*time.Minute)
 }
 
 // ── Phase 2: step_import_admin_did → deploy_vta → running ──────────────────
@@ -829,6 +844,13 @@ func (o *Orchestrator) runFullStackFinish(ctx context.Context, sessionID uint, a
 			return
 		}
 		o.markFailed(sessionID, "failed to create vta deployment: "+err.Error())
+		return
+	}
+	if err := o.k8s.WaitForComponentDeploymentReady(ctx, ns, name, 2*time.Minute); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		o.markFailed(sessionID, "vta deployment did not become ready: "+err.Error())
 		return
 	}
 

@@ -413,7 +413,12 @@ start, not after.) Nothing to parse — success is just exit code 0.
 Deployment with `workingDir = /work/dids`, command `["did-hosting-daemon"]`, SA `vta`
 (reads its Vault-backed secrets at every boot), mounting the dids PVC, plus the
 Service + Ingress for `dids-xxxx.{domain}` (created in `k8s_provision`, now backed by
-a running pod). Wait for Ready.
+a running pod). **Waits for Ready** (`WaitForComponentDeploymentReady`, 2 min timeout)
+before the step returns — `step_vta_register_dids` right after `deploy_mediator`
+live-resolves this daemon over HTTPS, and a `Deployment` object existing is not the
+same as the pod (and its Service/Ingress endpoint) actually serving traffic. *(This
+wait was documented from the start but not actually wired up until a live session hit
+the resulting 503 race — see checklist item 15.)*
 
 ### `deploy_mediator` — start the mediator Deployment
 
@@ -422,7 +427,10 @@ mounting the mediator PVC (it reads `conf/mediator.toml` and the `fjall` message
 from there). No Vault env vars — the mediator reads its secrets from Vault at startup
 and *probes* (write→read→delete a sentinel) using kubernetes auth, re-authenticating
 with its pod's own ServiceAccount JWT on every restart. Service + Ingress for
-`mediator-xxxx.{domain}`. No Redis/Valkey dependency.
+`mediator-xxxx.{domain}`. No Redis/Valkey dependency. **Waits for Ready**, same as
+`deploy_dids` — nothing in plain `full_stack` resolves the mediator right after this
+step, but `full_stack_with_vtc`'s `step_vtc_setup` does, and the invariant "a `deploy_*`
+step doesn't return until its component is actually up" should hold uniformly.
 
 ### Step `step_vta_register_dids` — VTA Job (workingDir `/work/vta`)
 
@@ -466,7 +474,9 @@ which is why the **VTA DID (`1a`)** must be returned to them ([§12](#12-api-sur
 
 Deployment with `workingDir = /work/vta`, command `["vta"]`, mounting the vta PVC, plus
 Service + Ingress for `fpp-xxxx.{domain}` (generalize today's `CreateVtaDeployment` /
-`CreateVtaService` / `CreateVtaIngress` to the `/work/vta` mount path).
+`CreateVtaService` / `CreateVtaIngress` to the `/work/vta` mount path). **Waits for
+Ready** before the session flips to `running` — otherwise `running` would mean "the
+Deployment object exists," not "the three returned URLs actually respond."
 
 ---
 
@@ -692,10 +702,10 @@ already had.
 
 > **Which Jobs actually need this.** Only the ones that touch the secret store:
 > `step_mediator_p1`/`p2`, `deploy_mediator`, `step_dids_p1`/`p2`, `deploy_dids`, and
-> every `vta …` Job. Verified against the daemon's own source: `add-acl`, `load-did`,
-> and `invite` (`step_dids_grant_vta`/`step_dids_load_did`/`step_dids_invite`) only ever
-> open the ACL/DIDs/sessions keyspaces directly — never the secret store — so they stay
-> on SA `pod-operator` and need no Vault access at all (§6).
+> every `vta …` Job. Verified against the daemon's own source: `load-did` and `invite`
+> (`step_dids_load_did`/`step_dids_invite`) only ever open the DIDs/sessions keyspaces
+> directly — never the secret store — so they stay on SA `pod-operator` and need no
+> Vault access at all (§6).
 
 **Admin private keys (2c, 3c).** Still captured from the setup logs and surfaced to the
 user **once** via `GET /setup/:id` for offline backup. Both are also already in Vault
@@ -809,7 +819,7 @@ on `POST /api/v1/setup` selects this path.
 | `POST` | `/setup` | accept `mode=full_stack`, optional `mediator_image`/`dids_image`, optional `admin_did` (user's local PNM admin DID — when present, auto-runs import + `deploy_vta`); create 3 DNS records; start the §5 machine |
 | `POST` | `/setup/:id/admin` | **reused from `vta_only`** — supply the user's PNM `admin_did` once the stack is up (`awaiting_admin_did`); triggers `vta import-did` + `deploy_vta` |
 | `GET` | `/setup/:id` | return the three URLs + **VTA DID (1a)** + **dids admin-enroll URL (3e)** + `dids_enroll_used` + per-step status + (once) the admin keys |
-| `GET` | `/setup/:id/logs` | `?source=` gains `mediator_p1\|mediator_p2\|dids_p1\|dids_p2\|dids_invite\|dids_load_did\|dids_grant_vta\|vta_register_dids\|import_admin_did\|mediator\|dids` |
+| `GET` | `/setup/:id/logs` | `?source=` gains `mediator_p1\|mediator_p2\|dids_p1\|dids_p2\|dids_invite\|dids_load_did\|vta_register_dids\|import_admin_did\|mediator\|dids` |
 | `DELETE` | `/setup/:id` | tear down all 3 DNS records + all component resources |
 | `POST` | `/setup/:id/dids/reissue-enroll` *(new, optional)* | regenerate the single-use dids admin enrollment URL (`did-hosting-daemon invite`); scales the dids Deployment to 0, waits for its pod gone, runs the invite Job, then scales back to 1 (always, even on failure) |
 | `POST` | `/setup/:id/dids/enroll-ack` *(new, optional)* | frontend marks `dids_enroll_used = true` once the user opens the enrollment URL, so `GET /setup/:id` stops re-offering a link the daemon will refuse a second time |
@@ -938,11 +948,13 @@ reaches the terminal `running` status.
 11. `internal/apidocs/openapi.yaml` — document new/changed routes (`User` tag).
 12. Update the stale **Full Stack** section of
     [`vta-setup-design.md`](vta-setup-design.md) to point here.
-13. *(added post-implementation, `vta_only` parity)* `step_dids_grant_vta` +
-    `step_vta_register_dids` — daemon-side `service` ACL for the VTA and the `--id
-    dids` server registration (§5/§6): `FSJobDidsGrantVta`/`FSJobVtaRegisterDids` in
-    `fullstack_names.go` (+ `allFSJobNames`), the two orchestrator steps + resume
-    statuses, the two `?source=` values, and the openapi status/source lists.
+13. *(added post-implementation, `vta_only` parity)* `step_vta_register_dids` — the
+    `--id dids` server registration (§5/§6): `FSJobVtaRegisterDids` in
+    `fullstack_names.go` (+ `allFSJobNames`), the orchestrator step + resume status,
+    the `?source=` value, and the openapi status/source lists. (A paired
+    `step_dids_grant_vta` — daemon-side `service` ACL for the VTA — was added and then
+    removed in the same pass; see §5's "No separate step grants the VTA an ACL entry"
+    note for why.)
 14. *(added post-implementation, mediator/dids Vault simplification, §9)* Mediator and
     dids daemon switched from token-auth/plaintext to kubernetes auth, both upstream
     binaries having gained parity with the VTA's own auth method: removed
@@ -953,6 +965,13 @@ reaches the terminal `running` status.
     `step_mediator_p1`/`p2`/`deploy_mediator`/`step_dids_p1`/`p2`/`deploy_dids` to SA
     `vta`; updated the mediator and webvh recipe templates (§7); removed the ClusterRole
     `secrets` grant and `VAULT_MEDIATOR_TOKEN_ROLE` config/helm values.
+15. *(added post-implementation, live-session bug fix)* `fsDeployDids` /
+    `fsDeployMediator` / the VTA's `deploy_vta` block now call
+    `WaitForComponentDeploymentReady` (2 min timeout) before returning — found via a
+    real session where `step_vta_register_dids` 503'd resolving the dids daemon's
+    `did.jsonl` because it ran immediately after `deploy_dids`, before the pod (and its
+    Service/Ingress endpoint) was actually serving. §6's `deploy_dids`/`deploy_mediator`/
+    `deploy_vta` entries updated to match.
 
 ---
 
@@ -974,14 +993,6 @@ above). Both the **VTA and the Mediator** store secrets in **Vault**
 (the VTA via kubernetes auth as in `vta_only`; the mediator via token auth with a
 `secrets-vault` build in *this* verified reference — see below); only the dids daemon
 stays plaintext *in this reference*.
-
-**Verified versions:**
-
-| VTA | Mediator | DID Hosting daemon |
-| --- | --- | --- |
-| 0.7.0 | 0.15.5 | 0.7.0 |
-| 0.6.0 | 0.15.4 | 0.7.0 |
-| 0.6.0 | 0.15.3 | 0.7.0 |
 
 **Saved-value cross-reference (reference ID → where this design captures it):**
 
