@@ -32,9 +32,10 @@ only holds the mediator's secrets, not its message store. No Redis/Valkey.
 
 > Status: **implemented** (`internal/setup/orchestrator_fullstack.go` + the
 > `internal/k8s/component_*.go` helpers). This document is the authoritative design
-> reference; the §5 state machine matches the code, including the two daemon-wiring
-> steps (`step_dids_grant_vta` / `step_vta_register_dids`) added after the initial
-> implementation for parity with `vta_only`'s external-host registration.
+> reference; the §5 state machine matches the code, including
+> `step_vta_register_dids` — added after the initial implementation for parity with
+> `vta_only`'s external-host registration (§5 explains why there's no matching
+> "grant the VTA an ACL entry on its own daemon" step: the daemon does that itself now).
 
 ---
 
@@ -190,7 +191,6 @@ pending
   → step_dids_p2          did-hosting-daemon setup (offline-complete)→ 3b admin DID, 3c admin priv key, 3d daemon DID
   → step_dids_invite      did-hosting-daemon invite --role admin   → 3e dids admin-enroll URL (returned to user)
   → step_dids_load_did    did-hosting-daemon load-did (mediator + VTA DID logs, offline, into the dids local store)
-  → step_dids_grant_vta   did-hosting-daemon add-acl --did {{1a}} --role service (offline — authorize the VTA on its daemon)
   → deploy_dids           Deployment dids-daemon (start it)
   → deploy_mediator       Deployment mediator (start it)
   → step_vta_register_dids vta did-mgmt servers add --id dids --did {{3d}} (daemon live+resolvable; VTA store still free)
@@ -214,21 +214,27 @@ before it starts. The `vta contexts reprovision`, `vta bootstrap provision-integ
 and `vta import-did` commands are **CLI operations against the VTA's PVC**, not HTTP
 calls, so they run as Jobs without the VTA server running.
 
-**Daemon wiring (`step_dids_grant_vta` / `step_vta_register_dids`).** These two steps
-give `full_stack` the same VTA↔host wiring `vta_only` gets from
-`didHosting.CreateAcl(vtaDid, "service")` + `did-mgmt servers add --id control`: the
-daemon's ACL is deny-by-default (a DID with no entry can't even authenticate), so
-without the grant the VTA could never talk to its own daemon; and without the registry
-entry the VTA has no publication target for future DID work (e.g. integrations the user
-later provisions with `--var WEBVH_SERVER=dids`, or promoting a DID to server-managed
-via `did-mgmt dids register --server dids`). Their placement is constrained from both
-sides: `add-acl` writes the dids fjall store directly, so it must run **before
-`deploy_dids`** (with `invite`/`load-did`); `servers add` **live-resolves** the
-daemon's DID and requires a hosting service in its DID document, so it must run **after
-`deploy_dids`** — and it writes the VTA's fjall store, so still before `deploy_vta`.
-Neither parses anything; exit code 0 is success. (The Ubuntu reference flow has no
-equivalent step — its uploads went through the daemon's admin browser UI — so this is
-K8s-mapping-only, motivated by `vta_only` parity, not by Appendix A.)
+**Daemon wiring (`step_vta_register_dids`).** This step gives `full_stack` the same
+VTA↔host registry wiring `vta_only` gets from `did-mgmt servers add --id control`:
+without it the VTA has no publication target for future DID work (e.g. integrations the
+user later provisions with `--var WEBVH_SERVER=dids`, or promoting a DID to
+server-managed via `did-mgmt dids register --server dids`). `servers add`
+**live-resolves** the daemon's DID and requires a hosting service in its DID document,
+so it must run **after `deploy_dids`** — and it writes the VTA's fjall store, so still
+before `deploy_vta`. Nothing parsed; exit code 0 is success. (The Ubuntu reference flow
+has no equivalent step — its uploads went through the daemon's admin browser UI — so
+this is K8s-mapping-only, motivated by `vta_only` parity, not by Appendix A.)
+
+**No separate step grants the VTA an ACL entry on its own daemon** — an earlier draft of
+this design added `step_dids_grant_vta` (`did-hosting-daemon add-acl --role service`) for
+exactly that, mirroring `vta_only`'s `didHosting.CreateAcl(vtaDid, "service")` against its
+external host. It's gone: `did-hosting-daemon`'s offline-complete finalizer
+(`step_dids_p2`) already seeds an idempotent **Admin**-role ACL entry for its
+provisioning VTA as of upstream commit "a VTA-provisioned daemon trusts its provisioning
+VTA to publish" (`affinidi-webvh-service`/`webvh-build-pipeline` `24ad22d`) — a dedicated
+grant step just collides with that entry ("ACL entry already exists — delete it first to
+change the role") and fails the Job. `Admin` is a strict superset of the `service` role
+the removed step requested, so nothing is lost.
 
 **PNM binding is user-local — exactly as `vta_only`.** The orchestrator never runs `pnm
 setup` or `pnm setup continue`; those happen on the user's own machine. The only
@@ -264,10 +270,9 @@ Cross-component Jobs mount a second PVC ([§4](#4-cross-component-file-handoffs)
 **ServiceAccount is per-Job, not per-component**: anything that touches the Vault-backed
 secret store — `step_mediator_p1`/`p2`, `deploy_mediator`, `step_dids_p1`/`p2`,
 `deploy_dids`, plus every VTA-side `vta …` Job — runs as SA `vta` (bound to the
-per-user kubernetes-auth role). The three dids Jobs that never touch secrets
-(`step_dids_invite`, `step_dids_load_did`, `step_dids_grant_vta`) stay on SA
-`pod-operator`, same as before. Image per component comes from the request (see
-[§10](#10-data-model-changes)).
+per-user kubernetes-auth role). The two dids Jobs that never touch secrets
+(`step_dids_invite`, `step_dids_load_did`) stay on SA `pod-operator`, same as before.
+Image per component comes from the request (see [§10](#10-data-model-changes)).
 
 ### Step `step_vta_setup` — VTA Job (workingDir `/work/vta`)
 
@@ -402,21 +407,6 @@ first boot: by the time either process starts, the documents are already in the 
 API *after* `deploy_dids` — that requires the daemon to already be running and reachable,
 which is backwards: the mediator/dids themselves need the DIDs resolvable *before* they
 start, not after.) Nothing to parse — success is just exit code 0.
-
-### Step `step_dids_grant_vta` — DIDS Job (workingDir `/work/dids`, SA `pod-operator`)
-
-Grants the session VTA's DID (`1a`) a `service`-role ACL entry on the daemon —
-offline, directly against the dids store, so like `invite`/`load-did` it must run
-**before** `deploy_dids`:
-
-```sh
-did-hosting-daemon add-acl --did {{1a}} --role service --label 'Session VTA'
-```
-
-The daemon's ACL is deny-by-default; this is the in-session mirror of `vta_only`'s
-`didHosting.CreateAcl(vtaDid, "service")` against the external shared host, and the
-prerequisite for the VTA ever authenticating to the daemon at runtime. Nothing to
-parse.
 
 ### `deploy_dids` — start the daemon Deployment
 

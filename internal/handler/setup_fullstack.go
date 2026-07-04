@@ -305,8 +305,6 @@ func (h *SetupHandler) logsFullStack(c *gin.Context, session *model.SetupSession
 			source = "dids_invite"
 		case "step_dids_load_did":
 			source = "dids_load_did"
-		case "step_dids_grant_vta":
-			source = "dids_grant_vta"
 		case "step_vta_register_dids":
 			source = "vta_register_dids"
 		case "step_import_admin_did":
@@ -341,8 +339,6 @@ func (h *SetupHandler) logsFullStack(c *gin.Context, session *model.SetupSession
 		streamJob(k8s.FSJobDidsInvite(sid))
 	case "dids_load_did":
 		streamJob(k8s.FSJobDidsLoadDid(sid))
-	case "dids_grant_vta":
-		streamJob(k8s.FSJobDidsGrantVta(sid))
 	case "vta_register_dids":
 		streamJob(k8s.FSJobVtaRegisterDids(sid))
 	case "import_admin_did":

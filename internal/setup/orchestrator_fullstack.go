@@ -211,14 +211,13 @@ func (o *Orchestrator) runFullStack(ctx context.Context, sessionID uint) {
 		return
 	}
 
-	// step_dids_grant_vta — the daemon's ACL is deny-by-default and its setup
-	// seeds only the recipe admin (3b), so without this grant the VTA can
-	// never authenticate to its own daemon at runtime. Must also run before
-	// deploy_dids, while no daemon pod holds the store lock.
-	o.fsSetStatus(sessionID, "step_dids_grant_vta")
-	if fail("dids grant-vta failed", o.fsStepDidsGrantVta(ctx, ns, s)) {
-		return
-	}
+	// No separate ACL grant for the VTA needed here: did-hosting-daemon's
+	// offline-complete finalizer (step_dids_p2) already seeds an idempotent
+	// Admin-role ACL entry for its provisioning VTA (upstream commit "a
+	// VTA-provisioned daemon trusts its provisioning VTA to publish") —
+	// a dedicated step_dids_grant_vta trying to add the same DID again just
+	// 409s against that entry. Admin is a superset of the "service" role this
+	// used to request, so nothing is lost by removing it.
 
 	// deploy_dids
 	o.fsSetStatus(sessionID, "deploy_dids")
@@ -694,41 +693,6 @@ func (o *Orchestrator) fsStepDidsLoadDid(ctx context.Context, ns string, s *mode
 	return nil
 }
 
-// fsStepDidsGrantVta grants the session VTA's DID (1a) a "service"-role ACL
-// entry on the dids daemon (`did-hosting-daemon add-acl`), offline. The
-// daemon's ACL is deny-by-default — a DID without an entry can't even
-// authenticate — and its setup only seeds the recipe admin (3b). This is the
-// in-session mirror of vta_only's didHosting.CreateAcl(vtaDid, "service") on
-// the external shared host, and what lets the running VTA later publish DID
-// logs to the daemon (e.g. integrations provisioned with WEBVH_SERVER=dids).
-// Like fsStepDidsInvite/fsStepDidsLoadDid it opens the local store directly,
-// so it must run before fsDeployDids, while no daemon pod holds the PVC.
-func (o *Orchestrator) fsStepDidsGrantVta(ctx context.Context, ns string, s *model.SetupSession) error {
-	jobName := k8s.FSJobDidsGrantVta(s.ID)
-	cmd := fmt.Sprintf("did-hosting-daemon add-acl --did %s --role service --label 'Session VTA'", shellQuote(s.VtaDid))
-
-	if err := o.k8s.CreateComponentJob(ctx, ns, k8s.ComponentJobSpec{
-		Name:           jobName,
-		Image:          s.DidsImage,
-		Command:        []string{"sh", "-c", cmd},
-		WorkingDir:     "/work/dids",
-		ServiceAccount: k8s.PodOperatorServiceAccount,
-		PVCMounts:      []k8s.PVCMount{{Name: "dids-data", ClaimName: k8s.FSDidsName(s.ID), MountPath: "/work/dids"}},
-		Env:            fsNoColorEnv(),
-	}); err != nil {
-		return fmt.Errorf("create job: %w", err)
-	}
-
-	succeeded, failMsg, err := o.k8s.WaitForJob(ctx, ns, jobName)
-	if err != nil {
-		return err
-	}
-	if !succeeded {
-		return o.fsJobFailErr(ctx, ns, jobName, failMsg)
-	}
-	return nil
-}
-
 // fsStepVtaRegisterDids registers the session's dids daemon (3d) in the VTA's
 // webvh server registry (`vta did-mgmt servers add --id dids`) — the
 // full_stack counterpart of vta_only's `--id control` registration in
@@ -883,7 +847,7 @@ func (o *Orchestrator) resumeFullStack() {
 		"dns_provision", "env_provision", "k8s_provision", "step_vta_setup",
 		"step_mediator_p1", "step_mediator_reprov", "step_mediator_p2",
 		"step_dids_p1", "step_dids_provision", "step_dids_p2", "step_dids_invite",
-		"step_dids_load_did", "step_dids_grant_vta", "deploy_dids", "deploy_mediator",
+		"step_dids_load_did", "deploy_dids", "deploy_mediator",
 		"step_vta_register_dids",
 	}
 	var inFlight []model.SetupSession
