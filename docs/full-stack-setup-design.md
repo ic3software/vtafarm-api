@@ -34,9 +34,11 @@ only holds the mediator's secrets, not its message store. No Redis/Valkey.
 **Scope:** VTA + Mediator + DID Hosting only. The reference flow stops at PNM binding
 (Step 4); there is no VTC step, so VTC is out of scope here too.
 
-> Status: **design only**. No code in this repo implements `full_stack` yet — the
-> orchestrator currently runs the VTA-only path for every session regardless of
-> `mode`. This document specifies what `full_stack` should do.
+> Status: **implemented** (`internal/setup/orchestrator_fullstack.go` + the
+> `internal/k8s/component_*.go` helpers). This document is the authoritative design
+> reference; the §5 state machine matches the code, including the two daemon-wiring
+> steps (`step_dids_grant_vta` / `step_vta_register_dids`) added after the initial
+> implementation for parity with `vta_only`'s external-host registration.
 
 ---
 
@@ -192,8 +194,10 @@ pending
   → step_dids_p2          did-hosting-daemon setup (offline-complete)→ 3b admin DID, 3c admin priv key, 3d daemon DID
   → step_dids_invite      did-hosting-daemon invite --role admin   → 3e dids admin-enroll URL (returned to user)
   → step_dids_load_did    did-hosting-daemon load-did (mediator + VTA DID logs, offline, into the dids local store)
+  → step_dids_grant_vta   did-hosting-daemon add-acl --did {{1a}} --role service (offline — authorize the VTA on its daemon)
   → deploy_dids           Deployment dids-daemon (start it)
   → deploy_mediator       Deployment mediator (start it)
+  → step_vta_register_dids vta did-mgmt servers add --id dids --did {{3d}} (daemon live+resolvable; VTA store still free)
   → awaiting_admin_did    ⏸ gate: wait for user's PNM admin DID (skip if admin_did given at POST /setup)
   → step_import_admin_did vta import-did --role admin --label pnm-bootstrap --did {{admin_did}}
   → deploy_vta            Deployment vta (start it)
@@ -213,6 +217,22 @@ must also be reachable before the VTA boots, and the VTA must have the admin DID
 before it starts. The `vta contexts reprovision`, `vta bootstrap provision-integration`,
 and `vta import-did` commands are **CLI operations against the VTA's PVC**, not HTTP
 calls, so they run as Jobs without the VTA server running.
+
+**Daemon wiring (`step_dids_grant_vta` / `step_vta_register_dids`).** These two steps
+give `full_stack` the same VTA↔host wiring `vta_only` gets from
+`didHosting.CreateAcl(vtaDid, "service")` + `did-mgmt servers add --id control`: the
+daemon's ACL is deny-by-default (a DID with no entry can't even authenticate), so
+without the grant the VTA could never talk to its own daemon; and without the registry
+entry the VTA has no publication target for future DID work (e.g. integrations the user
+later provisions with `--var WEBVH_SERVER=dids`, or promoting a DID to server-managed
+via `did-mgmt dids register --server dids`). Their placement is constrained from both
+sides: `add-acl` writes the dids fjall store directly, so it must run **before
+`deploy_dids`** (with `invite`/`load-did`); `servers add` **live-resolves** the
+daemon's DID and requires a hosting service in its DID document, so it must run **after
+`deploy_dids`** — and it writes the VTA's fjall store, so still before `deploy_vta`.
+Neither parses anything; exit code 0 is success. (The Ubuntu reference flow has no
+equivalent step — its uploads went through the daemon's admin browser UI — so this is
+K8s-mapping-only, motivated by `vta_only` parity, not by Appendix A.)
 
 **PNM binding is user-local — exactly as `vta_only`.** The orchestrator never runs `pnm
 setup` or `pnm setup continue`; those happen on the user's own machine. The only
@@ -380,6 +400,21 @@ API *after* `deploy_dids` — that requires the daemon to already be running and
 which is backwards: the mediator/dids themselves need the DIDs resolvable *before* they
 start, not after.) Nothing to parse — success is just exit code 0.
 
+### Step `step_dids_grant_vta` — DIDS Job (workingDir `/work/dids`)
+
+Grants the session VTA's DID (`1a`) a `service`-role ACL entry on the daemon —
+offline, directly against the dids store, so like `invite`/`load-did` it must run
+**before** `deploy_dids`:
+
+```sh
+did-hosting-daemon add-acl --did {{1a}} --role service --label 'Session VTA'
+```
+
+The daemon's ACL is deny-by-default; this is the in-session mirror of `vta_only`'s
+`didHosting.CreateAcl(vtaDid, "service")` against the external shared host, and the
+prerequisite for the VTA ever authenticating to the daemon at runtime. Nothing to
+parse.
+
 ### `deploy_dids` — start the daemon Deployment
 
 Deployment with `workingDir = /work/dids`, command `["did-hosting-daemon"]`, mounting
@@ -399,6 +434,23 @@ sentinel), so the token's policy must allow all four. Service + Ingress for
 > restart, so the injected token must be **periodic/renewable or long-TTL** — a
 > short-TTL token would leave the mediator unable to read its secrets after a restart.
 > Provision it as a periodic token scoped to the mediator policy.
+
+### Step `step_vta_register_dids` — VTA Job (workingDir `/work/vta`)
+
+Registers the session's dids daemon (`3d`) in the VTA's webvh server registry — the
+`full_stack` counterpart of the `--id control` registration `vta_only`'s provision job
+chains after `import-did`:
+
+```sh
+vta did-mgmt servers add --id dids --did {{3d}} --label 'Session DID Hosting Daemon'
+```
+
+`servers add` resolves the server DID **live** at add time and requires a
+`WebVHHosting`-family service in the resolved document
+(`vta-service/src/operations/did_webvh/servers.rs::validate_server_did`), which is why
+this runs **after** `deploy_dids`/`deploy_mediator` — the daemon must already be
+serving its own `did.jsonl`. It writes the VTA's fjall store offline, so it still runs
+**before** `deploy_vta` (same window as `step_import_admin_did`). Nothing to parse.
 
 ### Step `step_import_admin_did` — VTA Job (workingDir `/work/vta`)
 
@@ -748,7 +800,7 @@ on `POST /api/v1/setup` selects this path.
 | `POST` | `/setup` | accept `mode=full_stack`, optional `mediator_image`/`dids_image`, optional `admin_did` (user's local PNM admin DID — when present, auto-runs import + `deploy_vta`); create 3 DNS records; start the §5 machine |
 | `POST` | `/setup/:id/admin` | **reused from `vta_only`** — supply the user's PNM `admin_did` once the stack is up (`awaiting_admin_did`); triggers `vta import-did` + `deploy_vta` |
 | `GET` | `/setup/:id` | return the three URLs + **VTA DID (1a)** + **dids admin-enroll URL (3e)** + `dids_enroll_used` + per-step status + (once) the admin keys |
-| `GET` | `/setup/:id/logs` | `?source=` gains `mediator_p1\|mediator_p2\|dids_p1\|dids_p2\|dids_invite\|dids_load_did\|import_admin_did\|mediator\|dids` |
+| `GET` | `/setup/:id/logs` | `?source=` gains `mediator_p1\|mediator_p2\|dids_p1\|dids_p2\|dids_invite\|dids_load_did\|dids_grant_vta\|vta_register_dids\|import_admin_did\|mediator\|dids` |
 | `DELETE` | `/setup/:id` | tear down all 3 DNS records + all component resources |
 | `POST` | `/setup/:id/dids/reissue-enroll` *(new, optional)* | regenerate the single-use dids admin enrollment URL (`did-hosting-daemon invite`); scales the dids Deployment to 0, waits for its pod gone, runs the invite Job, then scales back to 1 (always, even on failure) |
 | `POST` | `/setup/:id/dids/enroll-ack` *(new, optional)* | frontend marks `dids_enroll_used = true` once the user opens the enrollment URL, so `GET /setup/:id` stops re-offering a link the daemon will refuse a second time |
@@ -874,6 +926,11 @@ reaches the terminal `running` status.
 11. `internal/apidocs/openapi.yaml` — document new/changed routes (`User` tag).
 12. Update the stale **Full Stack** section of
     [`vta-setup-design.md`](vta-setup-design.md) to point here.
+13. *(added post-implementation, `vta_only` parity)* `step_dids_grant_vta` +
+    `step_vta_register_dids` — daemon-side `service` ACL for the VTA and the `--id
+    dids` server registration (§5/§6): `FSJobDidsGrantVta`/`FSJobVtaRegisterDids` in
+    `fullstack_names.go` (+ `allFSJobNames`), the two orchestrator steps + resume
+    statuses, the two `?source=` values, and the openapi status/source lists.
 
 ---
 
