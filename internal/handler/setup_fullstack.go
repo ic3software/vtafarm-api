@@ -221,14 +221,14 @@ func (h *SetupHandler) deleteFullStack(c *gin.Context, session *model.SetupSessi
 		ns := h.k8s.UserNamespace(fmt.Sprintf("%d", session.UserID))
 
 		if h.orch != nil {
-			h.orch.TeardownMediatorVault(ctx, ns, session.UserID, session.ID)
+			h.orch.TeardownMediatorVault(ctx, session.UserID, session.ID)
+			h.orch.TeardownDidsVault(ctx, session.UserID, session.ID)
 		}
 
 		h.k8s.DeleteAllComponentJobs(ctx, ns, session.ID)
 		h.k8s.DeleteComponentResources(ctx, ns, k8s.FSVtaName(session.ID))
 		h.k8s.DeleteComponentResources(ctx, ns, k8s.FSMediatorName(session.ID))
 		h.k8s.DeleteComponentResources(ctx, ns, k8s.FSDidsName(session.ID))
-		h.k8s.DeleteComponentSecret(ctx, ns, k8s.FSMediatorTokenSecret(session.ID))
 	}
 
 	if h.orch != nil {
@@ -305,6 +305,8 @@ func (h *SetupHandler) logsFullStack(c *gin.Context, session *model.SetupSession
 			source = "dids_invite"
 		case "step_dids_load_did":
 			source = "dids_load_did"
+		case "step_vta_register_dids":
+			source = "vta_register_dids"
 		case "step_import_admin_did":
 			source = "import_admin_did"
 		case "deploy_vta", "running":
@@ -337,6 +339,8 @@ func (h *SetupHandler) logsFullStack(c *gin.Context, session *model.SetupSession
 		streamJob(k8s.FSJobDidsInvite(sid))
 	case "dids_load_did":
 		streamJob(k8s.FSJobDidsLoadDid(sid))
+	case "vta_register_dids":
+		streamJob(k8s.FSJobVtaRegisterDids(sid))
 	case "import_admin_did":
 		streamJob(k8s.FSJobImportAdminDid(sid))
 	case "vta":

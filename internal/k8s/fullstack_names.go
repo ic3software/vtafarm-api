@@ -24,14 +24,11 @@ func FSJobDidsProvision(sessionID uint) string { return fmt.Sprintf("fs-%d-dids-
 func FSJobDidsP2(sessionID uint) string        { return fmt.Sprintf("fs-%d-dids-p2", sessionID) }
 func FSJobDidsInvite(sessionID uint) string    { return fmt.Sprintf("fs-%d-dids-invite", sessionID) }
 func FSJobDidsLoadDid(sessionID uint) string   { return fmt.Sprintf("fs-%d-dids-load-did", sessionID) }
+func FSJobVtaRegisterDids(sessionID uint) string {
+	return fmt.Sprintf("fs-%d-vta-register-dids", sessionID)
+}
 func FSJobImportAdminDid(sessionID uint) string {
 	return fmt.Sprintf("fs-%d-import-admin-did", sessionID)
-}
-
-// FSMediatorTokenSecret is the per-session K8s Secret holding the mediator's
-// minted VAULT_TOKEN (design §9).
-func FSMediatorTokenSecret(sessionID uint) string {
-	return fmt.Sprintf("fs-%d-mediator-vault-token", sessionID)
 }
 
 // allFSJobNames lists every setup Job name for a session — used by teardown
@@ -47,6 +44,7 @@ func allFSJobNames(sessionID uint) []string {
 		FSJobDidsP2(sessionID),
 		FSJobDidsInvite(sessionID),
 		FSJobDidsLoadDid(sessionID),
+		FSJobVtaRegisterDids(sessionID),
 		FSJobImportAdminDid(sessionID),
 	}
 }

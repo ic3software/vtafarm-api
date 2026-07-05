@@ -173,8 +173,9 @@ components:
             State-machine value. vta_only: dns_provisioned, vta_setup_running, vta_setup_complete,
             provisioning, running, failed. full_stack: dns_provision, env_provision, k8s_provision,
             step_vta_setup, step_mediator_p1, step_mediator_reprov, step_mediator_p2, step_dids_p1,
-            step_dids_provision, step_dids_p2, step_dids_invite, step_dids_load_did, deploy_dids,
-            deploy_mediator, awaiting_admin_did, step_import_admin_did, deploy_vta, running, failed.
+            step_dids_provision, step_dids_p2, step_dids_invite, step_dids_load_did,
+            deploy_dids, deploy_mediator, step_vta_register_dids,
+            awaiting_admin_did, step_import_admin_did, deploy_vta, running, failed.
           example: "running"
         mode:
           type: string
@@ -1541,10 +1542,11 @@ paths:
         - `dns_provisioned` — returns 409 (not started yet)
 
         **full_stack**: `vta_setup | mediator_p1 | mediator_reprov | mediator_p2 | dids_p1 |
-        dids_provision | dids_p2 | dids_invite | dids_load_did | import_admin_did | vta |
-        mediator | dids` (the first ten stream a one-off setup Job's logs; the last three
-        stream the corresponding running pod). Without `?source`, the source is derived
-        from the session's current step status.
+        dids_provision | dids_p2 | dids_invite | dids_load_did |
+        vta_register_dids | import_admin_did | vta | mediator | dids` (the first eleven
+        stream a one-off setup Job's logs; the last three stream the corresponding running
+        pod). Without `?source`, the source is derived from the session's current step
+        status.
 
         Each event is a plain log line: `data: <line>\n\n`.
         A final `event: done` signals the end of the stream.
@@ -1578,6 +1580,7 @@ paths:
               - dids_p2
               - dids_invite
               - dids_load_did
+              - vta_register_dids
               - import_admin_did
       responses:
         "200":

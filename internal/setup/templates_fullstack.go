@@ -93,7 +93,7 @@ vta_mode  = "sealed-export"
 context = "mediator"
 
 [secrets]
-storage = "vault://{{ .Vault.HostPort }}/{{ .Vault.KVMount }}/{{ .Vault.Prefix }}"
+storage = "vault://{{ .Vault.HostPort }}/{{ .Vault.KVMount }}/{{ .Vault.Prefix }}?auth=kubernetes&role={{ .Vault.K8sRole }}{{ if .Vault.SkipVerify }}&insecure=1{{ end }}"
 
 [security]
 ssl          = "none"
@@ -114,12 +114,15 @@ listen_address = "0.0.0.0:7037"
 `))
 
 // MediatorVaultSecrets carries the [secrets] values for the mediator's
-// vault:// storage URL — token auth (VAULT_TOKEN env), not kubernetes auth
-// like the VTA, so there's no k8s_role/auth_method here (design §9).
+// vault:// storage URL. Kubernetes auth, same mechanism as the VTA — the
+// mediator binary exchanges its pod's own ServiceAccount JWT for a Vault
+// token, so there's no VAULT_TOKEN to mint or inject (design §9).
 type MediatorVaultSecrets struct {
-	HostPort string // e.g. vault.vault.svc:8200 (no scheme — vault:// URL form)
-	KVMount  string // KV v2 mount, e.g. "secret"
-	Prefix   string // mediator/user-<id>/session-<id>
+	HostPort   string // e.g. vault.vault.svc:8200 (no scheme — vault:// URL form)
+	KVMount    string // KV v2 mount, e.g. "secret"
+	Prefix     string // mediator/user-<id>/session-<id>
+	K8sRole    string // Vault kubernetes-auth role, e.g. vta-user-<id>
+	SkipVerify bool   // self-signed in-cluster CA → ?insecure=1
 }
 
 type mediatorRecipeData struct {
@@ -127,9 +130,8 @@ type mediatorRecipeData struct {
 }
 
 // RenderMediatorRecipeTOML renders the mediator's setup recipe (design §7) —
-// fjall message storage on the mediator PVC, secrets in Vault via the
-// injected VAULT_TOKEN (not part of this recipe; see the orchestrator's Job
-// env wiring).
+// fjall message storage on the mediator PVC, secrets in Vault via kubernetes
+// auth (the mediator's own pod ServiceAccount, same as the VTA's).
 func RenderMediatorRecipeTOML(s *model.SetupSession, vault MediatorVaultSecrets) (string, error) {
 	var buf bytes.Buffer
 	err := mediatorRecipeTmpl.Execute(&buf, mediatorRecipeData{Vault: vault})
@@ -175,9 +177,14 @@ enable_server  = true
 enable_witness = true
 enable_watcher = false
 
-[secrets]
-backend           = "plaintext"
-confirm_plaintext = true
+[secrets]                              # identical mechanism to the VTA/mediator — kubernetes auth
+backend           = "vault"
+vault_addr        = "{{ .Vault.Addr }}"
+vault_kv_mount    = "{{ .Vault.KVMount }}"
+vault_secret_path = "{{ .Vault.SecretPath }}"
+vault_auth_method = "kubernetes"
+vault_k8s_role    = "{{ .Vault.K8sRole }}"
+vault_skip_verify = {{ .Vault.SkipVerify }}
 
 [admin]
 mode = "generate"
@@ -186,18 +193,31 @@ mode = "generate"
 force = false
 `))
 
+// WebvhVaultSecrets carries the [secrets] values for the dids daemon's setup
+// recipe — same tagged-backend, kubernetes-auth shape as the VTA's own
+// [secrets] block (design §9), not the plaintext backend the daemon used
+// before.
+type WebvhVaultSecrets struct {
+	Addr       string // e.g. https://vault.vault.svc:8200
+	KVMount    string // KV v2 mount, e.g. "secret"
+	SecretPath string // dids/user-<id>/session-<id>/server-secrets
+	K8sRole    string // Vault kubernetes-auth role, e.g. vta-user-<id>
+	SkipVerify bool
+}
+
 type webvhRecipeData struct {
 	Phase       string
 	PublicURL   string
 	MediatorDid string
 	Digest      string
+	Vault       WebvhVaultSecrets
 }
 
 // RenderWebvhRecipeTOML renders the DID-hosting daemon's setup recipe
 // (design §7). phase is WebvhPhasePrepare (step_dids_p1, no digest needed)
 // or WebvhPhaseComplete (step_dids_p2, digest is the 3a bundle digest from
 // step_dids_provision).
-func RenderWebvhRecipeTOML(s *model.SetupSession, phase, digest string) (string, error) {
+func RenderWebvhRecipeTOML(s *model.SetupSession, phase, digest string, vault WebvhVaultSecrets) (string, error) {
 	if phase != WebvhPhasePrepare && phase != WebvhPhaseComplete {
 		return "", fmt.Errorf("render webvh recipe: invalid phase %q", phase)
 	}
@@ -207,6 +227,7 @@ func RenderWebvhRecipeTOML(s *model.SetupSession, phase, digest string) (string,
 		PublicURL:   "https://" + s.DidsFQDN(),
 		MediatorDid: s.MediatorDid,
 		Digest:      digest,
+		Vault:       vault,
 	})
 	return buf.String(), err
 }

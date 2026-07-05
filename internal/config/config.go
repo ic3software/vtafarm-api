@@ -25,15 +25,14 @@ type Config struct {
 // VaultConfig configures the farm's HashiCorp Vault. RoleID/SecretID come from
 // the vtafarm-api-vault Secret created by helm/vtafarm-vault/bootstrap.sh.
 type VaultConfig struct {
-	Addr              string // how THIS API reaches Vault (port-forward locally, svc in-cluster)
-	VTAAddr           string // address rendered into VTA pod configs — always in-cluster svc DNS
-	RoleID            string // AppRole role_id (from the vtafarm-api-vault Secret)
-	SecretID          string // AppRole secret_id (from the vtafarm-api-vault Secret)
-	KVMount           string // KV v2 mount, default "secret"
-	K8sAuthMount      string // kubernetes auth mount, default "kubernetes"
-	AppRoleMount      string // approle auth mount, default "approle"
-	MediatorTokenRole string // token role used to mint the mediator's VAULT_TOKEN, default "vtafarm-mediator-token"
-	SkipVerify        bool   // skip TLS verification (self-signed in-cluster CA)
+	Addr         string // how THIS API reaches Vault (port-forward locally, svc in-cluster)
+	VTAAddr      string // address rendered into VTA pod configs — always in-cluster svc DNS
+	RoleID       string // AppRole role_id (from the vtafarm-api-vault Secret)
+	SecretID     string // AppRole secret_id (from the vtafarm-api-vault Secret)
+	KVMount      string // KV v2 mount, default "secret"
+	K8sAuthMount string // kubernetes auth mount, default "kubernetes"
+	AppRoleMount string // approle auth mount, default "approle"
+	SkipVerify   bool   // skip TLS verification (self-signed in-cluster CA)
 }
 
 type WebAuthnConfig struct {
@@ -140,15 +139,14 @@ func Load() *Config {
 			RPDisplayName: getEnv("WEBAUTHN_RP_DISPLAY_NAME", "VTA Farm"),
 		},
 		Vault: VaultConfig{
-			Addr:              getEnv("VAULT_ADDR", ""),
-			VTAAddr:           getEnv("VAULT_VTA_ADDR", "https://vault.vault.svc:8200"),
-			RoleID:            getEnv("VAULT_ROLE_ID", ""),
-			SecretID:          getEnv("VAULT_SECRET_ID", ""),
-			KVMount:           getEnv("VAULT_KV_MOUNT", "secret"),
-			K8sAuthMount:      getEnv("VAULT_K8S_AUTH_MOUNT", "kubernetes"),
-			AppRoleMount:      getEnv("VAULT_APPROLE_MOUNT", "approle"),
-			MediatorTokenRole: getEnv("VAULT_MEDIATOR_TOKEN_ROLE", "vtafarm-mediator-token"),
-			SkipVerify:        getEnvBool("VAULT_SKIP_VERIFY", true),
+			Addr:         getEnv("VAULT_ADDR", ""),
+			VTAAddr:      getEnv("VAULT_VTA_ADDR", "https://vault.vault.svc:8200"),
+			RoleID:       getEnv("VAULT_ROLE_ID", ""),
+			SecretID:     getEnv("VAULT_SECRET_ID", ""),
+			KVMount:      getEnv("VAULT_KV_MOUNT", "secret"),
+			K8sAuthMount: getEnv("VAULT_K8S_AUTH_MOUNT", "kubernetes"),
+			AppRoleMount: getEnv("VAULT_APPROLE_MOUNT", "approle"),
+			SkipVerify:   getEnvBool("VAULT_SKIP_VERIFY", true),
 		},
 	}
 }

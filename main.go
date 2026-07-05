@@ -72,14 +72,13 @@ func main() {
 	var vaultClient *vault.Client
 	if cfg.Vault.Addr != "" {
 		vc, vErr := vault.New(vault.Config{
-			Addr:              cfg.Vault.Addr,
-			RoleID:            cfg.Vault.RoleID,
-			SecretID:          cfg.Vault.SecretID,
-			KVMount:           cfg.Vault.KVMount,
-			K8sAuthMount:      cfg.Vault.K8sAuthMount,
-			AppRoleMount:      cfg.Vault.AppRoleMount,
-			MediatorTokenRole: cfg.Vault.MediatorTokenRole,
-			SkipVerify:        cfg.Vault.SkipVerify,
+			Addr:         cfg.Vault.Addr,
+			RoleID:       cfg.Vault.RoleID,
+			SecretID:     cfg.Vault.SecretID,
+			KVMount:      cfg.Vault.KVMount,
+			K8sAuthMount: cfg.Vault.K8sAuthMount,
+			AppRoleMount: cfg.Vault.AppRoleMount,
+			SkipVerify:   cfg.Vault.SkipVerify,
 		})
 		if vErr != nil {
 			log.Printf("warn: Vault client init failed: %v — vta setup disabled", vErr)

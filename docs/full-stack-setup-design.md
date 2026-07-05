@@ -17,16 +17,12 @@ every cross-component file handoff (the `~/vta`, `~/mediator`, `~/dids` home dir
 single host) is reproduced by mounting the relevant PVCs into the Job that needs them;
 every `nohup <binary> &` becomes a **Deployment**.
 
-**Secret backends.** The **VTA and Mediator both store their secrets in the farm
-Vault**; only the DID Hosting daemon stays on a `plaintext` backend (on its PVC). The
-two Vault integrations differ in *how they authenticate*:
-
-- **VTA** — kubernetes auth: the VTA pod presents its `vta` ServiceAccount JWT against
-  the per-user kubernetes-auth role. Unchanged from `vta_only`.
-- **Mediator** — token auth: the mediator binary (built with the `secrets-vault`
-  feature) reads a `VAULT_TOKEN` from its environment and writes/reads its secrets under
-  a `vault://…` KV v2 prefix. The orchestrator mints that token (scoped to the
-  mediator's per-session prefix) and injects it; see [§9](#9-secrets-handling).
+**Secret backends.** **All three components — VTA, Mediator, and the DID Hosting
+daemon — store their secrets in the farm Vault, all via the same mechanism**:
+kubernetes auth. Each pod presents its `vta` ServiceAccount JWT against the same
+per-user kubernetes-auth role the VTA already uses; there's no per-session token to
+mint or inject, and no plaintext fallback for the daemon. See
+[§9](#9-secrets-handling).
 
 The mediator's *message* storage is still **fjall** (file-backed on its PVC) — Vault
 only holds the mediator's secrets, not its message store. No Redis/Valkey.
@@ -34,9 +30,12 @@ only holds the mediator's secrets, not its message store. No Redis/Valkey.
 **Scope:** VTA + Mediator + DID Hosting only. The reference flow stops at PNM binding
 (Step 4); there is no VTC step, so VTC is out of scope here too.
 
-> Status: **design only**. No code in this repo implements `full_stack` yet — the
-> orchestrator currently runs the VTA-only path for every session regardless of
-> `mode`. This document specifies what `full_stack` should do.
+> Status: **implemented** (`internal/setup/orchestrator_fullstack.go` + the
+> `internal/k8s/component_*.go` helpers). This document is the authoritative design
+> reference; the §5 state machine matches the code, including
+> `step_vta_register_dids` — added after the initial implementation for parity with
+> `vta_only`'s external-host registration (§5 explains why there's no matching
+> "grant the VTA an ACL entry on its own daemon" step: the daemon does that itself now).
 
 ---
 
@@ -51,7 +50,7 @@ mediator and the DID host**:
 | DID host | **Shared**, external (`DID_HOSTING_SERVER_URL`). API uploads the VTA DID log to it via the control client. | **Per-deployment**, in-cluster. A fresh `did-hosting-daemon` is provisioned + run in the same namespace; the VTA + mediator DID logs are uploaded to *it*. |
 | URLs returned | 1 (`fpp-xxxx.{domain}`) | 3 (`fpp-xxxx`/`mediator-xxxx`/`dids-xxxx.{domain}`) |
 | Subdomain | random `fpp-xxxx` prefix | three random-prefixed hosts sharing one ID (see [§3](#3-urls--dns)) |
-| Secret backend | HashiCorp Vault (`[secrets] backend = "vault"`) | **VTA: Vault** (k8s auth, same as `vta_only`). **Mediator: Vault** (token auth, `vault://`). **dids: plaintext** on its PVC |
+| Secret backend | HashiCorp Vault (`[secrets] backend = "vault"`) | **All three — VTA, mediator, dids — Vault, kubernetes auth** (same SA, same role) |
 | Mediator storage | n/a (shared) | secrets in **Vault**; messages in **fjall** (file-backed, on the mediator PVC) — no Redis/Valkey |
 | K8s resources / session | 1 PVC + Deployment + Service + Ingress | 3× (PVC + Deployment + Service + Ingress) |
 
@@ -60,9 +59,9 @@ ServiceAccounts (`EnsureUserEnvironment`), the Cloudflare A-record helpers, the 
 watch/log-capture helpers (`WaitForJob`, `JobLogs`, `StreamJobLogs`), and the
 `---DID_LOG_START---` stdout-marker trick for pulling files out of a finished Job.
 `EnsureUserAccess` (the per-user Vault policy + kubernetes-auth role) is **also reused**
-for the VTA. The mediator needs a small extension: the same per-user policy also grants
-the mediator's KV prefix, and the orchestrator mints a `VAULT_TOKEN` for the mediator
-(token auth). Only the dids daemon stays off Vault.
+for the VTA — full_stack only extends the same policy to also grant the mediator's and
+dids daemon's KV prefixes, and every component authenticates against the same role via
+the same `vta` ServiceAccount. No per-session token to mint, no plaintext fallback.
 
 ---
 
@@ -99,8 +98,8 @@ Each component's PVC, Service, Ingress, and Deployment all share **one name**:
 | Component | Port | Public URL | Storage | Notes |
 | --- | --- | --- | --- | --- |
 | VTA | 8100 | `fpp-xxxx.{domain}` | PVC `fs-{sid}-vta` + **Vault** seed | reuses today's VTA resources + Vault path (mounted at `/work/vta`) |
-| Mediator | 7037 | `mediator-xxxx.{domain}` | secrets in **Vault** (`vault://`); config + `fjall` message store on PVC `fs-{sid}-mediator` | token auth via injected `VAULT_TOKEN`; no Redis/Valkey |
-| DID Hosting daemon | 8534 | `dids-xxxx.{domain}` | PVC `fs-{sid}-dids` (`plaintext` secrets) | standard (integrated) topology |
+| Mediator | 7037 | `mediator-xxxx.{domain}` | secrets in **Vault** (`vault://`, kubernetes auth); config + `fjall` message store on PVC `fs-{sid}-mediator` | no Redis/Valkey |
+| DID Hosting daemon | 8534 | `dids-xxxx.{domain}` | secrets in **Vault** (kubernetes auth); PVC `fs-{sid}-dids` for everything else | standard (integrated) topology |
 
 Each component is one PVC + one Deployment + one Service + one Ingress. Nothing is
 shared between them at runtime — the cross-component file handoffs happen only during
@@ -181,7 +180,7 @@ home-dir layout, so the recipe bodies are essentially verbatim. (The mediator's
 ```text
 pending
   → dns_provision         create 3 Cloudflare A-records
-  → env_provision         EnsureUserEnvironment (ns + SAs + Role/RoleBinding) + EnsureUserAccess (Vault policy/role for VTA + mediator KV prefix; mint mediator VAULT_TOKEN)
+  → env_provision         EnsureUserEnvironment (ns + SAs + Role/RoleBinding) + EnsureUserAccess (Vault policy/role for VTA + mediator + dids KV prefixes)
   → k8s_provision         PVCs, Services, Ingresses for vta/mediator/dids
   → step_vta_setup        vta setup --from vta-setup.toml          → 1a VTA DID, 1b Mediator DID, DID logs
   → step_mediator_p1      mediator-setup (phase 1)                 → mediator/bootstrap-request.json
@@ -194,6 +193,7 @@ pending
   → step_dids_load_did    did-hosting-daemon load-did (mediator + VTA DID logs, offline, into the dids local store)
   → deploy_dids           Deployment dids-daemon (start it)
   → deploy_mediator       Deployment mediator (start it)
+  → step_vta_register_dids vta did-mgmt servers add --id dids --did {{3d}} (daemon live+resolvable; VTA store still free)
   → awaiting_admin_did    ⏸ gate: wait for user's PNM admin DID (skip if admin_did given at POST /setup)
   → step_import_admin_did vta import-did --role admin --label pnm-bootstrap --did {{admin_did}}
   → deploy_vta            Deployment vta (start it)
@@ -213,6 +213,28 @@ must also be reachable before the VTA boots, and the VTA must have the admin DID
 before it starts. The `vta contexts reprovision`, `vta bootstrap provision-integration`,
 and `vta import-did` commands are **CLI operations against the VTA's PVC**, not HTTP
 calls, so they run as Jobs without the VTA server running.
+
+**Daemon wiring (`step_vta_register_dids`).** This step gives `full_stack` the same
+VTA↔host registry wiring `vta_only` gets from `did-mgmt servers add --id control`:
+without it the VTA has no publication target for future DID work (e.g. integrations the
+user later provisions with `--var WEBVH_SERVER=dids`, or promoting a DID to
+server-managed via `did-mgmt dids register --server dids`). `servers add`
+**live-resolves** the daemon's DID and requires a hosting service in its DID document,
+so it must run **after `deploy_dids`** — and it writes the VTA's fjall store, so still
+before `deploy_vta`. Nothing parsed; exit code 0 is success. (The Ubuntu reference flow
+has no equivalent step — its uploads went through the daemon's admin browser UI — so
+this is K8s-mapping-only, motivated by `vta_only` parity, not by Appendix A.)
+
+**No separate step grants the VTA an ACL entry on its own daemon** — an earlier draft of
+this design added `step_dids_grant_vta` (`did-hosting-daemon add-acl --role service`) for
+exactly that, mirroring `vta_only`'s `didHosting.CreateAcl(vtaDid, "service")` against its
+external host. It's gone: `did-hosting-daemon`'s offline-complete finalizer
+(`step_dids_p2`) already seeds an idempotent **Admin**-role ACL entry for its
+provisioning VTA as of upstream commit "a VTA-provisioned daemon trusts its provisioning
+VTA to publish" (`affinidi-webvh-service`/`webvh-build-pipeline` `24ad22d`) — a dedicated
+grant step just collides with that entry ("ACL entry already exists — delete it first to
+change the role") and fails the Job. `Admin` is a strict superset of the `service` role
+the removed step requested, so nothing is lost.
 
 **PNM binding is user-local — exactly as `vta_only`.** The orchestrator never runs `pnm
 setup` or `pnm setup continue`; those happen on the user's own machine. The only
@@ -245,8 +267,12 @@ All Jobs: `RestartPolicy: Never`, `BackoffLimit: 0`, TTL 3600s. Each mounts its
 component PVC at `/work/<component>` with `workingDir` set to the same path (so the
 recipe's relative paths resolve), plus the recipe as a ConfigMap at `/config`.
 Cross-component Jobs mount a second PVC ([§4](#4-cross-component-file-handoffs)).
-VTA-side Jobs run as SA `vta`; mediator/dids Jobs run as SA `pod-operator`. Image per
-component comes from the request (see [§10](#10-data-model-changes)).
+**ServiceAccount is per-Job, not per-component**: anything that touches the Vault-backed
+secret store — `step_mediator_p1`/`p2`, `deploy_mediator`, `step_dids_p1`/`p2`,
+`deploy_dids`, plus every VTA-side `vta …` Job — runs as SA `vta` (bound to the
+per-user kubernetes-auth role). The two dids Jobs that never touch secrets
+(`step_dids_invite`, `step_dids_load_did`) stay on SA `pod-operator`, same as before.
+Image per component comes from the request (see [§10](#10-data-model-changes)).
 
 ### Step `step_vta_setup` — VTA Job (workingDir `/work/vta`)
 
@@ -264,10 +290,11 @@ vta setup --from /config/vta-setup.toml \
 Parse from stdout: **1a** VTA DID (`(?i)vta did:\s*(did:\S+)`), **1b** Mediator DID
 (`(?i)mediator:\s*(did:\S+)`), and both DID-log JSONL blobs (kept for the upload step).
 
-### Step `step_mediator_p1` — Mediator Job (workingDir `/work/mediator`)
+### Step `step_mediator_p1` — Mediator Job (workingDir `/work/mediator`, SA `vta`)
 
-Env: `VAULT_TOKEN` (`secretKeyRef` → the per-session token Secret) + `VAULT_SKIP_VERIFY=true`
-(self-signed in-cluster CA).
+No Vault env vars needed — auth is kubernetes auth, baked into the recipe's
+`vault://…?auth=kubernetes&role=…` URL (§7); the mediator binary exchanges its own
+pod's ServiceAccount JWT for a Vault token, same mechanism as the VTA.
 
 ```sh
 mediator-setup --from /config/mediator-recipe.toml
@@ -289,11 +316,10 @@ vta contexts reprovision \
 Parse: **2a** SHA-256 digest (`SHA-256 digest:\s+(\S+)`), **2b** Admin DID
 (`Admin DID:\s+(did:\S+)`).
 
-### Step `step_mediator_p2` — Mediator Job (workingDir `/work/mediator`)
+### Step `step_mediator_p2` — Mediator Job (workingDir `/work/mediator`, SA `vta`)
 
-Same `VAULT_TOKEN` + `VAULT_SKIP_VERIFY` env as Phase 1 — Phase 2 reads back the seed
-Phase 1 stored in Vault, so the token must still be valid (and point at the same
-`vault://…` prefix).
+Same kubernetes-auth Vault access as Phase 1 — Phase 2 reads back the seed Phase 1
+stored in Vault, re-authenticating fresh (no token to keep alive between the two Jobs).
 
 ```sh
 mediator-setup --from /config/mediator-recipe.toml \
@@ -310,15 +336,16 @@ Provisions the unified secret backend **into Vault** (`mediator_jwt_secret`,
 (`Private key \(multibase\):\s+(\S+)`) — already stored in Vault too — and return it to
 the user once for offline backup ([§9](#9-secrets-handling)).
 
-### Step `step_dids_p1` — DIDS Job (offline-prepare, workingDir `/work/dids`)
+### Step `step_dids_p1` — DIDS Job (offline-prepare, workingDir `/work/dids`, SA `vta`)
 
 ```sh
 did-hosting-daemon setup --from /config/webvh-recipe.toml
 ```
 
 Recipe `vta_mode = "offline-prepare"`, `[vta] request_path = "bootstrap-request.json"`.
-Writes that request file + stores the seed in the dids plaintext backend. Nothing to
-parse (the `client_did` line is informational).
+Writes that request file + stores the offline-bootstrap seed in Vault (kubernetes
+auth, same mechanism as the VTA and mediator). Nothing to parse (the `client_did` line
+is informational).
 
 ### Step `step_dids_provision` — VTA Job (mounts `/work/vta` + `/work/dids`, workingDir `/work/vta`)
 
@@ -331,10 +358,11 @@ vta bootstrap provision-integration \
 
 Parse **3a** SHA-256 digest.
 
-### Step `step_dids_p2` — DIDS Job (offline-complete, workingDir `/work/dids`)
+### Step `step_dids_p2` — DIDS Job (offline-complete, workingDir `/work/dids`, SA `vta`)
 
 Re-render the recipe (second ConfigMap) with `vta_mode = "offline-complete"` and the
-`[vta]` block carrying `bundle_path = "bundle.armor"`, `expect_digest = {{3a}}`.
+`[vta]` block carrying `bundle_path = "bundle.armor"`, `expect_digest = {{3a}}`. Writes
+the daemon's final secrets to Vault (kubernetes auth).
 
 ```sh
 did-hosting-daemon setup --from /config/webvh-recipe.toml \
@@ -345,7 +373,7 @@ Parse: **3b** Admin DID (`Generated admin did:key:\s+(did:\S+)`), **3c** Admin p
 key (`Private key \(save now, not re-shown\):\s+(\S+)` → return to user once), **3d**
 Daemon DID (the `server_did` value from `config.toml`).
 
-### Step `step_dids_invite` — DIDS Job (`did-hosting-daemon invite`, workingDir `/work/dids`)
+### Step `step_dids_invite` — DIDS Job (`did-hosting-daemon invite`, workingDir `/work/dids`, SA `pod-operator`)
 
 Mints **3e**, the dids admin-panel enrollment URL — the value the user logs in with:
 
@@ -360,7 +388,7 @@ daemon holds the PVC). Parse **3e** from the output and return it to the user as
 lets the user reach the dids admin web UI afterward. It is single-use; regenerate via the
 reissue endpoint.
 
-### Step `step_dids_load_did` — DIDS Job (mounts `/work/vta` + `/work/dids`, workingDir `/work/dids`)
+### Step `step_dids_load_did` — DIDS Job (mounts `/work/vta` + `/work/dids`, workingDir `/work/dids`, SA `pod-operator`)
 
 Loads the VTA's and mediator's DID logs into the dids daemon's local store **offline**,
 reading them straight off the vta PVC where `step_vta_setup` wrote them — no round-trip
@@ -382,23 +410,44 @@ start, not after.) Nothing to parse — success is just exit code 0.
 
 ### `deploy_dids` — start the daemon Deployment
 
-Deployment with `workingDir = /work/dids`, command `["did-hosting-daemon"]`, mounting
-the dids PVC, plus the Service + Ingress for `dids-xxxx.{domain}` (created in
-`k8s_provision`, now backed by a running pod). Wait for Ready.
+Deployment with `workingDir = /work/dids`, command `["did-hosting-daemon"]`, SA `vta`
+(reads its Vault-backed secrets at every boot), mounting the dids PVC, plus the
+Service + Ingress for `dids-xxxx.{domain}` (created in `k8s_provision`, now backed by
+a running pod). **Waits for Ready** (`WaitForComponentDeploymentReady`, 2 min timeout)
+before the step returns — `step_vta_register_dids` right after `deploy_mediator`
+live-resolves this daemon over HTTPS, and a `Deployment` object existing is not the
+same as the pod (and its Service/Ingress endpoint) actually serving traffic. *(This
+wait was documented from the start but not actually wired up until a live session hit
+the resulting 503 race — see checklist item 15.)*
 
 ### `deploy_mediator` — start the mediator Deployment
 
-Deployment with `workingDir = /work/mediator`, command `["mediator"]`, mounting the
-mediator PVC (it reads `conf/mediator.toml` and the `fjall` message store from there).
-Env: `VAULT_TOKEN` (`secretKeyRef` → the per-session token Secret) + `VAULT_SKIP_VERIFY`
-— the mediator reads its secrets from Vault at startup and *probes* (write→read→delete a
-sentinel), so the token's policy must allow all four. Service + Ingress for
-`mediator-xxxx.{domain}`. No Redis/Valkey dependency.
+Deployment with `workingDir = /work/mediator`, command `["mediator"]`, SA `vta`,
+mounting the mediator PVC (it reads `conf/mediator.toml` and the `fjall` message store
+from there). No Vault env vars — the mediator reads its secrets from Vault at startup
+and *probes* (write→read→delete a sentinel) using kubernetes auth, re-authenticating
+with its pod's own ServiceAccount JWT on every restart. Service + Ingress for
+`mediator-xxxx.{domain}`. No Redis/Valkey dependency. **Waits for Ready**, same as
+`deploy_dids` — nothing in plain `full_stack` resolves the mediator right after this
+step, but `full_stack_with_vtc`'s `step_vtc_setup` does, and the invariant "a `deploy_*`
+step doesn't return until its component is actually up" should hold uniformly.
 
-> **Token lifetime:** the Deployment is long-running and re-reads secrets on every pod
-> restart, so the injected token must be **periodic/renewable or long-TTL** — a
-> short-TTL token would leave the mediator unable to read its secrets after a restart.
-> Provision it as a periodic token scoped to the mediator policy.
+### Step `step_vta_register_dids` — VTA Job (workingDir `/work/vta`)
+
+Registers the session's dids daemon (`3d`) in the VTA's webvh server registry — the
+`full_stack` counterpart of the `--id control` registration `vta_only`'s provision job
+chains after `import-did`:
+
+```sh
+vta did-mgmt servers add --id dids --did {{3d}} --label 'Session DID Hosting Daemon'
+```
+
+`servers add` resolves the server DID **live** at add time and requires a
+`WebVHHosting`-family service in the resolved document
+(`vta-service/src/operations/did_webvh/servers.rs::validate_server_did`), which is why
+this runs **after** `deploy_dids`/`deploy_mediator` — the daemon must already be
+serving its own `did.jsonl`. It writes the VTA's fjall store offline, so it still runs
+**before** `deploy_vta` (same window as `step_import_admin_did`). Nothing to parse.
 
 ### Step `step_import_admin_did` — VTA Job (workingDir `/work/vta`)
 
@@ -425,7 +474,9 @@ which is why the **VTA DID (`1a`)** must be returned to them ([§12](#12-api-sur
 
 Deployment with `workingDir = /work/vta`, command `["vta"]`, mounting the vta PVC, plus
 Service + Ingress for `fpp-xxxx.{domain}` (generalize today's `CreateVtaDeployment` /
-`CreateVtaService` / `CreateVtaIngress` to the `/work/vta` mount path).
+`CreateVtaService` / `CreateVtaIngress` to the `/work/vta` mount path). **Waits for
+Ready** before the session flips to `running` — otherwise `running` would mean "the
+Deployment object exists," not "the three returned URLs actually respond."
 
 ---
 
@@ -494,10 +545,13 @@ vta_mode  = "sealed-export"
 context = "mediator"
 
 [secrets]
-# Vault KV v2: vault://<host[:port]>/<kv-mount>/<prefix>. Auth = the injected VAULT_TOKEN
-# env (+ VAULT_SKIP_VERIFY for the self-signed in-cluster CA). The mediator image MUST be
-# built with the `secrets-vault` feature. e.g. vault://vault.vault.svc:8200/secret/mediator/user-12/session-34
-storage = "vault://{{ .Vault.HostPort }}/{{ .Vault.KVMount }}/{{ .Vault.MediatorPrefix }}"
+# Vault KV v2: vault://<host[:port]>/<kv-mount>/<prefix>?auth=kubernetes&role=<role>.
+# Kubernetes auth — the mediator exchanges its own pod's ServiceAccount JWT for a
+# Vault token, same mechanism as the VTA. No VAULT_TOKEN env var, no per-session
+# token to mint. `?insecure=1` for the self-signed in-cluster CA. The mediator image
+# MUST be built with the `secrets-vault` feature. e.g.
+# vault://vault.vault.svc:8200/secret/mediator/user-12/session-34?auth=kubernetes&role=vta-user-12&insecure=1
+storage = "vault://{{ .Vault.HostPort }}/{{ .Vault.KVMount }}/{{ .Vault.MediatorPrefix }}?auth=kubernetes&role={{ .Vault.K8sRole }}&insecure=1"
 
 [security]
 ssl          = "none"
@@ -552,9 +606,14 @@ enable_server  = true
 enable_witness = true
 enable_watcher = false
 
-[secrets]
-backend           = "plaintext"
-confirm_plaintext = true
+[secrets]                              # identical mechanism to the VTA/mediator — kubernetes auth
+backend           = "vault"
+vault_addr        = "{{ .Vault.Addr }}"
+vault_kv_mount    = "{{ .Vault.KVMount }}"
+vault_secret_path = "{{ .Vault.SecretPath }}"   # dids/user-<id>/session-<id>/server-secrets
+vault_auth_method = "kubernetes"
+vault_k8s_role    = "{{ .Vault.K8sRole }}"
+vault_skip_verify = {{ .Vault.SkipVerify }}
 
 [admin]
 mode = "generate"
@@ -597,52 +656,61 @@ setup` output) handed to the API and passed straight to `vta import-did`
 
 ## 9. Secrets handling
 
-The **VTA and Mediator use Vault**; the DID Hosting daemon stays plaintext.
+**All three components use Vault, all three via kubernetes auth, all three through the
+same per-user policy and role.** There is no token-auth path and no plaintext fallback
+anywhere in `full_stack` — a deliberate simplification over an earlier design that gave
+the mediator a separately-minted `VAULT_TOKEN`. Each pod authenticates as itself:
 
-**VTA — kubernetes auth (unchanged from `vta_only`).** The master seed lives at
-`secret/vta/user-<id>/session-<id>/master-seed`; the VTA pod authenticates with its
-`vta` ServiceAccount JWT against the per-user kubernetes-auth role `vta-user-<id>`. The
-API only provisions the policy/role (`EnsureUserAccess`) and deletes the seed on
-teardown — it never reads it.
+- **VTA** — `vta` ServiceAccount JWT against the per-user kubernetes-auth role
+  `vta-user-<id>`. Master seed at `secret/vta/user-<id>/session-<id>/master-seed`.
+  Unchanged from `vta_only`.
+- **Mediator** — same SA, same role. Its recipe's `[secrets].storage` is a
+  `vault://<host:port>/<kv-mount>/<prefix>?auth=kubernetes&role=<role>` URL (§7); the
+  mediator binary reads its pod's own ServiceAccount JWT and exchanges it for a Vault
+  token, exactly like the VTA does internally. Secrets land at
+  `secret/data/mediator/user-<id>/session-<id>/{mediator_jwt_secret,…}`. Must be
+  **built with the `secrets-vault` feature**
+  (`--features "didcomm,redis-backend,fjall-backend,secrets-vault"`).
+- **DID Hosting daemon** — same SA, same role. Its recipe's `[secrets]` block is now a
+  tagged `backend = "vault"` (§7), matching the VTA's own non-interactive schema, with
+  secrets at `secret/data/dids/user-<id>/session-<id>/server-secrets`. Must be **built
+  with the `vault-secrets` feature**.
 
-**Mediator — token auth (`vault://`).** The mediator binary must be **built with the
-`secrets-vault` feature** (`--features "didcomm,redis-backend,fjall-backend,secrets-vault"`).
-Its recipe points `[secrets].storage` at `vault://<host:port>/<kv-mount>/<prefix>`, and
-it authenticates with a `VAULT_TOKEN` read from its environment (plus
-`VAULT_SKIP_VERIFY` for the self-signed in-cluster CA). The orchestrator wires this up
-per session:
+Because every component authenticates the same way as the same identity, `EnsureUserAccess`
+only has to widen **one** policy, not mint anything:
 
-1. **Scope** the prefix per tenant — `mediator/user-<id>/session-<id>` under the same KV
-   mount (`secret`), mirroring the VTA's seed-path scheme. Secrets land at
-   `secret/data/mediator/user-<id>/session-<id>/{mediator_jwt_secret,…}`.
-2. **Policy** — extend the per-user policy to grant that prefix. The mediator *probes*
-   (write → read → delete a sentinel) at setup and startup, so read alone is not enough:
+```hcl
+path "secret/data/mediator/user-<id>/session-<id>/*" {
+  capabilities = ["create", "update", "read", "delete"]
+}
+path "secret/metadata/mediator/user-<id>/session-<id>/*" {
+  capabilities = ["read", "list", "delete"]
+}
+path "secret/data/dids/user-<id>/session-<id>/*" {
+  capabilities = ["create", "update", "read", "delete"]
+}
+path "secret/metadata/dids/user-<id>/session-<id>/*" {
+  capabilities = ["read", "list", "delete"]
+}
+```
 
-   ```hcl
-   path "secret/data/mediator/user-<id>/session-<id>/*" {
-     capabilities = ["create", "update", "read", "delete"]
-   }
-   path "secret/metadata/mediator/user-<id>/session-<id>/*" {
-     capabilities = ["read", "list", "delete"]
-   }
-   ```
+No token minting, no renewal task on the API side, no per-session K8s Secret, no
+`VAULT_TOKEN`/`VAULT_SKIP_VERIFY` env vars on any Job or Deployment. Both the mediator
+and the dids binary re-authenticate with their own pod's ServiceAccount JWT on every
+restart — kubelet-rotated JWTs are handled transparently, the same guarantee the VTA
+already had.
 
-3. **Mint a token** attached to that policy (the API already holds an AppRole session, so
-   it can create a child token). Make it **periodic/renewable or long-TTL** — the mediator
-   Deployment re-reads secrets on every restart, so a short-TTL token would strand it.
-   Store it in a per-session K8s Secret `mediator-vault-token-{sid}`.
-4. **Inject** it as `VAULT_TOKEN` (`secretKeyRef`) into both mediator setup Jobs and the
-   mediator Deployment, alongside `VAULT_SKIP_VERIFY=true`.
-
-> This is the one structural difference from the VTA: the VTA never needs a token in its
-> pod (kubernetes auth), whereas the mediator does. If a future mediator build gains
-> kubernetes-auth support it can drop the token and mirror the VTA exactly.
-
-**DIDS daemon — plaintext** (`[secrets] backend = "plaintext"`) on its PVC; unchanged.
+> **Which Jobs actually need this.** Only the ones that touch the secret store:
+> `step_mediator_p1`/`p2`, `deploy_mediator`, `step_dids_p1`/`p2`, `deploy_dids`, and
+> every `vta …` Job. Verified against the daemon's own source: `load-did` and `invite`
+> (`step_dids_load_did`/`step_dids_invite`) only ever open the DIDs/sessions keyspaces
+> directly — never the secret store — so they stay on SA `pod-operator` and need no
+> Vault access at all (§6).
 
 **Admin private keys (2c, 3c).** Still captured from the setup logs and surfaced to the
-user **once** via `GET /setup/:id` for offline backup. The mediator key (2c) is also
-already in Vault; the dids key (3c) lives only in the dids plaintext backend.
+user **once** via `GET /setup/:id` for offline backup. Both are also already in Vault
+by the time they're shown — teardown deletes both KV prefixes (§13), so this reveal is
+the only copy the user gets afterward.
 
 ---
 
@@ -679,7 +747,7 @@ MediatorAdminDid   string  // 2b  → json: mediator_admin_did
 DIDHostingAdminDid string  // 3b  → json: did_hosting_admin_did
 DIDHostingDid      string  // 3d  → json: did_hosting_did
 
-// Admin private keys, returned to the user once (2c, 3c); plaintext, like the PVCs.
+// Admin private keys, returned to the user once (2c, 3c); stored plaintext in the DB.
 MediatorAdminKey string  // 2c
 WebvhAdminKey    string  // 3c
 DidsEnrollURL    string  // 3e dids admin-enroll URL — REQUIRED output, single-use (regenerable)
@@ -715,25 +783,28 @@ new columns nullable/defaulted so existing `vta_only` rows are unaffected.
 | --- | --- |
 | `GITHUB_MEDIATOR_PACKAGE_NAME` | GHCR package for `GET /setup/images?component=mediator` (default `mediator`) |
 | `GITHUB_DID_HOSTING_DAEMON_PACKAGE_NAME` | GHCR package for `GET /setup/images?component=dids` (default `did-hosting-daemon`) |
-| `VAULT_MEDIATOR_TOKEN_ROLE` | Vault token role used to mint the mediator's per-session `VAULT_TOKEN` (default `vtafarm-mediator-token`; see `helm/vtafarm-vault/bootstrap.sh`) |
 
 Reuse existing: `CLUSTER_INGRESS_IP`, `CLUSTER_DOMAIN`, `CLOUDFLARE_*`, and all
-`VAULT_*`. Both the VTA seed and the mediator secrets are Vault-backed; the mediator's
-`vault://` host is derived from `VAULT_VTA_ADDR` (in-cluster `vault.vault.svc:8200`) and
-its KV prefix is `mediator/user-<id>/session-<id>` under `VAULT_KV_MOUNT`.
-`MEDIATOR_DID` and `DID_HOSTING_*` remain **only** for `vta_only`; `full_stack` ignores
-them (it grows its own mediator + dids — mediator on Vault, dids plaintext).
+`VAULT_*`. The VTA seed, the mediator secrets, and the dids daemon secrets are all
+Vault-backed via kubernetes auth, all under the same per-user policy/role — no
+dedicated token-role config needed. The mediator's `vault://` host is derived from
+`VAULT_VTA_ADDR` (in-cluster `vault.vault.svc:8200`); its KV prefix is
+`mediator/user-<id>/session-<id>` and the dids daemon's is `dids/user-<id>/session-<id>`,
+both under `VAULT_KV_MOUNT`. `MEDIATOR_DID` and `DID_HOSTING_*` remain **only** for
+`vta_only`; `full_stack` ignores them (it grows its own mediator + dids, both on Vault).
 
 `GITHUB_MEDIATOR_PACKAGE_NAME`/`GITHUB_DID_HOSTING_DAEMON_PACKAGE_NAME` reuse the same
 `GITHUB_PACKAGE_OWNER`/`GITHUB_TOKEN` as the VTA's GHCR listing. `mediator_image`/
 `dids_image` are **required** request fields on `POST /setup` (same as `vta_image`),
-selected from `GET /setup/images?component=vta|mediator|dids`.
+selected from `GET /setup/images?component=vta|mediator|dids`. Both images must be
+built with their respective Vault feature flag (`secrets-vault` for the mediator,
+`vault-secrets` for the dids daemon).
 
-The existing ClusterRole covers most of this mode (namespaces, SAs, pods, pods/log,
+The existing ClusterRole covers all of this mode (namespaces, SAs, pods, pods/log,
 configmaps, pvcs, services, roles, rolebindings, jobs, deployments, ingresses) per
-CLAUDE.md. **One addition:** `secrets` (`get`/`create`/`delete`) — full_stack creates a
-per-session K8s Secret to hold the mediator's `VAULT_TOKEN`. (The VTA seed and the
-mediator secrets themselves live in Vault, not K8s Secrets.)
+CLAUDE.md — **no `secrets` verb needed**. An earlier design added one for the
+mediator's per-session `VAULT_TOKEN` Secret; kubernetes auth has no such Secret to
+create, so that grant was removed.
 
 ---
 
@@ -748,7 +819,7 @@ on `POST /api/v1/setup` selects this path.
 | `POST` | `/setup` | accept `mode=full_stack`, optional `mediator_image`/`dids_image`, optional `admin_did` (user's local PNM admin DID — when present, auto-runs import + `deploy_vta`); create 3 DNS records; start the §5 machine |
 | `POST` | `/setup/:id/admin` | **reused from `vta_only`** — supply the user's PNM `admin_did` once the stack is up (`awaiting_admin_did`); triggers `vta import-did` + `deploy_vta` |
 | `GET` | `/setup/:id` | return the three URLs + **VTA DID (1a)** + **dids admin-enroll URL (3e)** + `dids_enroll_used` + per-step status + (once) the admin keys |
-| `GET` | `/setup/:id/logs` | `?source=` gains `mediator_p1\|mediator_p2\|dids_p1\|dids_p2\|dids_invite\|dids_load_did\|import_admin_did\|mediator\|dids` |
+| `GET` | `/setup/:id/logs` | `?source=` gains `mediator_p1\|mediator_p2\|dids_p1\|dids_p2\|dids_invite\|dids_load_did\|vta_register_dids\|import_admin_did\|mediator\|dids` |
 | `DELETE` | `/setup/:id` | tear down all 3 DNS records + all component resources |
 | `POST` | `/setup/:id/dids/reissue-enroll` *(new, optional)* | regenerate the single-use dids admin enrollment URL (`did-hosting-daemon invite`); scales the dids Deployment to 0, waits for its pod gone, runs the invite Job, then scales back to 1 (always, even on failure) |
 | `POST` | `/setup/:id/dids/enroll-ack` *(new, optional)* | frontend marks `dids_enroll_used = true` once the user opens the enrollment URL, so `GET /setup/:id` stops re-offering a link the daemon will refuse a second time |
@@ -798,17 +869,18 @@ tag (per the API Docs Rule in CLAUDE.md).
 1. `orch.Cancel(sid)` — stop the goroutine.
 2. Delete 3 Cloudflare records (`CFRecordID/Mediator/Dids`).
 3. Delete component resources: Deployments, Services, Ingresses, PVCs for
-   vta/mediator/dids, all setup Jobs/ConfigMaps, and the `mediator-vault-token-{sid}` Secret.
-4. Delete Vault material: `TeardownVaultSeed` (VTA master seed) **and** the mediator's
-   KV prefix (`secret/{data,metadata}/mediator/user-<id>/session-<id>/*`); revoke the
-   mediator's token.
+   vta/mediator/dids, and all setup Jobs/ConfigMaps.
+4. Delete Vault material: `TeardownVaultSeed` (VTA master seed), `TeardownMediatorVault`
+   (mediator's KV prefix), and `TeardownDidsVault` (dids daemon's KV prefix). No token
+   to revoke anywhere — kubernetes auth leaves nothing to clean up beyond the KV data
+   itself.
 5. Delete the `SetupSession` row.
 6. If this was the user's last session, `DeleteNamespace` + `TeardownVaultUserAccess`
    (remove the per-user Vault policy/role) — both already implemented.
 
 No external DID-host cleanup is needed (unlike `vta_only`) — the mediator + dids pods are
 namespaced and die with everything else; only the Vault material (VTA seed, mediator
-secrets + token, and the per-user Vault access on the last session) needs explicit
+secrets, dids secrets, and the per-user Vault access on the last session) needs explicit
 removal.
 
 ---
@@ -845,28 +917,30 @@ reaches the terminal `running` status.
    `setup.FullStackHosts()` helper.
 3. `internal/setup/templates.go` — `create_mediator` VTA template variant (reuses the
    existing Vault `[secrets]` block) + mediator (fjall message store, **Vault `vault://`
-   secrets**) + webvh (p1/p3, plaintext) renderers; add `Vault.HostPort` +
-   `Vault.MediatorPrefix` to the render data.
+   secrets, kubernetes auth**) + webvh (p1/p3, **Vault `backend = "vault"`, kubernetes
+   auth**) renderers; add `Vault.HostPort`/`Vault.MediatorPrefix`/`Vault.K8sRole` (mediator)
+   and `Vault.Addr`/`Vault.SecretPath`/`Vault.K8sRole` (webvh) to the render data.
 4. `internal/setup/parser.go` — regexes from §8 (incl. `3e` enroll-URL). (`4a` is a user
    input, not parsed.)
 5. `internal/k8s/` — generic `CreateComponentSetupJob` (image, command, one-or-two PVC
-   mounts at `/work/<c>`, workingDir, SA, recipe ConfigMap, optional `VAULT_TOKEN`
-   `secretKeyRef` + `VAULT_SKIP_VERIFY` env); mediator + dids Deployment/Service/Ingress
-   helpers (generalize the VTA ones to a `/work/<c>` mount); create the per-session
-   `mediator-vault-token-{sid}` Secret. **ClusterRole += `secrets`.**
+   mounts at `/work/<c>`, workingDir, SA, recipe ConfigMap); mediator + dids
+   Deployment/Service/Ingress helpers (generalize the VTA ones to a `/work/<c>` mount).
+   No K8s Secret needed anywhere, no ClusterRole change.
 6. ~~`internal/didhosting/` per-session client constructor~~ — not needed. DID logs are
    loaded offline via `step_dids_load_did` (`did-hosting-daemon load-did`, §6) instead of
    an HTTP control-API call, so there's no per-session `didhosting.Client` at all.
 7. `internal/vault/` — extend the per-user policy to grant
-   `secret/{data,metadata}/mediator/user-<id>/session-<id>/*`; add `MediatorPrefix(userID, sid)`,
-   `MintMediatorToken` (periodic, scoped), and teardown (delete mediator secrets + revoke token).
+   `secret/{data,metadata}/{mediator,dids}/user-<id>/session-<id>/*`; add
+   `MediatorPrefix(userID, sid)`/`DidsPrefix(userID, sid)` and
+   `DeleteMediatorSecrets`/`DeleteDidsSecrets` for teardown. No token minting/revocation
+   anywhere — every component authenticates via the same kubernetes-auth role.
 8. `internal/setup/orchestrator.go` — `runFullStack` state machine (§5); extend
    `Resume` for the new statuses. **Reuse the `vta_only` admin-DID handshake unchanged**:
    `admin_did` is a user input, `Provision` / `POST /setup/:id/admin` triggers it, and
    `vta import-did` runs before `deploy_vta` (`awaiting_admin_did` gate when not supplied
-   upfront). Reuse `EnsureUserAccess` + `TeardownVaultSeed` for the VTA seed; mint +
-   inject the mediator `VAULT_TOKEN`, and revoke it + delete the mediator KV prefix on
-   teardown.
+   upfront). Reuse `EnsureUserAccess` + `TeardownVaultSeed` for the VTA seed; mediator and
+   dids Jobs/Deployments run as SA `vta` and need no env wiring beyond `NO_COLOR`;
+   `TeardownMediatorVault`/`TeardownDidsVault` delete their KV prefixes on teardown.
 9. `internal/handler/setup.go` — branch on `mode`; 3 DNS records; **reuse `POST
    /setup/:id/admin` for the PNM admin DID**; generalized teardown; reveal-once keys +
    required `vta_did` / dids-enroll-URL in `GET /setup/:id`; reissue-enroll endpoint.
@@ -874,25 +948,51 @@ reaches the terminal `running` status.
 11. `internal/apidocs/openapi.yaml` — document new/changed routes (`User` tag).
 12. Update the stale **Full Stack** section of
     [`vta-setup-design.md`](vta-setup-design.md) to point here.
+13. *(added post-implementation, `vta_only` parity)* `step_vta_register_dids` — the
+    `--id dids` server registration (§5/§6): `FSJobVtaRegisterDids` in
+    `fullstack_names.go` (+ `allFSJobNames`), the orchestrator step + resume status,
+    the `?source=` value, and the openapi status/source lists. (A paired
+    `step_dids_grant_vta` — daemon-side `service` ACL for the VTA — was added and then
+    removed in the same pass; see §5's "No separate step grants the VTA an ACL entry"
+    note for why.)
+14. *(added post-implementation, mediator/dids Vault simplification, §9)* Mediator and
+    dids daemon switched from token-auth/plaintext to kubernetes auth, both upstream
+    binaries having gained parity with the VTA's own auth method: removed
+    `MintMediatorToken`/`RevokeToken`/`MediatorTokenRole`, `FSMediatorTokenSecret`, and
+    the generic `CreateComponentSecret`/`GetComponentSecretValue`/`DeleteComponentSecret`
+    K8s helpers (all now dead); added `vault.DidsPrefix`/`DeleteDidsSecrets` and
+    `TeardownDidsVault`; widened `EnsureUserAccess`'s policy to cover `dids/*`; switched
+    `step_mediator_p1`/`p2`/`deploy_mediator`/`step_dids_p1`/`p2`/`deploy_dids` to SA
+    `vta`; updated the mediator and webvh recipe templates (§7); removed the ClusterRole
+    `secrets` grant and `VAULT_MEDIATOR_TOKEN_ROLE` config/helm values.
+15. *(added post-implementation, live-session bug fix)* `fsDeployDids` /
+    `fsDeployMediator` / the VTA's `deploy_vta` block now call
+    `WaitForComponentDeploymentReady` (2 min timeout) before returning — found via a
+    real session where `step_vta_register_dids` 503'd resolving the dids daemon's
+    `did.jsonl` because it ran immediately after `deploy_dids`, before the pod (and its
+    Service/Ingress endpoint) was actually serving. §6's `deploy_dids`/`deploy_mediator`/
+    `deploy_vta` entries updated to match.
 
 ---
 
 ## Appendix A — Verified Ubuntu reference flow
 
+> **Superseded on secrets backends.** This appendix documents the single-host flow as
+> originally verified: mediator secrets via Vault **token auth**, dids daemon on
+> **plaintext**. Both upstream binaries have since gained kubernetes-auth /
+> `vault-secrets` support at parity with the VTA, and the K8s mapping above (§9) has
+> moved to it for both — no token to mint, no plaintext fallback. Command ordering,
+> recipe shapes, and everything else below is otherwise still accurate and is kept as
+> the source of truth for those.
+
 The bare-metal flow this design automates (the "Automated VTI Setup" guide), verified
 end-to-end on Ubuntu Server with `fjall` mediator message storage. Kept as the source of
 truth for command ordering and recipe contents; the K8s mapping above supersedes the
-home-dir / `nohup` mechanics. Both the **VTA and the Mediator** store secrets in **Vault**
+home-dir / `nohup` mechanics, and now the secrets-backend choice too (see the note
+above). Both the **VTA and the Mediator** store secrets in **Vault**
 (the VTA via kubernetes auth as in `vta_only`; the mediator via token auth with a
-`secrets-vault` build — see below); only the dids daemon stays plaintext.
-
-**Verified versions:**
-
-| VTA | Mediator | DID Hosting daemon |
-| --- | --- | --- |
-| 0.7.0 | 0.15.5 | 0.7.0 |
-| 0.6.0 | 0.15.4 | 0.7.0 |
-| 0.6.0 | 0.15.3 | 0.7.0 |
+`secrets-vault` build in *this* verified reference — see below); only the dids daemon
+stays plaintext *in this reference*.
 
 **Saved-value cross-reference (reference ID → where this design captures it):**
 
@@ -954,9 +1054,11 @@ home-dir / `nohup` mechanics. Both the **VTA and the Mediator** store secrets in
 - **Unchanged:** VTA + dids backends, PNM, and `[database]`/`[storage]` — Vault stores
   only mediator secrets, not the fjall message store.
 
-The K8s mapping (§9) keeps all of this but swaps the single static `VAULT_TOKEN`/prefix
-for a **per-session** token + `mediator/user-<id>/session-<id>` prefix, injected from a
-K8s Secret, with `VAULT_SKIP_VERIFY=true` for the self-signed in-cluster CA.
+The K8s mapping (§9) keeps the per-tenant `mediator/user-<id>/session-<id>` prefix but
+drops the static `VAULT_TOKEN` entirely: the mediator now authenticates via
+`?auth=kubernetes&role=<role>` in the recipe's `storage` URL, exchanging its own pod's
+ServiceAccount JWT — no token to export, mint, or inject, and `?insecure=1` in the URL
+takes the place of the `VAULT_SKIP_VERIFY` env var.
 
 > The full step-by-step reference guide — including the recipe edits, the
 > `vta contexts reprovision` / `vta bootstrap provision-integration` transcripts, the
