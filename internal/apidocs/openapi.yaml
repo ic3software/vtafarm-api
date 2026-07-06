@@ -164,7 +164,7 @@ components:
           description: |
             Required for full_stack_with_vtc. Full image URL selected from
             GET /setup/images?component=vtc. Must be built with the `vault-secrets` feature.
-          example: "ghcr.io/ic3software/vtc-service:0.3.0"
+          example: "ghcr.io/ic3software/vtc:0.3.0"
         vtc_name:
           type: string
           default: "personal-vtc"

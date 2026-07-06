@@ -585,7 +585,7 @@ func (s *SetupSession) VtcFQDN() string { return s.VtcSubdomain + "." + s.Domain
 
 | Var | Purpose |
 | --- | --- |
-| `GITHUB_VTC_PACKAGE_NAME` | GHCR package for `GET /setup/images?component=vtc` (default `vtc-service`, same convention as `GITHUB_MEDIATOR_PACKAGE_NAME`) |
+| `GITHUB_VTC_PACKAGE_NAME` | GHCR package for `GET /setup/images?component=vtc` (default `vtc`, same convention as `GITHUB_MEDIATOR_PACKAGE_NAME`) |
 
 Reuse everything else — `CLUSTER_INGRESS_IP`, `CLUSTER_DOMAIN`,
 `CLOUDFLARE_*`, all `VAULT_*` (no new Vault token role needed, §10).
