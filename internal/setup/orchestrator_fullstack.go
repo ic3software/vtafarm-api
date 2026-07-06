@@ -925,3 +925,15 @@ func (o *Orchestrator) TeardownDidsVault(ctx context.Context, userID, sessionID 
 		log.Printf("[orchestrator] warn: delete dids secrets (user %d session %d): %v", userID, sessionID, err)
 	}
 }
+
+// TeardownVtcVault deletes the VTC's KV secrets (full_stack_with_vtc only).
+// Best-effort, mirrors TeardownMediatorVault — no token to revoke for the
+// VTC either, it authenticates via kubernetes auth like the other three.
+func (o *Orchestrator) TeardownVtcVault(ctx context.Context, userID, sessionID uint) {
+	if o.vault == nil {
+		return
+	}
+	if err := o.vault.DeleteVtcSecrets(ctx, userID, sessionID); err != nil {
+		log.Printf("[orchestrator] warn: delete vtc secrets (user %d session %d): %v", userID, sessionID, err)
+	}
+}
