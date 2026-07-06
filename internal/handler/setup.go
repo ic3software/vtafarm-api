@@ -32,9 +32,10 @@ type SetupHandler struct {
 	orch           *setup.Orchestrator
 	ghcr           *ghcr.Client // nil when not configured
 
-	// full_stack mode
+	// full_stack / full_stack_with_vtc modes
 	mediatorGhcr *ghcr.Client // nil when not configured
 	didsGhcr     *ghcr.Client // nil when not configured
+	vtcGhcr      *ghcr.Client // nil when not configured
 }
 
 func NewSetupHandler(
@@ -47,6 +48,7 @@ func NewSetupHandler(
 	ghcrClient *ghcr.Client,
 	mediatorGhcrClient *ghcr.Client,
 	didsGhcrClient *ghcr.Client,
+	vtcGhcrClient *ghcr.Client,
 ) *SetupHandler {
 	return &SetupHandler{
 		db:             db,
@@ -63,6 +65,7 @@ func NewSetupHandler(
 
 		mediatorGhcr: mediatorGhcrClient,
 		didsGhcr:     didsGhcrClient,
+		vtcGhcr:      vtcGhcrClient,
 	}
 }
 
@@ -93,9 +96,10 @@ func (h *SetupHandler) Validate(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"cloudflare": "ok"})
 }
 
-// GET /api/v1/setup/images?component=vta|mediator|dids
+// GET /api/v1/setup/images?component=vta|mediator|dids|vtc
 // component defaults to "vta" (vta_only's existing behavior, unchanged).
-// mediator/dids are full_stack-only — same GHCR-package-tags pattern as vta.
+// mediator/dids are full_stack-only and vtc is full_stack_with_vtc-only —
+// same GHCR-package-tags pattern as vta.
 func (h *SetupHandler) Images(c *gin.Context) {
 	type imageOption struct {
 		Tag    string `json:"tag"`
@@ -112,8 +116,10 @@ func (h *SetupHandler) Images(c *gin.Context) {
 		client = h.mediatorGhcr
 	case "dids":
 		client = h.didsGhcr
+	case "vtc":
+		client = h.vtcGhcr
 	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown component " + component + " (expected vta, mediator, or dids)"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown component " + component + " (expected vta, mediator, dids, or vtc)"})
 		return
 	}
 

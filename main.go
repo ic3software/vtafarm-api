@@ -97,7 +97,7 @@ func main() {
 	}
 
 	// GHCR clients for listing available image tags (optional, one per component).
-	var ghcrClient, mediatorGhcrClient, didsGhcrClient *ghcr.Client
+	var ghcrClient, mediatorGhcrClient, didsGhcrClient, vtcGhcrClient *ghcr.Client
 	if cfg.GHCR.Owner != "" && cfg.GHCR.PackageName != "" {
 		ghcrClient = ghcr.New(cfg.GHCR.Token, cfg.GHCR.Owner, cfg.GHCR.PackageName)
 		log.Printf("GHCR image listing enabled for ghcr.io/%s/%s", cfg.GHCR.Owner, cfg.GHCR.PackageName)
@@ -116,8 +116,14 @@ func main() {
 	} else {
 		log.Printf("warn: GITHUB_PACKAGE_OWNER or GITHUB_DID_HOSTING_DAEMON_PACKAGE_NAME not set — dids image listing disabled")
 	}
+	if cfg.GHCR.Owner != "" && cfg.GHCR.VtcPackageName != "" {
+		vtcGhcrClient = ghcr.New(cfg.GHCR.Token, cfg.GHCR.Owner, cfg.GHCR.VtcPackageName)
+		log.Printf("GHCR image listing enabled for ghcr.io/%s/%s", cfg.GHCR.Owner, cfg.GHCR.VtcPackageName)
+	} else {
+		log.Printf("warn: GITHUB_PACKAGE_OWNER or GITHUB_VTC_PACKAGE_NAME not set — vtc image listing disabled")
+	}
 
-	r := router.Setup(db, cfClient, k8sClient, orch, ghcrClient, mediatorGhcrClient, didsGhcrClient, dhClient, cfg)
+	r := router.Setup(db, cfClient, k8sClient, orch, ghcrClient, mediatorGhcrClient, didsGhcrClient, vtcGhcrClient, dhClient, cfg)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.AppPort,
