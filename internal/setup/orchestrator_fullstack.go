@@ -254,9 +254,14 @@ func (o *Orchestrator) runFullStack(ctx context.Context, sessionID uint) {
 }
 
 // fsK8sProvision creates the three PVCs + Services + Ingresses up front
-// (design §2: "created up front; 503 until pods come up").
+// (design §2: "created up front; 503 until pods come up") — four for
+// full_stack_with_vtc, whose extra component follows the exact same pattern.
 func (o *Orchestrator) fsK8sProvision(ctx context.Context, ns string, s *model.SetupSession) error {
-	for _, name := range []string{k8s.FSVtaName(s.ID), k8s.FSMediatorName(s.ID), k8s.FSDidsName(s.ID)} {
+	names := []string{k8s.FSVtaName(s.ID), k8s.FSMediatorName(s.ID), k8s.FSDidsName(s.ID)}
+	if s.Mode == model.ModeFullStackWithVtc {
+		names = append(names, k8s.FSVtcName(s.ID))
+	}
+	for _, name := range names {
 		if err := o.k8s.CreateComponentPVC(ctx, ns, name); err != nil {
 			return err
 		}
@@ -271,6 +276,9 @@ func (o *Orchestrator) fsK8sProvision(ctx context.Context, ns string, s *model.S
 		{k8s.FSVtaName(s.ID), s.FQDN(), 8100, fsLabels("vta", s.ID)},
 		{k8s.FSMediatorName(s.ID), s.MediatorFQDN(), 7037, fsLabels("mediator", s.ID)},
 		{k8s.FSDidsName(s.ID), s.DidsFQDN(), 8534, fsLabels("dids", s.ID)},
+	}
+	if s.Mode == model.ModeFullStackWithVtc {
+		svcs = append(svcs, svc{k8s.FSVtcName(s.ID), s.VtcFQDN(), 8200, fsLabels("vtc", s.ID)})
 	}
 	for _, sv := range svcs {
 		if err := o.k8s.CreateComponentService(ctx, ns, sv.name, sv.labels, sv.port); err != nil {
@@ -780,7 +788,9 @@ func (o *Orchestrator) fsDeployMediator(ctx context.Context, ns string, s *model
 // runFullStackFinish mirrors runProvision: import the user's PNM admin DID
 // then start the VTA Deployment. Called both from runFullStack's auto-
 // trigger path (admin_did supplied at POST /setup) and from Provision()'s
-// full_stack dispatch (POST /setup/:id/admin).
+// full_stack dispatch (POST /setup/:id/admin). full_stack_with_vtc's finish
+// (orchestrator_fullstack_vtc.go) shares the two step helpers below,
+// wrapping its VTC steps around them.
 func (o *Orchestrator) runFullStackFinish(ctx context.Context, sessionID uint, adminDid string) {
 	var session model.SetupSession
 	if err := o.db.First(&session, sessionID).Error; err != nil {
@@ -790,12 +800,38 @@ func (o *Orchestrator) runFullStackFinish(ctx context.Context, sessionID uint, a
 	s := &session
 	ns := o.k8s.UserNamespace(fmt.Sprintf("%d", s.UserID))
 
+	fail := func(prefix string, err error) bool {
+		if err == nil {
+			return false
+		}
+		if ctx.Err() != nil {
+			return true
+		}
+		o.markFailed(sessionID, prefix+": "+err.Error())
+		return true
+	}
+
 	o.db.Model(&model.SetupSession{}).Where("id = ?", sessionID).Updates(map[string]any{
 		"status": "step_import_admin_did", "admin_did": adminDid, "updated_at": time.Now(),
 	})
 	log.Printf("[orchestrator] fs session %d: importing admin DID %s", sessionID, adminDid)
+	if fail("import-admin-did failed", o.fsStepImportAdminDid(ctx, ns, s, adminDid)) {
+		return
+	}
 
-	jobName := k8s.FSJobImportAdminDid(sessionID)
+	o.fsSetStatus(sessionID, "deploy_vta")
+	if fail("failed to deploy vta", o.fsDeployVta(ctx, ns, s)) {
+		return
+	}
+
+	o.fsSetStatus(sessionID, "running")
+	log.Printf("[orchestrator] fs session %d: running at %s", sessionID, s.PublicURL())
+}
+
+// fsStepImportAdminDid runs the import-admin-did Job — imports the user's
+// PNM admin DID into the VTA's (still-unclaimed) fjall store.
+func (o *Orchestrator) fsStepImportAdminDid(ctx context.Context, ns string, s *model.SetupSession, adminDid string) error {
+	jobName := k8s.FSJobImportAdminDid(s.ID)
 	cmd := fmt.Sprintf("vta import-did --role admin --label pnm-bootstrap --did %s", shellQuote(adminDid))
 	if err := o.k8s.CreateComponentJob(ctx, ns, k8s.ComponentJobSpec{
 		Name:           jobName,
@@ -803,32 +839,28 @@ func (o *Orchestrator) runFullStackFinish(ctx context.Context, sessionID uint, a
 		Command:        []string{"sh", "-c", cmd},
 		WorkingDir:     "/work/vta",
 		ServiceAccount: k8s.VtaServiceAccount,
-		PVCMounts:      []k8s.PVCMount{{Name: "vta-data", ClaimName: k8s.FSVtaName(sessionID), MountPath: "/work/vta"}},
+		PVCMounts:      []k8s.PVCMount{{Name: "vta-data", ClaimName: k8s.FSVtaName(s.ID), MountPath: "/work/vta"}},
 		Env:            fsNoColorEnv(),
 	}); err != nil {
-		if ctx.Err() != nil {
-			return
-		}
-		o.markFailed(sessionID, "failed to create import-admin-did job: "+err.Error())
-		return
+		return fmt.Errorf("create job: %w", err)
 	}
 
 	succeeded, failMsg, err := o.k8s.WaitForJob(ctx, ns, jobName)
 	if err != nil {
-		if ctx.Err() != nil {
-			return
-		}
-		o.markFailed(sessionID, "import-admin-did job watch error: "+err.Error())
-		return
+		return err
 	}
 	if !succeeded {
-		o.markFailed(sessionID, "import-admin-did job failed: "+o.fsJobFailErr(ctx, ns, jobName, failMsg).Error())
-		return
+		return o.fsJobFailErr(ctx, ns, jobName, failMsg)
 	}
+	return nil
+}
 
-	o.fsSetStatus(sessionID, "deploy_vta")
-
-	name := k8s.FSVtaName(sessionID)
+// fsDeployVta starts the VTA Deployment and waits for it to become Ready —
+// full_stack_with_vtc's step_vtc_setup makes live calls against it right
+// after, so the deploy_* invariant (returns only once the component is
+// actually up) matters here too.
+func (o *Orchestrator) fsDeployVta(ctx context.Context, ns string, s *model.SetupSession) error {
+	name := k8s.FSVtaName(s.ID)
 	if err := o.k8s.CreateComponentDeployment(ctx, ns, k8s.ComponentDeploymentSpec{
 		Name:           name,
 		Image:          s.VtaImage,
@@ -838,33 +870,23 @@ func (o *Orchestrator) runFullStackFinish(ctx context.Context, sessionID uint, a
 		PVCMounts:      []k8s.PVCMount{{Name: "vta-data", ClaimName: name, MountPath: "/work/vta"}},
 		Env:            fsNoColorEnv(),
 		Port:           8100,
-		Labels:         fsLabels("vta", sessionID),
+		Labels:         fsLabels("vta", s.ID),
 	}); err != nil {
-		if ctx.Err() != nil {
-			return
-		}
-		o.markFailed(sessionID, "failed to create vta deployment: "+err.Error())
-		return
+		return err
 	}
-	if err := o.k8s.WaitForComponentDeploymentReady(ctx, ns, name, 2*time.Minute); err != nil {
-		if ctx.Err() != nil {
-			return
-		}
-		o.markFailed(sessionID, "vta deployment did not become ready: "+err.Error())
-		return
-	}
-
-	o.fsSetStatus(sessionID, "running")
-	log.Printf("[orchestrator] fs session %d: running at %s", sessionID, s.PublicURL())
+	return o.k8s.WaitForComponentDeploymentReady(ctx, ns, name, 2*time.Minute)
 }
 
 // ── Resume ───────────────────────────────────────────────────────────────────
 
-// resumeFullStack re-attaches goroutines for full_stack sessions interrupted
-// mid-run at startup. Every step is idempotent (AlreadyExists ignored,
-// WaitForJob re-attaches by name), so resuming just restarts the relevant
-// phase from its top — see plan decision #3.
+// resumeFullStack re-attaches goroutines for full_stack and
+// full_stack_with_vtc sessions interrupted mid-run at startup. Every step is
+// idempotent (AlreadyExists ignored, WaitForJob re-attaches by name; the VTC
+// context grant tolerates its Conflict case), so resuming just restarts the
+// relevant phase from its top — see plan decision #3.
 func (o *Orchestrator) resumeFullStack() {
+	fsModes := []string{model.ModeFullStack, model.ModeFullStackWithVtc}
+
 	preGate := []string{
 		"dns_provision", "env_provision", "k8s_provision", "step_vta_setup",
 		"step_mediator_p1", "step_mediator_reprov", "step_mediator_p2",
@@ -873,30 +895,35 @@ func (o *Orchestrator) resumeFullStack() {
 		"step_vta_register_dids",
 	}
 	var inFlight []model.SetupSession
-	if err := o.db.Where("mode = ? AND status IN ?", model.ModeFullStack, preGate).Find(&inFlight).Error; err != nil {
+	if err := o.db.Where("mode IN ? AND status IN ?", fsModes, preGate).Find(&inFlight).Error; err != nil {
 		log.Printf("[orchestrator] resume full_stack: query failed: %v", err)
 	}
 	for _, s := range inFlight {
-		log.Printf("[orchestrator] resuming full_stack session %d (status=%s)", s.ID, s.Status)
+		log.Printf("[orchestrator] resuming %s session %d (status=%s)", s.Mode, s.ID, s.Status)
 		o.Start(s.ID)
 	}
 
-	postGate := []string{"step_import_admin_did", "deploy_vta"}
+	// The vtc statuses only ever occur on full_stack_with_vtc rows, so one
+	// combined query is safe — Provision dispatches by mode either way.
+	postGate := []string{
+		"step_import_admin_did", "deploy_vta",
+		"step_vtc_setup_key", "step_vtc_acl_grant", "step_vtc_setup", "deploy_vtc",
+	}
 	var finishing []model.SetupSession
-	if err := o.db.Where("mode = ? AND status IN ?", model.ModeFullStack, postGate).Find(&finishing).Error; err != nil {
+	if err := o.db.Where("mode IN ? AND status IN ?", fsModes, postGate).Find(&finishing).Error; err != nil {
 		log.Printf("[orchestrator] resume full_stack: query failed: %v", err)
 	}
 	for _, s := range finishing {
-		log.Printf("[orchestrator] resuming full_stack finish %d (status=%s)", s.ID, s.Status)
+		log.Printf("[orchestrator] resuming %s finish %d (status=%s)", s.Mode, s.ID, s.Status)
 		o.Provision(s.ID, s.AdminDid)
 	}
 
 	var gatedWithAdmin []model.SetupSession
-	if err := o.db.Where("mode = ? AND status = ? AND admin_did != ''", model.ModeFullStack, "awaiting_admin_did").Find(&gatedWithAdmin).Error; err != nil {
+	if err := o.db.Where("mode IN ? AND status = ? AND admin_did != ''", fsModes, "awaiting_admin_did").Find(&gatedWithAdmin).Error; err != nil {
 		log.Printf("[orchestrator] resume full_stack: query failed: %v", err)
 	}
 	for _, s := range gatedWithAdmin {
-		log.Printf("[orchestrator] resuming full_stack gated session %d", s.ID)
+		log.Printf("[orchestrator] resuming %s gated session %d", s.Mode, s.ID)
 		o.Provision(s.ID, s.AdminDid)
 	}
 }
