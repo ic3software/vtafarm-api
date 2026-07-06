@@ -133,6 +133,8 @@ func Setup(
 		userAuth.POST("/setup/:id/admin", sh.ProvisionAdmin)
 		userAuth.POST("/setup/:id/dids/reissue-enroll", sh.ReissueDidsEnroll)
 		userAuth.POST("/setup/:id/dids/enroll-ack", sh.AckDidsEnroll)
+		userAuth.POST("/setup/:id/vtc/reissue-install", sh.ReissueVtcInstall)
+		userAuth.POST("/setup/:id/vtc/install-ack", sh.AckVtcInstall)
 	}
 
 	return r

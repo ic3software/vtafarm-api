@@ -142,7 +142,7 @@ func (h *SetupHandler) Images(c *gin.Context) {
 }
 
 type createSetupRequest struct {
-	Mode     string `json:"mode"      binding:"required,oneof=vta_only full_stack"`
+	Mode     string `json:"mode"      binding:"required,oneof=vta_only full_stack full_stack_with_vtc"`
 	VtaName  string `json:"vta_name"`
 	VtaImage string `json:"vta_image" binding:"required"`
 	// Optional — if set, Phase 2 (import-did + Deployment) starts automatically after Phase 1.
@@ -150,9 +150,13 @@ type createSetupRequest struct {
 	// Advanced — optional, defaults: portable=true, pre_rotation_count=1
 	Portable         *bool `json:"portable"`
 	PreRotationCount *int  `json:"pre_rotation_count"`
-	// full_stack only — optional, default from MEDIATOR_IMAGE/DIDS_IMAGE env.
+	// full_stack / full_stack_with_vtc only.
 	MediatorImage string `json:"mediator_image"`
 	DidsImage     string `json:"dids_image"`
+	// full_stack_with_vtc only — vtc_image is required for that mode;
+	// vtc_name defaults to "personal-vtc" and doubles as the VTA context id.
+	VtcImage string `json:"vtc_image"`
+	VtcName  string `json:"vtc_name"`
 }
 
 // POST /api/v1/setup
@@ -180,9 +184,13 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		return
 	}
 
-	if req.Mode == model.ModeFullStack {
+	if req.Mode == model.ModeFullStack || req.Mode == model.ModeFullStackWithVtc {
 		if !user.BetaAccess {
-			c.JSON(http.StatusForbidden, gin.H{"error": "full_stack mode is in beta — ask an admin to enable beta access for your account"})
+			c.JSON(http.StatusForbidden, gin.H{"error": req.Mode + " mode is in beta — ask an admin to enable beta access for your account"})
+			return
+		}
+		if req.Mode == model.ModeFullStackWithVtc {
+			h.createFullStackWithVtc(c, req)
 			return
 		}
 		h.createFullStack(c, req)
@@ -305,11 +313,14 @@ func (h *SetupHandler) List(c *gin.Context) {
 			CreatedAt:   s.CreatedAt,
 			UpdatedAt:   s.UpdatedAt,
 		}
-		if s.Mode == model.ModeFullStack {
+		if s.IsFullStackFamily() {
 			it.URLs = gin.H{
 				"vta":      s.PublicURL(),
 				"mediator": "https://" + s.MediatorFQDN(),
 				"dids":     "https://" + s.DidsFQDN(),
+			}
+			if s.Mode == model.ModeFullStackWithVtc {
+				it.URLs["vtc"] = "https://" + s.VtcFQDN()
 			}
 		} else {
 			it.URL = s.PublicURL()
@@ -330,7 +341,7 @@ func (h *SetupHandler) Get(c *gin.Context) {
 		return
 	}
 
-	if session.Mode == model.ModeFullStack {
+	if session.IsFullStackFamily() {
 		h.getFullStack(c, &session)
 		return
 	}
@@ -366,7 +377,7 @@ func (h *SetupHandler) Delete(c *gin.Context) {
 		h.orch.Cancel(session.ID)
 	}
 
-	if session.Mode == model.ModeFullStack {
+	if session.IsFullStackFamily() {
 		h.deleteFullStack(c, &session)
 		return
 	}
@@ -442,7 +453,7 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 		return
 	}
 
-	if session.Mode == model.ModeFullStack {
+	if session.IsFullStackFamily() {
 		h.logsFullStack(c, &session)
 		return
 	}
@@ -578,7 +589,7 @@ func (h *SetupHandler) ProvisionAdmin(c *gin.Context) {
 	}
 
 	readyStatus := "vta_setup_complete"
-	if session.Mode == model.ModeFullStack {
+	if session.IsFullStackFamily() {
 		readyStatus = "awaiting_admin_did"
 	}
 	if session.Status != readyStatus {

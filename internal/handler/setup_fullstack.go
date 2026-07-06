@@ -153,24 +153,28 @@ func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest) {
 }
 
 // getFullStack implements GET /api/v1/setup/:id's full_stack response shape
-// (design §12).
+// (design §12), extended in place for full_stack_with_vtc (vtc design §13):
+// a fourth URL, collected.vtc_did, the reveal-once install credentials, and
+// vtc_install_used.
 func (h *SetupHandler) getFullStack(c *gin.Context, session *model.SetupSession) {
+	urls := gin.H{
+		"vta":      session.PublicURL(),
+		"mediator": "https://" + session.MediatorFQDN(),
+		"dids":     "https://" + session.DidsFQDN(),
+	}
+	collected := gin.H{
+		"vta_did":               session.VtaDid,
+		"mediator_did":          session.MediatorDid,
+		"did_hosting_did":       session.DIDHostingDid,
+		"mediator_admin_did":    session.MediatorAdminDid,
+		"did_hosting_admin_did": session.DIDHostingAdminDid,
+	}
 	resp := gin.H{
-		"id":     session.UniqueId,
-		"mode":   session.Mode,
-		"status": session.Status,
-		"urls": gin.H{
-			"vta":      session.PublicURL(),
-			"mediator": "https://" + session.MediatorFQDN(),
-			"dids":     "https://" + session.DidsFQDN(),
-		},
-		"collected": gin.H{
-			"vta_did":               session.VtaDid,
-			"mediator_did":          session.MediatorDid,
-			"did_hosting_did":       session.DIDHostingDid,
-			"mediator_admin_did":    session.MediatorAdminDid,
-			"did_hosting_admin_did": session.DIDHostingAdminDid,
-		},
+		"id":         session.UniqueId,
+		"mode":       session.Mode,
+		"status":     session.Status,
+		"urls":       urls,
+		"collected":  collected,
 		"created_at": session.CreatedAt,
 		"updated_at": session.UpdatedAt,
 	}
@@ -190,6 +194,19 @@ func (h *SetupHandler) getFullStack(c *gin.Context, session *model.SetupSession)
 			resp["webvh_admin_key"] = session.WebvhAdminKey
 		}
 	}
+
+	if session.Mode == model.ModeFullStackWithVtc {
+		urls["vtc"] = "https://" + session.VtcFQDN()
+		collected["vtc_did"] = session.VtcDid
+		resp["vtc_install_used"] = session.VtcInstallUsed
+		// Single-shot like the dids enroll URL — once acked, stop offering a
+		// dead link; reissue-install mints a fresh pair.
+		if session.VtcInstallURL != "" && !session.VtcInstallUsed {
+			actionRequired["install_url"] = session.VtcInstallURL
+			actionRequired["claim_code"] = session.VtcClaimCode
+		}
+	}
+
 	if len(actionRequired) > 0 {
 		resp["action_required"] = actionRequired
 	}
@@ -207,7 +224,9 @@ func (h *SetupHandler) deleteFullStack(c *gin.Context, session *model.SetupSessi
 	ctx := c.Request.Context()
 
 	if h.cf != nil {
-		for label, rec := range map[string]string{"vta": session.CFRecordID, "mediator": strVal(session.CFRecordMediator), "dids": strVal(session.CFRecordDids)} {
+		// cf_record_vtc is nil outside full_stack_with_vtc, so the empty-skip
+		// covers plain full_stack rows.
+		for label, rec := range map[string]string{"vta": session.CFRecordID, "mediator": strVal(session.CFRecordMediator), "dids": strVal(session.CFRecordDids), "vtc": strVal(session.CFRecordVtc)} {
 			if rec == "" {
 				continue
 			}
@@ -229,6 +248,13 @@ func (h *SetupHandler) deleteFullStack(c *gin.Context, session *model.SetupSessi
 		h.k8s.DeleteComponentResources(ctx, ns, k8s.FSVtaName(session.ID))
 		h.k8s.DeleteComponentResources(ctx, ns, k8s.FSMediatorName(session.ID))
 		h.k8s.DeleteComponentResources(ctx, ns, k8s.FSDidsName(session.ID))
+
+		if session.Mode == model.ModeFullStackWithVtc {
+			if h.orch != nil {
+				h.orch.TeardownVtcVault(ctx, session.UserID, session.ID)
+			}
+			h.k8s.DeleteComponentResources(ctx, ns, k8s.FSVtcName(session.ID))
+		}
 	}
 
 	if h.orch != nil {
@@ -309,8 +335,22 @@ func (h *SetupHandler) logsFullStack(c *gin.Context, session *model.SetupSession
 			source = "vta_register_dids"
 		case "step_import_admin_did":
 			source = "import_admin_did"
-		case "deploy_vta", "running":
+		case "step_vtc_setup_key":
+			source = "vtc_setup_key"
+		case "step_vtc_acl_grant":
+			source = "vtc_acl_grant"
+		case "step_vtc_setup":
+			source = "vtc_setup"
+		case "deploy_vtc":
+			source = "vtc"
+		case "deploy_vta":
 			source = "vta"
+		case "running":
+			if session.Mode == model.ModeFullStackWithVtc {
+				source = "vtc"
+			} else {
+				source = "vta"
+			}
 		case "deploy_mediator", "awaiting_admin_did":
 			source = "mediator"
 		case "deploy_dids":
@@ -343,12 +383,20 @@ func (h *SetupHandler) logsFullStack(c *gin.Context, session *model.SetupSession
 		streamJob(k8s.FSJobVtaRegisterDids(sid))
 	case "import_admin_did":
 		streamJob(k8s.FSJobImportAdminDid(sid))
+	case "vtc_setup_key":
+		streamJob(k8s.FSJobVtcSetupKey(sid))
+	case "vtc_acl_grant":
+		streamJob(k8s.FSJobVtcAclGrant(sid))
+	case "vtc_setup":
+		streamJob(k8s.FSJobVtcSetup(sid))
 	case "vta":
 		streamPod("vta")
 	case "mediator":
 		streamPod("mediator")
 	case "dids":
 		streamPod("dids")
+	case "vtc":
+		streamPod("vtc")
 	default:
 		fmt.Fprintf(c.Writer, "event: error\ndata: unknown source %q\n\n", source)
 		c.Writer.Flush()
@@ -377,8 +425,8 @@ func (h *SetupHandler) ReissueDidsEnroll(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
-	if session.Mode != model.ModeFullStack {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "reissue-enroll is only available for full_stack sessions"})
+	if !session.IsFullStackFamily() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "reissue-enroll is only available for full-stack sessions"})
 		return
 	}
 	if session.DIDHostingAdminDid == "" {
@@ -475,8 +523,8 @@ func (h *SetupHandler) AckDidsEnroll(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
-	if session.Mode != model.ModeFullStack {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "enroll-ack is only available for full_stack sessions"})
+	if !session.IsFullStackFamily() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "enroll-ack is only available for full-stack sessions"})
 		return
 	}
 	if session.DidsEnrollURL == "" {
