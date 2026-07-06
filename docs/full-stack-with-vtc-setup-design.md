@@ -14,11 +14,12 @@ https://dids-xxxx.{domain}       ← WebVH DID Hosting daemon
 https://vtc-xxxx.{domain}        ← VTC REST + admin SPA + public website  (new)
 ```
 
-> **Status: design only.** No code in this repo implements
-> `full_stack_with_vtc` yet. §4b names one small **upstream** addition needed
-> in `vtc-service` before this can be built; §17 records what was verified
-> against the actual `vtc-service` / `vta-service` / `did-hosting-daemon`
-> sources.
+> **Status: implemented in this repo** (§16 items 3–13). Two **external**
+> prerequisites remain before the mode works end-to-end: §4b's
+> `vtc setup generate-key` addition in `vtc-service`, and publishing the VTC
+> image built with `--features vault-secrets` (§10/§16 items 1–2). §17
+> records what was verified against the actual `vtc-service` / `vta-service`
+> / `did-hosting-daemon` sources.
 
 **There is no standalone `vtc_only` mode.** An earlier draft of this design
 explored deploying a bare VTC pointed at an arbitrary/external VTA. It's
