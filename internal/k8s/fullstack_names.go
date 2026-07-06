@@ -6,11 +6,13 @@ import "fmt"
 // unique PK shared across vta_only and full_stack rows in the same table, so
 // these never collide with vta_only's "vta-*" names even for the same ID.
 
-// FSVtaName, FSMediatorName, FSDidsName are the PVC/Deployment/Service/
-// Ingress names for each component.
+// FSVtaName, FSMediatorName, FSDidsName, FSVtcName are the PVC/Deployment/
+// Service/Ingress names for each component (FSVtcName is
+// full_stack_with_vtc-only).
 func FSVtaName(sessionID uint) string      { return fmt.Sprintf("fs-%d-vta", sessionID) }
 func FSMediatorName(sessionID uint) string { return fmt.Sprintf("fs-%d-mediator", sessionID) }
 func FSDidsName(sessionID uint) string     { return fmt.Sprintf("fs-%d-dids", sessionID) }
+func FSVtcName(sessionID uint) string      { return fmt.Sprintf("fs-%d-vtc", sessionID) }
 
 // Per-step setup Job (+ matching ConfigMap) names, in §6 order.
 func FSJobVtaSetup(sessionID uint) string   { return fmt.Sprintf("fs-%d-vta-setup", sessionID) }
@@ -31,6 +33,14 @@ func FSJobImportAdminDid(sessionID uint) string {
 	return fmt.Sprintf("fs-%d-import-admin-did", sessionID)
 }
 
+// full_stack_with_vtc-only Jobs (design §8). FSJobVtcInvite is the reissue
+// endpoint's `vtc admin invite` Job (POST /setup/:id/vtc/reissue-install),
+// not a pipeline step — mirrors how FSJobDidsInvite doubles for reissue.
+func FSJobVtcSetupKey(sessionID uint) string { return fmt.Sprintf("fs-%d-vtc-setup-key", sessionID) }
+func FSJobVtcAclGrant(sessionID uint) string { return fmt.Sprintf("fs-%d-vtc-acl-grant", sessionID) }
+func FSJobVtcSetup(sessionID uint) string    { return fmt.Sprintf("fs-%d-vtc-setup", sessionID) }
+func FSJobVtcInvite(sessionID uint) string   { return fmt.Sprintf("fs-%d-vtc-invite", sessionID) }
+
 // allFSJobNames lists every setup Job name for a session — used by teardown
 // to best-effort delete each one (and its ConfigMap, where one exists).
 func allFSJobNames(sessionID uint) []string {
@@ -46,5 +56,9 @@ func allFSJobNames(sessionID uint) []string {
 		FSJobDidsLoadDid(sessionID),
 		FSJobVtaRegisterDids(sessionID),
 		FSJobImportAdminDid(sessionID),
+		FSJobVtcSetupKey(sessionID),
+		FSJobVtcAclGrant(sessionID),
+		FSJobVtcSetup(sessionID),
+		FSJobVtcInvite(sessionID),
 	}
 }
