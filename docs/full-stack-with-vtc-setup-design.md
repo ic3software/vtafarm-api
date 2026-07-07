@@ -14,12 +14,11 @@ https://dids-xxxx.{domain}       ← WebVH DID Hosting daemon
 https://vtc-xxxx.{domain}        ← VTC REST + admin SPA + public website  (new)
 ```
 
-> **Status: implemented in this repo** (§16 items 3–13). Two **external**
-> prerequisites remain before the mode works end-to-end: §4b's
-> `vtc setup generate-key` addition in `vtc-service`, and publishing the VTC
-> image built with `--features vault-secrets` (§10/§16 items 1–2). §17
-> records what was verified against the actual `vtc-service` / `vta-service`
-> / `did-hosting-daemon` sources.
+> **Status: implemented in this repo** (§16 items 3–13). One **external**
+> prerequisite remains: publishing the VTC image built with
+> `--features vault-secrets` (§10/§16 item 2). §17 records what was
+> verified against the actual `vtc-service` / `vta-service` /
+> `did-hosting-daemon` sources.
 
 **There is no standalone `vtc_only` mode.** An earlier draft of this design
 explored deploying a bare VTC pointed at an arbitrary/external VTA. It's
@@ -167,7 +166,7 @@ gone — it collided with the daemon's own auto-seeded entry ("ACL entry already
 and `Admin` already covers everything `service` would have. This mode is simply the
 first to actually *exercise* an authorization that was already there for free.
 
-### 4b. The VTC's own ephemeral setup-key handshake — still needs one upstream addition
+### 4b. The VTC's own ephemeral setup-key handshake
 
 Provisioning a VTC authenticates to the VTA with an ephemeral `did:key`
 (`vta_sdk::provision_client::EphemeralSetupKey`) that must already hold an
@@ -176,36 +175,42 @@ admin ACL entry at the VTA *before* `vtc setup --from <toml>` runs — see
 `docs/03-vtc/getting-started.md` §"Non-interactive setup" (both in the
 `verifiable-trust-infrastructure` repo). The interactive wizard generates
 this key inline and pauses for the operator to grant it; a K8s Job can't
-pause for a TTY prompt.
-
-`vtc-service`'s CLI (`vtc-service/src/main.rs`) has no command that just
-generates + persists the key and exits — only the interactive wizard calls
-`EphemeralSetupKey::generate()` + `persist_to()` outside of tests, and
-`vtc setup --from` requires the key to **already** exist at
-`setup_key_file`.
-
-**Proposed addition** (mirrors the existing shape of
-`vta bootstrap provision-request` — local-only, file-based, non-interactive):
+pause for a TTY prompt, so this mode mints and grants it itself, offline,
+as its own pair of steps (§6/§8):
 
 ```text
-vtc setup generate-key --out <path>
+vtc setup --setup-key-out <path> [--context <id>]
 ```
 
-Generates a fresh key, persists it (the same `EphemeralSetupKey::persist_to`
-format `vtc setup --from` already loads via `setup_key_file`), prints:
+Mints a fresh ephemeral `did:key`, persists it (0600, the same
+`EphemeralSetupKey::persist_to` format `vtc setup --from` loads via
+`setup_key_file`), and prints a block to **stderr** via the shared
+`vta_sdk::provision_client::driver::run_phase1_init` helper (the same one
+`mediator-setup --setup-key-out` and `did-hosting-daemon setup
+--setup-key-out` use):
 
 ```text
-setup_key_did=did:key:z6Mk...
+  Setup DID (ephemeral):
+    did:key:z6Mk...
+
+  Key stored at <path> (0600)
+
+  Using your Personal Network Manager (PNM) connected to this VTA,
+  create the vtc context and grant admin access to the setup DID:
+
+    pnm contexts create --id <context> --name "VTC" \
+      --admin-did did:key:z6Mk... --admin-expires 1h
+  ...
 ```
 
-This is the **one** piece of this whole design that requires a change
-outside vtafarm-api. (`vtc create-did-key` is *not* a substitute — it writes
-an ACL entry into the VTC's own store and prints a credential; it does not
-persist the `setup_key_file` JSON. Fallback if the upstream change stalls:
-the persisted format is a trivial 4-field JSON —
-`{version: 1, did, private_key_multibase, note}` — so vtafarm-api *could*
-mint the Ed25519 `did:key` in Go and write the file into the VTC PVC
-itself, at the cost of duplicating the did:key/multibase encoding logic.)
+(`--from` and `--setup-key-out` are mutually exclusive; `--context`
+defaults to `"default"` and only shapes the printed grant command above —
+this mode passes the same value as the phase-2 TOML's `context`, i.e.
+`s.VtcName`.) `ParseVtcSetupKeyDid` (§8) extracts the DID from the line
+following `Setup DID (ephemeral):` — K8s Job logs capture stderr same as
+stdout, so no command-level redirect is needed. (`vtc create-did-key`
+is *not* a substitute — it writes an ACL entry into the VTC's own store
+and prints a credential; it does not persist the `setup_key_file` JSON.)
 
 ## 5. Why this needs no ACL-grant gate and no service downtime
 
@@ -267,7 +272,7 @@ pending
   → step_vta_register_dids  `servers add --id dids --did {{3d}}` (§4a)      (unchanged)
   → awaiting_admin_did      ⏸ gate: PNM admin DID (skip if supplied upfront) (unchanged)
   → step_import_admin_did                                                  (unchanged)
-  → step_vtc_setup_key      `vtc setup generate-key` → setup_key_did        (§4b)
+  → step_vtc_setup_key      `vtc setup --setup-key-out` → setup_key_did      (§4b)
   → step_vtc_acl_grant      `vta contexts create --id {{vtc_name}} --name "VTC"
                              --admin-did {{setup_key_did}} --admin-expires 1h` (§4b)
   → deploy_vta                                                             (unchanged)
@@ -319,24 +324,32 @@ All Jobs use `internal/k8s/component_jobs.go`'s `ComponentJobSpec` /
 `orchestrator_fullstack.go` as `fsStepVtaRegisterDids`; spec in
 [`full-stack-setup-design.md` §6](full-stack-setup-design.md#6-per-step-jobs).)
 
-### `step_vtc_setup_key` — VTC Job (workingDir `/work/vtc`)
+### `step_vtc_setup_key` — VTC Job (workingDir `/app/vtc`)
 
 ```go
 k8s.ComponentJobSpec{
     Name:           FSJobVtcSetupKey(s.ID),
     Image:          s.VtcImage,
-    Command:        []string{"sh", "-c", "vtc setup generate-key --out /work/vtc/setup-key.json"},
-    WorkingDir:     "/work/vtc",
+    Command:        []string{"sh", "-c", fmt.Sprintf(
+        "vtc setup --setup-key-out /app/vtc/setup-key.json --context %s",
+        shellQuote(s.VtcName),
+    )},
+    WorkingDir:     "/app/vtc",
     ServiceAccount: k8s.PodOperatorServiceAccount, // no Vault access needed for this step
-    PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/work/vtc"}},
+    PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/app/vtc"}},
     Env:            fsNoColorEnv(),
 }
 ```
 
-Parse `setup_key_did=(did:\S+)` from stdout; persist to
-`SetupSession.VtcSetupKeyDid` (mostly for debuggability/audit — nothing
-downstream reads it back from the DB, `step_vtc_acl_grant` gets it straight
-from this Job's own logs in the same orchestrator run).
+`/app/vtc` matches the vtc image's own Dockerfile `WORKDIR` — see
+`deploy_vtc` below.
+
+Parse the DID from the line following `Setup DID (ephemeral):` in the
+printed block (§4b) — `Setup DID \(ephemeral\):\s+(did:\S+)` — rather than a
+machine `key=value` line; persist to `SetupSession.VtcSetupKeyDid` (mostly
+for debuggability/audit — nothing downstream reads it back from the DB,
+`step_vtc_acl_grant` gets it straight from this Job's own logs in the same
+orchestrator run).
 
 ### `step_vtc_acl_grant` — VTA Job (workingDir `/work/vta`, post-gate, before `deploy_vta`)
 
@@ -372,16 +385,16 @@ a *fresh* setup key first, the fallback grant for an existing context is
 family the PNM import already uses; no expiry flag, acceptable for the
 retry path).
 
-### `step_vtc_setup` — VTC Job (workingDir `/work/vtc`)
+### `step_vtc_setup` — VTC Job (workingDir `/app/vtc`)
 
 ```go
 k8s.ComponentJobSpec{
     Name:           FSJobVtcSetup(s.ID),
     Image:          s.VtcImage,
     Command:        []string{"sh", "-c", "vtc setup --from /config/vtc-setup.toml"},
-    WorkingDir:     "/work/vtc",
+    WorkingDir:     "/app/vtc",
     ServiceAccount: k8s.VtaServiceAccount, // needs Vault (kubernetes auth) — §9
-    PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/work/vtc"}},
+    PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/app/vtc"}},
     ConfigMapName:  FSJobVtcSetup(s.ID),
     ConfigMapKey:   "vtc-setup.toml",
     ConfigMapData:  toml, // §9
@@ -427,14 +440,28 @@ column (§11), don't overload the existing one.
 k8s.ComponentDeploymentSpec{
     Name:           k8s.FSVtcName(s.ID),
     Image:          s.VtcImage,
-    Command:        nil, // image entrypoint
-    WorkingDir:     "/work/vtc",
+    Command:        nil, // image entrypoint — see below
+    WorkingDir:     "/app/vtc",
     ServiceAccount: k8s.VtaServiceAccount, // reads its Vault key bundle at every boot
-    PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/work/vtc"}},
+    PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/app/vtc"}},
     Port:           8200,
     Labels:         fsLabels("vtc", s.ID),
 }
 ```
+
+Unlike `fsDeployVta`/`Mediator`/`Dids` (which set `Command` explicitly and
+never invoke their images' `entrypoint.sh` at all), `Command` is
+deliberately left `nil` here — the vtc image's entrypoint gates startup on
+a data/config presence check before `exec`ing the binary, which is worth
+keeping. That wrapper checks `/app/vtc/{data,config.toml}`, matching every
+one of this farm's images' Dockerfile `WORKDIR` (`/app/<name>` — vta,
+mediator, did-hosting-daemon, vtc all agree), so the PVC is mounted at
+`/app/vtc` here too — same path across all three VTC Job/Deployment specs
+in this section, so the image's own entrypoint finds what
+`step_vtc_setup`/`step_vtc_setup_key` wrote. Note this Deployment has no
+readiness probe (a running container is Ready by default absent one), so
+`WaitForComponentDeploymentReady` only confirms the process started, not
+that port 8200 is actually accepting connections.
 
 Service + Ingress for `fs-{sid}-vtc` are created up front in `k8s_provision`
 (§2), same pattern as the other three components.
@@ -442,19 +469,18 @@ Service + Ingress for `fs-{sid}-vtc` are created up front in `k8s_provision`
 ## 9. TOML template — `vtc-setup.toml`
 
 Renders the schema `vtc-service/src/setup/from_toml.rs::VtcWizardInputs`
-deserializes. **Note the `[secrets]` shape differs from the VTA's own setup
-TOML**: `vta setup --from` uses a tagged `backend = "vault"` field
-(`docs/02-vta/non-interactive-setup.md`), but `vtc setup --from`'s
-`[secrets]` is the VTC's own **implicit-selection** `SecretsConfig`
-(`vtc-service/src/config.rs` — it deliberately mirrors
+deserializes. **`[secrets]` matches the VTA's own setup TOML shape**: the
+VTC's `SecretsConfig` (`vtc-service/src/config.rs` — mirrors
 `vti_secrets::SecretsConfig`'s field names, and is the same type the
-runtime `config.toml` uses) — setting `vault_addr` activates the Vault
-backend, there is no `backend =` key. Every `vault_*` field below is
-verified against that struct (defaults: `vault_kv_mount = "secret"`,
-`vault_secret_key = "seed"`, `vault_auth_method = "kubernetes"`). Both
-`VtcWizardInputs` and `SecretsConfig` are `#[serde(deny_unknown_fields)]`,
-so a stray `backend = "vault"` copied from the VTA template would fail fast
-as a parse error rather than silently misconfiguring anything.
+runtime `config.toml` uses) takes an optional tagged `backend = "vault"`
+selector, same as `vta setup --from`'s
+(`docs/02-vta/non-interactive-setup.md`). Setting `backend = "vault"`
+selects the store explicitly and fails closed if `vault_addr` is missing,
+rather than relying on `vault_addr`'s mere presence to activate Vault
+implicitly (omitting `backend` still falls back to that implicit
+resolution). Every `vault_*` field below is verified against that struct
+(defaults: `vault_kv_mount = "secret"`, `vault_secret_key = "seed"`,
+`vault_auth_method = "kubernetes"`).
 
 ```toml
 config_path    = "config.toml"
@@ -471,6 +497,7 @@ mediator_did = "{{ .MediatorDid }}"           # 1b — the same shared mediator
 mediator_url = "{{ .MediatorURL }}"           # informational only; endpoint is resolved from the DID doc
 
 [secrets]
+backend           = "vault"
 vault_addr        = "{{ .Vault.Addr }}"
 vault_kv_mount    = "{{ .Vault.KVMount }}"
 vault_secret_path = "{{ .Vault.SecretPath }}"  # vtc/user-<id>/session-<id>/key-bundle
@@ -683,10 +710,9 @@ There is **no** ACL-grant gate — see §5/§7.
 
 ## 16. Implementation checklist
 
-1. **Upstream (`verifiable-trust-infrastructure`):** add
-   `vtc setup generate-key --out <path>` to `vtc-service` (§4b). Nothing
-   below can be built end-to-end without this (Go-side fallback noted in
-   §4b if it stalls).
+1. **Upstream (`verifiable-trust-infrastructure`):** `vtc setup
+   --setup-key-out <path> [--context <id>]` (§4b) exists in `vtc-service`.
+   Done.
 2. **Image pipeline:** publish the `vtc-service` image built with
    `--features vault-secrets` (non-default — §10) under
    `GITHUB_VTC_PACKAGE_NAME`.
@@ -701,9 +727,9 @@ There is **no** ACL-grant gate — see §5/§7.
 7. `internal/setup/templates_fullstack.go` (or a new
    `templates_fullstack_vtc.go`) — `RenderVtcSetupTOML` (§9).
 8. `internal/setup/parser_fullstack.go` (or a new
-   `parser_fullstack_vtc.go`) — `setup_key_did` regex, the 5-field terse
-   completion-block parser (§8), and the reissue parser for `vtc admin
-   invite`'s `Install URL` / `Claim code` lines (§13).
+   `parser_fullstack_vtc.go`) — the `Setup DID (ephemeral):` regex (§4b/§8),
+   the 5-field terse completion-block parser (§8), and the reissue parser for
+   `vtc admin invite`'s `Install URL` / `Claim code` lines (§13).
 9. `internal/vault/client.go` — `VtcPrefix`, `DeleteVtcSecrets`, widen
    `EnsureUserAccess`'s policy string (§10). `internal/setup/orchestrator_fullstack_vtc.go`
    (or alongside `TeardownMediatorVault`/`TeardownDidsVault`) — `TeardownVtcVault`
@@ -734,7 +760,7 @@ codebases (`verifiable-trust-infrastructure` for vtc/vta,
 | Claim | Evidence |
 | --- | --- |
 | `vtc setup --from <toml>` exists and is fully non-interactive | `vtc-service/src/setup/from_toml.rs` — parses `VtcWizardInputs`, feeds the same `apply()` as the wizard; terse `key=value` summary incl. `install_url`/`claim_code` |
-| No standalone setup-key generator exists (upstream ask, §4b) | `vtc-service/src/main.rs` — only `Setup{--from}`, `Status`, `CreateDidKey`, `Admin`, `Acl`; `CreateDidKey` writes the VTC store/credential, not the `setup_key_file` JSON |
+| Standalone setup-key generator exists (§4b) | `vtc-service/src/main.rs::Commands::Setup{setup_key_out, context, ..}` + `vtc-service/src/setup/phase1.rs::run_setup_phase1`; prints via shared `vta_sdk::provision_client::driver::run_phase1_init`, same as mediator/did-hosting. `CreateDidKey` remains a non-substitute — writes the VTC store/credential, not the `setup_key_file` JSON |
 | Setup-key JSON shape (Go fallback option) | `vta-sdk/src/provision_client/setup_key.rs::PersistedKey` — `{version: 1, did, private_key_multibase, note}`, 0600 |
 | `[secrets]` field names + defaults + `deny_unknown_fields` | `vtc-service/src/config.rs::SecretsConfig` (mirrors `vti_secrets`; kv_mount `secret`, secret_key `seed`, auth `kubernetes`) |
 | `vault-secrets` is a non-default vtc feature | `vtc-service/Cargo.toml` + `docs/03-vtc/feature-flags.md` |

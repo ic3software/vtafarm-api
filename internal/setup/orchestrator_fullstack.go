@@ -858,19 +858,25 @@ func (o *Orchestrator) fsStepImportAdminDid(ctx context.Context, ns string, s *m
 // fsDeployVta starts the VTA Deployment and waits for it to become Ready —
 // full_stack_with_vtc's step_vtc_setup makes live calls against it right
 // after, so the deploy_* invariant (returns only once the component is
-// actually up) matters here too.
+// actually up) matters here too. HealthCheckPath wires a readinessProbe
+// against GET /health (vta-service's unauthenticated health route) — without
+// it, Kubernetes marks the pod Ready the instant the container starts,
+// before the REST/DIDComm/storage subsystems have finished their async
+// startup, so WaitForComponentDeploymentReady below returned almost
+// instantly regardless of whether VTA could actually serve a request yet.
 func (o *Orchestrator) fsDeployVta(ctx context.Context, ns string, s *model.SetupSession) error {
 	name := k8s.FSVtaName(s.ID)
 	if err := o.k8s.CreateComponentDeployment(ctx, ns, k8s.ComponentDeploymentSpec{
-		Name:           name,
-		Image:          s.VtaImage,
-		Command:        []string{"vta"},
-		WorkingDir:     "/work/vta",
-		ServiceAccount: k8s.VtaServiceAccount,
-		PVCMounts:      []k8s.PVCMount{{Name: "vta-data", ClaimName: name, MountPath: "/work/vta"}},
-		Env:            fsNoColorEnv(),
-		Port:           8100,
-		Labels:         fsLabels("vta", s.ID),
+		Name:            name,
+		Image:           s.VtaImage,
+		Command:         []string{"vta"},
+		WorkingDir:      "/work/vta",
+		ServiceAccount:  k8s.VtaServiceAccount,
+		PVCMounts:       []k8s.PVCMount{{Name: "vta-data", ClaimName: name, MountPath: "/work/vta"}},
+		Env:             fsNoColorEnv(),
+		Port:            8100,
+		Labels:          fsLabels("vta", s.ID),
+		HealthCheckPath: "/health",
 	}); err != nil {
 		return err
 	}

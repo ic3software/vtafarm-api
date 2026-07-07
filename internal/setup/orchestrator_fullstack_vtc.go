@@ -105,19 +105,25 @@ func (o *Orchestrator) runFullStackWithVtcFinish(ctx context.Context, sessionID 
 	log.Printf("[orchestrator] fs-vtc session %d: running at https://%s", sessionID, s.VtcFQDN())
 }
 
-// fsStepVtcSetupKey runs `vtc setup generate-key`, persisting the ephemeral
-// setup key to the VTC PVC (setup-key.json — later loaded by step_vtc_setup's
-// TOML via setup_key_file) and capturing its did:key from stdout. No Vault
-// access needed for this step, so it runs as the plain pod-operator SA.
+// fsStepVtcSetupKey runs `vtc setup --setup-key-out` — phase 1 of
+// vtc-service's headless two-phase setup — persisting the ephemeral setup
+// key to the VTC PVC (setup-key.json — later
+// loaded by step_vtc_setup's TOML via setup_key_file) and capturing its
+// did:key from the printed "Setup DID (ephemeral):" line. `--context` only
+// shapes that printed (and here-unused) grant hint — the real ACL grant runs
+// as its own step below — but it's passed for log clarity and to match the
+// `context` the phase-2 TOML sets. No Vault access needed for this step, so
+// it runs as the plain pod-operator SA.
 func (o *Orchestrator) fsStepVtcSetupKey(ctx context.Context, ns string, s *model.SetupSession) (string, error) {
 	jobName := k8s.FSJobVtcSetupKey(s.ID)
+	cmd := fmt.Sprintf("vtc setup --setup-key-out /app/vtc/setup-key.json --context %s", shellQuote(s.VtcName))
 	if err := o.k8s.CreateComponentJob(ctx, ns, k8s.ComponentJobSpec{
 		Name:           jobName,
 		Image:          s.VtcImage,
-		Command:        []string{"sh", "-c", "vtc setup generate-key --out /work/vtc/setup-key.json"},
-		WorkingDir:     "/work/vtc",
+		Command:        []string{"sh", "-c", cmd},
+		WorkingDir:     "/app/vtc",
 		ServiceAccount: k8s.PodOperatorServiceAccount,
-		PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/work/vtc"}},
+		PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/app/vtc"}},
 		Env:            fsNoColorEnv(),
 	}); err != nil {
 		return "", fmt.Errorf("create job: %w", err)
@@ -202,9 +208,9 @@ func (o *Orchestrator) fsStepVtcSetup(ctx context.Context, ns string, s *model.S
 		Name:           jobName,
 		Image:          s.VtcImage,
 		Command:        []string{"sh", "-c", "vtc setup --from /config/vtc-setup.toml"},
-		WorkingDir:     "/work/vtc",
+		WorkingDir:     "/app/vtc",
 		ServiceAccount: k8s.VtaServiceAccount,
-		PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/work/vtc"}},
+		PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/app/vtc"}},
 		ConfigMapName:  jobName,
 		ConfigMapKey:   "vtc-setup.toml",
 		ConfigMapData:  toml,
@@ -228,18 +234,29 @@ func (o *Orchestrator) fsStepVtcSetup(ctx context.Context, ns string, s *model.S
 }
 
 // fsDeployVtc starts the VTC Deployment (image entrypoint — REST + admin SPA
-// + public website on 8200). Runs as SA vta — it reads its Vault key bundle
-// at every boot. Waits for Ready, keeping the deploy_* invariant the other
-// components hold.
+// + public website on 8200). Command is left nil so the vtc image's own
+// entrypoint.sh runs (unlike fsDeployVta/Mediator/Dids, which set Command
+// explicitly and never invoke their images' wrappers at all) — it gates
+// startup on a data/config presence check before exec'ing the binary, which
+// is worth keeping. That wrapper checks /app/vtc/{data,config.toml},
+// matching every one of this farm's images' Dockerfile WORKDIR
+// (/app/<name> — vta, mediator, did-hosting-daemon, vtc all agree), so the
+// PVC is mounted at /app/vtc here too — same path across all three VTC
+// Job/Deployment specs, so the entrypoint finds what
+// step_vtc_setup/step_vtc_setup_key wrote. Note this Deployment has no
+// readiness probe (a running container is Ready by default absent one), so
+// WaitForComponentDeploymentReady below only confirms the process started,
+// not that port 8200 is actually accepting connections. Runs as SA vta — it
+// reads its Vault key bundle at every boot.
 func (o *Orchestrator) fsDeployVtc(ctx context.Context, ns string, s *model.SetupSession) error {
 	name := k8s.FSVtcName(s.ID)
 	if err := o.k8s.CreateComponentDeployment(ctx, ns, k8s.ComponentDeploymentSpec{
 		Name:           name,
 		Image:          s.VtcImage,
-		Command:        nil, // image entrypoint
-		WorkingDir:     "/work/vtc",
+		Command:        nil, // image entrypoint — see comment above
+		WorkingDir:     "/app/vtc",
 		ServiceAccount: k8s.VtaServiceAccount,
-		PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: name, MountPath: "/work/vtc"}},
+		PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: name, MountPath: "/app/vtc"}},
 		Env:            fsNoColorEnv(),
 		Port:           8200,
 		Labels:         fsLabels("vtc", s.ID),

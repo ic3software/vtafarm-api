@@ -10,16 +10,16 @@ import (
 // ── vtc-setup.toml ───────────────────────────────────────────────────────────
 
 // Renders the schema vtc-service's `vtc setup --from` deserializes
-// (VtcWizardInputs — design §9). Note the [secrets] shape deliberately
-// differs from the VTA's own setup TOML: `vta setup --from` uses a tagged
-// `backend = "vault"` field, but the VTC's SecretsConfig is
-// implicit-selection — setting vault_addr activates the Vault backend, and a
-// stray `backend =` key would fail its deny_unknown_fields parse.
+// (VtcWizardInputs — design §9). [secrets].backend explicitly selects the
+// Vault backend (matching the VTA's own setup TOML shape) — it wins
+// outright over the legacy "whichever field is set" resolution and fails
+// closed on a mismatch, rather than relying on vault_addr's mere presence
+// to activate Vault implicitly.
 //
 // [webvh].server_id = "dids" matches the `--id dids` registered by
 // full_stack's step_vta_register_dids; domain/path are left unset so the
 // daemon auto-assigns a path (no collision risk). setup_key_file is relative,
-// resolved against the Job's /work/vtc workingDir where step_vtc_setup_key
+// resolved against the Job's /app/vtc workingDir where step_vtc_setup_key
 // wrote it. vault_secret_key = "bundle" stores the serialized VtcKeyBundle —
 // vti_secrets' seed store is byte-agnostic.
 var vtcSetupTmpl = template.Must(template.New("fs-vtc-setup").Parse(`config_path    = "config.toml"
@@ -36,6 +36,7 @@ mediator_did = "{{ .MediatorDid }}"
 mediator_url = "{{ .MediatorURL }}"
 
 [secrets]
+backend           = "vault"
 vault_addr        = "{{ .Vault.Addr }}"
 vault_kv_mount    = "{{ .Vault.KVMount }}"
 vault_secret_path = "{{ .Vault.SecretPath }}"

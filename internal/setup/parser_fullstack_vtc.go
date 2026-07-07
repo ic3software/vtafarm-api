@@ -15,7 +15,12 @@ import (
 // (fsJobLogs), same as every other full_stack parse.
 
 var (
-	vtcSetupKeyDidRe = regexp.MustCompile(`(?m)^setup_key_did=(did:\S+)`)
+	// `vtc setup --setup-key-out`'s output is the shared
+	// vta_sdk::provision_client::driver::run_phase1_init prose block (the same
+	// one mediator-setup / did-hosting-daemon print), not a machine key=value
+	// line — the DID appears indented on the line right after the
+	// "Setup DID (ephemeral):" header.
+	vtcSetupKeyDidRe = regexp.MustCompile(`Setup DID \(ephemeral\):\s+(did:\S+)`)
 	vtcDidRe         = regexp.MustCompile(`(?m)^vtc_did=(.+)$`)
 	vtcAdminDidRe    = regexp.MustCompile(`(?m)^admin_did=(.+)$`)
 	vtcInstallURLRe  = regexp.MustCompile(`(?m)^install_url=(.+)$`)
@@ -29,12 +34,12 @@ var (
 )
 
 // ParseVtcSetupKeyDid extracts the ephemeral setup key DID from
-// `vtc setup generate-key` output (design §4b/§8).
+// `vtc setup --setup-key-out` output (design §4b/§8).
 func ParseVtcSetupKeyDid(output string) (string, error) {
 	if m := vtcSetupKeyDidRe.FindStringSubmatch(output); m != nil {
 		return strings.TrimSpace(m[1]), nil
 	}
-	return "", fmt.Errorf("setup_key_did not found in generate-key output")
+	return "", fmt.Errorf("setup DID not found in setup --setup-key-out output")
 }
 
 // VtcSetupOutcome holds the values collected from `vtc setup --from`'s terse

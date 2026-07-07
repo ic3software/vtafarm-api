@@ -34,6 +34,13 @@ type ComponentDeploymentSpec struct {
 	Env            []corev1.EnvVar
 	Port           int32
 	Labels         map[string]string
+	// HealthCheckPath, if set, wires an HTTP readinessProbe against this path
+	// on Port. Without it, Kubernetes marks the pod Ready the instant the
+	// container process starts (no probe = ready-by-default), which is true
+	// long before the app inside has actually bound its listener — so
+	// WaitForComponentDeploymentReady's poll of ReadyReplicas was previously
+	// a near-instant no-op rather than a real "is this serving" check.
+	HealthCheckPath string
 }
 
 // CreateComponentDeployment creates a Deployment per spec. Idempotent —
@@ -58,6 +65,22 @@ func (c *Client) CreateComponentDeployment(ctx context.Context, ns string, spec 
 		ports = []corev1.ContainerPort{{ContainerPort: spec.Port, Protocol: corev1.ProtocolTCP}}
 	}
 
+	var readinessProbe *corev1.Probe
+	if spec.HealthCheckPath != "" {
+		readinessProbe = &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: spec.HealthCheckPath,
+					Port: intstr.FromInt32(spec.Port),
+				},
+			},
+			InitialDelaySeconds: 1,
+			PeriodSeconds:       2,
+			TimeoutSeconds:      2,
+			FailureThreshold:    3,
+		}
+	}
+
 	_, err := c.kube.AppsV1().Deployments(ns).Create(ctx, &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: spec.Name, Namespace: ns, Labels: spec.Labels},
 		Spec: appsv1.DeploymentSpec{
@@ -68,13 +91,14 @@ func (c *Client) CreateComponentDeployment(ctx context.Context, ns string, spec 
 				Spec: corev1.PodSpec{
 					ServiceAccountName: spec.ServiceAccount,
 					Containers: []corev1.Container{{
-						Name:         spec.Name,
-						Image:        spec.Image,
-						Command:      spec.Command,
-						WorkingDir:   spec.WorkingDir,
-						Env:          spec.Env,
-						Ports:        ports,
-						VolumeMounts: mounts,
+						Name:           spec.Name,
+						Image:          spec.Image,
+						Command:        spec.Command,
+						WorkingDir:     spec.WorkingDir,
+						Env:            spec.Env,
+						Ports:          ports,
+						VolumeMounts:   mounts,
+						ReadinessProbe: readinessProbe,
 					}},
 					Volumes: volumes,
 				},
