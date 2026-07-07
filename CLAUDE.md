@@ -158,17 +158,18 @@ under `/admin/`, since the caller isn't authenticated as an admin).
 | --- | --- | --- | --- |
 | `GET` | `/api/v1/user/me` | user | Get own profile, incl. `beta_access` (read-only) |
 | `POST` | `/api/v1/setup/validate` | user | Check Cloudflare connectivity |
-| `POST` | `/api/v1/setup` | user | Create session + provision DNS (`mode=full_stack` requires `beta_access`) |
+| `POST` | `/api/v1/setup` | user | Create session + provision DNS (`mode=full_stack` / `full_stack_with_vtc` requires `beta_access`) |
 | `DELETE` | `/api/v1/setup/:id` | user | Cancel session + tear down DNS |
 
 ## Beta Access
 
 `users.beta_access` (bool, default `false`) gates access to features still in
-beta — currently just `mode=full_stack` on `POST /setup`. It's a plain on/off
-switch, not a tier: only an admin can flip it (`PUT /api/v1/admin/users/:id/beta-access`),
-never the user themselves. `GET /api/v1/user/me` lets the frontend check the
-caller's own value fresh (not from the JWT, which doesn't carry it) so it can
-decide whether to offer the `full_stack` option at all.
+beta — currently the `full_stack` and `full_stack_with_vtc` modes on
+`POST /setup`. It's a plain on/off switch, not a tier: only an admin can flip
+it (`PUT /api/v1/admin/users/:id/beta-access`), never the user themselves.
+`GET /api/v1/user/me` lets the frontend check the caller's own value fresh
+(not from the JWT, which doesn't carry it) so it can decide whether to offer
+the beta modes at all.
 
 ## API Docs Rule
 

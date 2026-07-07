@@ -30,6 +30,7 @@ func Setup(
 	ghcrClient *ghcr.Client,
 	mediatorGhcrClient *ghcr.Client,
 	didsGhcrClient *ghcr.Client,
+	vtcGhcrClient *ghcr.Client,
 	dhClient *didhosting.Client,
 	cfg *config.Config,
 ) *gin.Engine {
@@ -54,7 +55,7 @@ func Setup(
 	sh := handler.NewSetupHandler(
 		db, cfClient, cfg.AppEnv, cfg.ClusterIngressIP, cfg.ClusterDomain,
 		cfg.MediatorDid, cfg.DidHosting.ServerUrl, dhClient, k8sClient, orch, ghcrClient,
-		mediatorGhcrClient, didsGhcrClient,
+		mediatorGhcrClient, didsGhcrClient, vtcGhcrClient,
 	)
 
 	v1 := r.Group("/api/v1")
@@ -132,6 +133,8 @@ func Setup(
 		userAuth.POST("/setup/:id/admin", sh.ProvisionAdmin)
 		userAuth.POST("/setup/:id/dids/reissue-enroll", sh.ReissueDidsEnroll)
 		userAuth.POST("/setup/:id/dids/enroll-ack", sh.AckDidsEnroll)
+		userAuth.POST("/setup/:id/vtc/reissue-install", sh.ReissueVtcInstall)
+		userAuth.POST("/setup/:id/vtc/install-ack", sh.AckVtcInstall)
 	}
 
 	return r

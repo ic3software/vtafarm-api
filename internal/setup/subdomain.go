@@ -42,3 +42,15 @@ func FullStackHosts(env string) (vtaSub, mediatorSub, didsSub string) {
 	}
 	return "fpp" + mid + id, "mediator" + mid + id, "dids" + mid + id
 }
+
+// FullStackWithVtcHosts derives the four full_stack_with_vtc subdomains —
+// the same three FullStackHosts produces plus vtc[-local]-xxxx, all sharing
+// one random ID (design §3).
+func FullStackWithVtcHosts(env string) (vtaSub, mediatorSub, didsSub, vtcSub string) {
+	id := GenerateID()
+	mid := "-"
+	if env == "development" {
+		mid = "-local-"
+	}
+	return "fpp" + mid + id, "mediator" + mid + id, "dids" + mid + id, "vtc" + mid + id
+}

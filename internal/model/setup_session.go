@@ -3,8 +3,9 @@ package model
 import "time"
 
 const (
-	ModeVtaOnly   = "vta_only"
-	ModeFullStack = "full_stack"
+	ModeVtaOnly          = "vta_only"
+	ModeFullStack        = "full_stack"
+	ModeFullStackWithVtc = "full_stack_with_vtc"
 )
 
 type SetupSession struct {
@@ -63,6 +64,37 @@ type SetupSession struct {
 	// clicked again. Reissue clears it back to false along with the new URL.
 	DidsEnrollUsed bool `gorm:"column:dids_enroll_used;not null;default:false" json:"dids_enroll_used"`
 
+	// full_stack_with_vtc — the VTC component. Subdomain/CFRecordVtc follow
+	// the same pattern as MediatorSubdomain/CFRecordMediator above. Empty ('')
+	// for other modes, same convention as the mediator/dids columns.
+	VtcSubdomain string  `gorm:"column:vtc_subdomain;not null;default:''" json:"vtc_subdomain,omitempty"`
+	CFRecordVtc  *string `gorm:"column:cf_record_vtc" json:"-"`
+
+	// VtcName doubles as the VTA context id the VTC's community lives under
+	// (design §8/§9); VtcImage is required for full_stack_with_vtc, like
+	// MediatorImage/DidsImage.
+	VtcName  string `gorm:"column:vtc_name;not null;default:'personal-vtc'" json:"vtc_name,omitempty"`
+	VtcImage string `gorm:"column:vtc_image;not null;default:''" json:"vtc_image,omitempty"`
+
+	// full_stack_with_vtc — collected outputs. VtcSetupKeyDid is the ephemeral
+	// did:key from step_vtc_setup_key, kept for audit/debug only — nothing
+	// reads it back from the DB. VtcAdminDid is the VTC's own pre-claim
+	// install admin from the setup summary, NOT the PNM AdminDid column above.
+	VtcSetupKeyDid string `gorm:"column:vtc_setup_key_did;not null;default:''" json:"vtc_setup_key_did,omitempty"`
+	VtcDid         string `gorm:"column:vtc_did;not null;default:''" json:"vtc_did,omitempty"`
+	VtcAdminDid    string `gorm:"column:vtc_admin_did;not null;default:''" json:"vtc_admin_did,omitempty"`
+
+	// Reveal-once install credentials, like MediatorAdminKey/WebvhAdminKey —
+	// the claim code is delivered over a logically separate channel from the URL.
+	VtcInstallURL string `gorm:"column:vtc_install_url;not null;default:''" json:"vtc_install_url,omitempty"`
+	VtcClaimCode  string `gorm:"column:vtc_claim_code;not null;default:''" json:"vtc_claim_code,omitempty"`
+
+	// VtcInstallUsed mirrors DidsEnrollUsed — set by the frontend (POST
+	// .../vtc/install-ack) once the user opens VtcInstallURL, so GET /setup/:id
+	// stops re-offering a dead link. The VTC's own install-token state machine
+	// already refuses a second claim; this just improves the UI.
+	VtcInstallUsed bool `gorm:"column:vtc_install_used;not null;default:false" json:"vtc_install_used"`
+
 	CreatedAt time.Time `                                       json:"created_at"`
 	UpdatedAt time.Time `                                       json:"updated_at"`
 }
@@ -83,4 +115,16 @@ func (s *SetupSession) MediatorFQDN() string {
 
 func (s *SetupSession) DidsFQDN() string {
 	return s.DidsSubdomain + "." + s.Domain
+}
+
+// VtcFQDN is full_stack_with_vtc-only, same convention as MediatorFQDN/DidsFQDN.
+func (s *SetupSession) VtcFQDN() string {
+	return s.VtcSubdomain + "." + s.Domain
+}
+
+// IsFullStackFamily reports whether the session runs the full_stack component
+// pipeline (full_stack or full_stack_with_vtc) — used wherever handlers and
+// the orchestrator dispatch vta_only vs the full_stack-shaped flows.
+func (s *SetupSession) IsFullStackFamily() bool {
+	return s.Mode == ModeFullStack || s.Mode == ModeFullStackWithVtc
 }

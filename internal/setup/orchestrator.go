@@ -44,27 +44,34 @@ func NewOrchestrator(db *gorm.DB, k8sClient *k8s.Client, vaultClient *vault.Clie
 
 // Start launches Phase 1 for a session. Safe to call from an HTTP handler.
 // Dispatches to the full_stack state machine (orchestrator_fullstack.go) for
-// full_stack sessions; vta_only runs the original runSetup below unchanged.
+// both full-stack modes — full_stack_with_vtc's pre-gate pipeline is
+// identical, it only adds post-gate steps (design §6) — while vta_only runs
+// the original runSetup below unchanged.
 func (o *Orchestrator) Start(sessionID uint) {
 	o.launch(sessionID, func(ctx context.Context) {
-		if o.sessionMode(sessionID) == model.ModeFullStack {
+		switch o.sessionMode(sessionID) {
+		case model.ModeFullStack, model.ModeFullStackWithVtc:
 			o.runFullStack(ctx, sessionID)
-			return
+		default:
+			o.runSetup(ctx, sessionID)
 		}
-		o.runSetup(ctx, sessionID)
 	})
 }
 
 // Provision launches Phase 2 for a session. Called after the user provides
-// their admin DID. Dispatches to full_stack's finishing chain (import-did +
-// deploy_vta) for full_stack sessions.
+// their admin DID. Dispatches to the mode's finishing chain — full_stack's
+// import-did + deploy_vta, or full_stack_with_vtc's superset that wraps the
+// VTC steps around deploy_vta (orchestrator_fullstack_vtc.go).
 func (o *Orchestrator) Provision(sessionID uint, adminDid string) {
 	o.launch(sessionID, func(ctx context.Context) {
-		if o.sessionMode(sessionID) == model.ModeFullStack {
+		switch o.sessionMode(sessionID) {
+		case model.ModeFullStack:
 			o.runFullStackFinish(ctx, sessionID, adminDid)
-			return
+		case model.ModeFullStackWithVtc:
+			o.runFullStackWithVtcFinish(ctx, sessionID, adminDid)
+		default:
+			o.runProvision(ctx, sessionID, adminDid)
 		}
-		o.runProvision(ctx, sessionID, adminDid)
 	})
 }
 
