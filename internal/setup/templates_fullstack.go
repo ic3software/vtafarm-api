@@ -66,14 +66,17 @@ type fullStackVtaSetupData struct {
 // RenderVtaSetupTOML, but [messaging] creates the in-cluster mediator
 // instead of pointing at the shared external one, and [vta_did] points at
 // the in-cluster dids host instead of the external DID-hosting server.
+// The webvh URL paths become the DIDs' path components
+// (did:webvh:<scid>:<host>:<vta_name>-vta / <vta_name>-mediator) — derived
+// from the session's name, same convention as the VTC's <vtc_name>-vtc.
 func RenderFullStackVtaSetupTOML(s *model.SetupSession, vault VaultSecrets) (string, error) {
 	var buf bytes.Buffer
 	err := fullStackVtaSetupTmpl.Execute(&buf, fullStackVtaSetupData{
 		VtaName:          s.VtaName,
 		VtaPublicURL:     s.PublicURL(),
 		MediatorURL:      "https://" + s.MediatorFQDN() + "/mediator/v1",
-		MediatorWebvhURL: "https://" + s.DidsFQDN() + "/mediator",
-		VtaDidWebvhURL:   "https://" + s.DidsFQDN() + "/vta",
+		MediatorWebvhURL: "https://" + s.DidsFQDN() + "/" + MediatorDidPath(s.VtaName),
+		VtaDidWebvhURL:   "https://" + s.DidsFQDN() + "/" + VtaDidPath(s.VtaName),
 		Portable:         s.Portable,
 		PreRotationCount: s.PreRotationCount,
 		Vault:            vault,

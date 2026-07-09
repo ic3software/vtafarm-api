@@ -72,8 +72,8 @@ type SetupSession struct {
 
 	// VtcName doubles as the VTA context id the VTC's community lives under
 	// (design §8/§9); VtcImage is required for full_stack_with_vtc, like
-	// MediatorImage/DidsImage.
-	VtcName  string `gorm:"column:vtc_name;not null;default:'personal-vtc'" json:"vtc_name,omitempty"`
+	// MediatorImage/DidsImage. '' for modes without a VTC.
+	VtcName  string `gorm:"column:vtc_name;not null" json:"vtc_name,omitempty"`
 	VtcImage string `gorm:"column:vtc_image;not null;default:''" json:"vtc_image,omitempty"`
 
 	// full_stack_with_vtc — collected outputs. VtcSetupKeyDid is the ephemeral

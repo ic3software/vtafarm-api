@@ -491,6 +491,7 @@ setup_key_file = "setup-key.json"
 
 [webvh]
 server_id = "dids"                            # registered by full_stack's step_vta_register_dids (§4a)
+path      = "{{ .VtcName }}-vtc"              # DID path — did:webvh:<scid>:<host>:<vtc_name>-vtc
 
 [messaging]
 mediator_did = "{{ .MediatorDid }}"           # 1b — the same shared mediator
@@ -509,9 +510,11 @@ vault_skip_verify = {{ .Vault.SkipVerify }}
 
 `[webvh].server_id = "dids"` matches the `--id dids` registered by
 `full_stack`'s `step_vta_register_dids` (§4a) — the VTA resolves it against its own
-registry. `domain`/`path` are left unset: this dids daemon isn't
-multi-tenant, and an unset `path` lets it auto-assign one, avoiding any
-collision risk (§8).
+registry. `path = "<vtc_name>-vtc"` pins the DID's path component instead of
+letting the daemon auto-assign a random one — the same name-based convention
+as the VTA's `<vta_name>-vta` and the mediator's `<vta_name>-mediator` paths,
+with the `-vtc` suffix keeping it distinct from those even if `vtc_name ==
+vta_name`. `domain` is left unset: the daemon resolves its default.
 
 ## 10. Secrets handling — a fourth prefix on the same shared policy
 
@@ -650,22 +653,22 @@ with a fourth URL and the VTC's collected outputs.
   "mode": "full_stack_with_vtc",
   "status": "running",
   "urls": {
-    "vta":      "https://fpp-a1b2c3d4.example.com",
-    "mediator": "https://mediator-a1b2c3d4.example.com",
-    "dids":     "https://dids-a1b2c3d4.example.com",
-    "vtc":      "https://vtc-a1b2c3d4.example.com"
+    "vta":      "https://vta-devtest1.example.com",
+    "mediator": "https://mediator-devtest1.example.com",
+    "dids":     "https://dids-devtest1.example.com",
+    "vtc":      "https://vtc-mycommunity.example.com"
   },
   "collected": {
-    "vta_did":               "did:webvh:…:dids-a1b2c3d4.example.com:vta",
-    "mediator_did":          "did:webvh:…:dids-a1b2c3d4.example.com:mediator",
-    "did_hosting_did":       "did:webvh:…:dids-a1b2c3d4.example.com",
+    "vta_did":               "did:webvh:…:dids-devtest1.example.com:devtest1-vta",
+    "mediator_did":          "did:webvh:…:dids-devtest1.example.com:devtest1-mediator",
+    "did_hosting_did":       "did:webvh:…:dids-devtest1.example.com",
     "mediator_admin_did":    "did:key:z6Mk…",
     "did_hosting_admin_did": "did:key:z6Mk…",
-    "vtc_did":               "did:webvh:…:dids-a1b2c3d4.example.com:<vtc-path>"
+    "vtc_did":               "did:webvh:…:dids-devtest1.example.com:mycommunity-vtc"
   },
   "action_required": {
-    "dids_admin_enroll_url": "https://dids-a1b2c3d4.example.com/enroll/…",
-    "install_url":           "https://vtc-a1b2c3d4.example.com/admin/install?token=…",
+    "dids_admin_enroll_url": "https://dids-devtest1.example.com/enroll/…",
+    "install_url":           "https://vtc-mycommunity.example.com/admin/install?token=…",
     "claim_code":            "ABCD-1234",
     "reveal_keys_once":      true
   },
