@@ -673,8 +673,11 @@ func (o *Orchestrator) fsStepDidsInvite(ctx context.Context, ns string, s *model
 // resolve their own DIDs successfully on first boot.
 func (o *Orchestrator) fsStepDidsLoadDid(ctx context.Context, ns string, s *model.SetupSession) error {
 	jobName := k8s.FSJobDidsLoadDid(s.ID)
-	cmd := "did-hosting-daemon load-did --path mediator --did-log /work/vta/data/vta/did-logs/mediator-did.jsonl" +
-		" && did-hosting-daemon load-did --path vta --did-log /work/vta/data/vta/did-logs/VTA-did.jsonl"
+	// The --path values must match the DID paths the webvh URLs in
+	// RenderFullStackVtaSetupTOML minted, or resolving the DIDs 404s.
+	cmd := fmt.Sprintf("did-hosting-daemon load-did --path %s --did-log /work/vta/data/vta/did-logs/mediator-did.jsonl"+
+		" && did-hosting-daemon load-did --path %s --did-log /work/vta/data/vta/did-logs/VTA-did.jsonl",
+		shellQuote(MediatorDidPath(s.VtaName)), shellQuote(VtaDidPath(s.VtaName)))
 
 	if err := o.k8s.CreateComponentJob(ctx, ns, k8s.ComponentJobSpec{
 		Name:           jobName,

@@ -17,11 +17,15 @@ import (
 // to activate Vault implicitly.
 //
 // [webvh].server_id = "dids" matches the `--id dids` registered by
-// full_stack's step_vta_register_dids; domain/path are left unset so the
-// daemon auto-assigns a path (no collision risk). setup_key_file is relative,
-// resolved against the Job's /app/vtc workingDir where step_vtc_setup_key
-// wrote it. vault_secret_key = "bundle" stores the serialized VtcKeyBundle —
-// vti_secrets' seed store is byte-agnostic.
+// full_stack's step_vta_register_dids; path pins the DID's path component to
+// <vtc_name>-vtc (did:webvh:<scid>:<host>:<vtc_name>-vtc) instead of letting
+// the daemon auto-assign a random one — same name-based convention as the
+// VTA's <vta_name>-vta and mediator's <vta_name>-mediator paths, and the
+// -vtc suffix keeps it distinct from those even if vtc_name == vta_name.
+// domain is left unset (the daemon resolves its default). setup_key_file is
+// relative, resolved against the Job's /app/vtc workingDir where
+// step_vtc_setup_key wrote it. vault_secret_key = "bundle" stores the
+// serialized VtcKeyBundle — vti_secrets' seed store is byte-agnostic.
 var vtcSetupTmpl = template.Must(template.New("fs-vtc-setup").Parse(`config_path    = "config.toml"
 base_url       = "{{ .VtcPublicURL }}"
 vta_did        = "{{ .VtaDid }}"
@@ -30,6 +34,7 @@ setup_key_file = "setup-key.json"
 
 [webvh]
 server_id = "dids"
+path      = "{{ .VtcDidPath }}"
 
 [messaging]
 mediator_did = "{{ .MediatorDid }}"
@@ -61,6 +66,7 @@ type vtcSetupData struct {
 	VtcPublicURL string
 	VtaDid       string
 	VtcName      string
+	VtcDidPath   string
 	MediatorDid  string
 	MediatorURL  string
 	Vault        VtcVaultSecrets
@@ -77,6 +83,7 @@ func RenderVtcSetupTOML(s *model.SetupSession, vault VtcVaultSecrets) (string, e
 		VtcPublicURL: "https://" + s.VtcFQDN(),
 		VtaDid:       s.VtaDid,
 		VtcName:      s.VtcName,
+		VtcDidPath:   VtcDidPath(s.VtcName),
 		MediatorDid:  s.MediatorDid,
 		MediatorURL:  "https://" + s.MediatorFQDN() + "/mediator/v1",
 		Vault:        vault,

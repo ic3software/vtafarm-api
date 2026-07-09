@@ -47,9 +47,6 @@ func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest) {
 		return
 	}
 
-	if req.VtaName == "" {
-		req.VtaName = "personal-vta"
-	}
 	portable := true
 	if req.Portable != nil {
 		portable = *req.Portable
@@ -68,14 +65,9 @@ func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest) {
 
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 
-	var existingName int64
-	h.db.Model(&model.SetupSession{}).Where("user_id = ? AND vta_name = ?", userID, req.VtaName).Count(&existingName)
-	if existingName > 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "vta_name already in use"})
-		return
-	}
-
-	vtaSub, mediatorSub, didsSub := setup.FullStackHosts(h.appEnv)
+	// vta_name has already been validated (required, DNS-safe, globally
+	// unique) by Create before dispatching here.
+	vtaSub, mediatorSub, didsSub := setup.FullStackHosts(h.appEnv, req.VtaName)
 	vtaFQDN := vtaSub + "." + h.clusterDomain
 	mediatorFQDN := mediatorSub + "." + h.clusterDomain
 	didsFQDN := didsSub + "." + h.clusterDomain
@@ -135,6 +127,12 @@ func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest) {
 		_ = h.cf.DeleteRecord(c.Request.Context(), recordVta)
 		_ = h.cf.DeleteRecord(c.Request.Context(), recordMediator)
 		_ = h.cf.DeleteRecord(c.Request.Context(), recordDids)
+		// The pre-insert count check races with concurrent creates; the DB
+		// unique index is the real gate.
+		if strings.Contains(createErr.Error(), "setup_sessions_vta_name_unique") {
+			c.JSON(http.StatusConflict, gin.H{"error": "vta_name already in use"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist session"})
 		return
 	}

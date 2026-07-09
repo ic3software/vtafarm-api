@@ -128,9 +128,17 @@ components:
           default: vta_only
         vta_name:
           type: string
-          default: "personal-vta"
-          example: "personal-vta"
-          description: Unique name per user. Auto-generates the DID hosting path {unique_id}/{vta_name}.
+          example: "myvta"
+          pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+          maxLength: 48
+          description: |
+            User-chosen agent name — becomes the session's subdomains:
+            vta-{vta_name} (vta_only and full_stack family), plus
+            mediator-{vta_name} / dids-{vta_name} for full_stack /
+            full_stack_with_vtc. Must be DNS-safe (lowercase letters, digits,
+            single hyphens between them, max 48 chars) and unique across ALL users'
+            sessions — 409 if already taken. Also used in the DID hosting
+            path {unique_id}/{vta_name} (vta_only).
         vta_image:
           type: string
           description: Full image URL selected from GET /setup/images.
@@ -167,11 +175,16 @@ components:
           example: "ghcr.io/ic3software/vtc:0.3.0"
         vtc_name:
           type: string
-          default: "personal-vtc"
+          example: "myvtc"
+          pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+          maxLength: 48
           description: |
-            full_stack_with_vtc only. Also used as the VTA context id the VTC's
-            community lives under.
-      required: [mode, vta_image]
+            Required for full_stack_with_vtc. User-chosen VTC name — becomes
+            the vtc-{vtc_name} subdomain. Same DNS-safe rules as vta_name and
+            unique across all full_stack_with_vtc sessions — 409 if already
+            taken. Also used as the VTA context id the VTC's community lives
+            under.
+      required: [mode, vta_name, vta_image]
 
     SetupSessionItem:
       type: object
@@ -198,15 +211,15 @@ components:
         url:
           type: string
           description: vta_only only.
-          example: "https://fpp-abc12345.example.com"
+          example: "https://vta-myvta.example.com"
         urls:
           type: object
           description: full_stack / full_stack_with_vtc only. `vtc` is present only for full_stack_with_vtc.
           properties:
-            vta: { type: string, example: "https://vta.example.com" }
-            mediator: { type: string, example: "https://mediator.example.com" }
-            dids: { type: string, example: "https://dids.example.com" }
-            vtc: { type: string, example: "https://vtc.example.com" }
+            vta: { type: string, example: "https://vta-myvta.example.com" }
+            mediator: { type: string, example: "https://mediator-myvta.example.com" }
+            dids: { type: string, example: "https://dids-myvta.example.com" }
+            vtc: { type: string, example: "https://vtc-myvtc.example.com" }
         vta_name:
           type: string
         vta_image:
@@ -253,7 +266,7 @@ components:
         url:
           type: string
           description: vta_only only.
-          example: "https://fpp-abc12345.example.com"
+          example: "https://vta-myvta.example.com"
         vta_image:
           type: string
           description: vta_only only.
@@ -273,10 +286,10 @@ components:
           type: object
           description: full_stack / full_stack_with_vtc only. `vtc` is present only for full_stack_with_vtc.
           properties:
-            vta: { type: string, example: "https://vta.example.com" }
-            mediator: { type: string, example: "https://mediator.example.com" }
-            dids: { type: string, example: "https://dids.example.com" }
-            vtc: { type: string, example: "https://vtc.example.com" }
+            vta: { type: string, example: "https://vta-myvta.example.com" }
+            mediator: { type: string, example: "https://mediator-myvta.example.com" }
+            dids: { type: string, example: "https://dids-myvta.example.com" }
+            vtc: { type: string, example: "https://vtc-myvtc.example.com" }
         collected:
           type: object
           description: full_stack / full_stack_with_vtc only.
@@ -351,7 +364,7 @@ components:
         url:
           type: string
           description: vta_only only.
-          example: "https://abc123.example.com"
+          example: "https://vta-myvta.example.com"
         status:
           type: string
           example: "dns_provisioned"
@@ -363,10 +376,10 @@ components:
           type: object
           description: full_stack / full_stack_with_vtc only. `vtc` is present only for full_stack_with_vtc.
           properties:
-            vta: { type: string, example: "https://vta.example.com" }
-            mediator: { type: string, example: "https://mediator.example.com" }
-            dids: { type: string, example: "https://dids.example.com" }
-            vtc: { type: string, example: "https://vtc.example.com" }
+            vta: { type: string, example: "https://vta-myvta.example.com" }
+            mediator: { type: string, example: "https://mediator-myvta.example.com" }
+            dids: { type: string, example: "https://dids-myvta.example.com" }
+            vtc: { type: string, example: "https://vtc-myvtc.example.com" }
 
 paths:
   /health:
@@ -1414,18 +1427,22 @@ paths:
     post:
       summary: Create setup session
       description: |
-        vta_only: generates a random subdomain, creates a Cloudflare DNS A record, stores the
-        session, and begins async VTA setup.
+        Subdomains are derived from the user-chosen `vta_name` (409 if the
+        name is already in use by any session).
 
-        full_stack: derives three random-prefixed hostnames (fpp-xxxx / mediator-xxxx /
-        dids-xxxx under CLUSTER_DOMAIN, sharing one random ID), creates all three Cloudflare
-        DNS A records up front, stores the session, and begins the async VTA + Mediator +
-        DID-hosting daemon state machine.
+        vta_only: creates a Cloudflare DNS A record for vta-{vta_name} under
+        CLUSTER_DOMAIN, stores the session, and begins async VTA setup.
 
-        full_stack_with_vtc: everything full_stack does plus a fourth hostname (vtc-xxxx),
-        a fourth DNS record, and a Verifiable Trust Community service wired to the same
-        session's VTA/mediator/dids once they're up. Requires `vtc_image`; `vtc_name`
-        (default `personal-vtc`) doubles as the VTA context id.
+        full_stack: derives three hostnames (vta-{vta_name} /
+        mediator-{vta_name} / dids-{vta_name} under CLUSTER_DOMAIN), creates
+        all three Cloudflare DNS A records up front, stores the session, and
+        begins the async VTA + Mediator + DID-hosting daemon state machine.
+
+        full_stack_with_vtc: everything full_stack does plus a fourth hostname
+        (vtc-{vtc_name} — the VTC's own name), a fourth DNS record, and a
+        Verifiable Trust Community service wired to the same session's
+        VTA/mediator/dids once they're up. Requires `vtc_image` and
+        `vtc_name`; `vtc_name` doubles as the VTA context id.
 
         **`mode=full_stack` and `mode=full_stack_with_vtc` require the caller's
         `beta_access` to be `true`** (see `GET /user/me`); an admin grants this via
@@ -1460,6 +1477,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "403":
           description: mode=full_stack / full_stack_with_vtc requested but the caller doesn't have beta_access
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: vta_name (or vtc_name) already in use
           content:
             application/json:
               schema:
@@ -1904,7 +1927,7 @@ paths:
                 properties:
                   install_url:
                     type: string
-                    example: "https://vtc-abc12345.example.com/admin/install?token=..."
+                    example: "https://vtc-myvtc.example.com/admin/install?token=..."
                   claim_code:
                     type: string
                     example: "ABCD-1234"

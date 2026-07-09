@@ -30,12 +30,26 @@ func (h *SetupHandler) createFullStackWithVtc(c *gin.Context, req createSetupReq
 		return
 	}
 
-	if req.VtaName == "" {
-		req.VtaName = "personal-vta"
-	}
+	// vta_name has already been validated by Create; vtc_name is this mode's
+	// own input and becomes the vtc-<name> subdomain, so it gets the same
+	// treatment — required, DNS-safe, and unique across all sessions that
+	// actually run a VTC (other modes' rows carry the column's historical
+	// default and never provision one).
 	if req.VtcName == "" {
-		req.VtcName = "personal-vtc"
+		c.JSON(http.StatusBadRequest, gin.H{"error": "vtc_name is required"})
+		return
 	}
+	if err := setup.ValidateName(req.VtcName); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid vtc_name: " + err.Error()})
+		return
+	}
+	var vtcNameTaken int64
+	h.db.Model(&model.SetupSession{}).Where("mode = ? AND vtc_name = ?", model.ModeFullStackWithVtc, req.VtcName).Count(&vtcNameTaken)
+	if vtcNameTaken > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "vtc_name already in use"})
+		return
+	}
+
 	portable := true
 	if req.Portable != nil {
 		portable = *req.Portable
@@ -54,14 +68,7 @@ func (h *SetupHandler) createFullStackWithVtc(c *gin.Context, req createSetupReq
 
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 
-	var existingName int64
-	h.db.Model(&model.SetupSession{}).Where("user_id = ? AND vta_name = ?", userID, req.VtaName).Count(&existingName)
-	if existingName > 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "vta_name already in use"})
-		return
-	}
-
-	vtaSub, mediatorSub, didsSub, vtcSub := setup.FullStackWithVtcHosts(h.appEnv)
+	vtaSub, mediatorSub, didsSub, vtcSub := setup.FullStackWithVtcHosts(h.appEnv, req.VtaName, req.VtcName)
 	vtaFQDN := vtaSub + "." + h.clusterDomain
 	mediatorFQDN := mediatorSub + "." + h.clusterDomain
 	didsFQDN := didsSub + "." + h.clusterDomain
@@ -129,6 +136,16 @@ func (h *SetupHandler) createFullStackWithVtc(c *gin.Context, req createSetupReq
 	}
 	if createErr != nil {
 		rollback()
+		// The pre-insert count checks race with concurrent creates; the DB
+		// unique indexes are the real gate.
+		if strings.Contains(createErr.Error(), "setup_sessions_vta_name_unique") {
+			c.JSON(http.StatusConflict, gin.H{"error": "vta_name already in use"})
+			return
+		}
+		if strings.Contains(createErr.Error(), "setup_sessions_vtc_name_unique") {
+			c.JSON(http.StatusConflict, gin.H{"error": "vtc_name already in use"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist session"})
 		return
 	}

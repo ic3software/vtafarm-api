@@ -142,7 +142,10 @@ func (h *SetupHandler) Images(c *gin.Context) {
 }
 
 type createSetupRequest struct {
-	Mode     string `json:"mode"      binding:"required,oneof=vta_only full_stack full_stack_with_vtc"`
+	Mode string `json:"mode"      binding:"required,oneof=vta_only full_stack full_stack_with_vtc"`
+	// Required, globally unique, DNS-safe (setup.ValidateName) — becomes the
+	// session's subdomains: vta-<name> (plus mediator-<name> / dids-<name>
+	// for the full_stack family).
 	VtaName  string `json:"vta_name"`
 	VtaImage string `json:"vta_image" binding:"required"`
 	// Optional — if set, Phase 2 (import-did + Deployment) starts automatically after Phase 1.
@@ -153,8 +156,9 @@ type createSetupRequest struct {
 	// full_stack / full_stack_with_vtc only.
 	MediatorImage string `json:"mediator_image"`
 	DidsImage     string `json:"dids_image"`
-	// full_stack_with_vtc only — vtc_image is required for that mode;
-	// vtc_name defaults to "personal-vtc" and doubles as the VTA context id.
+	// full_stack_with_vtc only — both required for that mode. vtc_name is
+	// globally unique and DNS-safe like vta_name (becomes the vtc-<name>
+	// subdomain) and doubles as the VTA context id.
 	VtcImage string `json:"vtc_image"`
 	VtcName  string `json:"vtc_name"`
 }
@@ -184,6 +188,25 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		return
 	}
 
+	// vta_name is user-chosen and becomes the session's subdomains
+	// (vta-<name>, and mediator-/dids-<name> for the full_stack family), so
+	// it must be DNS-safe and unique across all users' sessions, not just the
+	// caller's own.
+	if req.VtaName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "vta_name is required"})
+		return
+	}
+	if err := setup.ValidateName(req.VtaName); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid vta_name: " + err.Error()})
+		return
+	}
+	var nameTaken int64
+	h.db.Model(&model.SetupSession{}).Where("vta_name = ?", req.VtaName).Count(&nameTaken)
+	if nameTaken > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "vta_name already in use"})
+		return
+	}
+
 	if req.Mode == model.ModeFullStack || req.Mode == model.ModeFullStackWithVtc {
 		if !user.BetaAccess {
 			c.JSON(http.StatusForbidden, gin.H{"error": req.Mode + " mode is in beta — ask an admin to enable beta access for your account"})
@@ -197,9 +220,6 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		return
 	}
 
-	if req.VtaName == "" {
-		req.VtaName = "personal-vta"
-	}
 	portable := true
 	if req.Portable != nil {
 		portable = *req.Portable
@@ -209,16 +229,9 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		preRotationCount = *req.PreRotationCount
 	}
 
-	var existing int64
-	h.db.Model(&model.SetupSession{}).Where("user_id = ? AND vta_name = ?", userID, req.VtaName).Count(&existing)
-	if existing > 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "vta_name already in use"})
-		return
-	}
-
 	vtaDidUrl := h.didHostingBase + "/" + user.UniqueId + "/" + req.VtaName
 
-	subdomain := setup.GenerateSubdomain(h.appEnv)
+	subdomain := setup.VtaHost(h.appEnv, req.VtaName)
 	fqdn := subdomain + "." + h.clusterDomain
 
 	recordID, err := h.cf.CreateARecord(c.Request.Context(), fqdn, h.ingressIP)
@@ -256,6 +269,12 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	}
 	if createErr != nil {
 		_ = h.cf.DeleteRecord(c.Request.Context(), recordID)
+		// The pre-insert count check races with concurrent creates; the DB
+		// unique index is the real gate.
+		if strings.Contains(createErr.Error(), "setup_sessions_vta_name_unique") {
+			c.JSON(http.StatusConflict, gin.H{"error": "vta_name already in use"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist session"})
 		return
 	}
