@@ -128,7 +128,7 @@ components:
           default: vta_only
         vta_name:
           type: string
-          example: "devtest1"
+          example: "myvta"
           pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
           maxLength: 48
           description: |
@@ -175,7 +175,7 @@ components:
           example: "ghcr.io/ic3software/vtc:0.3.0"
         vtc_name:
           type: string
-          example: "mycommunity"
+          example: "myvtc"
           pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
           maxLength: 48
           description: |
@@ -211,15 +211,15 @@ components:
         url:
           type: string
           description: vta_only only.
-          example: "https://vta-devtest1.example.com"
+          example: "https://vta-myvta.example.com"
         urls:
           type: object
           description: full_stack / full_stack_with_vtc only. `vtc` is present only for full_stack_with_vtc.
           properties:
-            vta: { type: string, example: "https://vta-devtest1.example.com" }
-            mediator: { type: string, example: "https://mediator-devtest1.example.com" }
-            dids: { type: string, example: "https://dids-devtest1.example.com" }
-            vtc: { type: string, example: "https://vtc-mycommunity.example.com" }
+            vta: { type: string, example: "https://vta-myvta.example.com" }
+            mediator: { type: string, example: "https://mediator-myvta.example.com" }
+            dids: { type: string, example: "https://dids-myvta.example.com" }
+            vtc: { type: string, example: "https://vtc-myvtc.example.com" }
         vta_name:
           type: string
         vta_image:
@@ -266,7 +266,7 @@ components:
         url:
           type: string
           description: vta_only only.
-          example: "https://vta-devtest1.example.com"
+          example: "https://vta-myvta.example.com"
         vta_image:
           type: string
           description: vta_only only.
@@ -286,10 +286,10 @@ components:
           type: object
           description: full_stack / full_stack_with_vtc only. `vtc` is present only for full_stack_with_vtc.
           properties:
-            vta: { type: string, example: "https://vta-devtest1.example.com" }
-            mediator: { type: string, example: "https://mediator-devtest1.example.com" }
-            dids: { type: string, example: "https://dids-devtest1.example.com" }
-            vtc: { type: string, example: "https://vtc-mycommunity.example.com" }
+            vta: { type: string, example: "https://vta-myvta.example.com" }
+            mediator: { type: string, example: "https://mediator-myvta.example.com" }
+            dids: { type: string, example: "https://dids-myvta.example.com" }
+            vtc: { type: string, example: "https://vtc-myvtc.example.com" }
         collected:
           type: object
           description: full_stack / full_stack_with_vtc only.
@@ -364,7 +364,7 @@ components:
         url:
           type: string
           description: vta_only only.
-          example: "https://vta-devtest1.example.com"
+          example: "https://vta-myvta.example.com"
         status:
           type: string
           example: "dns_provisioned"
@@ -376,10 +376,10 @@ components:
           type: object
           description: full_stack / full_stack_with_vtc only. `vtc` is present only for full_stack_with_vtc.
           properties:
-            vta: { type: string, example: "https://vta-devtest1.example.com" }
-            mediator: { type: string, example: "https://mediator-devtest1.example.com" }
-            dids: { type: string, example: "https://dids-devtest1.example.com" }
-            vtc: { type: string, example: "https://vtc-mycommunity.example.com" }
+            vta: { type: string, example: "https://vta-myvta.example.com" }
+            mediator: { type: string, example: "https://mediator-myvta.example.com" }
+            dids: { type: string, example: "https://dids-myvta.example.com" }
+            vtc: { type: string, example: "https://vtc-myvtc.example.com" }
 
 paths:
   /health:
@@ -1927,7 +1927,7 @@ paths:
                 properties:
                   install_url:
                     type: string
-                    example: "https://vtc-mycommunity.example.com/admin/install?token=..."
+                    example: "https://vtc-myvtc.example.com/admin/install?token=..."
                   claim_code:
                     type: string
                     example: "ABCD-1234"

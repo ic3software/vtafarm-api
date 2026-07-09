@@ -653,22 +653,22 @@ with a fourth URL and the VTC's collected outputs.
   "mode": "full_stack_with_vtc",
   "status": "running",
   "urls": {
-    "vta":      "https://vta-devtest1.example.com",
-    "mediator": "https://mediator-devtest1.example.com",
-    "dids":     "https://dids-devtest1.example.com",
-    "vtc":      "https://vtc-mycommunity.example.com"
+    "vta":      "https://vta-myvta.example.com",
+    "mediator": "https://mediator-myvta.example.com",
+    "dids":     "https://dids-myvta.example.com",
+    "vtc":      "https://vtc-myvtc.example.com"
   },
   "collected": {
-    "vta_did":               "did:webvh:…:dids-devtest1.example.com:devtest1-vta",
-    "mediator_did":          "did:webvh:…:dids-devtest1.example.com:devtest1-mediator",
-    "did_hosting_did":       "did:webvh:…:dids-devtest1.example.com",
+    "vta_did":               "did:webvh:…:dids-myvta.example.com:myvta-vta",
+    "mediator_did":          "did:webvh:…:dids-myvta.example.com:myvta-mediator",
+    "did_hosting_did":       "did:webvh:…:dids-myvta.example.com",
     "mediator_admin_did":    "did:key:z6Mk…",
     "did_hosting_admin_did": "did:key:z6Mk…",
-    "vtc_did":               "did:webvh:…:dids-devtest1.example.com:mycommunity-vtc"
+    "vtc_did":               "did:webvh:…:dids-myvta.example.com:myvtc-vtc"
   },
   "action_required": {
-    "dids_admin_enroll_url": "https://dids-devtest1.example.com/enroll/…",
-    "install_url":           "https://vtc-mycommunity.example.com/admin/install?token=…",
+    "dids_admin_enroll_url": "https://dids-myvta.example.com/enroll/…",
+    "install_url":           "https://vtc-myvtc.example.com/admin/install?token=…",
     "claim_code":            "ABCD-1234",
     "reveal_keys_once":      true
   },
