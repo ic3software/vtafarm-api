@@ -17,6 +17,7 @@ func TestValidateName(t *testing.T) {
 		"",
 		"-devtest1",
 		"devtest1-",
+		"my--vta",
 		"Dev",
 		"dev_test",
 		"dev.test",

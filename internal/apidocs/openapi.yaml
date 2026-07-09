@@ -129,14 +129,14 @@ components:
         vta_name:
           type: string
           example: "myvta"
-          pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+          pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
           maxLength: 48
           description: |
             User-chosen agent name — becomes the session's subdomains:
             vta-{vta_name} (vta_only and full_stack family), plus
             mediator-{vta_name} / dids-{vta_name} for full_stack /
             full_stack_with_vtc. Must be DNS-safe (lowercase letters, digits,
-            inner hyphens, max 48 chars) and unique across ALL users'
+            single hyphens between them, max 48 chars) and unique across ALL users'
             sessions — 409 if already taken. Also used in the DID hosting
             path {unique_id}/{vta_name} (vta_only).
         vta_image:
@@ -176,7 +176,7 @@ components:
         vtc_name:
           type: string
           example: "myvtc"
-          pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+          pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
           maxLength: 48
           description: |
             Required for full_stack_with_vtc. User-chosen VTC name — becomes

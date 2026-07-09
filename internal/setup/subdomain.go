@@ -15,17 +15,20 @@ import (
 // out at 63, which leaves 48 for the name itself.
 const maxNameLength = 48
 
-var namePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+// Alphanumeric runs joined by single hyphens — no leading/trailing hyphen and
+// no "--" (consecutive hyphens are DNS-legal but IDNA reserves the "??--"
+// form for punycode, so reject them outright rather than mint lookalikes).
+var namePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
 // ValidateName checks that a user-chosen component name (vta_name / vtc_name)
-// can be embedded in a DNS label: lowercase letters, digits, and inner
-// hyphens only, at most 48 chars.
+// can be embedded in a DNS label: lowercase letters and digits, with single
+// hyphens between them, at most 48 chars.
 func ValidateName(name string) error {
 	if len(name) > maxNameLength {
 		return fmt.Errorf("must be at most %d characters", maxNameLength)
 	}
 	if !namePattern.MatchString(name) {
-		return fmt.Errorf("must contain only lowercase letters, digits, and hyphens, and start and end with a letter or digit")
+		return fmt.Errorf("must contain only lowercase letters, digits, and single hyphens, and start and end with a letter or digit")
 	}
 	return nil
 }
