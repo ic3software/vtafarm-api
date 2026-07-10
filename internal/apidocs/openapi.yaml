@@ -109,6 +109,9 @@ components:
         from_image:
           type: string
           description: The image the session runs before the upgrade.
+        to_image:
+          type: string
+          description: The image the session will run after the upgrade.
 
     UpgradeSkipped:
       type: object

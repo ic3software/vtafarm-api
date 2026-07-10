@@ -81,6 +81,7 @@ type upgradeTargetItem struct {
 	VtaName   string `json:"vta_name"`
 	Component string `json:"component"`
 	FromImage string `json:"from_image"`
+	ToImage   string `json:"to_image"`
 }
 
 type skippedItem struct {
@@ -155,6 +156,7 @@ func (h *UpgradeHandler) Create(c *gin.Context) {
 			VtaName:   t.session.VtaName,
 			Component: t.component,
 			FromImage: t.session.ComponentImage(t.component),
+			ToImage:   t.image,
 		}
 	}
 
