@@ -876,6 +876,13 @@ paths:
             type: integer
             minimum: 1
             default: 1
+        - name: mode
+          in: query
+          required: false
+          description: Only return sessions with this setup mode. Omit for all modes.
+          schema:
+            type: string
+            enum: [vta_only, full_stack, full_stack_with_vtc]
       responses:
         "200":
           description: One page of sessions plus pagination info

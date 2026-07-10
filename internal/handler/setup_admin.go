@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"github.com/ic3software/vtafarm-api/internal/model"
 )
@@ -13,9 +14,10 @@ import (
 // returns at most 20 rows per page regardless of what the client asks for.
 const adminSessionsPageSize = 20
 
-// AdminListSessions — GET /api/v1/admin/setup-sessions?page=N (admin only).
+// AdminListSessions — GET /api/v1/admin/setup-sessions?page=N&mode=M (admin only).
 // Lists ALL users' setup sessions ordered by id DESC (newest first), paginated
-// at adminSessionsPageSize per page. This is the read side of the session
+// at adminSessionsPageSize per page. An optional mode filter narrows the list
+// (and total) to one setup mode. This is the read side of the session
 // upgrade workflow: it exposes each session's per-component images so an admin
 // can see what's deployed before upgrading.
 func (h *SetupHandler) AdminListSessions(c *gin.Context) {
@@ -25,14 +27,28 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 		return
 	}
 
+	mode := c.Query("mode")
+	switch mode {
+	case "", model.ModeVtaOnly, model.ModeFullStack, model.ModeFullStackWithVtc:
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid mode"})
+		return
+	}
+	filtered := func(q *gorm.DB) *gorm.DB {
+		if mode != "" {
+			return q.Where("mode = ?", mode)
+		}
+		return q
+	}
+
 	var total int64
-	if err := h.db.Model(&model.SetupSession{}).Count(&total).Error; err != nil {
+	if err := filtered(h.db.Model(&model.SetupSession{})).Count(&total).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not count sessions"})
 		return
 	}
 
 	var sessions []model.SetupSession
-	if err := h.db.Order("id desc").
+	if err := filtered(h.db.Order("id desc")).
 		Limit(adminSessionsPageSize).
 		Offset((page - 1) * adminSessionsPageSize).
 		Find(&sessions).Error; err != nil {
