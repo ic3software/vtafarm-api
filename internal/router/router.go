@@ -20,6 +20,7 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/model"
 	"github.com/ic3software/vtafarm-api/internal/passkey"
 	"github.com/ic3software/vtafarm-api/internal/setup"
+	"github.com/ic3software/vtafarm-api/internal/upgrade"
 )
 
 func Setup(
@@ -27,6 +28,7 @@ func Setup(
 	cfClient *cloudflare.Client,
 	k8sClient *k8s.Client,
 	orch *setup.Orchestrator,
+	upgradeRunner *upgrade.Runner,
 	ghcrClient *ghcr.Client,
 	mediatorGhcrClient *ghcr.Client,
 	didsGhcrClient *ghcr.Client,
@@ -110,6 +112,14 @@ func Setup(
 		// Same handler as the user-facing GET /setup/images — admins need the
 		// tag list too (session upgrades), but sit behind a different cookie.
 		adminAuth.GET("/admin/setup/images", sh.Images)
+
+		// Batch image upgrades — background runner, DB-backed queue.
+		uph := handler.NewUpgradeHandler(db, upgradeRunner, ghcrClient, mediatorGhcrClient, didsGhcrClient, vtcGhcrClient)
+		adminAuth.POST("/admin/upgrades", uph.Create)
+		adminAuth.GET("/admin/upgrades", uph.List)
+		adminAuth.GET("/admin/upgrades/:id", uph.Get)
+		adminAuth.POST("/admin/upgrades/:id/cancel", uph.Cancel)
+		adminAuth.POST("/admin/upgrades/:id/resume", uph.Resume)
 	}
 
 	// Public invitation routes (no auth required)

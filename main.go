@@ -20,6 +20,7 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/router"
 	"github.com/ic3software/vtafarm-api/internal/setup"
+	"github.com/ic3software/vtafarm-api/internal/upgrade"
 	"github.com/ic3software/vtafarm-api/internal/vault"
 )
 
@@ -96,6 +97,14 @@ func main() {
 		orch.Resume(context.Background())
 	}
 
+	// Upgrade runner processes admin image-upgrade batches in the background;
+	// like the orchestrator it re-attaches interrupted work on startup.
+	var upgradeRunner *upgrade.Runner
+	if k8sClient != nil {
+		upgradeRunner = upgrade.NewRunner(db, k8sClient)
+		upgradeRunner.Resume()
+	}
+
 	// GHCR clients for listing available image tags (optional, one per component).
 	var ghcrClient, mediatorGhcrClient, didsGhcrClient, vtcGhcrClient *ghcr.Client
 	if cfg.GHCR.Owner != "" && cfg.GHCR.PackageName != "" {
@@ -123,7 +132,7 @@ func main() {
 		log.Printf("warn: GITHUB_PACKAGE_OWNER or GITHUB_VTC_PACKAGE_NAME not set — vtc image listing disabled")
 	}
 
-	r := router.Setup(db, cfClient, k8sClient, orch, ghcrClient, mediatorGhcrClient, didsGhcrClient, vtcGhcrClient, dhClient, cfg)
+	r := router.Setup(db, cfClient, k8sClient, orch, upgradeRunner, ghcrClient, mediatorGhcrClient, didsGhcrClient, vtcGhcrClient, dhClient, cfg)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.AppPort,

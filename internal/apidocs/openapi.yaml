@@ -93,6 +93,29 @@ components:
           type: string
       required: [error]
 
+    UpgradeTarget:
+      type: object
+      properties:
+        session_id:
+          type: string
+          description: The session's 8-char unique_id.
+          example: "a1b2c3d4"
+        vta_name:
+          type: string
+          example: "myvta"
+        from_image:
+          type: string
+          description: The image the session runs before the upgrade.
+
+    UpgradeSkipped:
+      type: object
+      properties:
+        session_id:
+          type: string
+        reason:
+          type: string
+          example: "already on the target image"
+
     PasskeyLoginResponse:
       description: |
         On success the server sets an httpOnly cookie (`vtafarm_admin` or `vtafarm_user`).
@@ -986,6 +1009,357 @@ paths:
                 $ref: "#/components/schemas/Error"
         "503":
           description: Image source not configured for the requested component
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/admin/upgrades:
+    post:
+      summary: Create an image upgrade batch
+      description: |
+        Upgrades a set of sessions' component Deployments to a new image. The
+        batch is processed by a background runner with bounded concurrency
+        (default 3 sessions at a time) — the response returns immediately;
+        poll `GET /admin/upgrades/{id}` for progress. On the first task
+        failure the batch pauses (fail-fast) so a broken image stops after at
+        most `concurrency` sessions.
+
+        Targets: either `session_ids` (explicit unique_ids — ineligible ones
+        are reported in `skipped` with a reason) or `all=true` (every running
+        session whose mode runs the component and isn't already on the image).
+        The image must exist in the component's GHCR tag list. `dry_run=true`
+        resolves and returns `targets`/`skipped` without creating anything.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [component, image]
+              properties:
+                component:
+                  type: string
+                  enum: [vta, mediator, dids, vtc]
+                image:
+                  type: string
+                  example: "ghcr.io/ic3software/vta:0.9.0-917881c"
+                session_ids:
+                  type: array
+                  items:
+                    type: string
+                  description: Sessions' 8-char unique_ids. Mutually exclusive with `all`.
+                all:
+                  type: boolean
+                  description: Target every eligible session. Mutually exclusive with `session_ids`.
+                dry_run:
+                  type: boolean
+                  description: Resolve targets without creating the batch.
+      responses:
+        "200":
+          description: Dry-run resolution
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  targets:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UpgradeTarget"
+                  skipped:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UpgradeSkipped"
+        "201":
+          description: Batch created and started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  component:
+                    type: string
+                  image:
+                    type: string
+                  status:
+                    type: string
+                    example: "running"
+                  targets:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UpgradeTarget"
+                  skipped:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UpgradeSkipped"
+        "400":
+          description: Invalid request, unknown image, or no eligible sessions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Failed to fetch tags from GHCR
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: K8s or image source not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      summary: List upgrade batches
+      description: The 20 most recent upgrade batches, newest first, with per-status task counts.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      responses:
+        "200":
+          description: Recent batches
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: integer
+                    component:
+                      type: string
+                    image:
+                      type: string
+                    concurrency:
+                      type: integer
+                    status:
+                      type: string
+                      enum: [running, paused, completed, cancelled]
+                    task_counts:
+                      type: object
+                      additionalProperties:
+                        type: integer
+                      description: Task count per status, e.g. {"succeeded":18,"pending":2}.
+                    created_at:
+                      type: string
+                      format: date-time
+                    updated_at:
+                      type: string
+                      format: date-time
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/admin/upgrades/{id}:
+    get:
+      summary: Get upgrade batch progress
+      description: |
+        The batch plus every task's live status — the progress view polls
+        this. Task statuses: pending, running, succeeded, failed, skipped.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Batch with tasks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  component:
+                    type: string
+                  image:
+                    type: string
+                  status:
+                    type: string
+                    enum: [running, paused, completed, cancelled]
+                  created_at:
+                    type: string
+                    format: date-time
+                  tasks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        session_id:
+                          type: string
+                          description: Session unique_id; empty if the session was deleted.
+                        vta_name:
+                          type: string
+                        from_image:
+                          type: string
+                        status:
+                          type: string
+                          enum: [pending, running, succeeded, failed, skipped]
+                        error_msg:
+                          type: string
+                        updated_at:
+                          type: string
+                          format: date-time
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Batch not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/admin/upgrades/{id}/cancel:
+    post:
+      summary: Cancel an upgrade batch
+      description: |
+        Marks the batch cancelled and skips its pending tasks. Tasks already
+        in flight finish on their own and keep their final status.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Batch cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  status:
+                    type: string
+                    example: "cancelled"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Batch not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Batch already completed or cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/admin/upgrades/{id}/resume:
+    post:
+      summary: Resume a paused upgrade batch
+      description: |
+        Re-opens a batch paused by a task failure: failed tasks stay failed,
+        remaining pending tasks are scheduled again.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Batch resumed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  status:
+                    type: string
+                    example: "running"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Batch not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Batch is not paused
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: K8s not configured
           content:
             application/json:
               schema:
