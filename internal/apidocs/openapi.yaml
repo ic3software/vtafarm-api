@@ -824,6 +824,173 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/admin/setup-sessions:
+    get:
+      summary: List all setup sessions
+      description: |
+        Returns ALL users' setup sessions, newest first (id DESC), paginated at
+        a fixed 20 per page. Each item includes the per-component images the
+        session runs, so an admin can review what's deployed (and, later,
+        upgrade sessions to newer images).
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - name: page
+          in: query
+          required: false
+          description: 1-based page number.
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+      responses:
+        "200":
+          description: One page of sessions plus pagination info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: integer
+                          description: Numeric PK — the sort key.
+                        unique_id:
+                          type: string
+                          example: "a1b2c3d4"
+                        user_unique_id:
+                          type: string
+                          description: The owning user's 8-char unique_id.
+                          example: "e5f6g7h8"
+                        vta_name:
+                          type: string
+                          example: "myvta"
+                        vtc_name:
+                          type: string
+                          description: full_stack_with_vtc only — absent otherwise.
+                        mode:
+                          type: string
+                          enum: [vta_only, full_stack, full_stack_with_vtc]
+                        status:
+                          type: string
+                          example: "running"
+                        error_msg:
+                          type: string
+                          description: Present when the session failed.
+                        fqdn:
+                          type: string
+                          example: "vta-myvta.example.com"
+                        vta_image:
+                          type: string
+                          example: "ghcr.io/ic3software/vta:0.9.0-917881c"
+                        mediator_image:
+                          type: string
+                          description: full_stack family only — absent otherwise.
+                        dids_image:
+                          type: string
+                          description: full_stack family only — absent otherwise.
+                        vtc_image:
+                          type: string
+                          description: full_stack_with_vtc only — absent otherwise.
+                        created_at:
+                          type: string
+                          format: date-time
+                  total:
+                    type: integer
+                    description: Total sessions across all pages.
+                  page:
+                    type: integer
+                  page_size:
+                    type: integer
+                    example: 20
+        "400":
+          description: Invalid page parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/admin/setup/images:
+    get:
+      summary: List available component images (admin)
+      description: |
+        Admin-cookie variant of `GET /setup/images` — same handler, same
+        response. Lets the admin UI populate image dropdowns when upgrading
+        sessions.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - name: component
+          in: query
+          required: false
+          description: Which component's image tags to list.
+          schema:
+            type: string
+            enum: [vta, mediator, dids, vtc]
+            default: vta
+      responses:
+        "200":
+          description: List of available image versions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    tag:
+                      type: string
+                      example: "0.9.0-917881c"
+                    image:
+                      type: string
+                      example: "ghcr.io/ic3software/vta:0.9.0-917881c"
+                    latest:
+                      type: boolean
+                      description: True on the versioned tag that "latest" currently points to. Absent on all other tags. This entry is always first in the list.
+                      example: true
+        "400":
+          description: Unknown component value
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Failed to fetch tags from GHCR
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Image source not configured for the requested component
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   # ── Admin — Passkeys ────────────────────────────────────────────────────────
 
   /api/v1/admin/passkeys/register/begin:

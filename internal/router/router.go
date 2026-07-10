@@ -106,6 +106,10 @@ func Setup(
 		adminAuth.DELETE("/admin/passkeys/:id", pkh.Delete)
 		adminAuth.POST("/admin/invitations", ih.Create)
 		adminAuth.GET("/admin/invitations", ih.List)
+		adminAuth.GET("/admin/setup-sessions", sh.AdminListSessions)
+		// Same handler as the user-facing GET /setup/images — admins need the
+		// tag list too (session upgrades), but sit behind a different cookie.
+		adminAuth.GET("/admin/setup/images", sh.Images)
 	}
 
 	// Public invitation routes (no auth required)
