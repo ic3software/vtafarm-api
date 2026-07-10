@@ -135,8 +135,9 @@ components:
             User-chosen agent name — becomes the session's subdomains:
             vta-{vta_name} (vta_only and full_stack family), plus
             mediator-{vta_name} / dids-{vta_name} for full_stack /
-            full_stack_with_vtc. Must be DNS-safe (lowercase letters, digits,
-            single hyphens between them, max 48 chars) and unique across ALL users'
+            full_stack_with_vtc. Must be DNS-safe (only lowercase letters,
+            digits, and hyphens; no consecutive hyphens (--); must start and
+            end with a letter or digit; max 48 chars) and unique across ALL users'
             sessions — 409 if already taken. Also used in the DID hosting
             path {unique_id}/{vta_name} (vta_only).
         vta_image:

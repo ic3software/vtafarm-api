@@ -28,7 +28,7 @@ func ValidateName(name string) error {
 		return fmt.Errorf("must be at most %d characters", maxNameLength)
 	}
 	if !namePattern.MatchString(name) {
-		return fmt.Errorf("must contain only lowercase letters, digits, and single hyphens, and start and end with a letter or digit")
+		return fmt.Errorf("Only lowercase letters, digits, and hyphens are allowed. Consecutive hyphens (--) are not permitted, and names must start and end with a letter or digit")
 	}
 	return nil
 }
