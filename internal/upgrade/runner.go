@@ -61,7 +61,7 @@ func (r *Runner) Resume() {
 		return
 	}
 	for _, b := range batches {
-		log.Printf("[upgrade] resuming batch %d (%s → %s)", b.ID, b.Component, b.Image)
+		log.Printf("[upgrade] resuming batch %d", b.ID)
 		r.Start(b.ID)
 	}
 }
@@ -157,14 +157,14 @@ func (r *Runner) runTask(batch *model.UpgradeBatch, taskID uint) {
 
 	r.setTask(&task, model.UpgradeTaskRunning, "")
 
-	deployName, err := deploymentName(&session, batch.Component)
+	deployName, err := deploymentName(&session, task.Component)
 	if err != nil {
 		r.failTask(batch, &task, err.Error())
 		return
 	}
 	ns := r.k8s.UserNamespace(fmt.Sprintf("%d", session.UserID))
 
-	if err := r.k8s.SetDeploymentImage(ctx, ns, deployName, batch.Image); err != nil {
+	if err := r.k8s.SetDeploymentImage(ctx, ns, deployName, task.ToImage); err != nil {
 		r.failTask(batch, &task, "patch deployment: "+err.Error())
 		return
 	}
@@ -172,14 +172,14 @@ func (r *Runner) runTask(batch *model.UpgradeBatch, taskID uint) {
 	deadline := time.Now().Add(rolloutTimeout)
 	lastReason := ""
 	for time.Now().Before(deadline) {
-		status, err := r.k8s.DeploymentRollout(ctx, ns, deployName, batch.Image)
+		status, err := r.k8s.DeploymentRollout(ctx, ns, deployName, task.ToImage)
 		if err == nil && status.Ready {
 			if err := r.db.Model(&model.SetupSession{}).Where("id = ?", session.ID).
-				Update(model.UpgradeImageColumn(batch.Component), batch.Image).Error; err != nil {
+				Update(model.UpgradeImageColumn(task.Component), task.ToImage).Error; err != nil {
 				log.Printf("[upgrade] task %d: record new image failed: %v", task.ID, err)
 			}
 			r.setTask(&task, model.UpgradeTaskSucceeded, "")
-			log.Printf("[upgrade] batch %d: session %d %s → %s ready", batch.ID, session.ID, batch.Component, batch.Image)
+			log.Printf("[upgrade] batch %d: session %d %s → %s ready", batch.ID, session.ID, task.Component, task.ToImage)
 			return
 		}
 		if err == nil && status.Reason != "" {

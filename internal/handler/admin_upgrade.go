@@ -56,12 +56,19 @@ func (h *UpgradeHandler) ghcrFor(component string) *ghcr.Client {
 	return nil
 }
 
-type createUpgradeRequest struct {
+type componentImage struct {
 	Component string `json:"component" binding:"required,oneof=vta mediator dids vtc"`
 	Image     string `json:"image"     binding:"required"`
+}
+
+type createUpgradeRequest struct {
+	// One target image per component to upgrade — a session gets one task per
+	// listed component its mode runs, so a full_stack session can have its
+	// vta + mediator + dids upgraded in a single batch.
+	Components []componentImage `json:"components" binding:"required,min=1,dive"`
 	// Exactly one of SessionIDs / All selects the targets. SessionIDs are the
 	// sessions' 8-char unique_ids; All means every eligible session (running,
-	// mode has the component, not already on Image).
+	// mode has the component, not already on the target image).
 	SessionIDs []string `json:"session_ids"`
 	All        bool     `json:"all"`
 	// DryRun resolves and returns the target list without creating anything —
@@ -72,19 +79,28 @@ type createUpgradeRequest struct {
 type upgradeTargetItem struct {
 	SessionID string `json:"session_id"` // unique_id
 	VtaName   string `json:"vta_name"`
+	Component string `json:"component"`
 	FromImage string `json:"from_image"`
 }
 
 type skippedItem struct {
 	SessionID string `json:"session_id"`
+	Component string `json:"component,omitempty"`
 	Reason    string `json:"reason"`
 }
 
-// Create — POST /api/v1/admin/upgrades (admin only). Validates the target
-// image against the component's GHCR tag list (an admin can only roll out
-// images that actually exist there), resolves the eligible sessions, then
-// creates the batch and starts the background runner. With dry_run it stops
-// after resolution and just reports what would happen.
+// upgradeTargetPair is an internal (session, component) resolution result.
+type upgradeTargetPair struct {
+	session   model.SetupSession
+	component string
+	image     string
+}
+
+// Create — POST /api/v1/admin/upgrades (admin only). Validates every target
+// image against its component's GHCR tag list (an admin can only roll out
+// images that actually exist there), resolves the eligible (session,
+// component) pairs, then creates the batch and starts the background runner.
+// With dry_run it stops after resolution and just reports what would happen.
 func (h *UpgradeHandler) Create(c *gin.Context) {
 	var req createUpgradeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -95,32 +111,35 @@ func (h *UpgradeHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "provide either session_ids or all=true (not both)"})
 		return
 	}
+	seen := map[string]bool{}
+	for _, ci := range req.Components {
+		if seen[ci.Component] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "duplicate component " + ci.Component})
+			return
+		}
+		seen[ci.Component] = true
+	}
 	if !req.DryRun && h.runner == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "K8s not configured — upgrades unavailable"})
 		return
 	}
 
-	// The image must be one the component's registry actually serves.
-	client := h.ghcrFor(req.Component)
-	if client == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "image source not configured for " + req.Component})
-		return
-	}
-	tags, err := client.ListTags(c.Request.Context())
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch images: " + err.Error()})
-		return
-	}
-	known := false
-	for _, t := range tags {
-		if t.Image == req.Image {
-			known = true
-			break
+	// Every image must be one its component's registry actually serves.
+	for _, ci := range req.Components {
+		client := h.ghcrFor(ci.Component)
+		if client == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "image source not configured for " + ci.Component})
+			return
 		}
-	}
-	if !known {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "image not found in " + req.Component + " registry: " + req.Image})
-		return
+		tags, err := client.ListTags(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch " + ci.Component + " images: " + err.Error()})
+			return
+		}
+		if !slices.ContainsFunc(tags, func(t ghcr.ImageTag) bool { return t.Image == ci.Image }) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "image not found in " + ci.Component + " registry: " + ci.Image})
+			return
+		}
 	}
 
 	targets, skipped, err := h.resolveTargets(&req)
@@ -130,11 +149,12 @@ func (h *UpgradeHandler) Create(c *gin.Context) {
 	}
 
 	targetItems := make([]upgradeTargetItem, len(targets))
-	for i, s := range targets {
+	for i, t := range targets {
 		targetItems[i] = upgradeTargetItem{
-			SessionID: s.UniqueId,
-			VtaName:   s.VtaName,
-			FromImage: s.ComponentImage(req.Component),
+			SessionID: t.session.UniqueId,
+			VtaName:   t.session.VtaName,
+			Component: t.component,
+			FromImage: t.session.ComponentImage(t.component),
 		}
 	}
 
@@ -149,21 +169,21 @@ func (h *UpgradeHandler) Create(c *gin.Context) {
 
 	adminID := c.MustGet(middleware.ContextUserID).(uint)
 	batch := model.UpgradeBatch{
-		AdminID:   adminID,
-		Component: req.Component,
-		Image:     req.Image,
-		Status:    model.UpgradeBatchRunning,
+		AdminID: adminID,
+		Status:  model.UpgradeBatchRunning,
 	}
 	err = h.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&batch).Error; err != nil {
 			return err
 		}
 		tasks := make([]model.UpgradeTask, len(targets))
-		for i, s := range targets {
+		for i, t := range targets {
 			tasks[i] = model.UpgradeTask{
 				BatchID:   batch.ID,
-				SessionID: s.ID,
-				FromImage: s.ComponentImage(req.Component),
+				SessionID: t.session.ID,
+				Component: t.component,
+				FromImage: t.session.ComponentImage(t.component),
+				ToImage:   t.image,
 				Status:    model.UpgradeTaskPending,
 			}
 		}
@@ -176,60 +196,89 @@ func (h *UpgradeHandler) Create(c *gin.Context) {
 
 	h.runner.Start(batch.ID)
 	c.JSON(http.StatusCreated, gin.H{
-		"id":        batch.ID,
-		"component": batch.Component,
-		"image":     batch.Image,
-		"status":    batch.Status,
-		"targets":   targetItems,
-		"skipped":   skipped,
+		"id":      batch.ID,
+		"status":  batch.Status,
+		"targets": targetItems,
+		"skipped": skipped,
 	})
 }
 
-// resolveTargets turns the request's selection into concrete sessions to
-// upgrade plus per-session skip reasons. Explicitly selected sessions get a
-// reason for every exclusion; all=true silently excludes non-candidates.
-func (h *UpgradeHandler) resolveTargets(req *createUpgradeRequest) ([]model.SetupSession, []skippedItem, error) {
-	modes := model.UpgradeComponentModes[req.Component]
+// resolveTargets turns the request's selection into concrete (session,
+// component) pairs to upgrade, plus per-pair skip reasons. Tasks are ordered
+// session-major — all of one session's components upgrade back-to-back, so
+// each customer's downtime window stays contiguous. Explicitly selected
+// sessions get a reason for every exclusion; all=true silently excludes
+// non-candidates.
+func (h *UpgradeHandler) resolveTargets(req *createUpgradeRequest) ([]upgradeTargetPair, []skippedItem, error) {
 	skipped := []skippedItem{}
 
+	var sessions []model.SetupSession
 	if req.All {
-		var sessions []model.SetupSession
-		err := h.db.Where("status = ? AND mode IN ?", "running", modes).
-			Where(model.UpgradeImageColumn(req.Component)+" != ?", req.Image).
-			Order("id").Find(&sessions).Error
-		return sessions, skipped, err
+		if err := h.db.Where("status = ?", "running").Order("id").Find(&sessions).Error; err != nil {
+			return nil, nil, err
+		}
+	} else {
+		var found []model.SetupSession
+		if err := h.db.Where("unique_id IN ?", req.SessionIDs).Order("id").Find(&found).Error; err != nil {
+			return nil, nil, err
+		}
+		byUniqueId := make(map[string]*model.SetupSession, len(found))
+		for i := range found {
+			byUniqueId[found[i].UniqueId] = &found[i]
+		}
+		for _, id := range req.SessionIDs {
+			s, ok := byUniqueId[id]
+			switch {
+			case !ok:
+				skipped = append(skipped, skippedItem{SessionID: id, Reason: "session not found"})
+			case s.Status != "running":
+				skipped = append(skipped, skippedItem{SessionID: id, Reason: "session is " + s.Status + ", not running"})
+			default:
+				sessions = append(sessions, *s)
+			}
+		}
 	}
 
-	var found []model.SetupSession
-	if err := h.db.Where("unique_id IN ?", req.SessionIDs).Order("id").Find(&found).Error; err != nil {
-		return nil, nil, err
-	}
-	byUniqueId := make(map[string]*model.SetupSession, len(found))
-	for i := range found {
-		byUniqueId[found[i].UniqueId] = &found[i]
-	}
-
-	targets := make([]model.SetupSession, 0, len(found))
-	for _, id := range req.SessionIDs {
-		s, ok := byUniqueId[id]
-		switch {
-		case !ok:
-			skipped = append(skipped, skippedItem{SessionID: id, Reason: "session not found"})
-		case s.Status != "running":
-			skipped = append(skipped, skippedItem{SessionID: id, Reason: "session is " + s.Status + ", not running"})
-		case !slices.Contains(modes, s.Mode):
-			skipped = append(skipped, skippedItem{SessionID: id, Reason: "mode " + s.Mode + " has no " + req.Component + " component"})
-		case s.ComponentImage(req.Component) == req.Image:
-			skipped = append(skipped, skippedItem{SessionID: id, Reason: "already on the target image"})
-		default:
-			targets = append(targets, *s)
+	targets := make([]upgradeTargetPair, 0, len(sessions)*len(req.Components))
+	for _, s := range sessions {
+		for _, ci := range req.Components {
+			switch {
+			case !slices.Contains(model.UpgradeComponentModes[ci.Component], s.Mode):
+				if !req.All {
+					skipped = append(skipped, skippedItem{SessionID: s.UniqueId, Component: ci.Component,
+						Reason: "mode " + s.Mode + " has no " + ci.Component + " component"})
+				}
+			case s.ComponentImage(ci.Component) == ci.Image:
+				if !req.All {
+					skipped = append(skipped, skippedItem{SessionID: s.UniqueId, Component: ci.Component,
+						Reason: "already on the target image"})
+				}
+			default:
+				targets = append(targets, upgradeTargetPair{session: s, component: ci.Component, image: ci.Image})
+			}
 		}
 	}
 	return targets, skipped, nil
 }
 
+// taskComponents returns the distinct components in a set of tasks, in
+// model.UpgradeComponents order — the batch-level summary of what it touches.
+func taskComponents(tasks []model.UpgradeTask) []string {
+	present := map[string]bool{}
+	for _, t := range tasks {
+		present[t.Component] = true
+	}
+	out := []string{}
+	for _, c := range model.UpgradeComponents {
+		if present[c] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // List — GET /api/v1/admin/upgrades (admin only). The 20 most recent batches
-// with per-status task counts, newest first.
+// with their components and per-status task counts, newest first.
 func (h *UpgradeHandler) List(c *gin.Context) {
 	var batches []model.UpgradeBatch
 	if err := h.db.Order("id desc").Limit(20).Find(&batches).Error; err != nil {
@@ -237,43 +286,37 @@ func (h *UpgradeHandler) List(c *gin.Context) {
 		return
 	}
 
-	counts := make(map[uint]map[string]int64)
+	type batchItem struct {
+		model.UpgradeBatch
+		Components []string         `json:"components"`
+		TaskCounts map[string]int64 `json:"task_counts"`
+	}
+	items := make([]batchItem, len(batches))
 	if len(batches) > 0 {
 		ids := make([]uint, len(batches))
 		for i, b := range batches {
 			ids[i] = b.ID
 		}
-		var rows []struct {
-			BatchID uint
-			Status  string
-			N       int64
-		}
-		if err := h.db.Model(&model.UpgradeTask{}).
-			Select("batch_id, status, COUNT(*) as n").
-			Where("batch_id IN ?", ids).
-			Group("batch_id, status").Scan(&rows).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not fetch task counts"})
+		var tasks []model.UpgradeTask
+		if err := h.db.Where("batch_id IN ?", ids).Find(&tasks).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not fetch tasks"})
 			return
 		}
-		for _, row := range rows {
-			if counts[row.BatchID] == nil {
-				counts[row.BatchID] = make(map[string]int64)
+		byBatch := make(map[uint][]model.UpgradeTask)
+		for _, t := range tasks {
+			byBatch[t.BatchID] = append(byBatch[t.BatchID], t)
+		}
+		for i, b := range batches {
+			counts := map[string]int64{}
+			for _, t := range byBatch[b.ID] {
+				counts[t.Status]++
 			}
-			counts[row.BatchID][row.Status] = row.N
+			items[i] = batchItem{
+				UpgradeBatch: b,
+				Components:   taskComponents(byBatch[b.ID]),
+				TaskCounts:   counts,
+			}
 		}
-	}
-
-	type batchItem struct {
-		model.UpgradeBatch
-		TaskCounts map[string]int64 `json:"task_counts"`
-	}
-	items := make([]batchItem, len(batches))
-	for i, b := range batches {
-		tc := counts[b.ID]
-		if tc == nil {
-			tc = map[string]int64{}
-		}
-		items[i] = batchItem{UpgradeBatch: b, TaskCounts: tc}
 	}
 	c.JSON(http.StatusOK, items)
 }
@@ -311,7 +354,9 @@ func (h *UpgradeHandler) Get(c *gin.Context) {
 	type taskItem struct {
 		SessionID string `json:"session_id"` // unique_id; "" if session deleted
 		VtaName   string `json:"vta_name,omitempty"`
+		Component string `json:"component"`
 		FromImage string `json:"from_image"`
+		ToImage   string `json:"to_image"`
 		Status    string `json:"status"`
 		ErrorMsg  string `json:"error_msg,omitempty"`
 		UpdatedAt string `json:"updated_at"`
@@ -319,7 +364,9 @@ func (h *UpgradeHandler) Get(c *gin.Context) {
 	items := make([]taskItem, len(tasks))
 	for i, t := range tasks {
 		item := taskItem{
+			Component: t.Component,
 			FromImage: t.FromImage,
+			ToImage:   t.ToImage,
 			Status:    t.Status,
 			ErrorMsg:  t.ErrorMsg,
 			UpdatedAt: t.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
@@ -333,8 +380,7 @@ func (h *UpgradeHandler) Get(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"id":         batch.ID,
-		"component":  batch.Component,
-		"image":      batch.Image,
+		"components": taskComponents(tasks),
 		"status":     batch.Status,
 		"created_at": batch.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		"tasks":      items,

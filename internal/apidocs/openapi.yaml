@@ -103,6 +103,9 @@ components:
         vta_name:
           type: string
           example: "myvta"
+        component:
+          type: string
+          enum: [vta, mediator, dids, vtc]
         from_image:
           type: string
           description: The image the session runs before the upgrade.
@@ -112,6 +115,9 @@ components:
       properties:
         session_id:
           type: string
+        component:
+          type: string
+          description: Absent when the whole session was skipped (e.g. not found).
         reason:
           type: string
           example: "already on the target image"
@@ -1018,18 +1024,22 @@ paths:
     post:
       summary: Create an image upgrade batch
       description: |
-        Upgrades a set of sessions' component Deployments to a new image. The
-        batch is processed by a background runner with bounded concurrency
-        (default 3 sessions at a time) — the response returns immediately;
-        poll `GET /admin/upgrades/{id}` for progress. On the first task
-        failure the batch pauses (fail-fast) so a broken image stops after at
-        most `concurrency` sessions.
+        Upgrades a set of sessions' component Deployments to new images. One
+        task is created per (session, component) pair — list several
+        components to upgrade a session's whole stack in one batch. Tasks are
+        ordered session-major (all of one session's components back-to-back)
+        and processed by a background runner with bounded concurrency
+        (default 1 — strictly one at a time) — the response returns
+        immediately; poll `GET /admin/upgrades/{id}` for progress. On the
+        first task failure the batch pauses (fail-fast) so a broken image
+        stops after at most `concurrency` tasks.
 
-        Targets: either `session_ids` (explicit unique_ids — ineligible ones
+        Targets: either `session_ids` (explicit unique_ids — ineligible pairs
         are reported in `skipped` with a reason) or `all=true` (every running
-        session whose mode runs the component and isn't already on the image).
-        The image must exist in the component's GHCR tag list. `dry_run=true`
-        resolves and returns `targets`/`skipped` without creating anything.
+        session whose mode runs the component and isn't already on the
+        image). Every image must exist in its component's GHCR tag list.
+        `dry_run=true` resolves and returns `targets`/`skipped` without
+        creating anything.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
@@ -1039,14 +1049,22 @@ paths:
           application/json:
             schema:
               type: object
-              required: [component, image]
+              required: [components]
               properties:
-                component:
-                  type: string
-                  enum: [vta, mediator, dids, vtc]
-                image:
-                  type: string
-                  example: "ghcr.io/ic3software/vta:0.9.0-917881c"
+                components:
+                  type: array
+                  minItems: 1
+                  description: Target image per component to upgrade (no duplicates).
+                  items:
+                    type: object
+                    required: [component, image]
+                    properties:
+                      component:
+                        type: string
+                        enum: [vta, mediator, dids, vtc]
+                      image:
+                        type: string
+                        example: "ghcr.io/ic3software/vta:0.9.0-917881c"
                 session_ids:
                   type: array
                   items:
@@ -1083,10 +1101,6 @@ paths:
                 properties:
                   id:
                     type: integer
-                  component:
-                    type: string
-                  image:
-                    type: string
                   status:
                     type: string
                     example: "running"
@@ -1130,7 +1144,7 @@ paths:
                 $ref: "#/components/schemas/Error"
     get:
       summary: List upgrade batches
-      description: The 20 most recent upgrade batches, newest first, with per-status task counts.
+      description: The 20 most recent upgrade batches, newest first, with their components and per-status task counts.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
@@ -1146,12 +1160,14 @@ paths:
                   properties:
                     id:
                       type: integer
-                    component:
-                      type: string
-                    image:
-                      type: string
+                    components:
+                      type: array
+                      items:
+                        type: string
+                      description: Distinct components the batch's tasks touch.
                     concurrency:
                       type: integer
+                      default: 1
                     status:
                       type: string
                       enum: [running, paused, completed, cancelled]
@@ -1204,10 +1220,11 @@ paths:
                 properties:
                   id:
                     type: integer
-                  component:
-                    type: string
-                  image:
-                    type: string
+                  components:
+                    type: array
+                    items:
+                      type: string
+                    description: Distinct components the batch's tasks touch.
                   status:
                     type: string
                     enum: [running, paused, completed, cancelled]
@@ -1224,7 +1241,12 @@ paths:
                           description: Session unique_id; empty if the session was deleted.
                         vta_name:
                           type: string
+                        component:
+                          type: string
+                          enum: [vta, mediator, dids, vtc]
                         from_image:
+                          type: string
+                        to_image:
                           type: string
                         status:
                           type: string

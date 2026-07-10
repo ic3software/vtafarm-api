@@ -20,28 +20,31 @@ const (
 var UpgradeComponents = []string{"vta", "mediator", "dids", "vtc"}
 
 // UpgradeBatch is one admin-triggered image rollout over a set of sessions.
-// The background runner (internal/upgrade) processes its tasks with at most
-// Concurrency in flight; on the first failure the batch flips to paused so a
-// bad image never marches through the whole fleet.
+// The components and target images live on the tasks — one task per
+// (session, component) — so a single batch can upgrade every component a
+// session runs. The background runner (internal/upgrade) processes tasks with
+// at most Concurrency in flight (default 1 — strictly sequential); on the
+// first failure the batch flips to paused so a bad image never marches
+// through the whole fleet.
 type UpgradeBatch struct {
 	ID          uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	AdminID     uint      `gorm:"not null"                 json:"-"`
-	Component   string    `gorm:"not null"                 json:"component"`
-	Image       string    `gorm:"not null"                 json:"image"`
-	Concurrency int       `gorm:"not null;default:3"       json:"concurrency"`
+	Concurrency int       `gorm:"not null;default:1"       json:"concurrency"`
 	Status      string    `gorm:"not null;default:running" json:"status"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
-// UpgradeTask is one session's upgrade within a batch. FromImage keeps the
-// pre-upgrade image so a failed or regretted upgrade can be reverted by
-// creating a new batch back to that image.
+// UpgradeTask is one (session, component) upgrade within a batch. FromImage
+// keeps the pre-upgrade image so a failed or regretted upgrade can be
+// reverted by creating a new batch back to that image.
 type UpgradeTask struct {
 	ID        uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	BatchID   uint      `gorm:"not null;index"           json:"-"`
 	SessionID uint      `gorm:"not null"                 json:"-"`
+	Component string    `gorm:"not null"                 json:"component"`
 	FromImage string    `gorm:"not null;default:''"      json:"from_image"`
+	ToImage   string    `gorm:"not null"                 json:"to_image"`
 	Status    string    `gorm:"not null;default:pending" json:"status"`
 	ErrorMsg  string    `gorm:"not null;default:''"      json:"error_msg,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
