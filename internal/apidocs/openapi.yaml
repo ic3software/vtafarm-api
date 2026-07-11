@@ -156,8 +156,11 @@ components:
       properties:
         mode:
           type: string
-          enum: [vta_only, full_stack, full_stack_with_vtc]
+          enum: [vta_only, full_stack_with_vtc]
           default: vta_only
+          description: >
+            full_stack (without VTC) is retired for new sessions and rejected
+            with 400 — existing full_stack sessions remain supported.
         vta_name:
           type: string
           example: "myvta"
@@ -1946,7 +1949,8 @@ paths:
       description: |
         Issues a fresh 24-hour invitation link for each request and emails it
         to the requester via Resend. Re-approving is allowed and issues a new
-        link (e.g. after the previous one expired). Requests are processed
+        link; the request's previous link, if still unused, is expired
+        immediately so only the newest one works. Requests are processed
         independently — one failure doesn't stop the rest, and a send failure
         does NOT roll back that approval: the result carries `invite_url` so
         the admin can deliver it manually, plus `email_error` explaining why

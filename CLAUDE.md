@@ -169,7 +169,7 @@ link and emails it to them via Resend.
 | --- | --- | --- | --- |
 | `GET` | `/api/v1/user/me` | user | Get own profile, incl. `beta_access` (read-only) |
 | `POST` | `/api/v1/setup/validate` | user | Check Cloudflare connectivity |
-| `POST` | `/api/v1/setup` | user | Create session + provision DNS (`mode=full_stack` / `full_stack_with_vtc` requires `beta_access`) |
+| `POST` | `/api/v1/setup` | user | Create session + provision DNS (`mode=full_stack_with_vtc` requires `beta_access`; `full_stack` is retired for new sessions — existing ones remain supported) |
 | `DELETE` | `/api/v1/setup/:id` | user | Cancel session + tear down DNS |
 
 ## Beta Access

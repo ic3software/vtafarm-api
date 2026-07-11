@@ -235,9 +235,18 @@ func (h *SignupRequestHandler) Approve(c *gin.Context) {
 }
 
 // approveOne issues an invitation for one request, emails it, and marks the
-// request approved. emailErr is a soft failure (approval stands, link needs
-// manual delivery); err means the approval itself failed.
+// request approved. Any previous unused invitation is expired first, so only
+// the newest link ever works. emailErr is a soft failure (approval stands,
+// link needs manual delivery); err means the approval itself failed.
 func (h *SignupRequestHandler) approveOne(ctx context.Context, adminID uint, sr *model.SignupRequest) (inviteURL string, emailSent bool, emailErr string, err error) {
+	if sr.InvitationID != nil {
+		if err := h.db.Model(&model.InvitationLink{}).
+			Where("id = ? AND used_at IS NULL", *sr.InvitationID).
+			Update("expires_at", time.Now()).Error; err != nil {
+			return "", false, "", err
+		}
+	}
+
 	token, err := generateInviteToken()
 	if err != nil {
 		return "", false, "", err
