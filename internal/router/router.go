@@ -16,6 +16,7 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/ghcr"
 	"github.com/ic3software/vtafarm-api/internal/handler"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
+	"github.com/ic3software/vtafarm-api/internal/mailer"
 	"github.com/ic3software/vtafarm-api/internal/middleware"
 	"github.com/ic3software/vtafarm-api/internal/model"
 	"github.com/ic3software/vtafarm-api/internal/passkey"
@@ -34,6 +35,7 @@ func Setup(
 	didsGhcrClient *ghcr.Client,
 	vtcGhcrClient *ghcr.Client,
 	dhClient *didhosting.Client,
+	mailClient *mailer.Client,
 	cfg *config.Config,
 ) *gin.Engine {
 	r := gin.Default()
@@ -109,6 +111,9 @@ func Setup(
 		adminAuth.POST("/admin/invitations", ih.Create)
 		adminAuth.GET("/admin/invitations", ih.List)
 		adminAuth.GET("/admin/setup-sessions", sh.AdminListSessions)
+		// Transactional email (Resend) — verify configuration end to end.
+		mh := handler.NewMailHandler(mailClient)
+		adminAuth.POST("/admin/test-email", mh.SendTest)
 		// Same handler as the user-facing GET /setup/images — admins need the
 		// tag list too (session upgrades), but sit behind a different cookie.
 		adminAuth.GET("/admin/setup/images", sh.Images)

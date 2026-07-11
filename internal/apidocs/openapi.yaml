@@ -747,6 +747,71 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/admin/test-email:
+    post:
+      summary: Send a test email
+      description: |
+        Sends a fixed test message via Resend so an admin can verify the email
+        configuration (API key, verified sender domain) end to end. Returns 503
+        when RESEND_API_KEY / RESEND_FROM are not configured.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to]
+              properties:
+                to:
+                  type: string
+                  format: email
+                  description: Recipient address for the test message.
+                  example: "you@example.com"
+      responses:
+        "200":
+          description: Email accepted by Resend
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    description: Resend email id.
+        "400":
+          description: Missing or invalid "to" address
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Resend rejected the send request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Email sending not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/v1/admin/users:
     get:
       summary: List users

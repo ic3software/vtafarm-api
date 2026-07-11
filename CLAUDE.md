@@ -41,6 +41,8 @@ See `.env.example` for all options. Key ones:
 | `CLOUDFLARE_API_TOKEN` | — | Cloudflare API token (`Zone:DNS:Edit` permission) |
 | `CLOUDFLARE_ZONE_ID` | — | Cloudflare Zone ID for the user's root domain |
 | `CLUSTER_INGRESS_IP` | — | External IP of the cluster's Ingress-NGINX LoadBalancer |
+| `RESEND_API_KEY` | — | Resend API key — email sending disabled when unset |
+| `RESEND_FROM` | — | Sender address, e.g. `VTA Farm <noreply@example.com>` (domain must be verified in Resend) |
 
 ## Project Structure
 
@@ -142,6 +144,7 @@ To create additional admins, an authenticated admin calls `POST /api/v1/admin/ad
 | `PUT` | `/api/v1/admin/users/:id/beta-access` | admin | Grant/revoke a user's beta access — the only way it's ever changed |
 | `POST` | `/api/v1/admin/invitations` | admin | Create a user invitation link |
 | `GET` | `/api/v1/admin/invitations` | admin | List invitation links |
+| `POST` | `/api/v1/admin/test-email` | admin | Send a test email via Resend to verify the mail configuration |
 
 Every route an authenticated admin calls lives under `/api/v1/admin/...` — that
 prefix is the signal that the route requires the admin role, regardless of

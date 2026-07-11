@@ -20,6 +20,15 @@ type Config struct {
 	DidHosting       DidHostingConfig
 	WebAuthn         WebAuthnConfig
 	Vault            VaultConfig
+	Mailer           MailerConfig
+}
+
+// MailerConfig configures transactional email via Resend. Both fields must be
+// set for email sending to be enabled; From's domain must be verified in the
+// Resend account the key belongs to.
+type MailerConfig struct {
+	ResendAPIKey string
+	From         string // e.g. "VTA Farm <noreply@example.com>"
 }
 
 // VaultConfig configures the farm's HashiCorp Vault. RoleID/SecretID come from
@@ -139,6 +148,10 @@ func Load() *Config {
 			RPID:          getEnv("WEBAUTHN_RP_ID", "localhost"),
 			RPOrigins:     splitComma(getEnv("WEBAUTHN_RP_ORIGINS", "http://localhost:5173")),
 			RPDisplayName: getEnv("WEBAUTHN_RP_DISPLAY_NAME", "VTA Farm"),
+		},
+		Mailer: MailerConfig{
+			ResendAPIKey: getEnv("RESEND_API_KEY", ""),
+			From:         getEnv("RESEND_FROM", ""),
 		},
 		Vault: VaultConfig{
 			Addr:         getEnv("VAULT_ADDR", ""),
