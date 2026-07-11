@@ -18,7 +18,6 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/didhosting"
 	"github.com/ic3software/vtafarm-api/internal/ghcr"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
-	"github.com/ic3software/vtafarm-api/internal/mailer"
 	"github.com/ic3software/vtafarm-api/internal/router"
 	"github.com/ic3software/vtafarm-api/internal/setup"
 	"github.com/ic3software/vtafarm-api/internal/upgrade"
@@ -45,15 +44,6 @@ func main() {
 		cfClient = cloudflare.New(cfg.Cloudflare.APIToken, cfg.Cloudflare.ZoneID)
 	} else {
 		log.Printf("warn: CLOUDFLARE_API_TOKEN or CLOUDFLARE_ZONE_ID not set — setup endpoints disabled")
-	}
-
-	// Resend mailer is optional; email-sending features are disabled without it.
-	var mailClient *mailer.Client
-	if cfg.Mailer.ResendAPIKey != "" && cfg.Mailer.From != "" {
-		mailClient = mailer.New(cfg.Mailer.ResendAPIKey, cfg.Mailer.From)
-		log.Printf("Resend mailer enabled (from %s)", cfg.Mailer.From)
-	} else {
-		log.Printf("warn: RESEND_API_KEY or RESEND_FROM not set — email sending disabled")
 	}
 
 	// K8s client is optional; setup execution requires it.
@@ -142,7 +132,7 @@ func main() {
 		log.Printf("warn: GITHUB_PACKAGE_OWNER or GITHUB_VTC_PACKAGE_NAME not set — vtc image listing disabled")
 	}
 
-	r := router.Setup(db, cfClient, k8sClient, orch, upgradeRunner, ghcrClient, mediatorGhcrClient, didsGhcrClient, vtcGhcrClient, dhClient, mailClient, cfg)
+	r := router.Setup(db, cfClient, k8sClient, orch, upgradeRunner, ghcrClient, mediatorGhcrClient, didsGhcrClient, vtcGhcrClient, dhClient, cfg)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.AppPort,

@@ -41,9 +41,6 @@ See `.env.example` for all options. Key ones:
 | `CLOUDFLARE_API_TOKEN` | — | Cloudflare API token (`Zone:DNS:Edit` permission) |
 | `CLOUDFLARE_ZONE_ID` | — | Cloudflare Zone ID for the user's root domain |
 | `CLUSTER_INGRESS_IP` | — | External IP of the cluster's Ingress-NGINX LoadBalancer |
-| `RESEND_API_KEY` | — | Resend API key — email sending disabled when unset |
-| `RESEND_FROM` | — | Sender address, e.g. `VTA Farm <noreply@example.com>` (domain must be verified in Resend) |
-| `PUBLIC_BASE_URL` | first `WEBAUTHN_RP_ORIGINS` entry | Frontend origin for links in emails |
 
 ## Project Structure
 
@@ -143,11 +140,9 @@ To create additional admins, an authenticated admin calls `POST /api/v1/admin/ad
 | `POST` | `/api/v1/admin/admins` | admin | Create admin + return enrollment token |
 | `GET` | `/api/v1/admin/users` | admin | List user accounts (includes `beta_access`) |
 | `PUT` | `/api/v1/admin/users/:id/beta-access` | admin | Grant/revoke a user's beta access — the only way it's ever changed |
+| `POST` | `/api/v1/admin/users/:id/recovery-link` | admin | Issue a 1h single-use login link for a user who lost their passkey |
 | `POST` | `/api/v1/admin/invitations` | admin | Create a user invitation link |
 | `GET` | `/api/v1/admin/invitations` | admin | List invitation links |
-| `POST` | `/api/v1/admin/test-email` | admin | Send a test email via Resend to verify the mail configuration |
-| `GET` | `/api/v1/admin/signup-requests` | admin | List account signup requests from the public home page (paginated, state filter) |
-| `POST` | `/api/v1/admin/signup-requests/approve` | admin | Approve requests by id — issues invitation links and emails them via Resend |
 
 Every route an authenticated admin calls lives under `/api/v1/admin/...` — that
 prefix is the signal that the route requires the admin role, regardless of
@@ -158,10 +153,22 @@ invitation link (`POST /api/v1/admin/invitations`) and the user self-registers
 with `POST /api/v1/invitations/:token/register` (public, token-based — not
 under `/admin/`, since the caller isn't authenticated as an admin).
 
-Visitors can also request an account themselves: `POST /api/v1/signup-requests`
-(public) records their email; an admin approves it
-(`POST /api/v1/admin/signup-requests/:id/approve`), which issues an invitation
-link and emails it to them via Resend.
+Visitors can also sign up themselves: `POST /api/v1/signup` (public,
+rate-limited per IP) takes an email and creates the account immediately — no
+admin approval and no email is ever sent. The email is a self-declared label
+(unverified, unique via a partial index on `users.email`, NULL for pre-email
+and admin-invited accounts); the passkey the frontend registers right after is
+what authenticates. Until that first passkey exists, repeating the call with
+the same email resumes the same account instead of failing, so an abandoned
+passkey ceremony never strands the email; once a passkey exists it answers
+409.
+
+There is deliberately no self-service (email-based) recovery. A user who lost
+their passkey contacts an admin, who verifies their identity out of band and
+issues a recovery link (`POST /api/v1/admin/users/:id/recovery-link` — 1 hour,
+single-use, delivered out of band; issuing a new one expires the previous).
+Consuming it (`POST /api/v1/recovery/:token`, public) revokes every passkey on
+the account and logs the holder in to register a fresh one.
 
 ### User — VTA Setup Wizard
 

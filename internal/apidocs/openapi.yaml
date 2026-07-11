@@ -750,71 +750,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /api/v1/admin/test-email:
-    post:
-      summary: Send a test email
-      description: |
-        Sends a fixed test message via Resend so an admin can verify the email
-        configuration (API key, verified sender domain) end to end. Returns 503
-        when RESEND_API_KEY / RESEND_FROM are not configured.
-      tags: [Admin]
-      security:
-        - CookieAuthAdmin: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [to]
-              properties:
-                to:
-                  type: string
-                  format: email
-                  description: Recipient address for the test message.
-                  example: "you@example.com"
-      responses:
-        "200":
-          description: Email accepted by Resend
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  id:
-                    type: string
-                    description: Resend email id.
-        "400":
-          description: Missing or invalid "to" address
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "401":
-          description: Missing or invalid token
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "403":
-          description: Insufficient role
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "502":
-          description: Resend rejected the send request
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "503":
-          description: Email sending not configured
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-
   /api/v1/admin/users:
     get:
       summary: List users
@@ -837,6 +772,14 @@ paths:
                     unique_id:
                       type: string
                       example: "a1b2c3d4"
+                    email:
+                      type: string
+                      format: email
+                      nullable: true
+                      description: |
+                        Self-declared email left at public signup (unverified).
+                        Null for accounts created before email signup existed
+                        and for admin-invited accounts.
                     beta_access:
                       type: boolean
                       description: Whether this user can create full_stack setup sessions.
@@ -905,6 +848,61 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/admin/users/{id}/recovery-link:
+    post:
+      summary: Issue an account recovery link
+      description: |
+        Issues a **1-hour, single-use** login link for a user who lost their
+        passkey. The admin must verify the requester really owns the account
+        (e.g. against its email) and deliver the URL out of band — the system
+        sends nothing, and whoever opens the link takes over the account.
+        Any previous unused link for the same account is expired immediately,
+        so only the newest one works. The link is consumed at the public
+        `POST /recovery/{token}`, which also revokes every passkey on the
+        account.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The user's 8-char `unique_id` (not the numeric PK).
+          schema:
+            type: string
+      responses:
+        "201":
+          description: Recovery link created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                    description: Append to the frontend's `/recover/` path to form the URL.
+                  expires_at:
+                    type: string
+                    format: date-time
         "401":
           description: Missing or invalid token
           content:
@@ -1785,17 +1783,26 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  # ── Signup requests ─────────────────────────────────────────────────────────
+  # ── Signup ──────────────────────────────────────────────────────────────────
 
-  /api/v1/signup-requests:
+  /api/v1/signup:
     post:
-      summary: "(public) Request an account"
+      summary: "(public) Sign up with an email"
       description: |
-        A visitor asks for an account by leaving their email (home page form).
-        A repeat request for the same address answers 200 with status
-        `already_requested`. An admin reviews requests and approves them,
-        which emails the visitor an invitation link.
-      tags: [Admin — Invitations]
+        Self-service account creation from the home page. The email is a
+        self-declared label — nothing is ever sent to it and ownership is not
+        verified; the passkey registered right after this call is what
+        authenticates the account.
+
+        On success the `vtafarm_user` cookie is set so the caller can
+        immediately continue with `POST /user/passkeys/register/begin` +
+        `complete`. Until that first passkey exists, repeating this call with
+        the same email resumes the same account (fresh cookie, no duplicate),
+        so an abandoned or failed passkey ceremony never strands the email.
+        Once a passkey exists the email is taken for good and answers 409.
+
+        Rate-limited per client IP.
+      tags: [Auth — User]
       requestBody:
         required: true
         content:
@@ -1809,211 +1816,138 @@ paths:
                   format: email
                   maxLength: 254
       responses:
-        "202":
-          description: Request recorded
+        "201":
+          description: Account created and logged in (cookie set)
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  status:
+                  id:
+                    type: integer
+                  unique_id:
                     type: string
-                    example: "received"
+                    example: "a1b2c3d4"
+                  token:
+                    type: string
+                    description: JWT, also set as the vtafarm_user cookie.
         "200":
-          description: This email already has a request on file
+          description: Existing passkey-less account resumed (cookie set); same body as 201
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  status:
+                  id:
+                    type: integer
+                  unique_id:
                     type: string
-                    example: "already_requested"
+                  token:
+                    type: string
         "400":
           description: Missing or invalid email
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "409":
+          description: Email already registered to an account with a passkey
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
-  /api/v1/admin/signup-requests:
+  # ── Account recovery ────────────────────────────────────────────────────────
+
+  /api/v1/recovery/{token}:
     get:
-      summary: List signup requests
-      description: |
-        Signup requests, newest first, paginated at a fixed 20 per page.
-        Approved requests include the issued invitation's token, expiry, and
-        whether it has been used. The optional state filter matches the UI's
-        derived states.
-      tags: [Admin — Invitations]
-      security:
-        - CookieAuthAdmin: []
+      summary: "(public) Validate a recovery link"
+      description: Checks whether an admin-issued recovery link is still usable.
+      tags: [Auth — User]
       parameters:
-        - name: page
-          in: query
-          required: false
-          description: 1-based page number.
-          schema:
-            type: integer
-            minimum: 1
-            default: 1
-        - name: state
-          in: query
-          required: false
-          description: >
-            Only return requests in this derived state: pending (awaiting
-            review), invited (active invitation), expired (invitation expired
-            unused), registered (invitation used). Omit for all.
+        - name: token
+          in: path
+          required: true
           schema:
             type: string
-            enum: [pending, invited, expired, registered]
       responses:
         "200":
-          description: One page of signup requests plus pagination info
+          description: Link is valid
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  items:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:
-                          type: integer
-                        email:
-                          type: string
-                        status:
-                          type: string
-                          enum: [pending, approved]
-                        created_at:
-                          type: string
-                          format: date-time
-                        email_sent_at:
-                          type: string
-                          format: date-time
-                          description: When the invitation email was delivered to Resend. Absent if never sent.
-                        invite_token:
-                          type: string
-                          description: Present once approved.
-                        invite_expires_at:
-                          type: string
-                          format: date-time
-                        invite_used_at:
-                          type: string
-                          format: date-time
-                  total:
-                    type: integer
-                    description: Total requests matching the filter.
-                  page:
-                    type: integer
-                  page_size:
-                    type: integer
-                    example: 20
-                  counts:
-                    type: object
-                    description: Per-state totals, independent of the active filter.
-                    properties:
-                      all:
-                        type: integer
-                      pending:
-                        type: integer
-                      invited:
-                        type: integer
-                      expired:
-                        type: integer
-                      registered:
-                        type: integer
-        "400":
-          description: Invalid page or state
+                  valid:
+                    type: boolean
+                  expires_at:
+                    type: string
+                    format: date-time
+        "404":
+          description: Link not found
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "401":
-          description: Missing or invalid token
+        "410":
+          description: Link already used or expired
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "403":
-          description: Insufficient role
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-
-  /api/v1/admin/signup-requests/approve:
     post:
-      summary: Approve signup requests
+      summary: "(public) Consume a recovery link"
       description: |
-        Issues a fresh 24-hour invitation link for each request and emails it
-        to the requester via Resend. Re-approving is allowed and issues a new
-        link; the request's previous link, if still unused, is expired
-        immediately so only the newest one works. Requests are processed
-        independently — one failure doesn't stop the rest, and a send failure
-        does NOT roll back that approval: the result carries `invite_url` so
-        the admin can deliver it manually, plus `email_error` explaining why
-        sending failed.
-      tags: [Admin — Invitations]
-      security:
-        - CookieAuthAdmin: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [ids]
-              properties:
-                ids:
-                  type: array
-                  minItems: 1
-                  maxItems: 100
-                  items:
-                    type: integer
+        Burns the link (single-use, guarded against concurrent consumes),
+        **revokes every passkey on the account**, and sets the `vtafarm_user`
+        cookie so the holder can immediately register a fresh passkey via
+        `POST /user/passkeys/register/begin` + `complete`. If that ceremony
+        fails, the 24-hour cookie still allows adding a passkey from Settings;
+        otherwise the admin simply issues another link. Rate-limited per
+        client IP.
+      tags: [Auth — User]
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
       responses:
         "200":
-          description: Per-request results, in input order
+          description: Logged in to the recovered account (cookie set)
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  results:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:
-                          type: integer
-                        email:
-                          type: string
-                        invite_url:
-                          type: string
-                          description: Full registration URL emailed to the requester.
-                        email_sent:
-                          type: boolean
-                        email_error:
-                          type: string
-                          description: Present when the email could not be sent (approval stands).
-                        error:
-                          type: string
-                          description: Present when this request could not be approved at all.
-        "400":
-          description: Missing or invalid ids
+                  id:
+                    type: integer
+                  unique_id:
+                    type: string
+                    example: "a1b2c3d4"
+                  token:
+                    type: string
+                    description: JWT, also set as the vtafarm_user cookie.
+        "404":
+          description: Link not found
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "401":
-          description: Missing or invalid token
+        "410":
+          description: Link already used or expired
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "403":
-          description: Insufficient role
+        "429":
+          description: Rate limit exceeded
           content:
             application/json:
               schema:

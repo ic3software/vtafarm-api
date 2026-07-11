@@ -16,7 +16,6 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/ghcr"
 	"github.com/ic3software/vtafarm-api/internal/handler"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
-	"github.com/ic3software/vtafarm-api/internal/mailer"
 	"github.com/ic3software/vtafarm-api/internal/middleware"
 	"github.com/ic3software/vtafarm-api/internal/model"
 	"github.com/ic3software/vtafarm-api/internal/passkey"
@@ -35,7 +34,6 @@ func Setup(
 	didsGhcrClient *ghcr.Client,
 	vtcGhcrClient *ghcr.Client,
 	dhClient *didhosting.Client,
-	mailClient *mailer.Client,
 	cfg *config.Config,
 ) *gin.Engine {
 	r := gin.Default()
@@ -98,13 +96,16 @@ func Setup(
 	)
 	uh := handler.NewUserHandler(db)
 	ih := handler.NewInvitationHandler(db, cfg.JWTSecret, cfg.CookieSecure())
-	srh := handler.NewSignupRequestHandler(db, mailClient, cfg.FrontendBaseURL())
+	rh := handler.NewRecoveryHandler(db, cfg.JWTSecret, cfg.CookieSecure())
 	{
 		adminH := handler.NewAdminHandler(db)
 		adminAuth.GET("/admin/admins", adminH.List)
 		adminAuth.POST("/admin/admins", adminH.Create)
 		adminAuth.GET("/admin/users", uh.List)
 		adminAuth.PUT("/admin/users/:id/beta-access", uh.SetBetaAccess)
+		// Lost-passkey recovery: issues a 1h single-use login link the admin
+		// delivers out of band; consuming it is the public /recovery route.
+		adminAuth.POST("/admin/users/:id/recovery-link", rh.Create)
 		adminAuth.POST("/admin/passkeys/register/begin", pkh.RegisterBegin)
 		adminAuth.POST("/admin/passkeys/register/complete", pkh.RegisterComplete)
 		adminAuth.GET("/admin/passkeys", pkh.List)
@@ -112,12 +113,6 @@ func Setup(
 		adminAuth.POST("/admin/invitations", ih.Create)
 		adminAuth.GET("/admin/invitations", ih.List)
 		adminAuth.GET("/admin/setup-sessions", sh.AdminListSessions)
-		// Transactional email (Resend) — verify configuration end to end.
-		mh := handler.NewMailHandler(mailClient)
-		adminAuth.POST("/admin/test-email", mh.SendTest)
-		// Signup requests — review the public requests and issue invitations.
-		adminAuth.GET("/admin/signup-requests", srh.List)
-		adminAuth.POST("/admin/signup-requests/approve", srh.Approve)
 		// Same handler as the user-facing GET /setup/images — admins need the
 		// tag list too (session upgrades), but sit behind a different cookie.
 		adminAuth.GET("/admin/setup/images", sh.Images)
@@ -135,8 +130,17 @@ func Setup(
 	v1.GET("/invitations/:token", ih.Validate)
 	v1.POST("/invitations/:token/register", ih.Register)
 
-	// Public signup request — visitors ask for an account from the home page.
-	v1.POST("/signup-requests", srh.Create)
+	// Public email signup — visitors create an account directly from the home
+	// page (no admin approval, no email sent). Rate-limited: it both creates
+	// accounts and issues login cookies.
+	sgh := handler.NewSignupHandler(db, cfg.JWTSecret, cfg.CookieSecure())
+	v1.POST("/signup", middleware.RateLimit(10, time.Minute), sgh.Signup)
+
+	// Account recovery — an admin issues a short-lived login link for a user
+	// who lost their passkey (adminAuth route above); the holder consumes it
+	// here. Consuming revokes the account's passkeys and sets a login cookie.
+	v1.GET("/recovery/:token", rh.Validate)
+	v1.POST("/recovery/:token", middleware.RateLimit(10, time.Minute), rh.Consume)
 
 	// User routes — cookie: vtafarm_user
 	userAuth := v1.Group("",
