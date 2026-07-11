@@ -10,6 +10,7 @@ type Config struct {
 	AppPort          string
 	AppEnv           string
 	JWTSecret        string
+	PublicBaseURL    string // frontend origin for links in emails; see FrontendBaseURL
 	ClusterIngressIP string
 	ClusterDomain    string
 	MediatorDid      string
@@ -52,6 +53,19 @@ type WebAuthnConfig struct {
 
 // CookieSecure returns true when running in production (requires HTTPS).
 func (c *Config) CookieSecure() bool { return c.AppEnv == "production" }
+
+// FrontendBaseURL returns the public frontend origin used to build links in
+// emails — PUBLIC_BASE_URL when set, else the first WebAuthn RP origin (which
+// is already the frontend origin in both dev and prod).
+func (c *Config) FrontendBaseURL() string {
+	if c.PublicBaseURL != "" {
+		return strings.TrimRight(c.PublicBaseURL, "/")
+	}
+	if len(c.WebAuthn.RPOrigins) > 0 {
+		return strings.TrimRight(c.WebAuthn.RPOrigins[0], "/")
+	}
+	return ""
+}
 
 type DidHostingConfig struct {
 	ControlUrl string // e.g. https://control.fpp2.ic3.dev — management API (auth + upload)
@@ -111,6 +125,7 @@ func Load() *Config {
 		AppPort:          getEnv("APP_PORT", "8080"),
 		AppEnv:           getEnv("APP_ENV", "development"),
 		JWTSecret:        getEnv("JWT_SECRET", "change-me-in-production"),
+		PublicBaseURL:    getEnv("PUBLIC_BASE_URL", ""),
 		ClusterIngressIP: getEnv("CLUSTER_INGRESS_IP", ""),
 		ClusterDomain:    getEnv("CLUSTER_DOMAIN", ""),
 		MediatorDid:      getEnv("MEDIATOR_DID", ""),

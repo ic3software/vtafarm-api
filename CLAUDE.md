@@ -43,6 +43,7 @@ See `.env.example` for all options. Key ones:
 | `CLUSTER_INGRESS_IP` | — | External IP of the cluster's Ingress-NGINX LoadBalancer |
 | `RESEND_API_KEY` | — | Resend API key — email sending disabled when unset |
 | `RESEND_FROM` | — | Sender address, e.g. `VTA Farm <noreply@example.com>` (domain must be verified in Resend) |
+| `PUBLIC_BASE_URL` | first `WEBAUTHN_RP_ORIGINS` entry | Frontend origin for links in emails |
 
 ## Project Structure
 
@@ -145,6 +146,8 @@ To create additional admins, an authenticated admin calls `POST /api/v1/admin/ad
 | `POST` | `/api/v1/admin/invitations` | admin | Create a user invitation link |
 | `GET` | `/api/v1/admin/invitations` | admin | List invitation links |
 | `POST` | `/api/v1/admin/test-email` | admin | Send a test email via Resend to verify the mail configuration |
+| `GET` | `/api/v1/admin/signup-requests` | admin | List account signup requests from the public home page (paginated, state filter) |
+| `POST` | `/api/v1/admin/signup-requests/approve` | admin | Approve requests by id — issues invitation links and emails them via Resend |
 
 Every route an authenticated admin calls lives under `/api/v1/admin/...` — that
 prefix is the signal that the route requires the admin role, regardless of
@@ -154,6 +157,11 @@ User accounts themselves aren't created by admin directly — an admin creates a
 invitation link (`POST /api/v1/admin/invitations`) and the user self-registers
 with `POST /api/v1/invitations/:token/register` (public, token-based — not
 under `/admin/`, since the caller isn't authenticated as an admin).
+
+Visitors can also request an account themselves: `POST /api/v1/signup-requests`
+(public) records their email; an admin approves it
+(`POST /api/v1/admin/signup-requests/:id/approve`), which issues an invitation
+link and emails it to them via Resend.
 
 ### User — VTA Setup Wizard
 

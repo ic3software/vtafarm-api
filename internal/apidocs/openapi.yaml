@@ -1012,6 +1012,18 @@ paths:
                   page_size:
                     type: integer
                     example: 20
+                  counts:
+                    type: object
+                    description: Per-mode totals, independent of the active filter.
+                    properties:
+                      all:
+                        type: integer
+                      vta_only:
+                        type: integer
+                      full_stack:
+                        type: integer
+                      full_stack_with_vtc:
+                        type: integer
         "400":
           description: Invalid page parameter
           content:
@@ -1765,6 +1777,239 @@ paths:
                 $ref: "#/components/schemas/Error"
         "410":
           description: Invitation expired or already used
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ── Signup requests ─────────────────────────────────────────────────────────
+
+  /api/v1/signup-requests:
+    post:
+      summary: "(public) Request an account"
+      description: |
+        A visitor asks for an account by leaving their email (home page form).
+        A repeat request for the same address answers 200 with status
+        `already_requested`. An admin reviews requests and approves them,
+        which emails the visitor an invitation link.
+      tags: [Admin — Invitations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  maxLength: 254
+      responses:
+        "202":
+          description: Request recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "received"
+        "200":
+          description: This email already has a request on file
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "already_requested"
+        "400":
+          description: Missing or invalid email
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/admin/signup-requests:
+    get:
+      summary: List signup requests
+      description: |
+        Signup requests, newest first, paginated at a fixed 20 per page.
+        Approved requests include the issued invitation's token, expiry, and
+        whether it has been used. The optional state filter matches the UI's
+        derived states.
+      tags: [Admin — Invitations]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - name: page
+          in: query
+          required: false
+          description: 1-based page number.
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: state
+          in: query
+          required: false
+          description: >
+            Only return requests in this derived state: pending (awaiting
+            review), invited (active invitation), expired (invitation expired
+            unused), registered (invitation used). Omit for all.
+          schema:
+            type: string
+            enum: [pending, invited, expired, registered]
+      responses:
+        "200":
+          description: One page of signup requests plus pagination info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: integer
+                        email:
+                          type: string
+                        status:
+                          type: string
+                          enum: [pending, approved]
+                        created_at:
+                          type: string
+                          format: date-time
+                        email_sent_at:
+                          type: string
+                          format: date-time
+                          description: When the invitation email was delivered to Resend. Absent if never sent.
+                        invite_token:
+                          type: string
+                          description: Present once approved.
+                        invite_expires_at:
+                          type: string
+                          format: date-time
+                        invite_used_at:
+                          type: string
+                          format: date-time
+                  total:
+                    type: integer
+                    description: Total requests matching the filter.
+                  page:
+                    type: integer
+                  page_size:
+                    type: integer
+                    example: 20
+                  counts:
+                    type: object
+                    description: Per-state totals, independent of the active filter.
+                    properties:
+                      all:
+                        type: integer
+                      pending:
+                        type: integer
+                      invited:
+                        type: integer
+                      expired:
+                        type: integer
+                      registered:
+                        type: integer
+        "400":
+          description: Invalid page or state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/admin/signup-requests/approve:
+    post:
+      summary: Approve signup requests
+      description: |
+        Issues a fresh 24-hour invitation link for each request and emails it
+        to the requester via Resend. Re-approving is allowed and issues a new
+        link (e.g. after the previous one expired). Requests are processed
+        independently — one failure doesn't stop the rest, and a send failure
+        does NOT roll back that approval: the result carries `invite_url` so
+        the admin can deliver it manually, plus `email_error` explaining why
+        sending failed.
+      tags: [Admin — Invitations]
+      security:
+        - CookieAuthAdmin: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids]
+              properties:
+                ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items:
+                    type: integer
+      responses:
+        "200":
+          description: Per-request results, in input order
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: integer
+                        email:
+                          type: string
+                        invite_url:
+                          type: string
+                          description: Full registration URL emailed to the requester.
+                        email_sent:
+                          type: boolean
+                        email_error:
+                          type: string
+                          description: Present when the email could not be sent (approval stands).
+                        error:
+                          type: string
+                          description: Present when this request could not be approved at all.
+        "400":
+          description: Missing or invalid ids
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role
           content:
             application/json:
               schema:

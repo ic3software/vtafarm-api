@@ -98,6 +98,7 @@ func Setup(
 	)
 	uh := handler.NewUserHandler(db)
 	ih := handler.NewInvitationHandler(db, cfg.JWTSecret, cfg.CookieSecure())
+	srh := handler.NewSignupRequestHandler(db, mailClient, cfg.FrontendBaseURL())
 	{
 		adminH := handler.NewAdminHandler(db)
 		adminAuth.GET("/admin/admins", adminH.List)
@@ -114,6 +115,9 @@ func Setup(
 		// Transactional email (Resend) — verify configuration end to end.
 		mh := handler.NewMailHandler(mailClient)
 		adminAuth.POST("/admin/test-email", mh.SendTest)
+		// Signup requests — review the public requests and issue invitations.
+		adminAuth.GET("/admin/signup-requests", srh.List)
+		adminAuth.POST("/admin/signup-requests/approve", srh.Approve)
 		// Same handler as the user-facing GET /setup/images — admins need the
 		// tag list too (session upgrades), but sit behind a different cookie.
 		adminAuth.GET("/admin/setup/images", sh.Images)
@@ -130,6 +134,9 @@ func Setup(
 	// Public invitation routes (no auth required)
 	v1.GET("/invitations/:token", ih.Validate)
 	v1.POST("/invitations/:token/register", ih.Register)
+
+	// Public signup request — visitors ask for an account from the home page.
+	v1.POST("/signup-requests", srh.Create)
 
 	// User routes — cookie: vtafarm_user
 	userAuth := v1.Group("",
