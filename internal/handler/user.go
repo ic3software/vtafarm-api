@@ -75,6 +75,7 @@ func (h *UserHandler) Me(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"id":          user.UniqueId,
+		"email":       user.Email,
 		"beta_access": user.BetaAccess,
 		"created_at":  user.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 	})
