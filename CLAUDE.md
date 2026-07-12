@@ -140,6 +140,7 @@ To create additional admins, an authenticated admin calls `POST /api/v1/admin/ad
 | `POST` | `/api/v1/admin/admins` | admin | Create admin + return enrollment token |
 | `GET` | `/api/v1/admin/users` | admin | List user accounts (includes `beta_access`) |
 | `PUT` | `/api/v1/admin/users/:id/beta-access` | admin | Grant/revoke a user's beta access — the only way it's ever changed |
+| `POST` | `/api/v1/admin/users/:id/recovery-link` | admin | Issue a 1h single-use login link for a user who lost their passkey |
 | `POST` | `/api/v1/admin/invitations` | admin | Create a user invitation link |
 | `GET` | `/api/v1/admin/invitations` | admin | List invitation links |
 
@@ -152,13 +153,30 @@ invitation link (`POST /api/v1/admin/invitations`) and the user self-registers
 with `POST /api/v1/invitations/:token/register` (public, token-based — not
 under `/admin/`, since the caller isn't authenticated as an admin).
 
+Visitors can also sign up themselves: `POST /api/v1/signup` (public,
+rate-limited per IP) takes an email and creates the account immediately — no
+admin approval and no email is ever sent. The email is a self-declared label
+(unverified, unique via a partial index on `users.email`, NULL for pre-email
+and admin-invited accounts); the passkey the frontend registers right after is
+what authenticates. Until that first passkey exists, repeating the call with
+the same email resumes the same account instead of failing, so an abandoned
+passkey ceremony never strands the email; once a passkey exists it answers
+409.
+
+There is deliberately no self-service (email-based) recovery. A user who lost
+their passkey contacts an admin, who verifies their identity out of band and
+issues a recovery link (`POST /api/v1/admin/users/:id/recovery-link` — 1 hour,
+single-use, delivered out of band; issuing a new one expires the previous).
+Consuming it (`POST /api/v1/recovery/:token`, public) revokes every passkey on
+the account and logs the holder in to register a fresh one.
+
 ### User — VTA Setup Wizard
 
 | Method | Path | Role | Description |
 | --- | --- | --- | --- |
 | `GET` | `/api/v1/user/me` | user | Get own profile, incl. `beta_access` (read-only) |
 | `POST` | `/api/v1/setup/validate` | user | Check Cloudflare connectivity |
-| `POST` | `/api/v1/setup` | user | Create session + provision DNS (`mode=full_stack` / `full_stack_with_vtc` requires `beta_access`) |
+| `POST` | `/api/v1/setup` | user | Create session + provision DNS (`mode=full_stack_with_vtc` requires `beta_access`; `full_stack` is retired for new sessions — existing ones remain supported) |
 | `DELETE` | `/api/v1/setup/:id` | user | Cancel session + tear down DNS |
 
 ## Beta Access

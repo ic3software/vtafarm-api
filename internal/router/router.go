@@ -96,12 +96,16 @@ func Setup(
 	)
 	uh := handler.NewUserHandler(db)
 	ih := handler.NewInvitationHandler(db, cfg.JWTSecret, cfg.CookieSecure())
+	rh := handler.NewRecoveryHandler(db, cfg.JWTSecret, cfg.CookieSecure())
 	{
 		adminH := handler.NewAdminHandler(db)
 		adminAuth.GET("/admin/admins", adminH.List)
 		adminAuth.POST("/admin/admins", adminH.Create)
 		adminAuth.GET("/admin/users", uh.List)
 		adminAuth.PUT("/admin/users/:id/beta-access", uh.SetBetaAccess)
+		// Lost-passkey recovery: issues a 1h single-use login link the admin
+		// delivers out of band; consuming it is the public /recovery route.
+		adminAuth.POST("/admin/users/:id/recovery-link", rh.Create)
 		adminAuth.POST("/admin/passkeys/register/begin", pkh.RegisterBegin)
 		adminAuth.POST("/admin/passkeys/register/complete", pkh.RegisterComplete)
 		adminAuth.GET("/admin/passkeys", pkh.List)
@@ -125,6 +129,18 @@ func Setup(
 	// Public invitation routes (no auth required)
 	v1.GET("/invitations/:token", ih.Validate)
 	v1.POST("/invitations/:token/register", ih.Register)
+
+	// Public email signup — visitors create an account directly from the home
+	// page (no admin approval, no email sent). Rate-limited: it both creates
+	// accounts and issues login cookies.
+	sgh := handler.NewSignupHandler(db, cfg.JWTSecret, cfg.CookieSecure())
+	v1.POST("/signup", middleware.RateLimit(10, time.Minute), sgh.Signup)
+
+	// Account recovery — an admin issues a short-lived login link for a user
+	// who lost their passkey (adminAuth route above); the holder consumes it
+	// here. Consuming revokes the account's passkeys and sets a login cookie.
+	v1.GET("/recovery/:token", rh.Validate)
+	v1.POST("/recovery/:token", middleware.RateLimit(10, time.Minute), rh.Consume)
 
 	// User routes — cookie: vtafarm_user
 	userAuth := v1.Group("",

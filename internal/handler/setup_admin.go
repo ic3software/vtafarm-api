@@ -47,6 +47,25 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 		return
 	}
 
+	// Per-mode totals for the filter buttons, independent of the active filter.
+	var modeCounts []struct {
+		Mode  string
+		Count int64
+	}
+	if err := h.db.Model(&model.SetupSession{}).
+		Select("mode, COUNT(*) AS count").Group("mode").
+		Find(&modeCounts).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not count sessions"})
+		return
+	}
+	counts := map[string]int64{
+		"all": 0, model.ModeVtaOnly: 0, model.ModeFullStack: 0, model.ModeFullStackWithVtc: 0,
+	}
+	for _, mc := range modeCounts {
+		counts[mc.Mode] = mc.Count
+		counts["all"] += mc.Count
+	}
+
 	var sessions []model.SetupSession
 	if err := filtered(h.db.Order("id desc")).
 		Limit(adminSessionsPageSize).
@@ -119,5 +138,6 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 		"total":     total,
 		"page":      page,
 		"page_size": adminSessionsPageSize,
+		"counts":    counts,
 	})
 }

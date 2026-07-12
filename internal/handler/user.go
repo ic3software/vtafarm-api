@@ -40,17 +40,19 @@ func (h *UserHandler) List(c *gin.Context) {
 	}
 
 	type userItem struct {
-		ID         uint   `json:"id"`
-		UniqueId   string `json:"unique_id"`
-		BetaAccess bool   `json:"beta_access"`
-		CreatedAt  string `json:"created_at"`
-		UpdatedAt  string `json:"updated_at"`
+		ID         uint    `json:"id"`
+		UniqueId   string  `json:"unique_id"`
+		Email      *string `json:"email"` // null for pre-email and admin-invited accounts
+		BetaAccess bool    `json:"beta_access"`
+		CreatedAt  string  `json:"created_at"`
+		UpdatedAt  string  `json:"updated_at"`
 	}
 	result := make([]userItem, len(users))
 	for i, u := range users {
 		result[i] = userItem{
 			ID:         u.ID,
 			UniqueId:   u.UniqueId,
+			Email:      u.Email,
 			BetaAccess: u.BetaAccess,
 			CreatedAt:  u.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 			UpdatedAt:  u.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),

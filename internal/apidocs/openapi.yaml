@@ -156,8 +156,11 @@ components:
       properties:
         mode:
           type: string
-          enum: [vta_only, full_stack, full_stack_with_vtc]
+          enum: [vta_only, full_stack_with_vtc]
           default: vta_only
+          description: >
+            full_stack (without VTC) is retired for new sessions and rejected
+            with 400 — existing full_stack sessions remain supported.
         vta_name:
           type: string
           example: "myvta"
@@ -769,6 +772,14 @@ paths:
                     unique_id:
                       type: string
                       example: "a1b2c3d4"
+                    email:
+                      type: string
+                      format: email
+                      nullable: true
+                      description: |
+                        Self-declared email left at public signup (unverified).
+                        Null for accounts created before email signup existed
+                        and for admin-invited accounts.
                     beta_access:
                       type: boolean
                       description: Whether this user can create full_stack setup sessions.
@@ -837,6 +848,61 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/admin/users/{id}/recovery-link:
+    post:
+      summary: Issue an account recovery link
+      description: |
+        Issues a **1-hour, single-use** login link for a user who lost their
+        passkey. The admin must verify the requester really owns the account
+        (e.g. against its email) and deliver the URL out of band — the system
+        sends nothing, and whoever opens the link takes over the account.
+        Any previous unused link for the same account is expired immediately,
+        so only the newest one works. The link is consumed at the public
+        `POST /recovery/{token}`, which also revokes every passkey on the
+        account.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The user's 8-char `unique_id` (not the numeric PK).
+          schema:
+            type: string
+      responses:
+        "201":
+          description: Recovery link created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                    description: Append to the frontend's `/recover/` path to form the URL.
+                  expires_at:
+                    type: string
+                    format: date-time
         "401":
           description: Missing or invalid token
           content:
@@ -947,6 +1013,18 @@ paths:
                   page_size:
                     type: integer
                     example: 20
+                  counts:
+                    type: object
+                    description: Per-mode totals, independent of the active filter.
+                    properties:
+                      all:
+                        type: integer
+                      vta_only:
+                        type: integer
+                      full_stack:
+                        type: integer
+                      full_stack_with_vtc:
+                        type: integer
         "400":
           description: Invalid page parameter
           content:
@@ -1700,6 +1778,176 @@ paths:
                 $ref: "#/components/schemas/Error"
         "410":
           description: Invitation expired or already used
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ── Signup ──────────────────────────────────────────────────────────────────
+
+  /api/v1/signup:
+    post:
+      summary: "(public) Sign up with an email"
+      description: |
+        Self-service account creation from the home page. The email is a
+        self-declared label — nothing is ever sent to it and ownership is not
+        verified; the passkey registered right after this call is what
+        authenticates the account.
+
+        On success the `vtafarm_user` cookie is set so the caller can
+        immediately continue with `POST /user/passkeys/register/begin` +
+        `complete`. Until that first passkey exists, repeating this call with
+        the same email resumes the same account (fresh cookie, no duplicate),
+        so an abandoned or failed passkey ceremony never strands the email.
+        Once a passkey exists the email is taken for good and answers 409.
+
+        Rate-limited per client IP.
+      tags: [Auth — User]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  maxLength: 254
+      responses:
+        "201":
+          description: Account created and logged in (cookie set)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  unique_id:
+                    type: string
+                    example: "a1b2c3d4"
+                  token:
+                    type: string
+                    description: JWT, also set as the vtafarm_user cookie.
+        "200":
+          description: Existing passkey-less account resumed (cookie set); same body as 201
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  unique_id:
+                    type: string
+                  token:
+                    type: string
+        "400":
+          description: Missing or invalid email
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Email already registered to an account with a passkey
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ── Account recovery ────────────────────────────────────────────────────────
+
+  /api/v1/recovery/{token}:
+    get:
+      summary: "(public) Validate a recovery link"
+      description: Checks whether an admin-issued recovery link is still usable.
+      tags: [Auth — User]
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Link is valid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                  expires_at:
+                    type: string
+                    format: date-time
+        "404":
+          description: Link not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "410":
+          description: Link already used or expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      summary: "(public) Consume a recovery link"
+      description: |
+        Burns the link (single-use, guarded against concurrent consumes),
+        **revokes every passkey on the account**, and sets the `vtafarm_user`
+        cookie so the holder can immediately register a fresh passkey via
+        `POST /user/passkeys/register/begin` + `complete`. If that ceremony
+        fails, the 24-hour cookie still allows adding a passkey from Settings;
+        otherwise the admin simply issues another link. Rate-limited per
+        client IP.
+      tags: [Auth — User]
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Logged in to the recovered account (cookie set)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  unique_id:
+                    type: string
+                    example: "a1b2c3d4"
+                  token:
+                    type: string
+                    description: JWT, also set as the vtafarm_user cookie.
+        "404":
+          description: Link not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "410":
+          description: Link already used or expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Rate limit exceeded
           content:
             application/json:
               schema:

@@ -175,6 +175,13 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		return
 	}
 
+	// full_stack (without VTC) is retired for NEW sessions — existing ones and
+	// their pipeline code remain fully supported (upgrades, teardown, display).
+	if req.Mode == model.ModeFullStack {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "full_stack mode can no longer be created — use full_stack_with_vtc"})
+		return
+	}
+
 	if h.ingressIP == "" || h.clusterDomain == "" {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "cluster not configured: CLUSTER_INGRESS_IP and CLUSTER_DOMAIN must be set"})
 		return
