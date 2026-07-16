@@ -19,8 +19,10 @@ const (
 // the same set GET /setup/images serves tags for.
 var UpgradeComponents = []string{"vta", "mediator", "dids", "vtc"}
 
-// UpgradeBatch is one admin-triggered image rollout over a set of sessions.
-// The components and target images live on the tasks — one task per
+// UpgradeBatch is one image rollout over a set of sessions. Exactly one of
+// AdminID / UserID is set (DB CHECK): an admin batch can span many sessions,
+// a user batch is that user's self-service upgrade of a single session they
+// own. The components and target images live on the tasks — one task per
 // (session, component) — so a single batch can upgrade every component a
 // session runs. The background runner (internal/upgrade) processes tasks with
 // at most Concurrency in flight (default 1 — strictly sequential); on the
@@ -28,7 +30,8 @@ var UpgradeComponents = []string{"vta", "mediator", "dids", "vtc"}
 // through the whole fleet.
 type UpgradeBatch struct {
 	ID          uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	AdminID     uint      `gorm:"not null"                 json:"-"`
+	AdminID     *uint     `json:"-"`
+	UserID      *uint     `json:"-"`
 	Concurrency int       `gorm:"not null;default:1"       json:"concurrency"`
 	Status      string    `gorm:"not null;default:running" json:"status"`
 	CreatedAt   time.Time `json:"created_at"`
