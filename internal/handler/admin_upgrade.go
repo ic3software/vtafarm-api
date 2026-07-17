@@ -171,7 +171,7 @@ func (h *UpgradeHandler) Create(c *gin.Context) {
 
 	adminID := c.MustGet(middleware.ContextUserID).(uint)
 	batch := model.UpgradeBatch{
-		AdminID: adminID,
+		AdminID: &adminID,
 		Status:  model.UpgradeBatchRunning,
 	}
 	err = h.db.Transaction(func(tx *gorm.DB) error {
@@ -290,6 +290,9 @@ func (h *UpgradeHandler) List(c *gin.Context) {
 
 	type batchItem struct {
 		model.UpgradeBatch
+		// "admin" for batch rollouts, "user" for a user's self-service
+		// upgrade of their own session (POST /setup/:id/upgrade).
+		Initiator  string           `json:"initiator"`
 		Components []string         `json:"components"`
 		TaskCounts map[string]int64 `json:"task_counts"`
 	}
@@ -315,6 +318,7 @@ func (h *UpgradeHandler) List(c *gin.Context) {
 			}
 			items[i] = batchItem{
 				UpgradeBatch: b,
+				Initiator:    batchInitiator(&b),
 				Components:   taskComponents(byBatch[b.ID]),
 				TaskCounts:   counts,
 			}
@@ -382,11 +386,21 @@ func (h *UpgradeHandler) Get(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"id":         batch.ID,
+		"initiator":  batchInitiator(batch),
 		"components": taskComponents(tasks),
 		"status":     batch.Status,
 		"created_at": batch.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		"tasks":      items,
 	})
+}
+
+// batchInitiator says who started a batch: "admin" for batch rollouts,
+// "user" for a user's self-service upgrade of their own session.
+func batchInitiator(b *model.UpgradeBatch) string {
+	if b.UserID != nil {
+		return "user"
+	}
+	return "admin"
 }
 
 // Cancel — POST /api/v1/admin/upgrades/:id/cancel (admin only). Pending tasks

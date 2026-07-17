@@ -89,6 +89,10 @@ func Setup(
 	v1.GET("/admin/enroll/:token", aeh.Validate)
 	v1.POST("/admin/enroll/:token", aeh.Enroll)
 
+	// Image upgrades — shared by the admin batch routes and the user
+	// self-service routes below; background runner, DB-backed queue.
+	uph := handler.NewUpgradeHandler(db, upgradeRunner, ghcrClient, mediatorGhcrClient, didsGhcrClient, vtcGhcrClient)
+
 	// Admin routes — cookie: vtafarm_admin
 	adminAuth := v1.Group("",
 		middleware.AuthRequired(cfg.JWTSecret, middleware.CookieAdmin),
@@ -118,7 +122,6 @@ func Setup(
 		adminAuth.GET("/admin/setup/images", sh.Images)
 
 		// Batch image upgrades — background runner, DB-backed queue.
-		uph := handler.NewUpgradeHandler(db, upgradeRunner, ghcrClient, mediatorGhcrClient, didsGhcrClient, vtcGhcrClient)
 		adminAuth.POST("/admin/upgrades", uph.Create)
 		adminAuth.GET("/admin/upgrades", uph.List)
 		adminAuth.GET("/admin/upgrades/:id", uph.Get)
@@ -160,6 +163,10 @@ func Setup(
 		userAuth.GET("/setup/:id", sh.Get)
 		userAuth.DELETE("/setup/:id", sh.Delete)
 		userAuth.GET("/setup/:id/logs", sh.Logs)
+		// Self-service image upgrade/downgrade — a user can only ever change
+		// their own session (looked up by unique_id AND user_id).
+		userAuth.POST("/setup/:id/upgrade", uph.CreateForSession)
+		userAuth.GET("/setup/:id/upgrade", uph.GetForSession)
 		userAuth.POST("/setup/:id/admin", sh.ProvisionAdmin)
 		userAuth.POST("/setup/:id/dids/reissue-enroll", sh.ReissueDidsEnroll)
 		userAuth.POST("/setup/:id/dids/enroll-ack", sh.AckDidsEnroll)

@@ -125,6 +125,45 @@ components:
           type: string
           example: "already on the target image"
 
+    SessionUpgrade:
+      type: object
+      description: One self-service image change of a single session, with per-component task state.
+      properties:
+        id:
+          type: integer
+        status:
+          type: string
+          enum: [running, paused, completed, cancelled]
+          description: paused means the upgrade stopped on a task failure.
+        components:
+          type: array
+          items:
+            type: string
+          description: Distinct components the upgrade touches.
+        created_at:
+          type: string
+          format: date-time
+        tasks:
+          type: array
+          items:
+            type: object
+            properties:
+              component:
+                type: string
+                enum: [vta, mediator, dids, vtc]
+              from_image:
+                type: string
+              to_image:
+                type: string
+              status:
+                type: string
+                enum: [pending, running, succeeded, failed, skipped]
+              error_msg:
+                type: string
+              updated_at:
+                type: string
+                format: date-time
+
     PasskeyLoginResponse:
       description: |
         On success the server sets an httpOnly cookie (`vtafarm_admin` or `vtafarm_user`).
@@ -305,7 +344,16 @@ components:
           example: "https://vta-myvta.example.com"
         vta_image:
           type: string
-          description: vta_only only.
+          description: Current VTA image (all modes) — the version shown by the self-service upgrade UI.
+        mediator_image:
+          type: string
+          description: full_stack / full_stack_with_vtc only. Current mediator image.
+        dids_image:
+          type: string
+          description: full_stack / full_stack_with_vtc only. Current dids image.
+        vtc_image:
+          type: string
+          description: full_stack_with_vtc only. Current VTC image.
         vta_did:
           type: string
           description: vta_only only. Populated after vta setup completes.
@@ -1248,6 +1296,10 @@ paths:
                   properties:
                     id:
                       type: integer
+                    initiator:
+                      type: string
+                      enum: [admin, user]
+                      description: Who started the batch — "user" for a self-service `POST /setup/{id}/upgrade`.
                     components:
                       type: array
                       items:
@@ -1308,6 +1360,10 @@ paths:
                 properties:
                   id:
                     type: integer
+                  initiator:
+                    type: string
+                    enum: [admin, user]
+                    description: Who started the batch — "user" for a self-service `POST /setup/{id}/upgrade`.
                   components:
                     type: array
                     items:
@@ -2418,6 +2474,136 @@ paths:
                 $ref: "#/components/schemas/Error"
         "502":
           description: Failed to delete DNS record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/setup/{id}/upgrade:
+    post:
+      summary: Change the session's component images (self-service)
+      description: |
+        Upgrades or downgrades components of the caller's OWN session to the
+        requested images — the session is looked up by unique_id AND the
+        authenticated user's id, so a user can never change another user's
+        session. Each image must exist in its component's GHCR tag list
+        (`GET /setup/images?component=…`), the component must belong to the
+        session's mode, and the session must be `running`. Creates a
+        single-session upgrade batch processed by the same background runner
+        as admin rollouts; the response returns immediately — poll
+        `GET /setup/{id}/upgrade` for progress. Only one change at a time per
+        session: 409 while tasks are still pending/running (including an
+        admin-initiated rollout touching this session). A previous
+        self-service upgrade of this session that paused on a failure is
+        superseded (cancelled) by the new request.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "ab12cd34"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [components]
+              properties:
+                components:
+                  type: array
+                  minItems: 1
+                  description: Target image per component (no duplicates). Any served image — upgrade or downgrade.
+                  items:
+                    type: object
+                    required: [component, image]
+                    properties:
+                      component:
+                        type: string
+                        enum: [vta, mediator, dids, vtc]
+                      image:
+                        type: string
+                        example: "ghcr.io/ic3software/vta:0.9.0-917881c"
+      responses:
+        "201":
+          description: Upgrade created and started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionUpgrade"
+        "400":
+          description: Invalid component for the session's mode, image not in the registry, or already on that image
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found (or owned by another user)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Session not running, or an upgrade is already in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Failed to fetch tags from GHCR
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: K8s or image source not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      summary: Get the session's latest self-service upgrade
+      description: |
+        The caller's most recent upgrade of this session with per-component
+        task state — the progress view polls this. 404 until the user has
+        upgraded the session at least once; admin-initiated rollouts are not
+        shown. A `paused` status means the upgrade stopped on a failure —
+        the failed task's `error_msg` says why.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "ab12cd34"
+      responses:
+        "200":
+          description: Latest upgrade with tasks
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionUpgrade"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found, or no upgrade yet
           content:
             application/json:
               schema:

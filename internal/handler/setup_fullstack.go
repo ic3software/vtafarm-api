@@ -173,8 +173,13 @@ func (h *SetupHandler) getFullStack(c *gin.Context, session *model.SetupSession)
 		"status":     session.Status,
 		"urls":       urls,
 		"collected":  collected,
-		"created_at": session.CreatedAt,
-		"updated_at": session.UpdatedAt,
+		// Current images per component — the self-service upgrade UI shows
+		// these as the running versions.
+		"vta_image":      session.VtaImage,
+		"mediator_image": session.MediatorImage,
+		"dids_image":     session.DidsImage,
+		"created_at":     session.CreatedAt,
+		"updated_at":     session.UpdatedAt,
 	}
 
 	resp["dids_enroll_used"] = session.DidsEnrollUsed
@@ -196,6 +201,7 @@ func (h *SetupHandler) getFullStack(c *gin.Context, session *model.SetupSession)
 	if session.Mode == model.ModeFullStackWithVtc {
 		urls["vtc"] = "https://" + session.VtcFQDN()
 		collected["vtc_did"] = session.VtcDid
+		resp["vtc_image"] = session.VtcImage
 		resp["vtc_install_used"] = session.VtcInstallUsed
 		// Single-shot like the dids enroll URL — once acked, stop offering a
 		// dead link; reissue-install mints a fresh pair.

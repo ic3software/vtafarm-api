@@ -178,6 +178,8 @@ the account and logs the holder in to register a fresh one.
 | `POST` | `/api/v1/setup/validate` | user | Check Cloudflare connectivity |
 | `POST` | `/api/v1/setup` | user | Create session + provision DNS (`mode=full_stack_with_vtc` requires `beta_access`; `full_stack` is retired for new sessions — existing ones remain supported) |
 | `DELETE` | `/api/v1/setup/:id` | user | Cancel session + tear down DNS |
+| `POST` | `/api/v1/setup/:id/upgrade` | user | Self-service image upgrade/downgrade of the user's **own** session (looked up by `unique_id AND user_id` — never another user's) |
+| `GET` | `/api/v1/setup/:id/upgrade` | user | Latest self-service upgrade of that session, for progress polling |
 
 ## Beta Access
 
