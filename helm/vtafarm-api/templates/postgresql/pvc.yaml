@@ -3,6 +3,9 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ .Values.name }}-postgresql
+  annotations:
+    # Survive `helm uninstall` — the database data must never be deleted with the release.
+    helm.sh/resource-policy: keep
 spec:
   accessModes:
     - ReadWriteOnce

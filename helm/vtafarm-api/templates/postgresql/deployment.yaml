@@ -5,6 +5,10 @@ metadata:
   name: {{ .Values.name }}-postgresql
 spec:
   replicas: 1
+  # Recreate: single replica on a ReadWriteOnce PVC — a rolling update could
+  # deadlock with the new pod unable to attach the volume the old pod holds.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: {{ .Values.name }}-postgresql
@@ -43,6 +47,8 @@ spec:
                 - {{ .Values.db.name }}
             initialDelaySeconds: 5
             periodSeconds: 5
+          resources:
+            {{- toYaml .Values.postgresql.resources | nindent 12 }}
       volumes:
         - name: data
           persistentVolumeClaim:

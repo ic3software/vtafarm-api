@@ -31,6 +31,14 @@ postgresql:
   # The secret must contain key: postgres-password
   existingSecret: "vtafarm-api-postgresql"
   storage: 5Gi
+  # No CPU limit: requests give fair-share under contention; a CFS quota would
+  # throttle bursts on an idle node. Memory is incompressible, so it gets a hard limit.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
 
 k8s:
   namespacePrefix: vtafarm-user
@@ -60,10 +68,11 @@ webauthn:
   rpOrigins: "https://vtafarm.firstperson.dev"
   rpDisplayName: "VTA Farm"
 
+# No CPU limit: the request gives fair-share under contention; a CFS quota
+# would throttle bursts on an idle node. Memory keeps a hard limit.
 resources:
   requests:
     cpu: 100m
     memory: 128Mi
   limits:
-    cpu: 500m
     memory: 256Mi
