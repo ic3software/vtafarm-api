@@ -42,6 +42,20 @@ func fsNoColorEnv() []corev1.EnvVar {
 	}
 }
 
+// fsMediatorTuningEnv sizes the mediator's byte budgets (mediator ≥0.17.0) for
+// the farm's single-tenant profile — half the shipped defaults. Env overrides
+// survive image upgrades without re-running mediator-setup; older images
+// ignore them. The Deployment's 256Mi memory limit is the backstop.
+func fsMediatorTuningEnv() []corev1.EnvVar {
+	return []corev1.EnvVar{
+		{Name: "LIMIT_WS_SEND_BUFFER", Value: "8388608"},        // 8 MiB, ships 32
+		{Name: "LIMIT_PUBSUB_BUFFER", Value: "4194304"},         // 4 MiB, ships 16
+		{Name: "STORAGE_FJALL_BLOCK_CACHE", Value: "8388608"},   // 8 MiB, ships 16
+		{Name: "STORAGE_FJALL_WRITE_BUFFER", Value: "16777216"}, // 16 MiB, ships 32
+		{Name: "STORAGE_FJALL_MAX_JOURNAL", Value: "67108864"},  // 64 MiB, ships 128 — the real ceiling
+	}
+}
+
 // vaultHostPort strips the scheme from a Vault address for the mediator's
 // vault://host:port/... storage URL form.
 func vaultHostPort(addr string) string {
@@ -755,6 +769,7 @@ func (o *Orchestrator) fsDeployDids(ctx context.Context, ns string, s *model.Set
 		Env:            fsNoColorEnv(),
 		Port:           8534,
 		Labels:         fsLabels("dids", s.ID),
+		Resources:      k8s.ComponentResources("10m", "64Mi", "128Mi"),
 	}); err != nil {
 		return err
 	}
@@ -777,9 +792,10 @@ func (o *Orchestrator) fsDeployMediator(ctx context.Context, ns string, s *model
 		WorkingDir:     "/work/mediator",
 		ServiceAccount: k8s.VtaServiceAccount,
 		PVCMounts:      []k8s.PVCMount{{Name: "mediator-data", ClaimName: name, MountPath: "/work/mediator"}},
-		Env:            fsNoColorEnv(),
+		Env:            append(fsNoColorEnv(), fsMediatorTuningEnv()...),
 		Port:           7037,
 		Labels:         fsLabels("mediator", s.ID),
+		Resources:      k8s.ComponentResources("50m", "128Mi", "256Mi"),
 	}); err != nil {
 		return err
 	}
@@ -880,6 +896,7 @@ func (o *Orchestrator) fsDeployVta(ctx context.Context, ns string, s *model.Setu
 		Port:            8100,
 		Labels:          fsLabels("vta", s.ID),
 		HealthCheckPath: "/health",
+		Resources:       k8s.ComponentResources("10m", "32Mi", "128Mi"),
 	}); err != nil {
 		return err
 	}

@@ -260,6 +260,7 @@ func (o *Orchestrator) fsDeployVtc(ctx context.Context, ns string, s *model.Setu
 		Env:            fsNoColorEnv(),
 		Port:           8200,
 		Labels:         fsLabels("vtc", s.ID),
+		Resources:      k8s.ComponentResources("10m", "32Mi", "128Mi"),
 	}); err != nil {
 		return err
 	}
