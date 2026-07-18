@@ -10,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
@@ -41,6 +42,25 @@ type ComponentDeploymentSpec struct {
 	// WaitForComponentDeploymentReady's poll of ReadyReplicas was previously
 	// a near-instant no-op rather than a real "is this serving" check.
 	HealthCheckPath string
+	// Resources sets the container's requests/limits. Memory always carries a
+	// limit (incompressible); CPU deliberately gets requests only — a CFS quota
+	// would throttle bursts even when node CPU is idle, while the request alone
+	// gives fair-share under contention.
+	Resources corev1.ResourceRequirements
+}
+
+// ComponentResources builds the standard farm resource shape: CPU+memory
+// requests, memory-only limit (see ComponentDeploymentSpec.Resources).
+func ComponentResources(cpuRequest, memRequest, memLimit string) corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse(cpuRequest),
+			corev1.ResourceMemory: resource.MustParse(memRequest),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse(memLimit),
+		},
+	}
 }
 
 // CreateComponentDeployment creates a Deployment per spec. Idempotent —
@@ -99,6 +119,7 @@ func (c *Client) CreateComponentDeployment(ctx context.Context, ns string, spec 
 						Ports:          ports,
 						VolumeMounts:   mounts,
 						ReadinessProbe: readinessProbe,
+						Resources:      spec.Resources,
 					}},
 					Volumes: volumes,
 				},
