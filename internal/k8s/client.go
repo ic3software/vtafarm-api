@@ -9,6 +9,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -18,7 +19,11 @@ import (
 )
 
 type Client struct {
-	kube            kubernetes.Interface
+	kube kubernetes.Interface
+	// dyn reaches resources outside the typed clientset — currently the
+	// Longhorn CRDs (nodes/settings.longhorn.io) behind the admin dashboard's
+	// storage stats.
+	dyn             dynamic.Interface
 	namespacePrefix string
 }
 
@@ -49,8 +54,14 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		return nil, fmt.Errorf("kubernetes.NewForConfig: %w", err)
 	}
 
+	dyn, err := dynamic.NewForConfig(restCfg)
+	if err != nil {
+		return nil, fmt.Errorf("dynamic.NewForConfig: %w", err)
+	}
+
 	return &Client{
 		kube:            kube,
+		dyn:             dyn,
 		namespacePrefix: cfg.K8s.NamespacePrefix,
 	}, nil
 }
