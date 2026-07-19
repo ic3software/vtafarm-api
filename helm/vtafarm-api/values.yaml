@@ -57,6 +57,16 @@ vault:
 cluster:
   domain: "firstperson.dev"
 
+# Monitor endpoints (/api/v1/monitor/*) polled by UptimeRobot.
+# MONITOR_TOKEN lives in the vtafarm-api-secrets Secret — see k8s/secret.yaml.example.
+monitor:
+  cpuPct: "90"
+  memPct: "90"
+  storagePct: "85"
+  restartWindowMin: "15"
+  pendingGraceMin: "10"
+  extraNamespaces: "vault,vault-transit,longhorn-system"
+
 github:
   packageOwner: ic3software
   packageName: vta
