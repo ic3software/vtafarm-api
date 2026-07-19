@@ -79,12 +79,14 @@ type DiskFree struct {
 	Bytes int64
 }
 
-// Estimate is the result for one mode. Count is the authoritative
-// placement-simulated number; ByCPU/ByMemory/ByStorage are naive
-// total-headroom divisions kept for display ("what's the bottleneck"), so
-// Count can be lower than all three when free space is fragmented.
-// ByStorage is -1 when storage stats were unavailable (storage then simply
-// doesn't constrain Count).
+// Estimate is the result for one mode. Count is the authoritative number: a
+// placement simulation constrained by every resource at once.
+// ByCPU/ByMemory/ByStorage are the same simulation run with only that
+// resource's costs kept ("how many would fit if only this resource
+// mattered"), so fragmentation is respected and the limiting resource's
+// figure agrees with Count instead of overstating it the way a straight
+// free/cost division would. ByStorage is -1 when storage stats were
+// unavailable (storage then simply doesn't constrain Count).
 type Estimate struct {
 	Count            int
 	ByCPU            int
@@ -106,6 +108,15 @@ func EstimateMode(mode Mode, nodes []NodeFree, disks []DiskFree, replicas int, s
 		replicas = 1
 	}
 
+	est := Estimate{Count: simulate(mode, nodes, disks, replicas, storageKnown)}
+	est.ByCPU, est.ByMemory, est.ByStorage = perResourceCounts(mode, nodes, disks, replicas, storageKnown)
+	est.LimitingResource = limitingResource(est)
+	return est
+}
+
+// simulate counts how many whole sessions of mode fit, bin-packing onto
+// copies of the headroom slices so callers can reuse them.
+func simulate(mode Mode, nodes []NodeFree, disks []DiskFree, replicas int, storageKnown bool) int {
 	nodesLeft := make([]NodeFree, len(nodes))
 	copy(nodesLeft, nodes)
 	disksLeft := make([]DiskFree, len(disks))
@@ -115,11 +126,7 @@ func EstimateMode(mode Mode, nodes []NodeFree, disks []DiskFree, replicas int, s
 	for count < maxSessions && placeSession(mode, nodesLeft, disksLeft, replicas, storageKnown) {
 		count++
 	}
-
-	est := Estimate{Count: count}
-	est.ByCPU, est.ByMemory, est.ByStorage = naiveCounts(mode, nodes, disks, replicas, storageKnown)
-	est.LimitingResource = limitingResource(est)
-	return est
+	return count
 }
 
 // placeSession tries to fit every component of one session, mutating the
@@ -183,43 +190,35 @@ func placeVolume(disks []DiskFree, bytes int64, replicas int) bool {
 	return true
 }
 
-// naiveCounts divides cluster-wide free totals by per-session cost, ignoring
-// fragmentation and replica anti-affinity. Display-only.
-func naiveCounts(mode Mode, nodes []NodeFree, disks []DiskFree, replicas int, storageKnown bool) (byCPU, byMem, byStorage int) {
-	var cpuCost, memCost, storageCost int64
-	for _, comp := range mode.Components {
-		cpuCost += comp.CPUMillis
-		memCost += comp.MemBytes
-		storageCost += comp.StorageBytes * int64(replicas)
-	}
-
-	var cpuFree, memFree, storageFree int64
-	for _, n := range nodes {
-		cpuFree += n.CPUMillis
-		memFree += n.MemBytes
-	}
-	for _, d := range disks {
-		storageFree += d.Bytes
-	}
-
-	byCPU = divCount(cpuFree, cpuCost)
-	byMem = divCount(memFree, memCost)
+// perResourceCounts runs the placement simulation once per resource with the
+// other resources' costs zeroed, answering "how many sessions would fit if
+// only this resource constrained placement". Sharing the simulation keeps
+// these display numbers consistent with Count: the limiting resource never
+// shows more sessions than actually fit.
+func perResourceCounts(mode Mode, nodes []NodeFree, disks []DiskFree, replicas int, storageKnown bool) (byCPU, byMem, byStorage int) {
+	byCPU = simulate(resourceOnly(mode, func(c Component) Component {
+		return Component{Name: c.Name, CPUMillis: c.CPUMillis}
+	}), nodes, nil, replicas, false)
+	byMem = simulate(resourceOnly(mode, func(c Component) Component {
+		return Component{Name: c.Name, MemBytes: c.MemBytes}
+	}), nodes, nil, replicas, false)
 	byStorage = -1
 	if storageKnown {
-		byStorage = divCount(storageFree, storageCost)
+		byStorage = simulate(resourceOnly(mode, func(c Component) Component {
+			return Component{Name: c.Name, StorageBytes: c.StorageBytes}
+		}), nodes, disks, replicas, true)
 	}
 	return byCPU, byMem, byStorage
 }
 
-// divCount returns free/cost, treating a zero-cost resource as unconstraining.
-func divCount(free, cost int64) int {
-	if cost <= 0 {
-		return maxSessions
+// resourceOnly copies mode with each component reduced by keep to the single
+// resource under consideration.
+func resourceOnly(mode Mode, keep func(Component) Component) Mode {
+	comps := make([]Component, len(mode.Components))
+	for i, c := range mode.Components {
+		comps[i] = keep(c)
 	}
-	if free < 0 {
-		return 0
-	}
-	return int(free / cost)
+	return Mode{Name: mode.Name, Components: comps}
 }
 
 // limitingResource names the scarcest resource by naive count (ties: cpu >

@@ -1180,11 +1180,15 @@ paths:
                         count:
                           type: integer
                           description: Placement-simulated sessions that still fit — the authoritative number.
-                        by_cpu: { type: integer }
-                        by_memory: { type: integer }
+                        by_cpu:
+                          type: integer
+                          description: Same placement simulation constrained by CPU alone; the limiting resource's value matches count.
+                        by_memory:
+                          type: integer
+                          description: Same placement simulation constrained by memory alone.
                         by_storage:
                           type: integer
-                          description: -1 when storage stats are unavailable.
+                          description: Same placement simulation constrained by storage alone; -1 when storage stats are unavailable.
                         limiting_resource:
                           type: string
                           enum: [cpu, memory, storage]

@@ -53,8 +53,8 @@ func TestEstimateModeCountsWholeSessions(t *testing.T) {
 }
 
 func TestEstimateModeFragmentation(t *testing.T) {
-	// Two nodes with 45m each: the naive total (90m) fits one full_stack
-	// (80m), but no single node can hold the 50m mediator pod.
+	// Two nodes with 45m each: the cluster-wide total (90m) would fit one
+	// full_stack (80m), but no single node can hold the 50m mediator pod.
 	nodes := []NodeFree{
 		{CPUMillis: 45, MemBytes: 10 * gi},
 		{CPUMillis: 45, MemBytes: 10 * gi},
@@ -65,8 +65,31 @@ func TestEstimateModeFragmentation(t *testing.T) {
 	if est.Count != 0 {
 		t.Fatalf("Count = %d, want 0 (mediator's 50m fits on no node)", est.Count)
 	}
-	if est.ByCPU != 1 {
-		t.Fatalf("ByCPU = %d, want 1 (naive total ignores fragmentation)", est.ByCPU)
+	if est.ByCPU != 0 {
+		t.Fatalf("ByCPU = %d, want 0 (per-resource count sees fragmentation too)", est.ByCPU)
+	}
+}
+
+func TestEstimateModePerResourceMatchesCount(t *testing.T) {
+	// Two nodes with 96Mi free each: the cluster-wide total (192Mi) divides
+	// into three 64Mi vta_only sessions, but each node holds only one. The
+	// displayed memory count must agree with Count, not report a third
+	// session that has nowhere to go.
+	nodes := []NodeFree{
+		{CPUMillis: 1000, MemBytes: 96 * mi},
+		{CPUMillis: 1000, MemBytes: 96 * mi},
+	}
+	disks := []DiskFree{{Bytes: 100 * gi}}
+
+	est := EstimateMode(VtaOnly, nodes, disks, 1, true)
+	if est.Count != 2 {
+		t.Fatalf("Count = %d, want 2", est.Count)
+	}
+	if est.LimitingResource != "memory" {
+		t.Fatalf("LimitingResource = %q, want memory", est.LimitingResource)
+	}
+	if est.ByMemory != est.Count {
+		t.Fatalf("ByMemory = %d, want %d (limiting resource must match Count)", est.ByMemory, est.Count)
 	}
 }
 
@@ -102,7 +125,7 @@ func TestEstimateModeReplicaAntiAffinity(t *testing.T) {
 	}
 	// Each session consumes 200Mi on each of the two disks.
 	if est.ByStorage != 512 {
-		t.Fatalf("ByStorage = %d, want 512 (200Gi total / 400Mi per session)", est.ByStorage)
+		t.Fatalf("ByStorage = %d, want 512 (100Gi per disk / 200Mi per replica)", est.ByStorage)
 	}
 }
 
