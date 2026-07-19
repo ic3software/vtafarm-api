@@ -7,7 +7,7 @@ NAMESPACE    ?= default
 DEPLOY_ENV   ?= production
 INGRESS_HOST ?=
 
-.PHONY: build gen-keypair tidy dev \
+.PHONY: build test gen-keypair tidy dev \
         migrate migrate-down migrate-new enroll enroll-prod \
         up down reset \
         image-build image-push \
@@ -16,6 +16,11 @@ INGRESS_HOST ?=
 # ─── Local ────────────────────────────────────────────────────────────────────
 build:
 	go build -o bin/api ./main.go
+
+# Same checks CI runs (.github/workflows)
+test:
+	go vet ./...
+	go test ./...
 
 gen-keypair:
 	go run ./cmd/gen-keypair
