@@ -28,7 +28,7 @@ const (
 	gi = int64(1) << 30
 )
 
-// Per-component requests mirror the provisioning code — keep in sync with:
+// Per-component planning costs mirror the provisioning code — keep in sync with:
 //
 //	vta_only:   internal/k8s/vta_resources.go   CreateVtaDeployment
 //	full_stack: internal/setup/orchestrator_fullstack.go     (dids, mediator, vta)
@@ -36,24 +36,39 @@ const (
 //
 // and the per-component PVC sizes (internal/k8s/setup_jobs.go and
 // internal/setup/orchestrator_fullstack.go).
-// CPU/memory use requests (what the scheduler reserves), not limits.
+// CPU uses requests (there are deliberately no CPU limits). Memory uses hard
+// limits so a reported session count still fits if every new component grows
+// to its configured ceiling.
 var (
 	VtaOnly = Mode{Name: "vta_only", Components: []Component{
-		{Name: "vta", CPUMillis: 10, MemBytes: 32 * mi, StorageBytes: 200 * mi},
+		{Name: "vta", CPUMillis: 10, MemBytes: 64 * mi, StorageBytes: 200 * mi},
 	}}
 
 	// FullStack is the full_stack_with_vtc mode — the plain full_stack mode is
 	// retired for new sessions, so capacity planning targets the VTC variant.
 	FullStack = Mode{Name: "full_stack", Components: []Component{
-		{Name: "dids", CPUMillis: 10, MemBytes: 64 * mi, StorageBytes: 200 * mi},
-		{Name: "mediator", CPUMillis: 50, MemBytes: 128 * mi, StorageBytes: gi},
-		{Name: "vta", CPUMillis: 10, MemBytes: 32 * mi, StorageBytes: 200 * mi},
-		{Name: "vtc", CPUMillis: 10, MemBytes: 32 * mi, StorageBytes: 200 * mi},
+		{Name: "dids", CPUMillis: 10, MemBytes: 128 * mi, StorageBytes: 200 * mi},
+		{Name: "mediator", CPUMillis: 50, MemBytes: 256 * mi, StorageBytes: gi},
+		{Name: "vta", CPUMillis: 10, MemBytes: 64 * mi, StorageBytes: 200 * mi},
+		{Name: "vtc", CPUMillis: 10, MemBytes: 64 * mi, StorageBytes: 200 * mi},
 	}}
 )
 
-// NodeFree is a schedulable node's remaining CPU/memory headroom
-// (allocatable − requested).
+// PlanningHeadroom returns the resource budget available for new sessions.
+// Existing reservations and stable live consumption are both protected. The
+// calculation is intentionally per node so placement simulation does not hide
+// a hot node behind spare capacity elsewhere in the cluster.
+func PlanningHeadroom(allocatable, requested, used int64) int64 {
+	if allocatable <= 0 {
+		return 0
+	}
+
+	occupied := max(requested, used)
+	return max(allocatable-occupied, 0)
+}
+
+// NodeFree is a schedulable node's CPU/memory planning headroom after stable
+// live usage and requests have been deducted.
 type NodeFree struct {
 	CPUMillis int64
 	MemBytes  int64

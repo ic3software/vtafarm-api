@@ -12,11 +12,15 @@ import (
 )
 
 type DashboardHandler struct {
-	k8s *k8s.Client
+	k8s   *k8s.Client
+	usage *usageHighWater
 }
 
 func NewDashboardHandler(k8sClient *k8s.Client) *DashboardHandler {
-	return &DashboardHandler{k8s: k8sClient}
+	return &DashboardHandler{
+		k8s:   k8sClient,
+		usage: newUsageHighWater(capacityUsageWindow),
+	}
 }
 
 type dashboardNode struct {
@@ -48,7 +52,7 @@ type dashboardEstimate struct {
 	LimitingResource string `json:"limiting_resource"`
 
 	CPUMillisPerSession    int64 `json:"cpu_millis_per_session"`
-	MemBytesPerSession     int64 `json:"mem_bytes_per_session"`
+	MemBytesPerSession     int64 `json:"mem_bytes_per_session"`     // sum of component memory limits
 	StorageBytesPerSession int64 `json:"storage_bytes_per_session"` // includes replica factor
 }
 
@@ -68,6 +72,7 @@ func (h *DashboardHandler) Get(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "cluster stats: " + err.Error()})
 		return
 	}
+	planningUsage := h.usage.Observe(time.Now(), stats.Nodes, stats.MetricsAvailable)
 
 	nodes := make([]dashboardNode, len(stats.Nodes))
 	var freeNodes []capacity.NodeFree
@@ -92,9 +97,23 @@ func (h *DashboardHandler) Get(c *gin.Context) {
 
 		// Estimates draw only on nodes new pods can land on.
 		if n.Schedulable {
+			usage, usageAvailable := planningUsage[n.Name]
+			var cpuFree, memFree int64
+			if usageAvailable {
+				cpuFree = capacity.PlanningHeadroom(
+					n.CPUAllocatableMillis,
+					n.CPURequestedMillis,
+					usage.CPUMillis,
+				)
+				memFree = capacity.PlanningHeadroom(
+					n.MemAllocatableBytes,
+					n.MemRequestedBytes,
+					usage.MemBytes,
+				)
+			}
 			freeNodes = append(freeNodes, capacity.NodeFree{
-				CPUMillis: max(n.CPUAllocatableMillis-n.CPURequestedMillis, 0),
-				MemBytes:  max(n.MemAllocatableBytes-n.MemRequestedBytes, 0),
+				CPUMillis: cpuFree,
+				MemBytes:  memFree,
 			})
 		}
 	}

@@ -903,7 +903,7 @@ func (o *Orchestrator) fsDeployVta(ctx context.Context, ns string, s *model.Setu
 		Port:            8100,
 		Labels:          fsLabels("vta", s.ID),
 		HealthCheckPath: "/health",
-		Resources:       k8s.ComponentResources("10m", "32Mi", "128Mi"),
+		Resources:       k8s.ComponentResources("10m", "32Mi", "64Mi"),
 	}); err != nil {
 		return err
 	}

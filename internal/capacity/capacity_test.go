@@ -2,6 +2,42 @@ package capacity
 
 import "testing"
 
+func TestPlanningHeadroom(t *testing.T) {
+	tests := []struct {
+		name                         string
+		allocatable, requested, used int64
+		want                         int64
+	}{
+		{name: "usage higher", allocatable: 7600, requested: 3400, used: 5100, want: 2500},
+		{name: "requests higher", allocatable: 4000, requested: 2500, used: 800, want: 1500},
+		{name: "floor at zero", allocatable: 1000, requested: 1100, used: 900, want: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := PlanningHeadroom(tt.allocatable, tt.requested, tt.used)
+			if got != tt.want {
+				t.Fatalf("PlanningHeadroom() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestModeMemoryUsesLimits(t *testing.T) {
+	var vtaMem, fullStackMem int64
+	for _, comp := range VtaOnly.Components {
+		vtaMem += comp.MemBytes
+	}
+	for _, comp := range FullStack.Components {
+		fullStackMem += comp.MemBytes
+	}
+	if vtaMem != 64*mi {
+		t.Fatalf("VtaOnly memory = %d, want 64Mi", vtaMem)
+	}
+	if fullStackMem != 512*mi {
+		t.Fatalf("FullStack memory = %d, want 512Mi", fullStackMem)
+	}
+}
+
 func TestEstimateModeCountsWholeSessions(t *testing.T) {
 	// One node fits exactly 3 vta_only pods by CPU; storage allows more.
 	nodes := []NodeFree{{CPUMillis: 30, MemBytes: 10 * gi}}
