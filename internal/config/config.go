@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -20,6 +21,25 @@ type Config struct {
 	DidHosting       DidHostingConfig
 	WebAuthn         WebAuthnConfig
 	Vault            VaultConfig
+	Monitor          MonitorConfig
+}
+
+// MonitorConfig configures the token-gated /api/v1/monitor/* endpoints polled
+// by an external uptime service (UptimeRobot). Empty Token disables them.
+type MonitorConfig struct {
+	Token          string // shared secret, passed as ?token= by the poller
+	CPUPercent     int    // per-node CPU used/allocatable alarm threshold
+	MemPercent     int    // per-node memory used/allocatable alarm threshold
+	StoragePercent int    // per-node Longhorn disk usage alarm threshold
+	// RestartWindowMin: a container restart within this many minutes counts as
+	// an alarm. Time-based (not restartCount) so alarms self-clear once stable.
+	RestartWindowMin int
+	// PendingGraceMin: how long a pod may sit Pending / not-Ready before it
+	// alarms — headroom for normal deploys and setup churn.
+	PendingGraceMin int
+	// ExtraNamespaces: infra namespaces watched in addition to the
+	// {K8S_NAMESPACE_PREFIX}-* user namespaces.
+	ExtraNamespaces []string
 }
 
 // VaultConfig configures the farm's HashiCorp Vault. RoleID/SecretID come from
@@ -140,6 +160,15 @@ func Load() *Config {
 			RPOrigins:     splitComma(getEnv("WEBAUTHN_RP_ORIGINS", "http://localhost:5173")),
 			RPDisplayName: getEnv("WEBAUTHN_RP_DISPLAY_NAME", "VTA Farm"),
 		},
+		Monitor: MonitorConfig{
+			Token:            getEnv("MONITOR_TOKEN", ""),
+			CPUPercent:       getEnvInt("MONITOR_CPU_PCT", 90),
+			MemPercent:       getEnvInt("MONITOR_MEM_PCT", 90),
+			StoragePercent:   getEnvInt("MONITOR_STORAGE_PCT", 85),
+			RestartWindowMin: getEnvInt("MONITOR_RESTART_WINDOW_MIN", 15),
+			PendingGraceMin:  getEnvInt("MONITOR_PENDING_GRACE_MIN", 10),
+			ExtraNamespaces:  splitComma(getEnv("MONITOR_EXTRA_NAMESPACES", "vault,vault-transit,longhorn-system")),
+		},
 		Vault: VaultConfig{
 			Addr:         getEnv("VAULT_ADDR", ""),
 			VTAAddr:      getEnv("VAULT_VTA_ADDR", "https://vault.vault.svc:8200"),
@@ -151,6 +180,13 @@ func Load() *Config {
 			SkipVerify:   getEnvBool("VAULT_SKIP_VERIFY", true),
 		},
 	}
+}
+
+func getEnvInt(key string, defaultVal int) int {
+	if v, err := strconv.Atoi(os.Getenv(key)); err == nil {
+		return v
+	}
+	return defaultVal
 }
 
 func getEnvBool(key string, defaultVal bool) bool {

@@ -62,6 +62,27 @@ func Setup(
 
 	v1 := r.Group("/api/v1")
 
+	// Monitor endpoints — polled by an external uptime service (UptimeRobot):
+	// healthy → 200, anything wrong → 503. Gated by MONITOR_TOKEN (?token=)
+	// since the poller can't log in; 404 until the token is configured.
+	mh := handler.NewMonitorHandler(db, k8sClient, handler.MonitorConfig{
+		Token:           cfg.Monitor.Token,
+		CPUPercent:      cfg.Monitor.CPUPercent,
+		MemPercent:      cfg.Monitor.MemPercent,
+		StoragePercent:  cfg.Monitor.StoragePercent,
+		RestartWindow:   time.Duration(cfg.Monitor.RestartWindowMin) * time.Minute,
+		PendingGrace:    time.Duration(cfg.Monitor.PendingGraceMin) * time.Minute,
+		ExtraNamespaces: cfg.Monitor.ExtraNamespaces,
+		VaultAddr:       cfg.Vault.Addr,
+		VaultSkipVerify: cfg.Vault.SkipVerify,
+	})
+	monitor := v1.Group("/monitor", mh.TokenRequired)
+	{
+		monitor.GET("/health", mh.Health)
+		monitor.GET("/workloads", mh.Workloads)
+		monitor.GET("/capacity", mh.Capacity)
+	}
+
 	// Auth — logout only (login is via passkey)
 	ah := handler.NewAuthHandler(cfg.CookieSecure())
 	v1.POST("/auth/admin/logout", ah.AdminLogout)

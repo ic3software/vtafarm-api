@@ -6,8 +6,22 @@ on:
       - main
 
 jobs:
+  test:
+    name: 🧪 Vet & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: 🧪 Vet & Test
+        run: make test
+
   build:
     name: 🛠️ Build & Push
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

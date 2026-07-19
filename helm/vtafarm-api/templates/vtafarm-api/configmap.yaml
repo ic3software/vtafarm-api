@@ -22,6 +22,12 @@ data:
   VAULT_APPROLE_MOUNT:  {{ .Values.vault.appRoleMount | quote }}
   VAULT_SKIP_VERIFY:    {{ .Values.vault.skipVerify | quote }}
   CLUSTER_DOMAIN:       {{ .Values.cluster.domain | quote }}
+  MONITOR_CPU_PCT:            {{ .Values.monitor.cpuPct | quote }}
+  MONITOR_MEM_PCT:            {{ .Values.monitor.memPct | quote }}
+  MONITOR_STORAGE_PCT:        {{ .Values.monitor.storagePct | quote }}
+  MONITOR_RESTART_WINDOW_MIN: {{ .Values.monitor.restartWindowMin | quote }}
+  MONITOR_PENDING_GRACE_MIN:  {{ .Values.monitor.pendingGraceMin | quote }}
+  MONITOR_EXTRA_NAMESPACES:   {{ .Values.monitor.extraNamespaces | quote }}
   GITHUB_PACKAGE_OWNER:      {{ .Values.github.packageOwner | quote }}
   GITHUB_PACKAGE_NAME:       {{ .Values.github.packageName | quote }}
   GITHUB_MEDIATOR_PACKAGE_NAME: {{ .Values.github.mediatorPackageName | quote }}

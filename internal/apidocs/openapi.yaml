@@ -482,6 +482,122 @@ paths:
                     type: string
                     example: ok
 
+  # ── Monitor (external uptime poller) ────────────────────────────────────────
+  # Polled by UptimeRobot: healthy → 200, anything wrong → 503 with the same
+  # body shape. Gated by the MONITOR_TOKEN shared secret (?token=); the routes
+  # answer 404 until the token is configured.
+
+  /api/v1/monitor/health:
+    get:
+      summary: "(token) Dependency health — DB, K8s API, Vault"
+      description: |
+        Checks the database, the Kubernetes API server, and Vault (including
+        its sealed state). `vault: disabled` (VAULT_ADDR unset) is not an alarm.
+      tags: [System]
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema: { type: string }
+          description: MONITOR_TOKEN shared secret
+      responses:
+        "200":
+          description: All dependencies healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  checks:
+                    type: object
+                    properties:
+                      db: { type: string, example: ok }
+                      k8s: { type: string, example: ok }
+                      vault: { type: string, example: ok, description: "ok | sealed | uninitialized | unreachable | disabled" }
+        "503":
+          description: One or more dependencies unhealthy (same body shape, status=alarm)
+        "401":
+          description: Missing or wrong token
+
+  /api/v1/monitor/workloads:
+    get:
+      summary: "(token) Unhealthy pods in user + infra namespaces"
+      description: |
+        Scans `{K8S_NAMESPACE_PREFIX}-*` plus MONITOR_EXTRA_NAMESPACES for pods
+        that are crash-looping, failing image pulls, restarted within the last
+        MONITOR_RESTART_WINDOW_MIN minutes, or stuck Pending / not-Ready past
+        MONITOR_PENDING_GRACE_MIN minutes. Job-owned pods are ignored.
+      tags: [System]
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema: { type: string }
+          description: MONITOR_TOKEN shared secret
+      responses:
+        "200":
+          description: No unhealthy pods
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  pods: { type: array, items: { type: object }, example: [] }
+        "503":
+          description: Unhealthy pods found — `pods` lists namespace/pod/reason
+        "401":
+          description: Missing or wrong token
+
+  /api/v1/monitor/capacity:
+    get:
+      summary: "(token) Node CPU/memory/storage usage vs alarm thresholds"
+      description: |
+        Alarms when any node's live CPU or memory usage, or any Longhorn node's
+        disk usage, crosses its threshold — and also when metrics-server or
+        Longhorn stats are unreadable ("can't see" is never "all green").
+        Thresholds default from MONITOR_*_PCT and can be overridden per poll.
+      tags: [System]
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema: { type: string }
+          description: MONITOR_TOKEN shared secret
+        - name: cpu
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100 }
+          description: CPU alarm threshold %, default MONITOR_CPU_PCT (90)
+        - name: mem
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100 }
+          description: Memory alarm threshold %, default MONITOR_MEM_PCT (90)
+        - name: storage
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100 }
+          description: Storage alarm threshold %, default MONITOR_STORAGE_PCT (85)
+      responses:
+        "200":
+          description: All nodes under thresholds
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  issues: { type: array, items: { type: object }, example: [] }
+                  thresholds:
+                    type: object
+                    properties:
+                      cpu: { type: integer, example: 90 }
+                      mem: { type: integer, example: 90 }
+                      storage: { type: integer, example: 85 }
+        "503":
+          description: Threshold breached or stats source unreadable — see `issues`
+        "401":
+          description: Missing or wrong token
+
   # ── Auth — Admin ────────────────────────────────────────────────────────────
 
   /api/v1/auth/admin/passkey/begin:
