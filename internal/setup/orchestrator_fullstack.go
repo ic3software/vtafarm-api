@@ -271,12 +271,19 @@ func (o *Orchestrator) runFullStack(ctx context.Context, sessionID uint) {
 // (design §2: "created up front; 503 until pods come up") — four for
 // full_stack_with_vtc, whose extra component follows the exact same pattern.
 func (o *Orchestrator) fsK8sProvision(ctx context.Context, ns string, s *model.SetupSession) error {
-	names := []string{k8s.FSVtaName(s.ID), k8s.FSMediatorName(s.ID), k8s.FSDidsName(s.ID)}
-	if s.Mode == model.ModeFullStackWithVtc {
-		names = append(names, k8s.FSVtcName(s.ID))
+	type pvcSpec struct {
+		name, storageSize string
 	}
-	for _, name := range names {
-		if err := o.k8s.CreateComponentPVC(ctx, ns, name); err != nil {
+	pvcs := []pvcSpec{
+		{k8s.FSVtaName(s.ID), k8s.VtaPVCStorageSize},
+		{k8s.FSMediatorName(s.ID), k8s.MediatorPVCStorageSize},
+		{k8s.FSDidsName(s.ID), k8s.DIDHostingPVCStorageSize},
+	}
+	if s.Mode == model.ModeFullStackWithVtc {
+		pvcs = append(pvcs, pvcSpec{k8s.FSVtcName(s.ID), k8s.VtcPVCStorageSize})
+	}
+	for _, pvc := range pvcs {
+		if err := o.k8s.CreateComponentPVC(ctx, ns, pvc.name, pvc.storageSize); err != nil {
 			return err
 		}
 	}

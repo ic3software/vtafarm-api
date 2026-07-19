@@ -34,8 +34,7 @@ func ProvisionJobName(sessionID uint) string {
 	return fmt.Sprintf("vta-provision-%d", sessionID)
 }
 
-
-// CreateSetupResources creates a 1Gi PVC, a ConfigMap with the TOML config, and a Job
+// CreateSetupResources creates a 200Mi PVC, a ConfigMap with the TOML config, and a Job
 // that runs `vta setup --from /config/vta-setup.toml` with the PVC mounted at /app/vta.
 // All three calls are idempotent (AlreadyExists is ignored).
 func (c *Client) CreateSetupResources(ctx context.Context, ns string, sessionID uint, toml, vtaImage string) error {
@@ -55,7 +54,7 @@ func (c *Client) CreateSetupResources(ctx context.Context, ns string, sessionID 
 			StorageClassName: nil, // use cluster default (e.g. longhorn)
 			Resources: corev1.VolumeResourceRequirements{
 				Requests: corev1.ResourceList{
-					corev1.ResourceStorage: resource.MustParse("1Gi"),
+					corev1.ResourceStorage: resource.MustParse(VtaPVCStorageSize),
 				},
 			},
 		},

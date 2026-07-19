@@ -36,11 +36,13 @@ func TestEstimateModeFragmentation(t *testing.T) {
 
 func TestEstimateModeStorageBound(t *testing.T) {
 	nodes := []NodeFree{{CPUMillis: 10000, MemBytes: 100 * gi}}
-	disks := []DiskFree{{Bytes: 9 * gi}} // 2 full_stack sessions (8Gi), not 3
+	// Each full_stack session requests 1Gi + 3*200Mi = 1624Mi, so 9Gi fits
+	// five whole sessions but not six.
+	disks := []DiskFree{{Bytes: 9 * gi}}
 
 	est := EstimateMode(FullStack, nodes, disks, 1, true)
-	if est.Count != 2 {
-		t.Fatalf("Count = %d, want 2", est.Count)
+	if est.Count != 5 {
+		t.Fatalf("Count = %d, want 5", est.Count)
 	}
 	if est.LimitingResource != "storage" {
 		t.Fatalf("LimitingResource = %q, want storage", est.LimitingResource)
@@ -62,9 +64,9 @@ func TestEstimateModeReplicaAntiAffinity(t *testing.T) {
 	if est.Count == 0 {
 		t.Fatal("Count = 0, want > 0 with two disks")
 	}
-	// Each session consumes 1Gi on each of the two disks.
-	if est.ByStorage != 100 {
-		t.Fatalf("ByStorage = %d, want 100 (200Gi total / 2Gi per session)", est.ByStorage)
+	// Each session consumes 200Mi on each of the two disks.
+	if est.ByStorage != 512 {
+		t.Fatalf("ByStorage = %d, want 512 (200Gi total / 400Mi per session)", est.ByStorage)
 	}
 }
 

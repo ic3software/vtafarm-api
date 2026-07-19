@@ -104,6 +104,8 @@ Each component's PVC, Service, Ingress, and Deployment all share **one name**:
 Each component is one PVC + one Deployment + one Service + one Ingress. Nothing is
 shared between them at runtime — the cross-component file handoffs happen only during
 setup ([§4](#4-cross-component-file-handoffs)).
+New PVCs request 200Mi for VTA and DID Hosting, and 1Gi for the mediator. Existing
+claims keep the capacity they were originally provisioned with.
 
 ---
 

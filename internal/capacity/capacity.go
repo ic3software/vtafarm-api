@@ -34,20 +34,21 @@ const (
 //	full_stack: internal/setup/orchestrator_fullstack.go     (dids, mediator, vta)
 //	            internal/setup/orchestrator_fullstack_vtc.go (vtc)
 //
-// and the 1Gi PVC per component (internal/k8s/setup_jobs.go, component_jobs.go).
+// and the per-component PVC sizes (internal/k8s/setup_jobs.go and
+// internal/setup/orchestrator_fullstack.go).
 // CPU/memory use requests (what the scheduler reserves), not limits.
 var (
 	VtaOnly = Mode{Name: "vta_only", Components: []Component{
-		{Name: "vta", CPUMillis: 10, MemBytes: 32 * mi, StorageBytes: gi},
+		{Name: "vta", CPUMillis: 10, MemBytes: 32 * mi, StorageBytes: 200 * mi},
 	}}
 
 	// FullStack is the full_stack_with_vtc mode — the plain full_stack mode is
 	// retired for new sessions, so capacity planning targets the VTC variant.
 	FullStack = Mode{Name: "full_stack", Components: []Component{
-		{Name: "dids", CPUMillis: 10, MemBytes: 64 * mi, StorageBytes: gi},
+		{Name: "dids", CPUMillis: 10, MemBytes: 64 * mi, StorageBytes: 200 * mi},
 		{Name: "mediator", CPUMillis: 50, MemBytes: 128 * mi, StorageBytes: gi},
-		{Name: "vta", CPUMillis: 10, MemBytes: 32 * mi, StorageBytes: gi},
-		{Name: "vtc", CPUMillis: 10, MemBytes: 32 * mi, StorageBytes: gi},
+		{Name: "vta", CPUMillis: 10, MemBytes: 32 * mi, StorageBytes: 200 * mi},
+		{Name: "vtc", CPUMillis: 10, MemBytes: 32 * mi, StorageBytes: 200 * mi},
 	}}
 )
 

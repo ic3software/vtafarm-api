@@ -45,10 +45,16 @@ type ComponentJobSpec struct {
 	ActiveDeadlineSeconds int64
 }
 
-// CreateComponentPVC creates a 1Gi RWO PVC for a full_stack component.
+// CreateComponentPVC creates an RWO PVC of storageSize for a full_stack
+// component.
 // Idempotent — AlreadyExists is ignored.
-func (c *Client) CreateComponentPVC(ctx context.Context, ns, name string) error {
-	_, err := c.kube.CoreV1().PersistentVolumeClaims(ns).Create(ctx, &corev1.PersistentVolumeClaim{
+func (c *Client) CreateComponentPVC(ctx context.Context, ns, name, storageSize string) error {
+	storage, err := resource.ParseQuantity(storageSize)
+	if err != nil {
+		return fmt.Errorf("parse pvc %s storage size %q: %w", name, storageSize, err)
+	}
+
+	_, err = c.kube.CoreV1().PersistentVolumeClaims(ns).Create(ctx, &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: ns,
@@ -58,7 +64,7 @@ func (c *Client) CreateComponentPVC(ctx context.Context, ns, name string) error 
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			Resources: corev1.VolumeResourceRequirements{
 				Requests: corev1.ResourceList{
-					corev1.ResourceStorage: resource.MustParse("1Gi"),
+					corev1.ResourceStorage: storage,
 				},
 			},
 		},

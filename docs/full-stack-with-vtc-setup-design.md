@@ -79,6 +79,9 @@ Deployment + Service + Ingress, built entirely on the generic
 `ComponentJobSpec`/`ComponentDeploymentSpec` helpers `full_stack` already
 uses — no new K8s primitives needed, same as the other three.
 
+New VTC PVCs request 200Mi. The inherited full-stack PVC requests are 200Mi
+for VTA and DID Hosting and 1Gi for the mediator; existing claims are unchanged.
+
 ## 3. URLs & DNS
 
 Extend `FullStackHosts` (`internal/setup/subdomain.go`) to derive a fourth
