@@ -117,6 +117,10 @@ func Setup(
 		adminAuth.POST("/admin/invitations", ih.Create)
 		adminAuth.GET("/admin/invitations", ih.List)
 		adminAuth.GET("/admin/setup-sessions", sh.AdminListSessions)
+		// Cluster capacity overview: CPU/memory/storage totals per node plus
+		// how many more sessions of each mode still fit.
+		dashH := handler.NewDashboardHandler(k8sClient)
+		adminAuth.GET("/admin/dashboard", dashH.Get)
 		// Same handler as the user-facing GET /setup/images — admins need the
 		// tag list too (session upgrades), but sit behind a different cookie.
 		adminAuth.GET("/admin/setup/images", sh.Images)

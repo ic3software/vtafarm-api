@@ -138,6 +138,7 @@ To create additional admins, an authenticated admin calls `POST /api/v1/admin/ad
 | Method | Path | Role | Description |
 | --- | --- | --- | --- |
 | `POST` | `/api/v1/admin/admins` | admin | Create admin + return enrollment token |
+| `GET` | `/api/v1/admin/dashboard` | admin | Cluster capacity overview: CPU/memory/storage per node + remaining-session estimates |
 | `GET` | `/api/v1/admin/users` | admin | List user accounts (includes `beta_access`) |
 | `PUT` | `/api/v1/admin/users/:id/beta-access` | admin | Grant/revoke a user's beta access — the only way it's ever changed |
 | `POST` | `/api/v1/admin/users/:id/recovery-link` | admin | Issue a 1h single-use login link for a user who lost their passkey |
@@ -272,4 +273,16 @@ rules:
 - apiGroups: ["networking.k8s.io"]
   resources: ["ingresses"]
   verbs: ["get", "list", "create", "update", "delete", "watch"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list"]
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["nodes"]
+  verbs: ["get", "list"]
+- apiGroups: ["longhorn.io"]
+  resources: ["nodes", "settings", "volumes"]
+  verbs: ["get", "list"]
+- apiGroups: ["storage.k8s.io"]
+  resources: ["storageclasses"]
+  verbs: ["get", "list"]
 ```

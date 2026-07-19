@@ -970,6 +970,116 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/admin/dashboard:
+    get:
+      summary: Cluster capacity overview
+      description: |
+        Whole-cluster resource picture for the admin dashboard: per-node and
+        total CPU/memory (allocatable, requested by pods, live usage from
+        metrics-server), Longhorn storage per node (maximum, reserved,
+        scheduled, available, schedulable headroom), and a placement-simulated
+        estimate of how many more sessions of each mode still fit.
+
+        `metrics_available` / `storage_available` flag degraded responses:
+        when metrics-server or Longhorn is unreachable the corresponding
+        numbers are zero/absent instead of the request failing. Estimate
+        `by_storage` is -1 when storage stats are unavailable.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      responses:
+        "200":
+          description: Cluster totals, per-node breakdowns, and session estimates
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cluster:
+                    type: object
+                    properties:
+                      cpu:
+                        type: object
+                        properties:
+                          allocatable_millis: { type: integer }
+                          requested_millis: { type: integer }
+                          used_millis: { type: integer }
+                      memory:
+                        type: object
+                        properties:
+                          allocatable_bytes: { type: integer }
+                          requested_bytes: { type: integer }
+                          used_bytes: { type: integer }
+                      storage:
+                        type: object
+                        properties:
+                          maximum_bytes: { type: integer }
+                          reserved_bytes: { type: integer }
+                          scheduled_bytes: { type: integer }
+                          available_bytes: { type: integer }
+                          schedulable_bytes: { type: integer }
+                          data_written_bytes:
+                            type: integer
+                            description: Bytes actually written across all Longhorn volumes (sum of actualSize) — far below scheduled_bytes for thin-provisioned volumes.
+                          replica_count:
+                            type: integer
+                            description: numberOfReplicas of the default StorageClass — multiplies each PVC's disk cost.
+                  nodes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        schedulable:
+                          type: boolean
+                          description: False for cordoned or NoSchedule/NoExecute-tainted nodes; those are excluded from estimates.
+                        cpu_allocatable_millis: { type: integer }
+                        cpu_requested_millis: { type: integer }
+                        cpu_used_millis: { type: integer }
+                        mem_allocatable_bytes: { type: integer }
+                        mem_requested_bytes: { type: integer }
+                        mem_used_bytes: { type: integer }
+                  storage_nodes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        schedulable:
+                          type: boolean
+                          description: False when the Longhorn node or all of its disks have allowScheduling off.
+                        maximum_bytes: { type: integer }
+                        reserved_bytes: { type: integer }
+                        scheduled_bytes: { type: integer }
+                        available_bytes: { type: integer }
+                        schedulable_bytes: { type: integer }
+                  metrics_available: { type: boolean }
+                  storage_available: { type: boolean }
+                  estimates:
+                    type: object
+                    description: Keyed by mode; full_stack refers to full_stack_with_vtc (plain full_stack is retired).
+                    additionalProperties:
+                      type: object
+                      properties:
+                        count:
+                          type: integer
+                          description: Placement-simulated sessions that still fit — the authoritative number.
+                        by_cpu: { type: integer }
+                        by_memory: { type: integer }
+                        by_storage:
+                          type: integer
+                          description: -1 when storage stats are unavailable.
+                        limiting_resource:
+                          type: string
+                          enum: [cpu, memory, storage]
+                        cpu_millis_per_session: { type: integer }
+                        mem_bytes_per_session: { type: integer }
+                        storage_bytes_per_session: { type: integer }
+        "502":
+          description: Cluster stats could not be read
+        "503":
+          description: Kubernetes is not configured
+
   /api/v1/admin/setup-sessions:
     get:
       summary: List all setup sessions
