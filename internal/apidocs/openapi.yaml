@@ -465,6 +465,19 @@ components:
             dids: { type: string, example: "https://dids-myvta.example.com" }
             vtc: { type: string, example: "https://vtc-myvtc.example.com" }
 
+    ModeAvailability:
+      type: object
+      description: Remaining create capacity for one setup mode.
+      properties:
+        count:
+          type: integer
+          description: How many more sessions of this mode still fit (placement-simulated). 0 in the fail-open default.
+          example: 12
+        available:
+          type: boolean
+          description: Whether at least one more session fits (`count > 0`). True in the fail-open default.
+          example: true
+
 paths:
   /health:
     get:
@@ -2531,6 +2544,61 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/setup/availability:
+    get:
+      summary: Remaining create capacity per mode
+      description: |
+        How many more sessions of each creatable mode the cluster can still
+        schedule (a placement simulation, not free/cost division), so the create
+        screen can show "Unavailable" and disable the button before the user
+        submits. `available` is `count > 0`.
+
+        Fails open: when capacity can't be measured (Kubernetes client
+        unavailable, or metrics-server / Longhorn temporarily unreachable so the
+        cluster can't be read at all) it returns `determinable: false` with every
+        mode `available: true`, so a transient outage never wrongly blocks
+        creation. The authoritative gate is `POST /setup`, which returns 503 when
+        the selected mode no longer fits.
+
+        The `full_stack_with_vtc` figure is the full_stack_with_vtc mode
+        (the retired plain full_stack shares the same per-component cost).
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      responses:
+        "200":
+          description: Per-mode remaining capacity
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vta_only:
+                    $ref: "#/components/schemas/ModeAvailability"
+                  full_stack_with_vtc:
+                    $ref: "#/components/schemas/ModeAvailability"
+                  metrics_available:
+                    type: boolean
+                    description: False when metrics-server was unreachable (capacity then planned from reservations only).
+                  storage_available:
+                    type: boolean
+                    description: False when Longhorn stats were unavailable (storage then doesn't constrain the estimate).
+                  determinable:
+                    type: boolean
+                    description: False when the cluster couldn't be read at all; the mode figures are then a fail-open default (all available).
+                example:
+                  vta_only: { count: 12, available: true }
+                  full_stack_with_vtc: { count: 2, available: true }
+                  metrics_available: true
+                  storage_available: true
+                  determinable: true
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/v1/setup:
     post:
       summary: Create setup session
@@ -2608,7 +2676,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "503":
-          description: Cloudflare not configured on server
+          description: |
+            Cloudflare not configured on server, or the cluster is at capacity —
+            no resources are available to schedule a new session of the requested
+            mode (see `GET /setup/availability`).
           content:
             application/json:
               schema:

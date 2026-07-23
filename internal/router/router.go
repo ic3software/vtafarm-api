@@ -183,6 +183,9 @@ func Setup(
 		userAuth.DELETE("/user/passkeys/:id", pkh.Delete)
 		userAuth.POST("/setup/validate", sh.Validate)
 		userAuth.GET("/setup/images", sh.Images)
+		// Remaining per-mode cluster capacity — the create screen checks this to
+		// show "Unavailable" and disable the button before submitting.
+		userAuth.GET("/setup/availability", sh.Availability)
 		userAuth.GET("/setup", sh.List)
 		userAuth.POST("/setup", sh.Create)
 		userAuth.GET("/setup/:id", sh.Get)
