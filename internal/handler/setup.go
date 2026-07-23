@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/ic3software/vtafarm-api/internal/capacity"
 	"github.com/ic3software/vtafarm-api/internal/cloudflare"
 	"github.com/ic3software/vtafarm-api/internal/didhosting"
 	"github.com/ic3software/vtafarm-api/internal/ghcr"
@@ -31,6 +32,7 @@ type SetupHandler struct {
 	k8s            *k8s.Client
 	orch           *setup.Orchestrator
 	ghcr           *ghcr.Client // nil when not configured
+	capacity       *CapacityService
 
 	// full_stack / full_stack_with_vtc modes
 	mediatorGhcr *ghcr.Client // nil when not configured
@@ -62,6 +64,7 @@ func NewSetupHandler(
 		k8s:            k8sClient,
 		orch:           orch,
 		ghcr:           ghcrClient,
+		capacity:       NewCapacityService(k8sClient),
 
 		mediatorGhcr: mediatorGhcrClient,
 		didsGhcr:     didsGhcrClient,
@@ -219,11 +222,18 @@ func (h *SetupHandler) Create(c *gin.Context) {
 			c.JSON(http.StatusForbidden, gin.H{"error": req.Mode + " mode is in beta — ask an admin to enable beta access for your account"})
 			return
 		}
+		if !h.capacityAllows(c, capacity.FullStack) {
+			return
+		}
 		if req.Mode == model.ModeFullStackWithVtc {
 			h.createFullStackWithVtc(c, req)
 			return
 		}
 		h.createFullStack(c, req)
+		return
+	}
+
+	if !h.capacityAllows(c, capacity.VtaOnly) {
 		return
 	}
 
@@ -295,6 +305,57 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		"url":       "https://" + fqdn,
 		"status":    session.Status,
 		"vta_image": req.VtaImage,
+	})
+}
+
+// capacityAllows gates a create on remaining cluster capacity for mode. It
+// fails open: if capacity can't be measured (no k8s client / stats read failed)
+// it returns true rather than blocking. Only a measured "zero fit" writes 503
+// and returns false.
+func (h *SetupHandler) capacityAllows(c *gin.Context, mode capacity.Mode) bool {
+	if h.capacity == nil {
+		return true
+	}
+	fits, determinable := h.capacity.ModeFits(c.Request.Context(), mode)
+	if !determinable {
+		return true
+	}
+	if !fits {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "the cluster is at capacity — no resources are available to create a new agent right now. Please try again later or contact an admin."})
+		return false
+	}
+	return true
+}
+
+// GET /api/v1/setup/availability — how many more sessions of each creatable
+// mode still fit, so the create screen can show "Unavailable" and disable the
+// button before the user submits. Fails open: when capacity can't be measured
+// it reports every mode available with determinable=false, so a transient
+// metrics/Longhorn outage never wrongly blocks the UI.
+func (h *SetupHandler) Availability(c *gin.Context) {
+	type modeAvail struct {
+		Count     int  `json:"count"`
+		Available bool `json:"available"`
+	}
+
+	est, meta, determinable := h.capacity.Estimates(c.Request.Context())
+	if !determinable {
+		c.JSON(http.StatusOK, gin.H{
+			"vta_only":            modeAvail{Available: true},
+			"full_stack_with_vtc": modeAvail{Available: true},
+			"metrics_available":   false,
+			"storage_available":   false,
+			"determinable":        false,
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"vta_only":            modeAvail{Count: est[capacity.VtaOnly.Name].Count, Available: est[capacity.VtaOnly.Name].Count >= 1},
+		"full_stack_with_vtc": modeAvail{Count: est[capacity.FullStack.Name].Count, Available: est[capacity.FullStack.Name].Count >= 1},
+		"metrics_available":   meta.MetricsAvailable,
+		"storage_available":   meta.StorageAvailable,
+		"determinable":        true,
 	})
 }
 
