@@ -144,6 +144,8 @@ To create additional admins, an authenticated admin calls `POST /api/v1/admin/ad
 | `POST` | `/api/v1/admin/users/:id/recovery-link` | admin | Issue a 1h single-use login link for a user who lost their passkey |
 | `POST` | `/api/v1/admin/invitations` | admin | Create a user invitation link |
 | `GET` | `/api/v1/admin/invitations` | admin | List invitation links |
+| `GET` | `/api/v1/admin/setup-sessions` | admin | List all users' setup sessions (paginated, 20/page) |
+| `DELETE` | `/api/v1/admin/setup-sessions/:id` | admin | Delete any user's session — same teardown as `DELETE /setup/:id`, but not scoped to the caller. Irreversible; the UI requires typing the session id to confirm |
 
 Every route an authenticated admin calls lives under `/api/v1/admin/...` — that
 prefix is the signal that the route requires the admin role, regardless of

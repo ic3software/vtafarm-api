@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"log"
 	"net/http"
 	"strconv"
 
@@ -140,4 +141,23 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 		"page_size": adminSessionsPageSize,
 		"counts":    counts,
 	})
+}
+
+// AdminDeleteSession — DELETE /api/v1/admin/setup-sessions/:id (admin only).
+// Tears down any user's session, identified by unique_id alone — the one
+// difference from the user-facing DELETE /setup/:id, which is scoped to the
+// caller. Destructive and irreversible: the frontend gates it behind a
+// type-the-session-id confirmation.
+func (h *SetupHandler) AdminDeleteSession(c *gin.Context) {
+	publicID := c.Param("id")
+
+	var session model.SetupSession
+	if err := h.db.Where("unique_id = ?", publicID).First(&session).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+		return
+	}
+
+	log.Printf("[admin] deleting session %d (%s) owned by user %d", session.ID, session.UniqueId, session.UserID)
+
+	h.teardownSession(c, &session)
 }
