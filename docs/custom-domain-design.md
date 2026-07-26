@@ -140,7 +140,7 @@ This is the farm's flagship stack — the mediator and DID-hosting daemon that
 - **No certificate work at all.** The `*.firstperson.dev` wildcard already
   covers these names. No cert-manager Certificate, no ACME order, and **no
   consumption of any Let's Encrypt quota** (§9).
-- **Created by an admin**, never through the normal user flow.
+- **Created by an admin on a dedicated page**, never through the user flow.
 
 Two consequences worth stating plainly:
 
@@ -151,8 +151,76 @@ Two consequences worth stating plainly:
 2. It exercises the entire fixed-label code path with **none** of the
    verification or TLS machinery, which is why it ships first (§17).
 
-Deleting a platform stack must require an explicit admin confirmation — every
-`vta_only` session depends on it.
+#### 3.3.1 The reservation is absolute
+
+`CLUSTER_DOMAIN` **and every subdomain of it** are rejected by the user-facing
+`POST /api/v1/domains` for **every caller, including admins** (§13). There is
+no role check to get wrong and no "admins may also attach it as custom" path:
+the *only* way a `firstperson.dev` row comes into existence is
+`POST /api/v1/admin/platform-stack`, which always writes `kind = 'platform'`.
+
+Enforcing it at the route rather than by role matters because the two paths
+produce different objects — a `custom` row would drag in TXT verification, an
+ACME certificate, and per-user ownership, none of which apply to a zone we
+already control.
+
+#### 3.3.2 One action creates the whole stack
+
+The admin page creates the domain **and** the session together. Splitting them
+("first go make a domain, then go make an agent") would expose a two-step
+ceremony for something that only ever happens once per environment:
+
+```text
+POST /api/v1/admin/platform-stack { label, vta_image, mediator_image, dids_image, vtc_image }
+   ├─ upsert the firstperson.dev domain row (kind=platform, verified_at=now)
+   ├─ create the four proxied Cloudflare A records
+   └─ create the full_stack_with_vtc session against it → orchestrator starts
+```
+
+- `label` defaults to `firstperson`; it never appears in a hostname and only
+  reaches the DID paths — `did:webvh:<scid>:dids.firstperson.dev:firstperson-vta`
+  and friends (§4.3).
+- **`beta_access` does not apply** — that gate exists for users, and the caller
+  here is an admin.
+- **Cluster capacity still applies.** The platform stack consumes the same
+  resources as any other full stack; if the cluster genuinely cannot fit it,
+  that is information the admin needs, not something to override silently.
+- Exactly one platform stack per environment, enforced by the same
+  `setup_sessions_domain_unique` index every other domain uses (§5.2).
+
+#### 3.3.3 Development and production each get their own
+
+Both environments can run a platform stack simultaneously, and they do not
+collide — for the same reasons as §4.2, applied to `firstperson.dev` itself:
+
+```text
+production   vta.firstperson.dev      mediator.firstperson.dev      …
+development  dev-vta.firstperson.dev  dev-mediator.firstperson.dev  …
+```
+
+The `domains` rows both say `firstperson.dev`, but they live in **separate
+databases**, so `domains_domain_unique` never sees them together. The DNS
+records differ by the `dev-` prefix, and the Kubernetes resources by
+`K8S_NAMESPACE_PREFIX`.
+
+#### 3.3.4 Handing its values back to configuration
+
+`MEDIATOR_DID` can only be known *after* the platform stack finishes setup — it
+is minted by the pipeline. So the admin page must surface the collected values
+(`mediator_did`, `did_hosting_did`, and the `https://dids.firstperson.dev`
+URLs) as copyable fields once the session reaches `running`, for pasting into
+configuration.
+
+A later improvement, deliberately **not** in this design: read those values
+straight from the platform session row instead of from env, which would remove
+the copy step entirely. Worth doing once the platform stack has proven itself;
+not worth coupling the two before then.
+
+#### 3.3.5 Deletion
+
+Deleting a platform stack takes every `vta_only` session's mediator and DID
+host with it. It requires the strongest confirmation in the product — see
+§11.1.
 
 ### 3.4 Why a domain is immutable once a session runs on it
 
@@ -834,7 +902,9 @@ automatically. Only `custom` domains reach ACME at all.
 | `GET` | `/api/v1/domains/:id` | user | Detail + last known per-record state |
 | `POST` | `/api/v1/domains/:id/verify` | user | Run the check; on success set `verified_at`. Rate-limited |
 | `DELETE` | `/api/v1/domains/:id` | user | 409 while a session references it |
-| `POST` | `/api/v1/admin/domains` | admin | Create a `platform` domain — verified immediately, no checks (§3.3) |
+| `POST` | `/api/v1/admin/platform-stack` | admin | Create the platform domain **and** its session in one action (§3.3.2). The only route that can mint a `firstperson.dev` row |
+| `GET` | `/api/v1/admin/platform-stack` | admin | Current state: not created / provisioning / running, plus the collected values to copy into config (§3.3.4) |
+| `DELETE` | `/api/v1/admin/setup-sessions/:id` | admin | Delete any session; requires `{"confirm": "<label>"}` for the platform stack (§11.1) |
 
 `POST /domains/:id/verify` response:
 
@@ -902,8 +972,42 @@ released), so the same user can immediately create a new session on it — see
 **Do not delete the TLS Secret** with the session (§9.3 mitigation 1).
 Namespace deletion cleans it up when the user's last session goes.
 
-Deleting a `platform` stack requires explicit admin confirmation — every
-`vta_only` session depends on its mediator and DID host.
+### 11.1 Admin-initiated deletion
+
+Today only the owning user can delete a session — `DELETE /api/v1/setup/:id`
+looks the row up by `unique_id AND user_id`, and there is no admin equivalent.
+The admin sessions view is read-only (`GET /api/v1/admin/setup-sessions`).
+
+Add:
+
+| Method | Path | Role | Description |
+| --- | --- | --- | --- |
+| `DELETE` | `/api/v1/admin/setup-sessions/:id` | admin | Delete **any** session, whoever owns it |
+
+It reuses the existing teardown path verbatim — orchestrator cancel, DNS
+records, K8s resources, Vault seed, namespace collection, DB row — differing
+only in the lookup: `unique_id` alone, with no `user_id` filter. Keeping one
+teardown implementation matters more than the small amount of duplication a
+separate admin path would save; a divergent second teardown is how orphaned
+namespaces and stranded Vault entries happen.
+
+**Three tiers of confirmation**, by blast radius. The API enforces the third;
+the first two are UI (frontend doc §6):
+
+| Target | Confirmation |
+| --- | --- |
+| A user's own session (existing user-facing flow) | unchanged |
+| Another user's session, from the admin view | modal naming the session **and its owner**; a plain confirm button is enough |
+| The **platform stack** | modal that spells out that every `vta_only` session loses its mediator and DID host, plus **type-to-confirm** of the label |
+
+For the platform stack the API must not rely on the UI alone: require an
+explicit body field (e.g. `{"confirm": "<label>"}`) and answer 400 without it.
+A destructive action reachable by a single mis-click in an admin table is worth
+one deliberate extra step — and this is the one deletion in the product that
+degrades every other user's service.
+
+The response should also report what it tore down (session id, mode, owner) so
+the action is legible in logs after the fact.
 
 ---
 
@@ -936,7 +1040,7 @@ promoting it is the only go.mod change).
 | Condition | HTTP | Message |
 | --- | --- | --- |
 | Fewer than two labels, or an invalid DNS label | 400 | `invalid domain` |
-| A `firstperson.dev` name, from a non-admin | 400 | `firstperson.dev is managed by VTA Farm — choose the managed option` |
+| `CLUSTER_DOMAIN` itself, **or any subdomain of it, from any caller including an admin** (§3.3.1) | 400 | `firstperson.dev is managed by VTA Farm and can't be attached — choose the managed option` |
 | IP literal, `localhost`, or a `.local`/`.internal`/`.test`/`.invalid`/`.example` name | 400 | `this domain can't be issued a public TLS certificate` |
 | Any of the four FQDNs would exceed 253 chars | 400 | `domain too long` |
 | The caller already has a custom domain | 409 | `only one custom domain per account` |
