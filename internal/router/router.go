@@ -138,6 +138,9 @@ func Setup(
 		adminAuth.POST("/admin/invitations", ih.Create)
 		adminAuth.GET("/admin/invitations", ih.List)
 		adminAuth.GET("/admin/setup-sessions", sh.AdminListSessions)
+		// Same teardown as the user-facing DELETE /setup/:id, but reaches any
+		// user's session rather than only the caller's.
+		adminAuth.DELETE("/admin/setup-sessions/:id", sh.AdminDeleteSession)
 		// Cluster capacity overview: CPU/memory/storage totals per node plus
 		// how many more sessions of each mode still fit.
 		dashH := handler.NewDashboardHandler(k8sClient)

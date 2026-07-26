@@ -1335,6 +1335,60 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/admin/setup-sessions/{id}:
+    delete:
+      summary: Delete any user's setup session
+      description: |
+        Tears down a session belonging to any user: cancels the orchestrator,
+        deletes its Cloudflare DNS records, the hosted DID and its ACL entry,
+        all Kubernetes resources, the Vault master seed, and the DB row. When
+        it was that user's last session, their namespace and Vault access are
+        removed too.
+
+        Identical to the user-facing `DELETE /setup/{id}` except the session is
+        looked up by `unique_id` alone rather than being scoped to the caller.
+
+        **Irreversible** — there is no undo and no soft delete. The admin UI
+        requires the admin to type the session's `unique_id` to confirm.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The session's 8-char `unique_id` (not the numeric PK).
+          schema:
+            type: string
+          example: "a1b2c3d4"
+      responses:
+        "204":
+          description: Session deleted
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Failed to delete the DNS record upstream
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/v1/admin/setup/images:
     get:
       summary: List available component images (admin)

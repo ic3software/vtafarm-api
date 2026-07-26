@@ -460,12 +460,24 @@ func (h *SetupHandler) Delete(c *gin.Context) {
 		return
 	}
 
+	h.teardownSession(c, &session)
+}
+
+// teardownSession destroys everything a session owns — orchestrator goroutine,
+// DNS records, hosted DID + ACL, K8s resources, Vault seed, the row itself —
+// and, when it was the user's last session, their namespace and Vault access
+// too. It writes the response (204, or an error status) itself.
+//
+// Ownership is the caller's business: Delete scopes the lookup to the calling
+// user, AdminDeleteSession accepts any session. Everything after that point is
+// identical, so both funnel through here.
+func (h *SetupHandler) teardownSession(c *gin.Context, session *model.SetupSession) {
 	if h.orch != nil {
 		h.orch.Cancel(session.ID)
 	}
 
 	if session.IsFullStackFamily() {
-		h.deleteFullStack(c, &session)
+		h.deleteFullStack(c, session)
 		return
 	}
 
@@ -504,7 +516,7 @@ func (h *SetupHandler) Delete(c *gin.Context) {
 		h.orch.TeardownVaultSeed(c.Request.Context(), session.UserID, session.ID)
 	}
 
-	if err := h.db.Delete(&session).Error; err != nil {
+	if err := h.db.Delete(session).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete session"})
 		return
 	}
