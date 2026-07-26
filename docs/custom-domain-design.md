@@ -611,18 +611,15 @@ spec:
 | | 4 Certificates | 1 Certificate, 4 SANs |
 | --- | --- | --- |
 | ACME orders per session | 4 | **1** |
-| Charged to "50 certs / registered domain / week" | 4 | **1** |
-| → session recreations before *that* limit | ~12 / week | **~50 / week** |
 | HTTP-01 challenges | 4 | 4 — unchanged, one per name |
-| "5 per identical name set / week" | 5 per name | 5 for the set |
-| → recreations before *that* limit | 5 | **5 — unchanged** |
+| Recreations before the binding limit (§9.3) | 5 / week | **5 / week — unchanged** |
 | K8s Secrets per session | 4 | 1 |
 | Readiness conditions to poll | 4 | 1 |
 
-So it does **not** relax the limit that actually binds (§9.3 — five
-recreations per week either way). What it does is take the per-registered-domain
-allowance from "comfortable" to "irrelevant", cut the moving parts by four, and
-make failure diagnosis a single object lookup.
+So it does **not** relax the limit that actually binds (§9.3 — five recreations
+per week either way). What it buys is fewer moving parts: one Secret instead of
+four, one readiness condition instead of four, and failure diagnosis that is a
+single object lookup.
 
 ### 8.2 ClusterIssuer — `k8s/tls/clusterissuer-http01.yaml`
 
@@ -736,39 +733,28 @@ this architecture, and parked (§16.3 O1).
 | Authorization failures per identifier per account | 5 / hour | our account × that hostname | no |
 | ARI-driven renewals | **exempt from all limits** | — | — |
 
-### 9.2 What the 50/week limit actually means
+### 9.2 Nothing here needs tracking on our side
 
-**It is not a cap on our cluster or our account.** `50 certificates per
-registered domain per 7 days` is charged to **the customer's registered
-domain** — `aaa.com` — and every customer domain carries its own independent
-allowance. A thousand customers is a thousand separate 50-per-week budgets;
-the number **does not aggregate as the user base grows**, and there is no
-ceiling anywhere that says "this cluster may issue 50 certificates".
+**No quota accounting, counters or pre-flight budget checks are part of this
+design**, and none should be built.
 
-Two details that follow from how the limit is scoped:
+The per-registered-domain limit is charged to the *customer's* domain, so it is
+theirs, not ours — there is no cluster-wide ceiling to watch, and it does not
+aggregate as the user base grows. The one limit charged to our account (300 new
+orders / 3 h) sits three orders of magnitude away from real usage at one
+certificate per session, and Let's Encrypt raises it on request if that ever
+changes. **ARI-driven renewals are exempt from every limit**, so steady-state
+operation consumes nothing at all — enable ARI in cert-manager.
 
-- **"Registered domain" means the eTLD+1.** All four of our hostnames
-  (`vta.` / `vtc.` / `mediator.` / `dids.aaa.com`) count against the single
-  `aaa.com` bucket — which is another reason to request them as one
-  certificate rather than four (§8.1).
-- **The counter is global across every ACME account, not just ours.** If the
-  customer already issues Let's Encrypt certificates for `aaa.com` elsewhere —
-  their marketing site, a mail host, a staging environment — those consume the
-  same 50. Rarely a problem at 1 certificate per session, but it is the reason
-  a failure here may have nothing to do with us, and the error message should
-  not assert that it does.
+The table above is reference material for diagnosing a failure, not a budget to
+manage. Only §9.3 has any bearing on the design, and it is handled by a
+teardown rule rather than by counting anything.
 
-With one certificate per session (§8.1), a single customer could create and
-destroy ~50 sessions a week on their domain before this one binds. It is not
-the constraint that matters in practice.
-
-Our only shared limit is **300 new orders per 3 hours**, which at one order per
-session means 300 new custom-domain sessions per 3 hours. It is also the one
-Let's Encrypt will raise on request (there is a form for hosting providers;
-approval takes weeks). Neither is close to binding.
-
-And because **ARI-driven renewals are exempt from every limit**, steady-state
-operation consumes no budget at all. Enable ARI in cert-manager.
+One consequence worth remembering when writing error messages: the
+per-registered-domain counter is global across *every* ACME account, not just
+ours. A customer already issuing Let's Encrypt certificates for `aaa.com`
+elsewhere consumes the same allowance, so a failure here may have nothing to do
+with us — don't word the message as though it must.
 
 ### 9.3 The limit that does bind: 5 per identical name set
 
