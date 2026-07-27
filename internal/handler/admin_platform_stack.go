@@ -235,8 +235,11 @@ func (h *SetupHandler) CreatePlatformStack(c *gin.Context) {
 		// One label stands in for both names on a fixed-label domain: neither
 		// reaches a hostname, and the did:webvh paths they do reach are already
 		// distinct by their -vta / -mediator / -vtc suffixes (design §4.3).
-		VtaName:          label,
-		VtcName:          label,
+		VtaName: label,
+		VtcName: label,
+		// The stack's own daemon is also the shared one every vta_only session
+		// uploads to, so this value is what puts those rows in one namespace.
+		DidHost:          didsFQDN,
 		VtaImage:         req.VtaImage,
 		MediatorImage:    req.MediatorImage,
 		DidsImage:        req.DidsImage,

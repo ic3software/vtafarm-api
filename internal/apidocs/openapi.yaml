@@ -346,7 +346,9 @@ components:
             digits, and hyphens; no consecutive hyphens (--); must start and
             end with a letter or digit; max 48 chars) and unique across ALL users'
             sessions — 409 if already taken. Also used in the DID hosting
-            path {unique_id}/{vta_name} (vta_only).
+            path {vta_name}-vta, which for vta_only is served by the shared
+            daemon and so must additionally not collide with the platform
+            stack's own paths there — a second, separate 409.
         vta_image:
           type: string
           description: Full image URL selected from GET /setup/images.
@@ -490,7 +492,7 @@ components:
           description: Shared MEDIATOR_DID (vta_only)
         vta_did_url:
           type: string
-          description: Derived DID-hosting URL — {DID_HOSTING_SERVER_URL}/{unique_id}/{vta_name}
+          description: Derived DID-hosting URL — {DID_HOSTING_SERVER_URL}/{vta_name}-vta
         error_msg:
           type: string
           description: Present only when status is `failed`

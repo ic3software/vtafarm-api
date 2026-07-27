@@ -73,6 +73,20 @@ func NewSetupHandler(
 	}
 }
 
+// hostOf reduces a configured base URL to the bare hostname stored in
+// did_host. It has to be the hostname and not the URL, because that value is
+// compared against a full_stack session's own DidsFQDN() — and the platform
+// stack, whose daemon IS the shared one, must land on the same string from
+// both directions. An unparseable value degrades to itself rather than to "",
+// which would drop the row out of the uniqueness index entirely.
+func hostOf(baseURL string) string {
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Host == "" {
+		return baseURL
+	}
+	return u.Host
+}
+
 func (h *SetupHandler) cfRequired(c *gin.Context) bool {
 	if h.cf == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "cloudflare not configured"})
@@ -287,7 +301,14 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		preRotationCount = *req.PreRotationCount
 	}
 
-	vtaDidUrl := h.didHostingBase + "/" + user.UniqueId + "/" + req.VtaName
+	// One path component, not two: the owner's unique_id used to prefix it so
+	// that per-user namespacing made the path unique for free, which put an
+	// opaque id in the middle of every DID this mode mints
+	// (did:webvh:<scid>:<host>:ex9re34d:myvta). The -vta suffix replaces it —
+	// the same shape full_stack's own daemon serves, and the thing that lets
+	// setup_sessions_did_path_unique compare these paths against the platform
+	// stack's exactly.
+	vtaDidUrl := h.didHostingBase + "/" + setup.VtaDidPath(req.VtaName)
 
 	subdomain := setup.VtaHost(h.appEnv, req.VtaName)
 	fqdn := subdomain + "." + h.clusterDomain
@@ -304,13 +325,15 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		Status: "dns_provisioned",
 		// Set explicitly rather than left to the column default: the field
 		// would otherwise read "" in memory for the rest of this request.
-		DomainType:       model.DomainManaged,
-		Domain:           h.clusterDomain,
-		Subdomain:        subdomain,
-		CFRecordID:       recordID,
-		VtaName:          req.VtaName,
-		MediatorDid:      h.mediatorDid,
-		VtaDidUrl:        vtaDidUrl,
+		DomainType:  model.DomainManaged,
+		Domain:      h.clusterDomain,
+		Subdomain:   subdomain,
+		CFRecordID:  recordID,
+		VtaName:     req.VtaName,
+		MediatorDid: h.mediatorDid,
+		VtaDidUrl:   vtaDidUrl,
+		// The shared daemon — this mode deploys none of its own.
+		DidHost:          hostOf(h.didHostingBase),
 		VtaImage:         req.VtaImage,
 		AdminDid:         req.AdminDid,
 		Portable:         portable,
@@ -332,8 +355,15 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		_ = h.cf.DeleteRecord(c.Request.Context(), recordID)
 		// The pre-insert count check races with concurrent creates; the DB
 		// unique index is the real gate.
-		if strings.Contains(createErr.Error(), "setup_sessions_vta_name_unique") {
+		if isUniqueViolation(createErr, "setup_sessions_vta_name_unique") {
 			c.JSON(http.StatusConflict, gin.H{"error": "vta_name already in use"})
+			return
+		}
+		// Reachable where the hostname index is not: the platform stack's own
+		// DIDs sit on the same shared daemon, and its row is excluded from that
+		// index because its hostnames are the fixed labels.
+		if isUniqueViolation(createErr, "setup_sessions_did_path_unique") {
+			c.JSON(http.StatusConflict, gin.H{"error": "vta_name already in use on the shared DID host"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist session"})

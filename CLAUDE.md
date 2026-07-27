@@ -287,6 +287,34 @@ edits DNS.
   ClusterIssuers) before a verification can pass; until they exist the check
   fails with a reason, which tells an operator more than a hidden route would.
 
+### DID paths and where they must be unique
+
+A `did:webvh` path only has to be distinct among the DIDs served by the **same**
+daemon. Which daemon that is follows from neither mode nor `domain_type` alone,
+so `setup_sessions.did_host` records it and
+`UNIQUE (did_host, vta_name) WHERE did_host <> ''` is the whole rule:
+
+| session | daemon | shares with |
+| --- | --- | --- |
+| `vta_only` (managed, and custom once allowed) | the shared one — `DID_HOSTING_SERVER_URL` | every other `vta_only` **and the platform stack** |
+| `full_stack` managed / custom | its own `dids[-<name>].<zone>` | nothing |
+| `platform` | its own — which **is** the shared one | every `vta_only` |
+
+A custom domain moves a session's hostnames, not its DID host: `vta_only`
+deploys no daemon, so its DID lands on ours however its hostnames are named.
+That is why per-domain scoping would be the wrong test, and why
+`vta_name` still has to be globally unique for that mode.
+
+Paths are `<vta_name>-vta` / `<vta_name>-mediator` / `<vtc_name>-vtc`
+(`setup.VtaDidPath` and friends) — **`vta_only` included**, even though it mints
+only one. The suffix is load-bearing, not cosmetic: it is what lets one index
+over `vta_name` stand in for a rule about rendered paths. Every indexed path
+ends in `-vta`, so it can never equal an unindexed `-mediator` / `-vtc` path
+belonging to the platform stack. Give `vta_only` a bare name and a session
+called `<platform label>-mediator` walks straight past the index and collides on
+the daemon. The owning user's `unique_id` used to prefix the path, which made it
+unique for free and put an opaque id inside every DID; the suffix replaced it.
+
 ### The platform stack
 
 One `full_stack` session per environment at `vta.firstperson.dev` / `vtc.` /

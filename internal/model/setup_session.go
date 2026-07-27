@@ -45,9 +45,15 @@ type SetupSession struct {
 	DomainID   *uint  `gorm:"column:domain_id"                            json:"-"`
 	DomainType string `gorm:"column:domain_type;not null;default:managed" json:"domain_type"`
 	// VTA config inputs
-	VtaName          string `gorm:"not null;default:'personal-vta'" json:"vta_name"`
-	MediatorDid      string `gorm:"column:mediator_did;not null;default:''"  json:"mediator_did"`
-	VtaDidUrl        string `gorm:"column:vta_did_url;not null;default:''"   json:"vta_did_url"`
+	VtaName     string `gorm:"not null;default:'personal-vta'" json:"vta_name"`
+	MediatorDid string `gorm:"column:mediator_did;not null;default:''"  json:"mediator_did"`
+	VtaDidUrl   string `gorm:"column:vta_did_url;not null;default:''"   json:"vta_did_url"`
+	// DidHost is the hostname of the DID-hosting daemon serving this session's
+	// did:webvh identifiers — the shared one for vta_only, the session's own
+	// for full_stack. It scopes setup_sessions_did_path_unique: a DID path only
+	// has to be distinct among the DIDs on the same daemon, and which daemon
+	// that is follows from neither Mode nor DomainType alone.
+	DidHost          string `gorm:"column:did_host;not null;default:''"      json:"-"`
 	Portable         bool   `gorm:"not null;default:true"           json:"portable"`
 	PreRotationCount int    `gorm:"not null;default:1"              json:"pre_rotation_count"`
 	// Image used for the vta-setup K8s Job

@@ -40,7 +40,7 @@ User provides (form):
 Backend derives (not user input):
   subdomain        → "vta-{vta_name}" ("dev-vta-{vta_name}" in dev), under CLUSTER_DOMAIN
   vta public URL   → https://{subdomain}.{CLUSTER_DOMAIN}
-  did_hosting_url  → {DID_HOSTING_SERVER_URL}/{user_unique_id}/{vta_name}   (external shared host)
+  did_hosting_url  → {DID_HOSTING_SERVER_URL}/{vta_name}-vta               (external shared host)
   mediator         → the shared external mediator MEDIATOR_DID
 
 VTA TOML uses:
@@ -147,7 +147,7 @@ after).
 | --- | --- | --- |
 | VTA subdomain | `vta-{vta_name}` via `setup.VtaHost` (`dev-vta-{vta_name}` in dev) | `vta-personal-vta` |
 | VTA public URL | `https://{subdomain}.{CLUSTER_DOMAIN}` | `https://vta-personal-vta.example.com` |
-| DID hosting URL | `{DID_HOSTING_SERVER_URL}/{user_unique_id}/{vta_name}` | `https://dids.example.com/ab12cd34/personal-vta` |
+| DID hosting URL | `{DID_HOSTING_SERVER_URL}/{vta_name}-vta` via `setup.VtaDidPath` | `https://dids.example.com/personal-vta-vta` |
 | Mediator DID | the shared `MEDIATOR_DID` env value | `did:webvh:…:mediator` |
 
 (Full Stack instead derives four named hosts and grows its own mediator, dids daemon, and
@@ -446,7 +446,8 @@ type SetupSession struct {
 
     // Derived / shared
     MediatorDid string // shared MEDIATOR_DID (vta_only)
-    VtaDidUrl   string // {DID_HOSTING_SERVER_URL}/{unique_id}/{vta_name}
+    VtaDidUrl   string // {DID_HOSTING_SERVER_URL}/{vta_name}-vta
+    DidHost     string // daemon serving those DIDs — the shared one here (json "-")
     CFRecordID  string // single Cloudflare record id (json "-")
 
     // Outputs

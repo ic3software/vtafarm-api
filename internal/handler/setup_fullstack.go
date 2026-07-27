@@ -170,13 +170,17 @@ func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest, d
 		CFRecordVtc:       &recordVtc,
 		VtaName:           vtaName,
 		VtcName:           vtcName,
-		VtaImage:          req.VtaImage,
-		MediatorImage:     req.MediatorImage,
-		DidsImage:         req.DidsImage,
-		VtcImage:          req.VtcImage,
-		AdminDid:          req.AdminDid,
-		Portable:          portable,
-		PreRotationCount:  preRotationCount,
+		// This mode runs its own DID-hosting daemon, so its three paths share a
+		// namespace with nothing else — the index still needs the host to know
+		// that.
+		DidHost:          didsFQDN,
+		VtaImage:         req.VtaImage,
+		MediatorImage:    req.MediatorImage,
+		DidsImage:        req.DidsImage,
+		VtcImage:         req.VtcImage,
+		AdminDid:         req.AdminDid,
+		Portable:         portable,
+		PreRotationCount: preRotationCount,
 	}
 	const maxAttempts = 5
 	var createErr error
