@@ -1,0 +1,20 @@
+-- When the last live DNS check of a domain ran.
+--
+-- Two jobs, and the second is why it lives in the database rather than in the
+-- portal's memory:
+--
+--   1. It is what the portal shows as "last checked", so a reload no longer
+--      loses it and every browser sees the same answer.
+--   2. It is the server-side cooldown. A check resolves five names against
+--      public resolvers, and DNS does not move fast enough for a second check
+--      a few seconds later to say anything new — so the API refuses one inside
+--      a minute (429) instead of trusting the button to stay disabled.
+--
+-- NULL means never checked, which is the state every freshly attached domain
+-- starts in: attach performs no lookups, so the first check is always allowed
+-- immediately.
+--
+-- Verified rows never get one written after the fact — verification is checked
+-- once and never re-run, so their check performs no lookups and needs no
+-- throttle.
+ALTER TABLE domains ADD COLUMN last_checked_at TIMESTAMPTZ;

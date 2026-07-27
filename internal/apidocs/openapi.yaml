@@ -93,6 +93,21 @@ components:
           type: string
       required: [error]
 
+    RateLimited:
+      type: object
+      properties:
+        error:
+          type: string
+        retry_after:
+          type: integer
+          description: |
+            Seconds until the request is allowed again, rounded up so it is
+            never `0` — mirrored in the `Retry-After` header. Only the
+            per-domain check cooldown carries it; the per-IP limiter answers
+            with `error` alone, so treat it as optional.
+          example: 43
+      required: [error]
+
     UpgradeTarget:
       type: object
       properties:
@@ -272,6 +287,15 @@ components:
           type: string
           format: date-time
           nullable: true
+        last_checked_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            When a check last resolved this domain; `null` if none ever has,
+            which is how every freshly attached domain starts. Another check
+            inside a minute of it is refused with 429, so this is what a client
+            should derive its "try again in Ns" from rather than a local timer.
         in_use_by:
           type: string
           description: unique_id of the session running on this domain, when there is one.
@@ -284,10 +308,16 @@ components:
           type: boolean
           description: |
             Whether this response performed live lookups. `false` on the list
-            endpoint, which never resolves — so the UI shows a neutral "not
-            checked yet" instead of a red cross on records nobody has looked at.
+            endpoint, which never resolves — so the UI shows no per-record
+            status at all rather than a red cross on records nobody looked at.
         txt:
           $ref: "#/components/schemas/DomainTxt"
+          description: |
+            The TXT challenge to create. Present on every response for a
+            pending custom domain, including the list endpoint's — where
+            `found` is empty and `ok` is false because nothing was resolved.
+            Absent once the domain is verified: the token is checked at
+            verification time only and may then be deleted.
         records:
           type: array
           items:
@@ -3300,15 +3330,16 @@ paths:
       summary: Domain detail, resolved live
       description: |
         Runs the same check as `POST /domains/{id}/verify` and promotes the
-        domain to verified when everything passes, so a portal polling this
-        every 30s shows a ✓ appearing on its own once the user fixes DNS in
-        another tab.
+        domain to verified when everything passes. The portal does not call it
+        — it reads the list and checks only when the user asks — so this is the
+        read-only way for anything else to see a domain's live DNS state.
 
         Cheap after success: an already-verified domain performs **no lookups
         at all**. Verification is a one-time proof, not a liveness check.
 
-        Rate-limited per IP alongside the verify route, since both do real DNS
-        work.
+        Subject to the same one-minute per-domain cooldown as the verify route
+        (429), so reaching for this one is not a way around it, plus the per-IP
+        limit both share.
       tags: [User]
       security:
         - CookieAuthUser: []
@@ -3337,11 +3368,18 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "429":
-          description: Too many checks — try again shortly
+          description: |
+            Either the per-domain cooldown — one check per minute, body carries
+            `retry_after` — or the per-IP limit both routes share. Neither
+            resolved anything, so nothing about the domain has changed.
+          headers:
+            Retry-After:
+              description: Seconds to wait. Sent with the per-domain cooldown.
+              schema: { type: integer }
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Error"
+                $ref: "#/components/schemas/RateLimited"
     delete:
       summary: Remove a domain
       description: |
@@ -3396,6 +3434,13 @@ paths:
         A failing check answers **200, not 4xx** — it is an expected, retryable
         state the UI renders record by record, not a client error. Read each
         record's `detail` for why.
+
+        **One check per domain per minute.** Asking again sooner answers 429
+        with `retry_after` (seconds) and a `Retry-After` header — a second
+        check that soon queries public resolvers five more times to report what
+        the last one already said. `last_checked_at` on any domain response is
+        when the window started, so a client can count down instead of
+        guessing.
 
         Two things users hit, worth surfacing in the UI: a domain on Cloudflare
         must have all four CNAMEs **DNS only (grey cloud)**, and a name checked
@@ -3457,11 +3502,18 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "429":
-          description: Too many checks — try again shortly
+          description: |
+            Either the per-domain cooldown — one check per minute, body carries
+            `retry_after` — or the per-IP limit both routes share. Neither
+            resolved anything, so nothing about the domain has changed.
+          headers:
+            Retry-After:
+              description: Seconds to wait. Sent with the per-domain cooldown.
+              schema: { type: integer }
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Error"
+                $ref: "#/components/schemas/RateLimited"
 
   /api/v1/setup/validate:
     post:

@@ -252,8 +252,9 @@ func Setup(
 	{
 		domains.GET("", dh.List)
 		domains.POST("", dh.Create)
-		// Both of these perform live DNS lookups, so they share one limit —
-		// and the portal polls the first every 30s by design.
+		// Both of these perform live DNS lookups, so they share one limit.
+		// This is the per-IP backstop against bulk abuse; the real gate is
+		// handler.VerifyCooldown, which is per-domain and survives restarts.
 		resolveLimit := middleware.RateLimit(40, time.Minute)
 		domains.GET("/:id", resolveLimit, dh.Get)
 		domains.POST("/:id/verify", resolveLimit, dh.Verify)
