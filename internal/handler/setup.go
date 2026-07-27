@@ -34,7 +34,7 @@ type SetupHandler struct {
 	ghcr           *ghcr.Client // nil when not configured
 	capacity       *CapacityService
 
-	// full_stack / full_stack_with_vtc modes
+	// full_stack mode
 	mediatorGhcr *ghcr.Client // nil when not configured
 	didsGhcr     *ghcr.Client // nil when not configured
 	vtcGhcr      *ghcr.Client // nil when not configured
@@ -101,7 +101,7 @@ func (h *SetupHandler) Validate(c *gin.Context) {
 
 // GET /api/v1/setup/images?component=vta|mediator|dids|vtc
 // component defaults to "vta" (vta_only's existing behavior, unchanged).
-// mediator/dids are full_stack-only and vtc is full_stack_with_vtc-only —
+// mediator/dids are full_stack-only and vtc is full_stack-only —
 // same GHCR-package-tags pattern as vta.
 func (h *SetupHandler) Images(c *gin.Context) {
 	type imageOption struct {
@@ -145,10 +145,10 @@ func (h *SetupHandler) Images(c *gin.Context) {
 }
 
 type createSetupRequest struct {
-	Mode string `json:"mode"      binding:"required,oneof=vta_only full_stack full_stack_with_vtc"`
+	Mode string `json:"mode"      binding:"required,oneof=vta_only full_stack"`
 	// Required, globally unique, DNS-safe (setup.ValidateName) — becomes the
 	// session's subdomains: vta-<name> (plus mediator-<name> / dids-<name>
-	// for the full_stack family).
+	// for full_stack).
 	VtaName  string `json:"vta_name"`
 	VtaImage string `json:"vta_image" binding:"required"`
 	// Optional — if set, Phase 2 (import-did + Deployment) starts automatically after Phase 1.
@@ -156,14 +156,13 @@ type createSetupRequest struct {
 	// Advanced — optional, defaults: portable=true, pre_rotation_count=1
 	Portable         *bool `json:"portable"`
 	PreRotationCount *int  `json:"pre_rotation_count"`
-	// full_stack / full_stack_with_vtc only.
+	// full_stack only — all three images are required for that mode. vtc_name
+	// is globally unique and DNS-safe like vta_name (becomes the vtc-<name>
+	// subdomain) and doubles as the VTA context id.
 	MediatorImage string `json:"mediator_image"`
 	DidsImage     string `json:"dids_image"`
-	// full_stack_with_vtc only — both required for that mode. vtc_name is
-	// globally unique and DNS-safe like vta_name (becomes the vtc-<name>
-	// subdomain) and doubles as the VTA context id.
-	VtcImage string `json:"vtc_image"`
-	VtcName  string `json:"vtc_name"`
+	VtcImage      string `json:"vtc_image"`
+	VtcName       string `json:"vtc_name"`
 }
 
 // POST /api/v1/setup
@@ -175,13 +174,6 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	var req createSetupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	// full_stack (without VTC) is retired for NEW sessions — existing ones and
-	// their pipeline code remain fully supported (upgrades, teardown, display).
-	if req.Mode == model.ModeFullStack {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "full_stack mode can no longer be created — use full_stack_with_vtc"})
 		return
 	}
 
@@ -199,9 +191,9 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	}
 
 	// vta_name is user-chosen and becomes the session's subdomains
-	// (vta-<name>, and mediator-/dids-<name> for the full_stack family), so
-	// it must be DNS-safe and unique across all users' sessions, not just the
-	// caller's own.
+	// (vta-<name>, and mediator-/dids-<name> for full_stack), so it must be
+	// DNS-safe and unique across all users' sessions, not just the caller's
+	// own.
 	if req.VtaName == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "vta_name is required"})
 		return
@@ -217,16 +209,12 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		return
 	}
 
-	if req.Mode == model.ModeFullStack || req.Mode == model.ModeFullStackWithVtc {
+	if req.Mode == model.ModeFullStack {
 		if !user.BetaAccess {
 			c.JSON(http.StatusForbidden, gin.H{"error": req.Mode + " mode is in beta — ask an admin to enable beta access for your account"})
 			return
 		}
 		if !h.capacityAllows(c, capacity.FullStack) {
-			return
-		}
-		if req.Mode == model.ModeFullStackWithVtc {
-			h.createFullStackWithVtc(c, req)
 			return
 		}
 		h.createFullStack(c, req)
@@ -341,21 +329,21 @@ func (h *SetupHandler) Availability(c *gin.Context) {
 	est, meta, determinable := h.capacity.Estimates(c.Request.Context())
 	if !determinable {
 		c.JSON(http.StatusOK, gin.H{
-			"vta_only":            modeAvail{Available: true},
-			"full_stack_with_vtc": modeAvail{Available: true},
-			"metrics_available":   false,
-			"storage_available":   false,
-			"determinable":        false,
+			"vta_only":          modeAvail{Available: true},
+			"full_stack":        modeAvail{Available: true},
+			"metrics_available": false,
+			"storage_available": false,
+			"determinable":      false,
 		})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"vta_only":            modeAvail{Count: est[capacity.VtaOnly.Name].Count, Available: est[capacity.VtaOnly.Name].Count >= 1},
-		"full_stack_with_vtc": modeAvail{Count: est[capacity.FullStack.Name].Count, Available: est[capacity.FullStack.Name].Count >= 1},
-		"metrics_available":   meta.MetricsAvailable,
-		"storage_available":   meta.StorageAvailable,
-		"determinable":        true,
+		"vta_only":          modeAvail{Count: est[capacity.VtaOnly.Name].Count, Available: est[capacity.VtaOnly.Name].Count >= 1},
+		"full_stack":        modeAvail{Count: est[capacity.FullStack.Name].Count, Available: est[capacity.FullStack.Name].Count >= 1},
+		"metrics_available": meta.MetricsAvailable,
+		"storage_available": meta.StorageAvailable,
+		"determinable":      true,
 	})
 }
 
@@ -400,14 +388,12 @@ func (h *SetupHandler) List(c *gin.Context) {
 			CreatedAt:   s.CreatedAt,
 			UpdatedAt:   s.UpdatedAt,
 		}
-		if s.IsFullStackFamily() {
+		if s.IsFullStack() {
 			it.URLs = gin.H{
 				"vta":      s.PublicURL(),
 				"mediator": "https://" + s.MediatorFQDN(),
 				"dids":     "https://" + s.DidsFQDN(),
-			}
-			if s.Mode == model.ModeFullStackWithVtc {
-				it.URLs["vtc"] = "https://" + s.VtcFQDN()
+				"vtc":      "https://" + s.VtcFQDN(),
 			}
 		} else {
 			it.URL = s.PublicURL()
@@ -428,7 +414,7 @@ func (h *SetupHandler) Get(c *gin.Context) {
 		return
 	}
 
-	if session.IsFullStackFamily() {
+	if session.IsFullStack() {
 		h.getFullStack(c, &session)
 		return
 	}
@@ -476,7 +462,7 @@ func (h *SetupHandler) teardownSession(c *gin.Context, session *model.SetupSessi
 		h.orch.Cancel(session.ID)
 	}
 
-	if session.IsFullStackFamily() {
+	if session.IsFullStack() {
 		h.deleteFullStack(c, session)
 		return
 	}
@@ -552,7 +538,7 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 		return
 	}
 
-	if session.IsFullStackFamily() {
+	if session.IsFullStack() {
 		h.logsFullStack(c, &session)
 		return
 	}
@@ -688,7 +674,7 @@ func (h *SetupHandler) ProvisionAdmin(c *gin.Context) {
 	}
 
 	readyStatus := "vta_setup_complete"
-	if session.IsFullStackFamily() {
+	if session.IsFullStack() {
 		readyStatus = "awaiting_admin_did"
 	}
 	if session.Status != readyStatus {

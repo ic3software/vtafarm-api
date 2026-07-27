@@ -30,7 +30,7 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 
 	mode := c.Query("mode")
 	switch mode {
-	case "", model.ModeVtaOnly, model.ModeFullStack, model.ModeFullStackWithVtc:
+	case "", model.ModeVtaOnly, model.ModeFullStack:
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid mode"})
 		return
@@ -60,7 +60,7 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 		return
 	}
 	counts := map[string]int64{
-		"all": 0, model.ModeVtaOnly: 0, model.ModeFullStack: 0, model.ModeFullStackWithVtc: 0,
+		"all": 0, model.ModeVtaOnly: 0, model.ModeFullStack: 0,
 	}
 	for _, mc := range modeCounts {
 		counts[mc.Mode] = mc.Count

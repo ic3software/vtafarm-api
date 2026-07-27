@@ -2,8 +2,13 @@
 
 Automates VTA stack installation driven by a frontend form. Supports two modes:
 
-- **VTA Only** — deploys just the VTA service; user provides an existing external DID hosting URL.
-- **Full Stack** — deploys VTA + DIDComm Mediator + WebVH DID Hosting Daemon; all three are hosted in-cluster.
+- **VTA Only** (`vta_only`) — deploys just the VTA service; user provides an existing external DID hosting URL.
+- **Full Stack** (`full_stack`) — deploys VTA + DIDComm Mediator + WebVH DID Hosting Daemon + VTC; all four are hosted in-cluster.
+
+> **The VTC is always part of Full Stack.** An earlier iteration split this into
+> `full_stack` (three components) and `full_stack_with_vtc` (four). That split is retired:
+> the three-component pipeline is gone and `full_stack` now always provisions all four.
+> The `full_stack_with_vtc` mode identifier no longer exists.
 
 In both modes the backend:
 
@@ -33,7 +38,7 @@ User provides (form):
   portable, pre_rotation_count → optional advanced VTA-DID knobs
 
 Backend derives (not user input):
-  subdomain        → random "fpp-xxxx" ("fpp-local-xxxx" in dev), under CLUSTER_DOMAIN
+  subdomain        → "vta-{vta_name}" ("vta-local-{vta_name}" in dev), under CLUSTER_DOMAIN
   vta public URL   → https://{subdomain}.{CLUSTER_DOMAIN}
   did_hosting_url  → {DID_HOSTING_SERVER_URL}/{user_unique_id}/{vta_name}   (external shared host)
   mediator         → the shared external mediator MEDIATOR_DID
@@ -90,13 +95,15 @@ From the code (`internal/setup/orchestrator.go`, `internal/handler/setup.go`):
 > `step_dids_load_did` approach; see `full-stack-setup-design.md` §4/§6/Appendix A for
 > why). This section is just a pointer + the shape of the mode.
 
-VTA Farm deploys and wires all three components.
+VTA Farm deploys and wires all four components. The VTC is not optional — there is no
+VTC-less Full Stack.
 
 ```text
 User provides:
-  domain  → creates  fpp-xxxx.{domain}       (VTA)
-                     mediator-xxxx.{domain}  (DIDComm Mediator)
-                     dids-xxxx.{domain}      (WebVH DID Hosting Daemon)
+  vta_name → creates  vta-{vta_name}.{domain}       (VTA)
+                      mediator-{vta_name}.{domain}  (DIDComm Mediator)
+                      dids-{vta_name}.{domain}      (WebVH DID Hosting Daemon)
+  vtc_name → creates  vtc-{vtc_name}.{domain}       (Verifiable Trust Community)
 ```
 
 **State machine (Full Stack)** — see
@@ -104,9 +111,11 @@ User provides:
 up-to-date step list. The shared steps (`dns_provision`, `step_vta_setup`,
 `awaiting_admin_did`, `step_import_admin_did`, `deploy_vta`, and the terminal `running`
 status) are the **same steps, same names** as VTA Only above; Full Stack additionally
-splits `env_provision` / `k8s_provision` out of `step_vta_setup` (three components to
-provision instead of one) and inserts the mediator/dids steps between `step_vta_setup`
-and the `awaiting_admin_did` gate.
+splits `env_provision` / `k8s_provision` out of `step_vta_setup` (four components to
+provision instead of one), inserts the mediator/dids steps between `step_vta_setup`
+and the `awaiting_admin_did` gate, and wraps `deploy_vta` in the VTC steps
+(`step_vtc_setup_key` / `step_vtc_acl_grant` before it, `step_vtc_setup` / `deploy_vtc`
+after).
 
 ---
 
@@ -115,30 +124,34 @@ and the `awaiting_admin_did` gate.
 | Field | Mode | Required | Default | Notes |
 | --- | --- | --- | --- | --- |
 | `mode` | both | yes | — | `vta_only` \| `full_stack` |
-| `vta_name` | both | no | `personal-vta` | unique per user; becomes the DID-hosting path `{unique_id}/{vta_name}` |
+| `vta_name` | both | no | `personal-vta` | unique per user; drives the VTA subdomain and the DID-hosting path |
 | `vta_image` | both | yes | — | full image URL chosen from `GET /setup/images` |
 | `admin_did` | both | no | — | the user's local `pnm setup` admin DID; when present, Phase 2 (import + deploy) auto-runs |
 | `portable` | both | no | `true` | advanced — VTA-DID portability |
 | `pre_rotation_count` | both | no | `1` | advanced — number of pre-rotation keys |
+| `mediator_image` | `full_stack` | yes | — | from `GET /setup/images?component=mediator` |
+| `dids_image` | `full_stack` | yes | — | from `GET /setup/images?component=dids` |
+| `vtc_image` | `full_stack` | yes | — | from `GET /setup/images?component=vtc` |
+| `vtc_name` | `full_stack` | no | `personal-vtc` | **unique across all sessions** (409 if taken); drives the VTC subdomain, its `did:webvh` path, and the VTA context id |
 
-> There is **no `domain`, `did_hosting_url`, `*_port`, or `log_level` form field** in the
-> implemented `vta_only` flow: the domain comes from `CLUSTER_DOMAIN`, the DID-hosting URL is
+> There is **no `domain`, `did_hosting_url`, `*_port`, or `log_level` form field** in
+> either mode: the domain comes from `CLUSTER_DOMAIN`, the `vta_only` DID-hosting URL is
 > derived (below), and ports / log-level are fixed in the rendered TOML (`log_level` is
-> hardcoded to `"info"` in both modes). Full Stack has its own required `mediator_image` /
-> `dids_image` request fields — implemented, see
-> [`full-stack-setup-design.md`](full-stack-setup-design.md) §11/§12.
+> hardcoded to `"info"` in both modes). See
+> [`full-stack-setup-design.md`](full-stack-setup-design.md) §11/§12 for the Full Stack
+> request fields.
 
 **Backend-derived values** (not form inputs):
 
 | Value | How it's derived | `vta_only` example |
 | --- | --- | --- |
-| VTA subdomain | random `fpp-xxxx` via `GenerateSubdomain` (`fpp-local-xxxx` in dev) | `fpp-a1b2c3d4` |
-| VTA public URL | `https://{subdomain}.{CLUSTER_DOMAIN}` | `https://fpp-a1b2c3d4.example.com` |
+| VTA subdomain | `vta-{vta_name}` via `setup.VtaHost` (`vta-local-{vta_name}` in dev) | `vta-personal-vta` |
+| VTA public URL | `https://{subdomain}.{CLUSTER_DOMAIN}` | `https://vta-personal-vta.example.com` |
 | DID hosting URL | `{DID_HOSTING_SERVER_URL}/{user_unique_id}/{vta_name}` | `https://dids.example.com/ab12cd34/personal-vta` |
 | Mediator DID | the shared `MEDIATOR_DID` env value | `did:webvh:…:mediator` |
 
-(Full Stack instead derives three named hosts and grows its own mediator + dids — see
-[`full-stack-setup-design.md`](full-stack-setup-design.md).)
+(Full Stack instead derives four named hosts and grows its own mediator, dids daemon, and
+VTC — see [`full-stack-setup-design.md` §3](full-stack-setup-design.md#3-urls--dns).)
 
 ---
 
@@ -157,18 +170,19 @@ The backend calls the Cloudflare API to create DNS records **before** running an
 
 ### DNS Records Created
 
-For **VTA Only** mode (one record — the generated subdomain):
+For **VTA Only** mode (one record — the derived subdomain):
 
 ```text
-A   {fpp-xxxx}.{CLUSTER_DOMAIN}  →  {CLUSTER_INGRESS_IP}   proxied=true
+A   vta-{vta_name}.{CLUSTER_DOMAIN}  →  {CLUSTER_INGRESS_IP}   proxied=true
 ```
 
-For **Full Stack** mode:
+For **Full Stack** mode (four records):
 
 ```text
-A   fpp-xxxx.{domain}       →  {CLUSTER_INGRESS_IP}   proxied=true
-A   mediator-xxxx.{domain}  →  {CLUSTER_INGRESS_IP}   proxied=true
-A   dids-xxxx.{domain}      →  {CLUSTER_INGRESS_IP}   proxied=true
+A   vta-{vta_name}.{domain}       →  {CLUSTER_INGRESS_IP}   proxied=true
+A   mediator-{vta_name}.{domain}  →  {CLUSTER_INGRESS_IP}   proxied=true
+A   dids-{vta_name}.{domain}      →  {CLUSTER_INGRESS_IP}   proxied=true
+A   vtc-{vtc_name}.{domain}       →  {CLUSTER_INGRESS_IP}   proxied=true
 ```
 
 ### Cloudflare Client — `internal/cloudflare/client.go`
@@ -253,12 +267,13 @@ The API server's ClusterRole must include:
 - apiGroups: ["batch"]
   resources: ["jobs"]
   verbs: ["get", "list", "create", "delete", "watch"]
-# full_stack: per-session Secret holding the mediator's minted VAULT_TOKEN. The
-# VTA seed and the mediator's own secrets live in Vault, not here.
-- apiGroups: [""]
-  resources: ["secrets"]
-  verbs: ["get", "create", "delete"]
 ```
+
+No `secrets` verb is needed in either mode. An earlier `full_stack` design created a
+per-session K8s Secret holding the mediator's minted `VAULT_TOKEN`; every component now
+authenticates to Vault with kubernetes auth (its own pod's ServiceAccount JWT), so there
+is no such Secret and the grant was removed. The authoritative rule set is in
+`CLAUDE.md` § Kubernetes Design.
 
 ---
 
@@ -371,79 +386,15 @@ pre_rotation_count = {{ .PreRotationCount }}
 > `kind = "create_mediator"` and points `[vta_did].url` at the in-cluster dids host — see
 > [`full-stack-setup-design.md`](full-stack-setup-design.md).
 
-### mediator-recipe.toml (full_stack only)
+### Full Stack recipes — see the Full Stack design
 
-```toml
-[deployment]
-type      = "server"
-protocols = ["didcomm"]
-use_vta   = true
-vta_mode  = "sealed-export"
-
-[vta]
-context = "mediator"
-
-[secrets]
-storage = "file:///data/conf/secrets.json"
-
-[security]
-ssl          = "none"
-admin        = "generate"
-jwt_mode     = "generate"
-network_mode = "open"
-
-[database]
-url = "redis://127.0.0.1/"
-
-[storage]
-backend  = "fjall"
-data_dir = "/data/mediator"
-
-[output]
-config_path    = "/data/conf/mediator.toml"
-listen_address = "0.0.0.0:{{.MediatorPort}}"
-```
-
-### webvh-recipe.toml phase 1 (full_stack only)
-
-```toml
-[deployment]
-service  = "daemon"
-vta_mode = "offline-prepare"
-
-[output]
-config_path = "/data/config.toml"
-
-[server]
-host       = "0.0.0.0"
-port       = {{.DIDsPort}}
-log_level  = "{{.LogLevel}}"
-log_format = "text"
-data_dir   = "/data/daemon"
-
-[identity]
-public_url   = "https://dids.{{.Domain}}"
-mediator_did = "{{.MediatorDID}}"
-
-[vta]
-request_path = "/data/bootstrap-request.json"
-
-[daemon]
-enable_control  = true
-enable_server   = true
-enable_witness  = true
-enable_watcher  = false
-
-[secrets]
-backend           = "plaintext"
-confirm_plaintext = true
-
-[admin]
-mode = "generate"
-
-[reprovision]
-force = false
-```
+`mediator-recipe.toml`, `webvh-recipe.toml` (phases 1 and 3), and `vtc-setup.toml` are
+**not** reproduced here. Earlier copies of the first two went stale in exactly the way
+this document's Mode B note warns about (they still showed plaintext `[secrets]` backends
+and absolute `/data/...` paths, both since replaced by Vault kubernetes auth and
+`workingDir`-relative paths). The authoritative renderings live in
+[`full-stack-setup-design.md` §7](full-stack-setup-design.md#7-recipe-templates), next to
+the state machine and Job specs that consume them.
 
 ---
 
@@ -459,7 +410,12 @@ force = false
 | full_stack | `step_dids_provision` | SHA-256 digest (3a) | `SHA-256 digest:\s+(\S+)` |
 | full_stack | `step_dids_p2` | Admin DID (3b) | `Generated admin did:key:\s+(did:\S+)` |
 | full_stack | `step_dids_p2` | Daemon DID (3d) | `server_did` from `config.toml` |
+| full_stack | `step_vtc_setup_key` | ephemeral setup DID (5a) | `Setup DID \(ephemeral\):\s+(did:\S+)` |
+| full_stack | `step_vtc_setup` | VTC DID + install credentials (5b–5e) | `key=value` completion block — one parser pass |
 | both | `step_import_admin_did` | PNM Admin DID (4a) | n/a — **user input** (local `pnm setup`), not parsed |
+
+The full list (including the reveal-once admin private keys and the reissue parsers) is in
+[`full-stack-setup-design.md` §8](full-stack-setup-design.md#8-output-parsing-regex).
 
 In `vta_only` the **Mediator DID is not parsed** — it's the shared `MEDIATOR_DID` env value
 written straight into the config. Only the VTA DID (1a) and its DID log come from the Job
@@ -482,7 +438,7 @@ type SetupSession struct {
 
     // Inputs
     Domain           string // = CLUSTER_DOMAIN
-    Subdomain        string // generated "fpp-xxxx"
+    Subdomain        string // derived "vta-{vta_name}"
     VtaName          string
     VtaImage         string
     Portable         bool   // default true
@@ -501,9 +457,10 @@ type SetupSession struct {
 }
 ```
 
-> Full Stack's additive columns (mediator/dids subdomains/records, `mediator_admin_did`,
-> `did_hosting_admin_did`, per-component images, etc.) are implemented — see
-> [`full-stack-setup-design.md` §10](full-stack-setup-design.md).
+> Full Stack's additive columns (mediator/dids/vtc subdomains + Cloudflare records,
+> `mediator_admin_did`, `did_hosting_admin_did`, `vtc_name`, `vtc_did`, the reveal-once
+> install credentials, per-component images, etc.) are implemented — see
+> [`full-stack-setup-design.md` §10](full-stack-setup-design.md#10-data-model-changes).
 
 ---
 
@@ -529,7 +486,7 @@ type SetupSession struct {
   "id": "ab12cd34",
   "status": "running",
   "mode": "vta_only",
-  "url": "https://fpp-a1b2c3d4.example.com",
+  "url": "https://vta-personal-vta.example.com",
   "vta_image": "ghcr.io/ic3software/vta:0.9.0",
   "vta_did": "did:webvh:...:dids.example.com:ab12cd34:personal-vta",
   "created_at": "2026-06-03T10:00:00Z",
@@ -552,10 +509,16 @@ type SetupSession struct {
 
 `POST /api/v1/setup` then validates the body:
 
-1. `mode`: required, `vta_only` | `full_stack`
-2. `vta_image`: required
+1. `mode`: required, `vta_only` | `full_stack` (`full_stack` additionally requires the
+   caller's `beta_access`)
+2. `vta_image`: required; `full_stack` also requires `mediator_image`, `dids_image`, and
+   `vtc_image`
 3. `vta_name`: must be unique for this user (`409` on conflict; defaults to `personal-vta`)
-4. cluster config: `CLUSTER_INGRESS_IP` **and** `CLUSTER_DOMAIN` must be set (`422` if not)
+4. `vtc_name` (`full_stack`): must be unique across **all** sessions (`409` on conflict;
+   defaults to `personal-vtc`)
+5. names must be DNS-safe per `setup.ValidateName` — lowercase letters/digits joined by
+   single hyphens, ≤48 chars
+6. cluster config: `CLUSTER_INGRESS_IP` **and** `CLUSTER_DOMAIN` must be set (`422` if not)
 
 ---
 

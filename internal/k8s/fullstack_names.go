@@ -8,7 +8,7 @@ import "fmt"
 
 // FSVtaName, FSMediatorName, FSDidsName, FSVtcName are the PVC/Deployment/
 // Service/Ingress names for each component (FSVtcName is
-// full_stack_with_vtc-only).
+// full_stack-only).
 func FSVtaName(sessionID uint) string      { return fmt.Sprintf("fs-%d-vta", sessionID) }
 func FSMediatorName(sessionID uint) string { return fmt.Sprintf("fs-%d-mediator", sessionID) }
 func FSDidsName(sessionID uint) string     { return fmt.Sprintf("fs-%d-dids", sessionID) }
@@ -33,7 +33,7 @@ func FSJobImportAdminDid(sessionID uint) string {
 	return fmt.Sprintf("fs-%d-import-admin-did", sessionID)
 }
 
-// full_stack_with_vtc-only Jobs (design §8). FSJobVtcInvite is the reissue
+// full_stack-only Jobs (design §8). FSJobVtcInvite is the reissue
 // endpoint's `vtc admin invite` Job (POST /setup/:id/vtc/reissue-install),
 // not a pipeline step — mirrors how FSJobDidsInvite doubles for reissue.
 func FSJobVtcSetupKey(sessionID uint) string { return fmt.Sprintf("fs-%d-vtc-setup-key", sessionID) }

@@ -90,7 +90,7 @@ func DidsPrefix(userID, sessionID uint) string {
 	return fmt.Sprintf("dids/user-%d/session-%d", userID, sessionID)
 }
 
-// VtcPrefix is the KV v2 path (under the mount) where a full_stack_with_vtc
+// VtcPrefix is the KV v2 path (under the mount) where a full_stack
 // session's VTC key bundle lives. EnsureUserAccess globs over
 // secret/{data,metadata}/vtc/user-<id>/*, mirroring MediatorPrefix/DidsPrefix.
 func VtcPrefix(userID, sessionID uint) string {
@@ -102,7 +102,7 @@ func VtcPrefix(userID, sessionID uint) string {
 // this, a VTA pod running as that SA can read/write only its own seed paths.
 //
 // The policy also grants the user's mediator, dids, and vtc KV prefixes
-// (full_stack / full_stack_with_vtc modes) — those components all
+// (full_stack mode) — those components all
 // authenticate to Vault the same way the VTA does (kubernetes auth, same SA,
 // same role), so one shared policy covers all four. Each needs
 // create/update/read/delete on data plus read/delete (and list, where the
@@ -188,7 +188,7 @@ func (c *Client) DeleteDidsSecrets(ctx context.Context, userID, sessionID uint) 
 		fmt.Sprintf("/v1/%s/metadata/%s", c.cfg.KVMount, DidsPrefix(userID, sessionID)), token, nil, nil)
 }
 
-// DeleteVtcSecrets destroys all versions of a full_stack_with_vtc session's
+// DeleteVtcSecrets destroys all versions of a full_stack session's
 // VTC key bundle (KV v2 metadata delete) — mirrors DeleteMediatorSecrets.
 func (c *Client) DeleteVtcSecrets(ctx context.Context, userID, sessionID uint) error {
 	token, err := c.login(ctx)

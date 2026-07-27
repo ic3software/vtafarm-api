@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// ── §8/§13: regex output parsing for the full_stack_with_vtc Jobs ───────────
+// ── §8/§13: regex output parsing for the full_stack Jobs ───────────
 //
 // Unlike full_stack's other parsed values, `vtc setup --from`'s terse
 // completion block is machine-oriented key=value lines

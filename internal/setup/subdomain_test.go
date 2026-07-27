@@ -51,18 +51,20 @@ func TestHosts(t *testing.T) {
 		t.Errorf("VtaHost(development) = %q, want vta-local-devtest1", got)
 	}
 
-	vta, med, dids := FullStackHosts("production", "devtest1")
-	if vta != "vta-devtest1" || med != "mediator-devtest1" || dids != "dids-devtest1" {
-		t.Errorf("FullStackHosts = %q, %q, %q", vta, med, dids)
+	vta, med, dids, vtc := FullStackHosts("production", "devtest1", "mycommunity")
+	if vta != "vta-devtest1" || med != "mediator-devtest1" || dids != "dids-devtest1" || vtc != "vtc-mycommunity" {
+		t.Errorf("FullStackHosts = %q, %q, %q, %q", vta, med, dids, vtc)
 	}
 
-	vta, med, dids, vtc := FullStackWithVtcHosts("production", "devtest1", "mycommunity")
-	if vta != "vta-devtest1" || med != "mediator-devtest1" || dids != "dids-devtest1" || vtc != "vtc-mycommunity" {
-		t.Errorf("FullStackWithVtcHosts = %q, %q, %q, %q", vta, med, dids, vtc)
+	// The VTC host follows vtc_name, not vta_name, so a session whose two
+	// names differ must not derive the VTC host from the VTA's.
+	_, _, _, vtc = FullStackHosts("development", "devtest1", "mycommunity")
+	if vtc != "vtc-local-mycommunity" {
+		t.Errorf("FullStackHosts(development) vtc = %q, want vtc-local-mycommunity", vtc)
 	}
 
 	// The longest prefix + a max-length name must still fit a DNS label.
-	_, med, _, _ = FullStackWithVtcHosts("development", strings.Repeat("x", maxNameLength), "vtc")
+	_, med, _, _ = FullStackHosts("development", strings.Repeat("x", maxNameLength), "vtc")
 	if len(med) > 63 {
 		t.Errorf("mediator host %q exceeds the 63-char DNS label limit", med)
 	}

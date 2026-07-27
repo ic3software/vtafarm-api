@@ -54,8 +54,9 @@ See `.env.example` for all options. Key ones:
 │   ├── 000001_init.up.sql
 │   └── 000001_init.down.sql
 ├── docs/
-│   ├── automated-setup.md      # VTA stack CLI reference
-│   └── vta-setup-design.md     # API design for VTA setup automation
+│   ├── vta-setup-design.md          # API design for VTA setup automation (Mode A + shared shape)
+│   ├── full-stack-setup-design.md   # Authoritative design for the full_stack mode (all 4 components)
+│   └── vault-transit-upgrade.md     # Vault / transit upgrade + restore runbook
 └── internal/
     ├── apidocs/
     │   ├── openapi.yaml        # OpenAPI 3.1 spec — update whenever routes change
@@ -179,20 +180,38 @@ the account and logs the holder in to register a fresh one.
 | --- | --- | --- | --- |
 | `GET` | `/api/v1/user/me` | user | Get own profile, incl. `beta_access` (read-only) |
 | `POST` | `/api/v1/setup/validate` | user | Check Cloudflare connectivity |
-| `POST` | `/api/v1/setup` | user | Create session + provision DNS (`mode=full_stack_with_vtc` requires `beta_access`; `full_stack` is retired for new sessions — existing ones remain supported) |
+| `POST` | `/api/v1/setup` | user | Create session + provision DNS (`mode=vta_only` or `full_stack`; `full_stack` requires `beta_access`) |
 | `DELETE` | `/api/v1/setup/:id` | user | Cancel session + tear down DNS |
 | `POST` | `/api/v1/setup/:id/upgrade` | user | Self-service image upgrade/downgrade of the user's **own** session (looked up by `unique_id AND user_id` — never another user's) |
 | `GET` | `/api/v1/setup/:id/upgrade` | user | Latest self-service upgrade of that session, for progress polling |
 
+## Setup Modes
+
+There are exactly two: **`vta_only`** and **`full_stack`**.
+
+- `vta_only` — the VTA alone, pointed at a shared external mediator + DID host.
+- `full_stack` — VTA + DIDComm Mediator + WebVH DID Hosting daemon + VTC, all
+  four in the user's namespace, wired to each other. **The VTC is mandatory**;
+  there is no VTC-less variant.
+
+An earlier iteration had a third mode, `full_stack_with_vtc`, with `full_stack`
+meaning "the same thing minus the VTC". That split is gone: the VTC-less
+pipeline is retired and `full_stack` now always means all four components. The
+`full_stack_with_vtc` identifier does not exist anywhere in the API, the DB, or
+the frontend.
+
+Design: `docs/full-stack-setup-design.md` (authoritative for `full_stack`),
+`docs/vta-setup-design.md` (Mode A / shared shape).
+
 ## Beta Access
 
 `users.beta_access` (bool, default `false`) gates access to features still in
-beta — currently the `full_stack` and `full_stack_with_vtc` modes on
-`POST /setup`. It's a plain on/off switch, not a tier: only an admin can flip
-it (`PUT /api/v1/admin/users/:id/beta-access`), never the user themselves.
+beta — currently the `full_stack` mode on `POST /setup`. It's a plain on/off
+switch, not a tier: only an admin can flip it
+(`PUT /api/v1/admin/users/:id/beta-access`), never the user themselves.
 `GET /api/v1/user/me` lets the frontend check the caller's own value fresh
 (not from the JWT, which doesn't carry it) so it can decide whether to offer
-the beta modes at all.
+the beta mode at all.
 
 ## API Docs Rule
 

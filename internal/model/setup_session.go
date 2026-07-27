@@ -2,10 +2,14 @@ package model
 
 import "time"
 
+// The only two setup modes. full_stack always provisions all four components
+// (VTA + mediator + dids daemon + VTC) — the VTC is not optional. An earlier
+// iteration split this into full_stack (three components) and
+// full_stack_with_vtc (four); that split is retired and the
+// full_stack_with_vtc identifier no longer exists anywhere.
 const (
-	ModeVtaOnly          = "vta_only"
-	ModeFullStack        = "full_stack"
-	ModeFullStackWithVtc = "full_stack_with_vtc"
+	ModeVtaOnly   = "vta_only"
+	ModeFullStack = "full_stack"
 )
 
 type SetupSession struct {
@@ -64,19 +68,19 @@ type SetupSession struct {
 	// clicked again. Reissue clears it back to false along with the new URL.
 	DidsEnrollUsed bool `gorm:"column:dids_enroll_used;not null;default:false" json:"dids_enroll_used"`
 
-	// full_stack_with_vtc — the VTC component. Subdomain/CFRecordVtc follow
-	// the same pattern as MediatorSubdomain/CFRecordMediator above. Empty ('')
-	// for other modes, same convention as the mediator/dids columns.
+	// full_stack — the VTC component. Subdomain/CFRecordVtc follow the same
+	// pattern as MediatorSubdomain/CFRecordMediator above. Empty ('') for
+	// vta_only, same convention as the mediator/dids columns.
 	VtcSubdomain string  `gorm:"column:vtc_subdomain;not null;default:''" json:"vtc_subdomain,omitempty"`
 	CFRecordVtc  *string `gorm:"column:cf_record_vtc" json:"-"`
 
 	// VtcName doubles as the VTA context id the VTC's community lives under
-	// (design §8/§9); VtcImage is required for full_stack_with_vtc, like
-	// MediatorImage/DidsImage. '' for modes without a VTC.
+	// (design §6/§7); VtcImage is required for full_stack, like
+	// MediatorImage/DidsImage. '' for vta_only.
 	VtcName  string `gorm:"column:vtc_name;not null" json:"vtc_name,omitempty"`
 	VtcImage string `gorm:"column:vtc_image;not null;default:''" json:"vtc_image,omitempty"`
 
-	// full_stack_with_vtc — collected outputs. VtcSetupKeyDid is the ephemeral
+	// full_stack — collected outputs. VtcSetupKeyDid is the ephemeral
 	// did:key from step_vtc_setup_key, kept for audit/debug only — nothing
 	// reads it back from the DB. VtcAdminDid is the VTC's own pre-claim
 	// install admin from the setup summary, NOT the PNM AdminDid column above.
@@ -117,14 +121,13 @@ func (s *SetupSession) DidsFQDN() string {
 	return s.DidsSubdomain + "." + s.Domain
 }
 
-// VtcFQDN is full_stack_with_vtc-only, same convention as MediatorFQDN/DidsFQDN.
+// VtcFQDN is full_stack-only, same convention as MediatorFQDN/DidsFQDN.
 func (s *SetupSession) VtcFQDN() string {
 	return s.VtcSubdomain + "." + s.Domain
 }
 
-// IsFullStackFamily reports whether the session runs the full_stack component
-// pipeline (full_stack or full_stack_with_vtc) — used wherever handlers and
-// the orchestrator dispatch vta_only vs the full_stack-shaped flows.
-func (s *SetupSession) IsFullStackFamily() bool {
-	return s.Mode == ModeFullStack || s.Mode == ModeFullStackWithVtc
+// IsFullStack reports whether the session runs the four-component pipeline —
+// used wherever handlers and the orchestrator dispatch vta_only vs full_stack.
+func (s *SetupSession) IsFullStack() bool {
+	return s.Mode == ModeFullStack
 }

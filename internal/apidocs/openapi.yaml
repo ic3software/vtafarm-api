@@ -195,11 +195,12 @@ components:
       properties:
         mode:
           type: string
-          enum: [vta_only, full_stack_with_vtc]
+          enum: [vta_only, full_stack]
           default: vta_only
           description: >
-            full_stack (without VTC) is retired for new sessions and rejected
-            with 400 — existing full_stack sessions remain supported.
+            full_stack always provisions all four components (VTA + mediator +
+            dids daemon + VTC) — the VTC is not optional and there is no
+            VTC-less variant.
         vta_name:
           type: string
           example: "myvta"
@@ -207,9 +208,8 @@ components:
           maxLength: 48
           description: |
             User-chosen agent name — becomes the session's subdomains:
-            vta-{vta_name} (vta_only and full_stack family), plus
-            mediator-{vta_name} / dids-{vta_name} for full_stack /
-            full_stack_with_vtc. Must be DNS-safe (only lowercase letters,
+            vta-{vta_name} (both modes), plus mediator-{vta_name} /
+            dids-{vta_name} for full_stack. Must be DNS-safe (only lowercase letters,
             digits, and hyphens; no consecutive hyphens (--); must start and
             end with a letter or digit; max 48 chars) and unique across ALL users'
             sessions — 409 if already taken. Also used in the DID hosting
@@ -233,19 +233,19 @@ components:
         mediator_image:
           type: string
           description: |
-            Required for full_stack / full_stack_with_vtc. Full image URL selected from
+            Required for full_stack. Full image URL selected from
             GET /setup/images?component=mediator. Must be built with the `secrets-vault` feature.
           example: "ghcr.io/ic3software/mediator:0.15.5"
         dids_image:
           type: string
           description: |
-            Required for full_stack / full_stack_with_vtc. Full image URL selected from
+            Required for full_stack. Full image URL selected from
             GET /setup/images?component=dids.
           example: "ghcr.io/ic3software/did-hosting-daemon:0.7.0"
         vtc_image:
           type: string
           description: |
-            Required for full_stack_with_vtc. Full image URL selected from
+            Required for full_stack. Full image URL selected from
             GET /setup/images?component=vtc. Must be built with the `vault-secrets` feature.
           example: "ghcr.io/ic3software/vtc:0.3.0"
         vtc_name:
@@ -254,9 +254,9 @@ components:
           pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
           maxLength: 48
           description: |
-            Required for full_stack_with_vtc. User-chosen VTC name — becomes
+            Required for full_stack. User-chosen VTC name — becomes
             the vtc-{vtc_name} subdomain. Same DNS-safe rules as vta_name and
-            unique across all full_stack_with_vtc sessions — 409 if already
+            unique across all sessions — 409 if already
             taken. Also used as the VTA context id the VTC's community lives
             under.
       required: [mode, vta_name, vta_image]
@@ -275,21 +275,20 @@ components:
             step_vta_setup, step_mediator_p1, step_mediator_reprov, step_mediator_p2, step_dids_p1,
             step_dids_provision, step_dids_p2, step_dids_invite, step_dids_load_did,
             deploy_dids, deploy_mediator, step_vta_register_dids,
-            awaiting_admin_did, step_import_admin_did, deploy_vta, running, failed.
-            full_stack_with_vtc: same as full_stack, with step_vtc_setup_key,
-            step_vtc_acl_grant inserted before deploy_vta and step_vtc_setup,
-            deploy_vtc after it.
+            awaiting_admin_did, step_import_admin_did, step_vtc_setup_key,
+            step_vtc_acl_grant, deploy_vta, step_vtc_setup, deploy_vtc,
+            running, failed.
           example: "running"
         mode:
           type: string
-          enum: [vta_only, full_stack, full_stack_with_vtc]
+          enum: [vta_only, full_stack]
         url:
           type: string
           description: vta_only only.
           example: "https://vta-myvta.example.com"
         urls:
           type: object
-          description: full_stack / full_stack_with_vtc only. `vtc` is present only for full_stack_with_vtc.
+          description: full_stack only.
           properties:
             vta: { type: string, example: "https://vta-myvta.example.com" }
             mediator: { type: string, example: "https://mediator-myvta.example.com" }
@@ -323,8 +322,8 @@ components:
       description: |
         Response shape differs by `mode`. vta_only uses the flat fields below
         (`url`, `vta_image`, `vta_did`). full_stack instead uses `urls`,
-        `collected`, and `action_required` — see the full_stack-only fields.
-        full_stack_with_vtc extends the full_stack shape with `urls.vtc`,
+        `collected`, and `action_required` — see the full_stack-only fields —
+        each covering all four components, including `urls.vtc`,
         `collected.vtc_did`, `action_required.install_url`/`claim_code`, and
         `vtc_install_used`.
       properties:
@@ -337,7 +336,7 @@ components:
           example: "running"
         mode:
           type: string
-          enum: [vta_only, full_stack, full_stack_with_vtc]
+          enum: [vta_only, full_stack]
         url:
           type: string
           description: vta_only only.
@@ -347,13 +346,13 @@ components:
           description: Current VTA image (all modes) — the version shown by the self-service upgrade UI.
         mediator_image:
           type: string
-          description: full_stack / full_stack_with_vtc only. Current mediator image.
+          description: full_stack only. Current mediator image.
         dids_image:
           type: string
-          description: full_stack / full_stack_with_vtc only. Current dids image.
+          description: full_stack only. Current dids image.
         vtc_image:
           type: string
-          description: full_stack_with_vtc only. Current VTC image.
+          description: full_stack only. Current VTC image.
         vta_did:
           type: string
           description: vta_only only. Populated after vta setup completes.
@@ -368,7 +367,7 @@ components:
           format: date-time
         urls:
           type: object
-          description: full_stack / full_stack_with_vtc only. `vtc` is present only for full_stack_with_vtc.
+          description: full_stack only.
           properties:
             vta: { type: string, example: "https://vta-myvta.example.com" }
             mediator: { type: string, example: "https://mediator-myvta.example.com" }
@@ -376,7 +375,7 @@ components:
             vtc: { type: string, example: "https://vtc-myvtc.example.com" }
         collected:
           type: object
-          description: full_stack / full_stack_with_vtc only.
+          description: full_stack only.
           properties:
             vta_did:
               type: string
@@ -391,10 +390,10 @@ components:
               type: string
             vtc_did:
               type: string
-              description: full_stack_with_vtc only. The VTC's own did:webvh, hosted by the session's dids daemon.
+              description: full_stack only. The VTC's own did:webvh, hosted by the session's dids daemon.
         action_required:
           type: object
-          description: full_stack / full_stack_with_vtc only. Present once there's something for the user to act on.
+          description: full_stack only. Present once there's something for the user to act on.
           properties:
             dids_admin_enroll_url:
               type: string
@@ -405,42 +404,42 @@ components:
             install_url:
               type: string
               description: |
-                full_stack_with_vtc only. One-shot VTC admin install URL. The setup-minted
+                full_stack only. One-shot VTC admin install URL. The setup-minted
                 token expires after 15 minutes, so `POST /setup/{id}/vtc/reissue-install`
                 is the expected way to claim once it's stale. Omitted once
                 `vtc_install_used` is true.
             claim_code:
               type: string
               description: |
-                full_stack_with_vtc only. Second-channel claim code — the VTC refuses a
+                full_stack only. Second-channel claim code — the VTC refuses a
                 claim without both this and the install URL. Offered/omitted together
                 with `install_url`.
         dids_enroll_used:
           type: boolean
           description: |
-            full_stack / full_stack_with_vtc only. True once the frontend has called
+            full_stack only. True once the frontend has called
             `POST /setup/{id}/dids/enroll-ack` for the current `dids_admin_enroll_url`.
             While true, `action_required.dids_admin_enroll_url` is omitted — the URL is
             single-use, so call `POST /setup/{id}/dids/reissue-enroll` for a fresh one.
         vtc_install_used:
           type: boolean
           description: |
-            full_stack_with_vtc only. True once the frontend has called
+            full_stack only. True once the frontend has called
             `POST /setup/{id}/vtc/install-ack` for the current install URL. While true,
             `action_required.install_url`/`claim_code` are omitted — call
             `POST /setup/{id}/vtc/reissue-install` for a fresh pair.
         mediator_admin_key:
           type: string
-          description: full_stack / full_stack_with_vtc only. 2c — shown once for offline backup.
+          description: full_stack only. 2c — shown once for offline backup.
         webvh_admin_key:
           type: string
-          description: full_stack / full_stack_with_vtc only. 3c — shown once for offline backup.
+          description: full_stack only. 3c — shown once for offline backup.
 
     CreateSetupResponse:
       type: object
       description: |
         `url`/`vta_image` are populated for `mode=vta_only`; `urls` is
-        populated for `mode=full_stack` / `mode=full_stack_with_vtc` instead.
+        populated for `mode=full_stack` instead.
       properties:
         id:
           type: string
@@ -458,7 +457,7 @@ components:
           example: "ghcr.io/ic3software/vta:0.9.0"
         urls:
           type: object
-          description: full_stack / full_stack_with_vtc only. `vtc` is present only for full_stack_with_vtc.
+          description: full_stack only.
           properties:
             vta: { type: string, example: "https://vta-myvta.example.com" }
             mediator: { type: string, example: "https://mediator-myvta.example.com" }
@@ -1186,7 +1185,7 @@ paths:
                   storage_available: { type: boolean }
                   estimates:
                     type: object
-                    description: Keyed by mode; full_stack refers to full_stack_with_vtc (plain full_stack is retired).
+                    description: Keyed by mode (vta_only, full_stack).
                     additionalProperties:
                       type: object
                       properties:
@@ -1239,7 +1238,7 @@ paths:
           description: Only return sessions with this setup mode. Omit for all modes.
           schema:
             type: string
-            enum: [vta_only, full_stack, full_stack_with_vtc]
+            enum: [vta_only, full_stack]
       responses:
         "200":
           description: One page of sessions plus pagination info
@@ -1268,10 +1267,10 @@ paths:
                           example: "myvta"
                         vtc_name:
                           type: string
-                          description: full_stack_with_vtc only — absent otherwise.
+                          description: full_stack only — absent otherwise.
                         mode:
                           type: string
-                          enum: [vta_only, full_stack, full_stack_with_vtc]
+                          enum: [vta_only, full_stack]
                         status:
                           type: string
                           example: "running"
@@ -1292,7 +1291,7 @@ paths:
                           description: full_stack family only — absent otherwise.
                         vtc_image:
                           type: string
-                          description: full_stack_with_vtc only — absent otherwise.
+                          description: full_stack only — absent otherwise.
                         created_at:
                           type: string
                           format: date-time
@@ -1314,7 +1313,7 @@ paths:
                         type: integer
                       full_stack:
                         type: integer
-                      full_stack_with_vtc:
+                      full_stack:
                         type: integer
         "400":
           description: Invalid page parameter
@@ -2494,9 +2493,9 @@ paths:
       summary: Validate setup prerequisites
       description: |
         Verifies Cloudflare connectivity and that CLUSTER_INGRESS_IP is configured.
-        Applies to all modes — full_stack additionally needs all three hostnames
-        (vta/mediator/dids) to be creatable, and full_stack_with_vtc a fourth (vtc),
-        which the same Cloudflare zone check covers.
+        Applies to both modes — full_stack additionally needs all four hostnames
+        (vta/mediator/dids/vtc) to be creatable, which the same Cloudflare zone
+        check covers.
       tags: [User]
       security:
         - CookieAuthUser: []
@@ -2538,9 +2537,8 @@ paths:
       description: |
         Returns available container image tags fetched from GHCR, for the component
         selected by `?component=`. Use this to populate the image version dropdown
-        before creating a session — `vta_image` (all modes), `mediator_image`/`dids_image`
-        (full_stack / full_stack_with_vtc), and `vtc_image` (full_stack_with_vtc)
-        on `POST /setup`.
+        before creating a session — `vta_image` (both modes), and
+        `mediator_image`/`dids_image`/`vtc_image` (full_stack) on `POST /setup`.
       tags: [User]
       security:
         - CookieAuthUser: []
@@ -2614,8 +2612,8 @@ paths:
         creation. The authoritative gate is `POST /setup`, which returns 503 when
         the selected mode no longer fits.
 
-        The `full_stack_with_vtc` figure is the full_stack_with_vtc mode
-        (the retired plain full_stack shares the same per-component cost).
+        The `full_stack` figure covers all four components (VTA + mediator +
+        dids daemon + VTC), since every full_stack session provisions them all.
       tags: [User]
       security:
         - CookieAuthUser: []
@@ -2629,7 +2627,7 @@ paths:
                 properties:
                   vta_only:
                     $ref: "#/components/schemas/ModeAvailability"
-                  full_stack_with_vtc:
+                  full_stack:
                     $ref: "#/components/schemas/ModeAvailability"
                   metrics_available:
                     type: boolean
@@ -2642,7 +2640,7 @@ paths:
                     description: False when the cluster couldn't be read at all; the mode figures are then a fail-open default (all available).
                 example:
                   vta_only: { count: 12, available: true }
-                  full_stack_with_vtc: { count: 2, available: true }
+                  full_stack: { count: 2, available: true }
                   metrics_available: true
                   storage_available: true
                   determinable: true
@@ -2663,18 +2661,15 @@ paths:
         vta_only: creates a Cloudflare DNS A record for vta-{vta_name} under
         CLUSTER_DOMAIN, stores the session, and begins async VTA setup.
 
-        full_stack: derives three hostnames (vta-{vta_name} /
-        mediator-{vta_name} / dids-{vta_name} under CLUSTER_DOMAIN), creates
-        all three Cloudflare DNS A records up front, stores the session, and
-        begins the async VTA + Mediator + DID-hosting daemon state machine.
+        full_stack: derives four hostnames (vta-{vta_name} /
+        mediator-{vta_name} / dids-{vta_name} under CLUSTER_DOMAIN, plus
+        vtc-{vtc_name} from the VTC's own name), creates all four Cloudflare
+        DNS A records up front, stores the session, and begins the async
+        VTA + Mediator + DID-hosting daemon + VTC state machine. The VTC is
+        always provisioned, so `vtc_image` and `vtc_name` are required;
+        `vtc_name` doubles as the VTA context id.
 
-        full_stack_with_vtc: everything full_stack does plus a fourth hostname
-        (vtc-{vtc_name} — the VTC's own name), a fourth DNS record, and a
-        Verifiable Trust Community service wired to the same session's
-        VTA/mediator/dids once they're up. Requires `vtc_image` and
-        `vtc_name`; `vtc_name` doubles as the VTA context id.
-
-        **`mode=full_stack` and `mode=full_stack_with_vtc` require the caller's
+        **`mode=full_stack` requires the caller's
         `beta_access` to be `true`** (see `GET /user/me`); an admin grants this via
         `PUT /admin/users/{id}/beta-access`.
       tags: [User]
@@ -2706,7 +2701,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "403":
-          description: mode=full_stack / full_stack_with_vtc requested but the caller doesn't have beta_access
+          description: mode=full_stack requested but the caller doesn't have beta_access
           content:
             application/json:
               schema:
@@ -2798,10 +2793,9 @@ paths:
       description: |
         Cancels the session goroutine and tears down its resources.
         vta_only: the Cloudflare DNS record, K8s resources, and the session's Vault seed.
-        full_stack: all three Cloudflare DNS records, all three components' K8s resources,
-        the mediator's/dids daemon's Vault secrets, and the VTA's Vault seed.
-        full_stack_with_vtc: the same plus the fourth DNS record, the VTC's K8s
-        resources, and its Vault key bundle.
+        full_stack: all four Cloudflare DNS records, all four components' K8s
+        resources, the mediator's/dids daemon's/VTC's Vault secrets, and the
+        VTA's Vault seed.
       tags: [User]
       security:
         - CookieAuthUser: []
@@ -2989,9 +2983,8 @@ paths:
         pod). Without `?source`, the source is derived from the session's current step
         status.
 
-        **full_stack_with_vtc**: everything full_stack accepts plus
-        `vtc_setup_key | vtc_acl_grant | vtc_setup` (one-off Job logs) and `vtc`
-        (the running VTC pod).
+        full_stack also accepts `vtc_setup_key | vtc_acl_grant | vtc_setup`
+        (one-off Job logs) and `vtc` (the running VTC pod).
 
         Each event is a plain log line: `data: <line>\n\n`.
         A final `event: done` signals the end of the stream.
@@ -3138,7 +3131,7 @@ paths:
     post:
       summary: Reissue dids admin enrollment URL
       description: |
-        full_stack / full_stack_with_vtc only. Regenerates the single-use dids admin-panel enrollment URL
+        full_stack only. Regenerates the single-use dids admin-panel enrollment URL
         (re-runs `did-hosting-daemon invite --role admin`) — useful if the original URL
         (returned once from `step_dids_invite` / `GET /setup/{id}`) was lost or already
         consumed. Scales the dids Deployment to 0 and waits for its pod to terminate
@@ -3207,7 +3200,7 @@ paths:
     post:
       summary: Acknowledge dids admin enrollment URL as used
       description: |
-        full_stack / full_stack_with_vtc only. Called by the frontend the moment the user opens
+        full_stack only. Called by the frontend the moment the user opens
         `action_required.dids_admin_enroll_url` — marks `dids_enroll_used` true so
         `GET /setup/{id}` stops offering that (single-use) URL. Call
         `POST /setup/{id}/dids/reissue-enroll` to mint a fresh one afterwards.
@@ -3261,7 +3254,7 @@ paths:
     post:
       summary: Reissue VTC admin install URL + claim code
       description: |
-        full_stack_with_vtc only. Remints the one-shot VTC admin install URL **and**
+        full_stack only. Remints the one-shot VTC admin install URL **and**
         claim code by re-running `vtc admin invite` against the stopped VTC's local
         store. The setup-minted install token expires after 15 minutes, so this is the
         *expected* way users actually claim the VTC admin, not an edge case.
@@ -3295,7 +3288,7 @@ paths:
                     type: string
                     example: "ABCD-1234"
         "400":
-          description: Session is not a full_stack_with_vtc session
+          description: Session is not a full_stack session
           content:
             application/json:
               schema:
@@ -3335,7 +3328,7 @@ paths:
     post:
       summary: Acknowledge VTC install URL as used
       description: |
-        full_stack_with_vtc only. Called by the frontend the moment the user opens
+        full_stack only. Called by the frontend the moment the user opens
         `action_required.install_url` — marks `vtc_install_used` true so
         `GET /setup/{id}` stops offering that (one-shot) URL and its claim code. Call
         `POST /setup/{id}/vtc/reissue-install` to mint a fresh pair afterwards.
@@ -3361,7 +3354,7 @@ paths:
                     type: boolean
                     example: true
         "400":
-          description: Session is not a full_stack_with_vtc session
+          description: Session is not a full_stack session
           content:
             application/json:
               schema:

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -16,153 +15,10 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/setup"
 )
 
-// This file holds the full_stack_with_vtc-specific handlers (design
-// docs/full-stack-with-vtc-setup-design.md §13). The shared full_stack
-// handlers (get/delete/logs, dids enroll-ack/reissue) live in
-// setup_fullstack.go and branch on mode inline for the small VTC extensions.
-
-// createFullStackWithVtc handles POST /api/v1/setup for
-// mode=full_stack_with_vtc — createFullStack's shape with a fourth
-// Cloudflare A-record (vtc) and the vtc_image/vtc_name inputs.
-func (h *SetupHandler) createFullStackWithVtc(c *gin.Context, req createSetupRequest) {
-	if h.k8s == nil || h.orch == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "k8s/orchestrator not configured"})
-		return
-	}
-
-	// vta_name has already been validated by Create; vtc_name is this mode's
-	// own input and becomes the vtc-<name> subdomain, so it gets the same
-	// treatment — required, DNS-safe, and unique across all sessions that
-	// actually run a VTC (other modes' rows carry the column's historical
-	// default and never provision one).
-	if req.VtcName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "vtc_name is required"})
-		return
-	}
-	if err := setup.ValidateName(req.VtcName); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid vtc_name: " + err.Error()})
-		return
-	}
-	var vtcNameTaken int64
-	h.db.Model(&model.SetupSession{}).Where("mode = ? AND vtc_name = ?", model.ModeFullStackWithVtc, req.VtcName).Count(&vtcNameTaken)
-	if vtcNameTaken > 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "vtc_name already in use"})
-		return
-	}
-
-	portable := true
-	if req.Portable != nil {
-		portable = *req.Portable
-	}
-	preRotationCount := 1
-	if req.PreRotationCount != nil {
-		preRotationCount = *req.PreRotationCount
-	}
-
-	if req.MediatorImage == "" || req.DidsImage == "" || req.VtcImage == "" {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": "full_stack_with_vtc requires mediator_image, dids_image and vtc_image (select from GET /setup/images?component=mediator|dids|vtc)",
-		})
-		return
-	}
-
-	userID := c.MustGet(middleware.ContextUserID).(uint)
-
-	vtaSub, mediatorSub, didsSub, vtcSub := setup.FullStackWithVtcHosts(h.appEnv, req.VtaName, req.VtcName)
-	vtaFQDN := vtaSub + "." + h.clusterDomain
-	mediatorFQDN := mediatorSub + "." + h.clusterDomain
-	didsFQDN := didsSub + "." + h.clusterDomain
-	vtcFQDN := vtcSub + "." + h.clusterDomain
-
-	// All four records are created up front (design §3) — the rendered
-	// recipes embed the final HTTPS URLs. Roll back everything created so
-	// far on the first failure.
-	var created []string
-	rollback := func() {
-		for _, rec := range created {
-			_ = h.cf.DeleteRecord(c.Request.Context(), rec)
-		}
-	}
-	records := make(map[string]string, 4)
-	for _, host := range []struct{ label, fqdn string }{
-		{"vta", vtaFQDN}, {"mediator", mediatorFQDN}, {"dids", didsFQDN}, {"vtc", vtcFQDN},
-	} {
-		rec, err := h.cf.CreateARecord(c.Request.Context(), host.fqdn, h.ingressIP)
-		if err != nil {
-			rollback()
-			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create DNS record (" + host.label + "): " + err.Error()})
-			return
-		}
-		created = append(created, rec)
-		records[host.label] = rec
-	}
-
-	recordMediator, recordDids, recordVtc := records["mediator"], records["dids"], records["vtc"]
-	session := model.SetupSession{
-		UserID: userID,
-		Mode:   model.ModeFullStackWithVtc,
-		Status: "dns_provision",
-		Domain: h.clusterDomain,
-		// VTA reuses Subdomain/CFRecordID — same fields vta_only uses.
-		Subdomain:         vtaSub,
-		CFRecordID:        records["vta"],
-		MediatorSubdomain: mediatorSub,
-		DidsSubdomain:     didsSub,
-		VtcSubdomain:      vtcSub,
-		CFRecordMediator:  &recordMediator,
-		CFRecordDids:      &recordDids,
-		CFRecordVtc:       &recordVtc,
-		VtaName:           req.VtaName,
-		VtcName:           req.VtcName,
-		VtaImage:          req.VtaImage,
-		MediatorImage:     req.MediatorImage,
-		DidsImage:         req.DidsImage,
-		VtcImage:          req.VtcImage,
-		AdminDid:          req.AdminDid,
-		Portable:          portable,
-		PreRotationCount:  preRotationCount,
-	}
-	const maxAttempts = 5
-	var createErr error
-	for range maxAttempts {
-		session.UniqueId = generateUniqueId()
-		createErr = h.db.Create(&session).Error
-		if createErr == nil {
-			break
-		}
-		if !strings.Contains(createErr.Error(), "setup_sessions_unique_id_unique") {
-			break
-		}
-	}
-	if createErr != nil {
-		rollback()
-		// The pre-insert count checks race with concurrent creates; the DB
-		// unique indexes are the real gate.
-		if strings.Contains(createErr.Error(), "setup_sessions_vta_name_unique") {
-			c.JSON(http.StatusConflict, gin.H{"error": "vta_name already in use"})
-			return
-		}
-		if strings.Contains(createErr.Error(), "setup_sessions_vtc_name_unique") {
-			c.JSON(http.StatusConflict, gin.H{"error": "vtc_name already in use"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist session"})
-		return
-	}
-
-	h.orch.Start(session.ID)
-
-	c.JSON(http.StatusCreated, gin.H{
-		"id":     session.UniqueId,
-		"status": session.Status,
-		"urls": gin.H{
-			"vta":      "https://" + vtaFQDN,
-			"mediator": "https://" + mediatorFQDN,
-			"dids":     "https://" + didsFQDN,
-			"vtc":      "https://" + vtcFQDN,
-		},
-	})
-}
+// This file holds full_stack's VTC-specific handlers (design
+// docs/full-stack-setup-design.md §12). The rest of the full_stack handlers
+// (create, get/delete/logs, dids enroll-ack/reissue) live in
+// setup_fullstack.go.
 
 // ReissueVtcInstall handles POST /api/v1/setup/:id/vtc/reissue-install
 // (design §13, required — the setup-minted install token lives only 15
@@ -181,8 +37,8 @@ func (h *SetupHandler) ReissueVtcInstall(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
-	if session.Mode != model.ModeFullStackWithVtc {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "reissue-install is only available for full_stack_with_vtc sessions"})
+	if !session.IsFullStack() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "reissue-install is only available for full_stack sessions"})
 		return
 	}
 	if session.VtcAdminDid == "" {
@@ -280,8 +136,8 @@ func (h *SetupHandler) AckVtcInstall(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
-	if session.Mode != model.ModeFullStackWithVtc {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "install-ack is only available for full_stack_with_vtc sessions"})
+	if !session.IsFullStack() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "install-ack is only available for full_stack sessions"})
 		return
 	}
 	if session.VtcInstallURL == "" {

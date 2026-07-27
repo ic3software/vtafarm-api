@@ -267,9 +267,9 @@ func (o *Orchestrator) runFullStack(ctx context.Context, sessionID uint) {
 	log.Printf("[orchestrator] fs session %d: awaiting admin DID", sessionID)
 }
 
-// fsK8sProvision creates the three PVCs + Services + Ingresses up front
-// (design §2: "created up front; 503 until pods come up") — four for
-// full_stack_with_vtc, whose extra component follows the exact same pattern.
+// fsK8sProvision creates the four PVCs + Services + Ingresses up front
+// (design §2: "created up front; 503 until pods come up"). Every component
+// follows the exact same pattern.
 func (o *Orchestrator) fsK8sProvision(ctx context.Context, ns string, s *model.SetupSession) error {
 	type pvcSpec struct {
 		name, storageSize string
@@ -278,9 +278,7 @@ func (o *Orchestrator) fsK8sProvision(ctx context.Context, ns string, s *model.S
 		{k8s.FSVtaName(s.ID), k8s.VtaPVCStorageSize},
 		{k8s.FSMediatorName(s.ID), k8s.MediatorPVCStorageSize},
 		{k8s.FSDidsName(s.ID), k8s.DIDHostingPVCStorageSize},
-	}
-	if s.Mode == model.ModeFullStackWithVtc {
-		pvcs = append(pvcs, pvcSpec{k8s.FSVtcName(s.ID), k8s.VtcPVCStorageSize})
+		{k8s.FSVtcName(s.ID), k8s.VtcPVCStorageSize},
 	}
 	for _, pvc := range pvcs {
 		if err := o.k8s.CreateComponentPVC(ctx, ns, pvc.name, pvc.storageSize); err != nil {
@@ -297,9 +295,7 @@ func (o *Orchestrator) fsK8sProvision(ctx context.Context, ns string, s *model.S
 		{k8s.FSVtaName(s.ID), s.FQDN(), 8100, fsLabels("vta", s.ID)},
 		{k8s.FSMediatorName(s.ID), s.MediatorFQDN(), 7037, fsLabels("mediator", s.ID)},
 		{k8s.FSDidsName(s.ID), s.DidsFQDN(), 8534, fsLabels("dids", s.ID)},
-	}
-	if s.Mode == model.ModeFullStackWithVtc {
-		svcs = append(svcs, svc{k8s.FSVtcName(s.ID), s.VtcFQDN(), 8200, fsLabels("vtc", s.ID)})
+		{k8s.FSVtcName(s.ID), s.VtcFQDN(), 8200, fsLabels("vtc", s.ID)},
 	}
 	for _, sv := range svcs {
 		if err := o.k8s.CreateComponentService(ctx, ns, sv.name, sv.labels, sv.port); err != nil {
@@ -787,7 +783,7 @@ func (o *Orchestrator) fsDeployDids(ctx context.Context, ns string, s *model.Set
 // its Vault-backed secrets at every boot (kubernetes auth, same as the VTA).
 // Waits for Ready for the same reason as fsDeployDids — nothing in plain
 // full_stack resolves the mediator over HTTP right after this, but
-// full_stack_with_vtc's step_vtc_setup does (§9 [messaging]), so the
+// full_stack's step_vtc_setup does (§9 [messaging]), so the
 // invariant "deploy_* returns only once the component is actually up" holds
 // for every component, not just the one known to need it today.
 func (o *Orchestrator) fsDeployMediator(ctx context.Context, ns string, s *model.SetupSession) error {
@@ -810,49 +806,6 @@ func (o *Orchestrator) fsDeployMediator(ctx context.Context, ns string, s *model
 }
 
 // ── Phase 2: step_import_admin_did → deploy_vta → running ──────────────────
-
-// runFullStackFinish mirrors runProvision: import the user's PNM admin DID
-// then start the VTA Deployment. Called both from runFullStack's auto-
-// trigger path (admin_did supplied at POST /setup) and from Provision()'s
-// full_stack dispatch (POST /setup/:id/admin). full_stack_with_vtc's finish
-// (orchestrator_fullstack_vtc.go) shares the two step helpers below,
-// wrapping its VTC steps around them.
-func (o *Orchestrator) runFullStackFinish(ctx context.Context, sessionID uint, adminDid string) {
-	var session model.SetupSession
-	if err := o.db.First(&session, sessionID).Error; err != nil {
-		log.Printf("[orchestrator] fs finish %d: load failed: %v", sessionID, err)
-		return
-	}
-	s := &session
-	ns := o.k8s.UserNamespace(fmt.Sprintf("%d", s.UserID))
-
-	fail := func(prefix string, err error) bool {
-		if err == nil {
-			return false
-		}
-		if ctx.Err() != nil {
-			return true
-		}
-		o.markFailed(sessionID, prefix+": "+err.Error())
-		return true
-	}
-
-	o.db.Model(&model.SetupSession{}).Where("id = ?", sessionID).Updates(map[string]any{
-		"status": "step_import_admin_did", "admin_did": adminDid, "updated_at": time.Now(),
-	})
-	log.Printf("[orchestrator] fs session %d: importing admin DID %s", sessionID, adminDid)
-	if fail("import-admin-did failed", o.fsStepImportAdminDid(ctx, ns, s, adminDid)) {
-		return
-	}
-
-	o.fsSetStatus(sessionID, "deploy_vta")
-	if fail("failed to deploy vta", o.fsDeployVta(ctx, ns, s)) {
-		return
-	}
-
-	o.fsSetStatus(sessionID, "running")
-	log.Printf("[orchestrator] fs session %d: running at %s", sessionID, s.PublicURL())
-}
 
 // fsStepImportAdminDid runs the import-admin-did Job — imports the user's
 // PNM admin DID into the VTA's (still-unclaimed) fjall store.
@@ -882,7 +835,7 @@ func (o *Orchestrator) fsStepImportAdminDid(ctx context.Context, ns string, s *m
 }
 
 // fsDeployVta starts the VTA Deployment and waits for it to become Ready —
-// full_stack_with_vtc's step_vtc_setup makes live calls against it right
+// full_stack's step_vtc_setup makes live calls against it right
 // after, so the deploy_* invariant (returns only once the component is
 // actually up) matters here too. HealthCheckPath wires a readinessProbe
 // against GET /health (vta-service's unauthenticated health route) — without
@@ -912,14 +865,12 @@ func (o *Orchestrator) fsDeployVta(ctx context.Context, ns string, s *model.Setu
 
 // ── Resume ───────────────────────────────────────────────────────────────────
 
-// resumeFullStack re-attaches goroutines for full_stack and
-// full_stack_with_vtc sessions interrupted mid-run at startup. Every step is
-// idempotent (AlreadyExists ignored, WaitForJob re-attaches by name; the VTC
-// context grant tolerates its Conflict case), so resuming just restarts the
-// relevant phase from its top — see plan decision #3.
+// resumeFullStack re-attaches goroutines for full_stack sessions interrupted
+// mid-run at startup. Every step is idempotent (AlreadyExists ignored,
+// WaitForJob re-attaches by name; the VTC context grant tolerates its
+// Conflict case), so resuming just restarts the relevant phase from its top —
+// see plan decision #3.
 func (o *Orchestrator) resumeFullStack() {
-	fsModes := []string{model.ModeFullStack, model.ModeFullStackWithVtc}
-
 	preGate := []string{
 		"dns_provision", "env_provision", "k8s_provision", "step_vta_setup",
 		"step_mediator_p1", "step_mediator_reprov", "step_mediator_p2",
@@ -928,7 +879,7 @@ func (o *Orchestrator) resumeFullStack() {
 		"step_vta_register_dids",
 	}
 	var inFlight []model.SetupSession
-	if err := o.db.Where("mode IN ? AND status IN ?", fsModes, preGate).Find(&inFlight).Error; err != nil {
+	if err := o.db.Where("mode = ? AND status IN ?", model.ModeFullStack, preGate).Find(&inFlight).Error; err != nil {
 		log.Printf("[orchestrator] resume full_stack: query failed: %v", err)
 	}
 	for _, s := range inFlight {
@@ -936,14 +887,12 @@ func (o *Orchestrator) resumeFullStack() {
 		o.Start(s.ID)
 	}
 
-	// The vtc statuses only ever occur on full_stack_with_vtc rows, so one
-	// combined query is safe — Provision dispatches by mode either way.
 	postGate := []string{
 		"step_import_admin_did", "deploy_vta",
 		"step_vtc_setup_key", "step_vtc_acl_grant", "step_vtc_setup", "deploy_vtc",
 	}
 	var finishing []model.SetupSession
-	if err := o.db.Where("mode IN ? AND status IN ?", fsModes, postGate).Find(&finishing).Error; err != nil {
+	if err := o.db.Where("mode = ? AND status IN ?", model.ModeFullStack, postGate).Find(&finishing).Error; err != nil {
 		log.Printf("[orchestrator] resume full_stack: query failed: %v", err)
 	}
 	for _, s := range finishing {
@@ -952,7 +901,7 @@ func (o *Orchestrator) resumeFullStack() {
 	}
 
 	var gatedWithAdmin []model.SetupSession
-	if err := o.db.Where("mode IN ? AND status = ? AND admin_did != ''", fsModes, "awaiting_admin_did").Find(&gatedWithAdmin).Error; err != nil {
+	if err := o.db.Where("mode = ? AND status = ? AND admin_did != ''", model.ModeFullStack, "awaiting_admin_did").Find(&gatedWithAdmin).Error; err != nil {
 		log.Printf("[orchestrator] resume full_stack: query failed: %v", err)
 	}
 	for _, s := range gatedWithAdmin {
@@ -986,7 +935,7 @@ func (o *Orchestrator) TeardownDidsVault(ctx context.Context, userID, sessionID 
 	}
 }
 
-// TeardownVtcVault deletes the VTC's KV secrets (full_stack_with_vtc only).
+// TeardownVtcVault deletes the VTC's KV secrets (full_stack only).
 // Best-effort, mirrors TeardownMediatorVault — no token to revoke for the
 // VTC either, it authenticates via kubernetes auth like the other three.
 func (o *Orchestrator) TeardownVtcVault(ctx context.Context, userID, sessionID uint) {
