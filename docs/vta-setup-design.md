@@ -38,7 +38,7 @@ User provides (form):
   portable, pre_rotation_count → optional advanced VTA-DID knobs
 
 Backend derives (not user input):
-  subdomain        → "vta-{vta_name}" ("vta-local-{vta_name}" in dev), under CLUSTER_DOMAIN
+  subdomain        → "vta-{vta_name}" ("dev-vta-{vta_name}" in dev), under CLUSTER_DOMAIN
   vta public URL   → https://{subdomain}.{CLUSTER_DOMAIN}
   did_hosting_url  → {DID_HOSTING_SERVER_URL}/{user_unique_id}/{vta_name}   (external shared host)
   mediator         → the shared external mediator MEDIATOR_DID
@@ -145,7 +145,7 @@ after).
 
 | Value | How it's derived | `vta_only` example |
 | --- | --- | --- |
-| VTA subdomain | `vta-{vta_name}` via `setup.VtaHost` (`vta-local-{vta_name}` in dev) | `vta-personal-vta` |
+| VTA subdomain | `vta-{vta_name}` via `setup.VtaHost` (`dev-vta-{vta_name}` in dev) | `vta-personal-vta` |
 | VTA public URL | `https://{subdomain}.{CLUSTER_DOMAIN}` | `https://vta-personal-vta.example.com` |
 | DID hosting URL | `{DID_HOSTING_SERVER_URL}/{user_unique_id}/{vta_name}` | `https://dids.example.com/ab12cd34/personal-vta` |
 | Mediator DID | the shared `MEDIATOR_DID` env value | `did:webvh:…:mediator` |

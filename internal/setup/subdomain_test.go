@@ -43,12 +43,25 @@ func TestDidPaths(t *testing.T) {
 	}
 }
 
+func TestEnvPrefix(t *testing.T) {
+	if got := EnvPrefix("development"); got != "dev-" {
+		t.Errorf("EnvPrefix(development) = %q, want dev-", got)
+	}
+	// Only the literal "development" marks records as local; anything else —
+	// production, staging, an unset APP_ENV — creates unprefixed records.
+	for _, env := range []string{"production", "staging", ""} {
+		if got := EnvPrefix(env); got != "" {
+			t.Errorf("EnvPrefix(%q) = %q, want empty", env, got)
+		}
+	}
+}
+
 func TestHosts(t *testing.T) {
 	if got := VtaHost("production", "devtest1"); got != "vta-devtest1" {
 		t.Errorf("VtaHost(production) = %q, want vta-devtest1", got)
 	}
-	if got := VtaHost("development", "devtest1"); got != "vta-local-devtest1" {
-		t.Errorf("VtaHost(development) = %q, want vta-local-devtest1", got)
+	if got := VtaHost("development", "devtest1"); got != "dev-vta-devtest1" {
+		t.Errorf("VtaHost(development) = %q, want dev-vta-devtest1", got)
 	}
 
 	vta, med, dids, vtc := FullStackHosts("production", "devtest1", "mycommunity")
@@ -56,16 +69,52 @@ func TestHosts(t *testing.T) {
 		t.Errorf("FullStackHosts = %q, %q, %q, %q", vta, med, dids, vtc)
 	}
 
+	vta, med, dids, vtc = FullStackHosts("development", "devtest1", "mycommunity")
+	if vta != "dev-vta-devtest1" || med != "dev-mediator-devtest1" || dids != "dev-dids-devtest1" {
+		t.Errorf("FullStackHosts(development) = %q, %q, %q", vta, med, dids)
+	}
 	// The VTC host follows vtc_name, not vta_name, so a session whose two
 	// names differ must not derive the VTC host from the VTA's.
-	_, _, _, vtc = FullStackHosts("development", "devtest1", "mycommunity")
-	if vtc != "vtc-local-mycommunity" {
-		t.Errorf("FullStackHosts(development) vtc = %q, want vtc-local-mycommunity", vtc)
+	if vtc != "dev-vtc-mycommunity" {
+		t.Errorf("FullStackHosts(development) vtc = %q, want dev-vtc-mycommunity", vtc)
 	}
 
 	// The longest prefix + a max-length name must still fit a DNS label.
 	_, med, _, _ = FullStackHosts("development", strings.Repeat("x", maxNameLength), "vtc")
 	if len(med) > 63 {
 		t.Errorf("mediator host %q exceeds the 63-char DNS label limit", med)
+	}
+}
+
+// The fixed-label form custom and platform domains use: no user-chosen name in
+// the hostname at all, so the label is just the component (plus the dev
+// marker). One domain therefore backs at most one session.
+func TestFixedLabelHosts(t *testing.T) {
+	for _, tc := range []struct {
+		env, component, want string
+	}{
+		{"production", "vta", "vta"},
+		{"production", "mediator", "mediator"},
+		{"production", "dids", "dids"},
+		{"production", "vtc", "vtc"},
+		{"development", "vta", "dev-vta"},
+		{"development", "mediator", "dev-mediator"},
+		{"development", "dids", "dev-dids"},
+		{"development", "vtc", "dev-vtc"},
+	} {
+		if got := componentHost(tc.env, tc.component, ""); got != tc.want {
+			t.Errorf("componentHost(%q, %q, \"\") = %q, want %q", tc.env, tc.component, got, tc.want)
+		}
+	}
+}
+
+func TestCNAMETarget(t *testing.T) {
+	if got := CNAMETarget("production", "firstperson.dev"); got != "lb.firstperson.dev" {
+		t.Errorf("CNAMETarget(production) = %q, want lb.firstperson.dev", got)
+	}
+	// Development and production must resolve to different targets, so the
+	// same customer domain can be attached in both at once without collision.
+	if got := CNAMETarget("development", "firstperson.dev"); got != "dev-lb.firstperson.dev" {
+		t.Errorf("CNAMETarget(development) = %q, want dev-lb.firstperson.dev", got)
 	}
 }

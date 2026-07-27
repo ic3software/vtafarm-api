@@ -180,6 +180,7 @@ the account and logs the holder in to register a fresh one.
 | --- | --- | --- | --- |
 | `GET` | `/api/v1/user/me` | user | Get own profile, incl. `beta_access` (read-only) |
 | `POST` | `/api/v1/setup/validate` | user | Check Cloudflare connectivity |
+| `GET` | `/api/v1/setup/domain-info` | user | Hostname facts for this environment (`managed_domain`, `env_prefix`, `target_ip`, `target_host`) so the portal never hardcodes the production hostname shape |
 | `POST` | `/api/v1/setup` | user | Create session + provision DNS (`mode=vta_only` or `full_stack`; `full_stack` requires `beta_access`) |
 | `DELETE` | `/api/v1/setup/:id` | user | Cancel session + tear down DNS |
 | `POST` | `/api/v1/setup/:id/upgrade` | user | Self-service image upgrade/downgrade of the user's **own** session (looked up by `unique_id AND user_id` — never another user's) |

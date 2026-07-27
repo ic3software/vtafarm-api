@@ -2651,6 +2651,58 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/setup/domain-info:
+    get:
+      summary: Hostname facts for this environment
+      description: |
+        Everything the create screen needs to describe the hostnames a session
+        will get, so hints aren't hardcoded to the production shape
+        (`vta-{vta_name}.firstperson.dev`), which is wrong in development.
+
+        A locally run API prefixes every DNS label it creates with `env_prefix`
+        (`dev-`), so the same name yields `vta-alice` in production and
+        `dev-vta-alice` in development. Both records live in the same
+        Cloudflare zone; the prefix is what keeps them apart and sorted
+        together.
+
+        `target_ip` and `target_host` describe where a user-owned custom domain
+        must point. Custom domains aren't implemented yet — these are returned
+        now so the hint text has one source once they are.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      responses:
+        "200":
+          description: Hostname facts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  managed_domain:
+                    type: string
+                    description: The zone managed sessions are created under (CLUSTER_DOMAIN).
+                  env_prefix:
+                    type: string
+                    description: Prefixed onto every DNS label this API creates — `dev-` in development, empty in production.
+                  target_ip:
+                    type: string
+                    description: External IP of the cluster ingress (CLUSTER_INGRESS_IP). Empty when the cluster isn't configured.
+                  target_host:
+                    type: string
+                    description: Hostname a custom domain's records point at — always `{env_prefix}lb.{managed_domain}`. That record must be grey-cloud (DNS only) in the zone; a proxied one answers other people's hostnames with Cloudflare error 1014.
+                example:
+                  managed_domain: firstperson.dev
+                  env_prefix: "dev-"
+                  target_ip: 157.180.68.139
+                  target_host: dev-lb.firstperson.dev
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/v1/setup:
     post:
       summary: Create setup session

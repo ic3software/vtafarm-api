@@ -347,6 +347,27 @@ func (h *SetupHandler) Availability(c *gin.Context) {
 	})
 }
 
+// GET /api/v1/setup/domain-info — the environment's hostname facts, so the
+// portal can render accurate hints instead of hardcoding the production shape
+// (`vta-<name>.firstperson.dev`), which is wrong in development and will be
+// wrong again for custom and platform domains.
+//
+//	managed_domain  the zone managed sessions live under (CLUSTER_DOMAIN)
+//	env_prefix      "dev-" locally, "" in production — prefixed onto every label
+//	target_ip       the ingress IP a custom domain must ultimately resolve to
+//	target_host     the hostname a custom domain CNAMEs at
+//
+// The last two describe custom domains, which don't exist yet; they're
+// returned now so the hint text has a single source once they do.
+func (h *SetupHandler) DomainInfo(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"managed_domain": h.clusterDomain,
+		"env_prefix":     setup.EnvPrefix(h.appEnv),
+		"target_ip":      h.ingressIP,
+		"target_host":    setup.CNAMETarget(h.appEnv, h.clusterDomain),
+	})
+}
+
 // GET /api/v1/setup
 func (h *SetupHandler) List(c *gin.Context) {
 	userID := c.MustGet(middleware.ContextUserID).(uint)

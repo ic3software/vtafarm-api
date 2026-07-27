@@ -154,13 +154,15 @@ dids-{vta_name}.{domain}
 vtc-{vtc_name}.{domain}
 ```
 
-In development (`APP_ENV=development`) each gets a `-local-` infix —
-`vta-local-{vta_name}`, `mediator-local-{vta_name}`, `dids-local-{vta_name}`,
-`vtc-local-{vtc_name}` — distinguishing local DNS records from production.
+In development (`APP_ENV=development`) each gets a `dev-` prefix —
+`dev-vta-{vta_name}`, `dev-mediator-{vta_name}`, `dev-dids-{vta_name}`,
+`dev-vtc-{vtc_name}` — distinguishing local DNS records from production. It's a
+prefix rather than an infix so every dev record sorts together in the zone; see
+`setup.EnvPrefix` and `docs/custom-domain-design.md` §2.
 
 `vta_name` and `vtc_name` are both validated by `setup.ValidateName`: lowercase letters
 and digits joined by single hyphens, at most 48 characters (the longest component prefix,
-`mediator-local-`, is 15 chars against DNS's 63-char label limit). `vtc_name` is
+`dev-mediator-`, is 13 chars against DNS's 63-char label limit). `vtc_name` is
 additionally **unique across all sessions** — it becomes a public community identity, so
 a collision is a 409 at `POST /setup`, not a silently shared name.
 

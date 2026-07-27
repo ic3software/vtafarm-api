@@ -189,6 +189,9 @@ func Setup(
 		// Remaining per-mode cluster capacity — the create screen checks this to
 		// show "Unavailable" and disable the button before submitting.
 		userAuth.GET("/setup/availability", sh.Availability)
+		// Hostname facts for this environment, so the create screen's hints
+		// don't hardcode the production shape.
+		userAuth.GET("/setup/domain-info", sh.DomainInfo)
 		userAuth.GET("/setup", sh.List)
 		userAuth.POST("/setup", sh.Create)
 		userAuth.GET("/setup/:id", sh.Get)
