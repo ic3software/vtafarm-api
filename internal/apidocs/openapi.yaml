@@ -1965,6 +1965,109 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/admin/setup-sessions/{id}/dids/reissue-enroll:
+    post:
+      summary: Reissue the DID-hosting enrollment link (admin)
+      description: |
+        Admin-cookie twin of `POST /setup/{id}/dids/reissue-enroll`, looked up by
+        `unique_id` alone.
+
+        Exists for the platform stack: it is owned by a passkey-less system
+        account, so the user-facing route can never be called for it — and
+        without this one an admin can see the stack's single-use enrollment link
+        but never replace a spent one.
+      tags: [Admin]
+      security: [{ CookieAuthAdmin: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: A fresh enrollment URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dids_admin_enroll_url: { type: string }
+        "401": { description: Missing or invalid token, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: Session not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: The dids daemon isn't provisioned yet, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api/v1/admin/setup-sessions/{id}/dids/enroll-ack:
+    post:
+      summary: Acknowledge the DID-hosting enrollment link (admin)
+      description: |
+        Admin-cookie twin of `POST /setup/{id}/dids/enroll-ack`. Marks the
+        single-use link as opened so the UI stops offering one that would fail
+        if clicked again.
+      tags: [Admin]
+      security: [{ CookieAuthAdmin: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Acknowledged
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dids_enroll_used: { type: boolean }
+        "401": { description: Missing or invalid token, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: Session not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: No enrollment URL has been issued yet, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api/v1/admin/setup-sessions/{id}/vtc/reissue-install:
+    post:
+      summary: Reissue the VTC install link (admin)
+      description: |
+        Admin-cookie twin of `POST /setup/{id}/vtc/reissue-install`.
+
+        This is the one that matters most for the platform stack: without an
+        install URL and its claim code nobody can claim the platform community,
+        and the pair is reveal-once.
+      tags: [Admin]
+      security: [{ CookieAuthAdmin: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: A fresh install URL and claim code
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  install_url: { type: string }
+                  claim_code: { type: string }
+        "401": { description: Missing or invalid token, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: Session not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: The VTC isn't provisioned yet, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api/v1/admin/setup-sessions/{id}/vtc/install-ack:
+    post:
+      summary: Acknowledge the VTC install link (admin)
+      description: |
+        Admin-cookie twin of `POST /setup/{id}/vtc/install-ack`. The VTC's own
+        install-token state machine already refuses a second claim; this just
+        stops the UI offering a dead link.
+      tags: [Admin]
+      security: [{ CookieAuthAdmin: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Acknowledged
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vtc_install_used: { type: boolean }
+        "401": { description: Missing or invalid token, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: Session not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: No install URL has been issued yet, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
   /api/v1/admin/setup/domain-info:
     get:
       summary: Hostname facts for this environment (admin)

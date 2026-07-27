@@ -504,14 +504,19 @@ func (h *SetupHandler) logsFullStack(c *gin.Context, session *model.SetupSession
 // lock isn't released until then), runs the invite Job, then scales back to
 // 1 — via defer, so the daemon comes back up even if the Job itself fails.
 func (h *SetupHandler) ReissueDidsEnroll(c *gin.Context) {
-	publicID := c.Param("id")
-	userID := c.MustGet(middleware.ContextUserID).(uint)
-
-	var session model.SetupSession
-	if err := h.db.Where("unique_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
-		return
+	if s := h.userSession(c); s != nil {
+		h.reissueDidsEnroll(c, s)
 	}
+}
+
+// AdminReissueDidsEnroll — the admin-cookie twin, reaching any user's session.
+func (h *SetupHandler) AdminReissueDidsEnroll(c *gin.Context) {
+	if s := h.adminSession(c); s != nil {
+		h.reissueDidsEnroll(c, s)
+	}
+}
+
+func (h *SetupHandler) reissueDidsEnroll(c *gin.Context, session *model.SetupSession) {
 	if !session.IsFullStack() {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "reissue-enroll is only available for full-stack sessions"})
 		return
@@ -602,14 +607,19 @@ func (h *SetupHandler) ReissueDidsEnroll(c *gin.Context) {
 // same invite; this just lets the UI know not to offer that same link again
 // after a refresh — reissue-enroll is what mints a fresh one.
 func (h *SetupHandler) AckDidsEnroll(c *gin.Context) {
-	publicID := c.Param("id")
-	userID := c.MustGet(middleware.ContextUserID).(uint)
-
-	var session model.SetupSession
-	if err := h.db.Where("unique_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
-		return
+	if s := h.userSession(c); s != nil {
+		h.ackDidsEnroll(c, s)
 	}
+}
+
+// AdminAckDidsEnroll — the admin-cookie twin, reaching any user's session.
+func (h *SetupHandler) AdminAckDidsEnroll(c *gin.Context) {
+	if s := h.adminSession(c); s != nil {
+		h.ackDidsEnroll(c, s)
+	}
+}
+
+func (h *SetupHandler) ackDidsEnroll(c *gin.Context, session *model.SetupSession) {
 	if !session.IsFullStack() {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "enroll-ack is only available for full-stack sessions"})
 		return
@@ -619,7 +629,7 @@ func (h *SetupHandler) AckDidsEnroll(c *gin.Context) {
 		return
 	}
 
-	if err := h.db.Model(&session).Update("dids_enroll_used", true).Error; err != nil {
+	if err := h.db.Model(session).Update("dids_enroll_used", true).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update session"})
 		return
 	}

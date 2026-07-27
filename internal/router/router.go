@@ -152,6 +152,14 @@ func Setup(
 		// the admin DID can't be supplied up front, since `pnm setup` mints it
 		// from a VTA DID the pipeline hasn't produced yet.
 		adminAuth.POST("/admin/setup-sessions/:id/admin", sh.AdminProvisionAdmin)
+		// The rest of the post-provisioning actions, same reasoning: without
+		// them an admin can see the platform stack's single-use enrollment and
+		// install links but never acknowledge or reissue one, which is most of
+		// what finishing the stack consists of.
+		adminAuth.POST("/admin/setup-sessions/:id/dids/reissue-enroll", sh.AdminReissueDidsEnroll)
+		adminAuth.POST("/admin/setup-sessions/:id/dids/enroll-ack", sh.AdminAckDidsEnroll)
+		adminAuth.POST("/admin/setup-sessions/:id/vtc/reissue-install", sh.AdminReissueVtcInstall)
+		adminAuth.POST("/admin/setup-sessions/:id/vtc/install-ack", sh.AdminAckVtcInstall)
 		// The farm's own flagship stack at vta.{CLUSTER_DOMAIN} and friends —
 		// the mediator and DID host vta_only sessions point at. Created whole
 		// (domain + DNS + session) by one action; the only route that can mint

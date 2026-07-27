@@ -335,10 +335,12 @@ func (h *SetupHandler) GetPlatformStack(c *gin.Context) {
 		// admin DID this stack parks waiting for — so the page can't ask for
 		// that DID without showing this one first.
 		"collected": gin.H{
-			"vta_did":         session.VtaDid,
-			"mediator_did":    session.MediatorDid,
-			"did_hosting_did": session.DIDHostingDid,
-			"vtc_did":         session.VtcDid,
+			"vta_did":               session.VtaDid,
+			"mediator_did":          session.MediatorDid,
+			"did_hosting_did":       session.DIDHostingDid,
+			"mediator_admin_did":    session.MediatorAdminDid,
+			"did_hosting_admin_did": session.DIDHostingAdminDid,
+			"vtc_did":               session.VtcDid,
 		},
 		"images": gin.H{
 			"vta":      session.VtaImage,
@@ -358,6 +360,35 @@ func (h *SetupHandler) GetPlatformStack(c *gin.Context) {
 		"created_at": session.CreatedAt,
 		"updated_at": session.UpdatedAt,
 	}
+
+	// The same post-provisioning outputs a user gets on GET /setup/:id. They
+	// are not decoration: without the VTC install URL and its claim code nobody
+	// can claim the platform community, and the two admin keys are shown for
+	// offline backup and exist nowhere else the admin can reach.
+	resp["dids_enroll_used"] = session.DidsEnrollUsed
+	resp["vtc_install_used"] = session.VtcInstallUsed
+
+	actionRequired := gin.H{}
+	if session.DidsEnrollURL != "" && !session.DidsEnrollUsed {
+		actionRequired["dids_admin_enroll_url"] = session.DidsEnrollURL
+	}
+	if session.VtcInstallURL != "" && !session.VtcInstallUsed {
+		actionRequired["install_url"] = session.VtcInstallURL
+		actionRequired["claim_code"] = session.VtcClaimCode
+	}
+	if session.MediatorAdminKey != "" || session.WebvhAdminKey != "" {
+		actionRequired["reveal_keys_once"] = true
+		if session.MediatorAdminKey != "" {
+			resp["mediator_admin_key"] = session.MediatorAdminKey
+		}
+		if session.WebvhAdminKey != "" {
+			resp["webvh_admin_key"] = session.WebvhAdminKey
+		}
+	}
+	if len(actionRequired) > 0 {
+		resp["action_required"] = actionRequired
+	}
+
 	if session.ErrorMsg != "" {
 		resp["error_msg"] = session.ErrorMsg
 	}

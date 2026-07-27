@@ -876,35 +876,50 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 }
 
 // POST /api/v1/setup/:id/admin
-func (h *SetupHandler) ProvisionAdmin(c *gin.Context) {
+// userSession loads the session named by :id, scoped to the calling user, and
+// adminSession loads it by unique_id alone.
+//
+// Every session action exists in both cookie families: the user-facing route
+// owns the caller's session, and the admin twin reaches any of them. The twins
+// are not a convenience — the platform stack is owned by a passkey-less system
+// account, so a route that filters by user_id can never be called for it.
+// Splitting the lookup from the action keeps one implementation of each action;
+// a divergent second copy is how the two drift.
+//
+// Both write the 404 themselves and return nil when they do.
+func (h *SetupHandler) userSession(c *gin.Context) *model.SetupSession {
 	userID := c.MustGet(middleware.ContextUserID).(uint)
+	return h.findSession(c, h.db.Where("unique_id = ? AND user_id = ?", c.Param("id"), userID))
+}
 
+func (h *SetupHandler) adminSession(c *gin.Context) *model.SetupSession {
+	return h.findSession(c, h.db.Where("unique_id = ?", c.Param("id")))
+}
+
+func (h *SetupHandler) findSession(c *gin.Context, q *gorm.DB) *model.SetupSession {
 	var session model.SetupSession
-	if err := h.db.Where("unique_id = ? AND user_id = ?", c.Param("id"), userID).First(&session).Error; err != nil {
+	if err := q.First(&session).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
-		return
+		return nil
 	}
-	h.provisionAdmin(c, &session)
+	return &session
+}
+
+func (h *SetupHandler) ProvisionAdmin(c *gin.Context) {
+	if s := h.userSession(c); s != nil {
+		h.provisionAdmin(c, s)
+	}
 }
 
 // AdminProvisionAdmin — POST /api/v1/admin/setup-sessions/:id/admin (admin only).
 //
-// The admin-cookie twin of ProvisionAdmin, differing only in the lookup:
-// unique_id alone, with no user_id filter.
-//
-// It exists for the platform stack, which is owned by a passkey-less system
-// account — nobody can ever hold that user's cookie, so without this route a
-// gated platform stack could never be resumed by anyone. An earlier attempt to
-// dodge that by requiring admin_did at create time was impossible to satisfy:
-// the admin DID is minted locally by `pnm setup` from the VTA DID, which does
-// not exist until the pipeline has already run and parked.
+// An earlier attempt to dodge needing this — requiring admin_did at create time
+// — was impossible to satisfy: `pnm setup` mints that DID locally from the VTA
+// DID, which does not exist until the pipeline has already run and parked.
 func (h *SetupHandler) AdminProvisionAdmin(c *gin.Context) {
-	var session model.SetupSession
-	if err := h.db.Where("unique_id = ?", c.Param("id")).First(&session).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
-		return
+	if s := h.adminSession(c); s != nil {
+		h.provisionAdmin(c, s)
 	}
-	h.provisionAdmin(c, &session)
 }
 
 // provisionAdmin resumes a session parked waiting for its PNM admin DID.
