@@ -169,3 +169,18 @@ func (s *SetupSession) IsFixedLabel() bool {
 func (s *SetupSession) OwnsDNS() bool {
 	return s.DomainType != DomainCustom
 }
+
+// CustomDomainID returns the domain this session runs on and whether it has one
+// at all. Only custom sessions do — managed and platform are served by the
+// cluster wildcard and own no certificate.
+//
+// setup_sessions_domain_link_check already guarantees a custom row has a
+// domain_id, so the false case is unreachable in a consistent database. It
+// exists so the nullable column is dereferenced in exactly one place rather
+// than at each caller that names a per-domain resource.
+func (s *SetupSession) CustomDomainID() (uint, bool) {
+	if s.DomainType != DomainCustom || s.DomainID == nil {
+		return 0, false
+	}
+	return *s.DomainID, true
+}

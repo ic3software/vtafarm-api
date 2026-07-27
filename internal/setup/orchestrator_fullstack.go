@@ -353,9 +353,12 @@ func (o *Orchestrator) fsK8sProvision(ctx context.Context, ns string, s *model.S
 	// hostnames sit under our zone, which the cluster wildcard already covers —
 	// so they name no Secret here and reach ACME never.
 	tlsSecret := ""
-	if s.DomainType == model.DomainCustom {
-		tlsSecret = k8s.FSTLSSecret(s.ID)
+	if domainID, ok := s.CustomDomainID(); ok {
+		tlsSecret = k8s.CustomTLSSecret(domainID)
 		hosts := []string{s.FQDN(), s.MediatorFQDN(), s.DidsFQDN(), s.VtcFQDN()}
+		// Creating this when the Secret already holds a valid certificate for
+		// the same four names is free: cert-manager adopts it and never calls
+		// ACME. That is the rebuild path, and why the name is the domain's.
 		if err := o.k8s.CreateSessionCert(ctx, ns, tlsSecret, o.acmeIssuer, hosts); err != nil {
 			return err
 		}
@@ -443,7 +446,13 @@ func (o *Orchestrator) fsWaitDNS(ctx context.Context, s *model.SetupSession) err
 // the hostname out for longer. Failing with something the user can act on is
 // worth more than another attempt.
 func (o *Orchestrator) fsWaitCert(ctx context.Context, ns string, s *model.SetupSession) error {
-	name := k8s.FSTLSSecret(s.ID)
+	domainID, ok := s.CustomDomainID()
+	if !ok {
+		// Only custom domains reach here; a session without one has no
+		// Certificate to wait on and is already served by the wildcard.
+		return nil
+	}
+	name := k8s.CustomTLSSecret(domainID)
 	deadline := time.Now().Add(fsCertWaitBudget)
 
 	for {

@@ -244,7 +244,7 @@ func Setup(
 	// grey-cloud lb records, the ACME issuers) before a verification can pass —
 	// but that shows up as a failing check with a reason, which is more useful
 	// than a route that pretends not to exist.
-	dh := handler.NewDomainHandler(db, cfg.AppEnv, cfg.ClusterDomain, cfg.ClusterIngressIP)
+	dh := handler.NewDomainHandler(db, cfg.AppEnv, cfg.ClusterDomain, cfg.ClusterIngressIP, k8sClient)
 	domains := v1.Group("/domains",
 		middleware.AuthRequired(cfg.JWTSecret, middleware.CookieUser),
 		middleware.RequireRole(model.RoleUser),

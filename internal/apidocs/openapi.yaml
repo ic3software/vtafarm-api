@@ -3389,6 +3389,14 @@ paths:
         The four CNAMEs stay in the user's zone: we never created them and have
         no access. **Tell the user to remove them** — a record left aimed at our
         ingress is exactly the dangling-DNS setup the per-attach token defuses.
+
+        **The domain's TLS certificate and its Secret are deleted here.**
+        Deleting a *session* keeps them on purpose, so a rebuild reuses the
+        certificate and spends no ACME quota; detaching the domain is where that
+        stops applying. The account is giving up the names, someone else may
+        attach them next, and re-attaching mints a new domain id anyway — so a
+        kept certificate would be unreachable key material for names its holder
+        no longer claims. A re-attach therefore starts from a fresh issuance.
       tags: [User]
       security:
         - CookieAuthUser: []

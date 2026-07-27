@@ -14,6 +14,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/ic3software/vtafarm-api/internal/dnscheck"
+	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/middleware"
 	"github.com/ic3software/vtafarm-api/internal/model"
 	"github.com/ic3software/vtafarm-api/internal/setup"
@@ -46,15 +47,20 @@ type DomainHandler struct {
 	clusterDomain string
 	ingressIP     string
 	checker       *dnscheck.Checker
+	// k8s is used by Delete alone, to remove the domain's certificate. Nil
+	// where the cluster isn't configured (local development against no
+	// cluster), which detaching must still work without.
+	k8s *k8s.Client
 }
 
-func NewDomainHandler(db *gorm.DB, appEnv, clusterDomain, ingressIP string) *DomainHandler {
+func NewDomainHandler(db *gorm.DB, appEnv, clusterDomain, ingressIP string, kube *k8s.Client) *DomainHandler {
 	return &DomainHandler{
 		db:            db,
 		appEnv:        appEnv,
 		clusterDomain: clusterDomain,
 		ingressIP:     ingressIP,
 		checker:       dnscheck.New(),
+		k8s:           kube,
 	}
 }
 
@@ -434,6 +440,23 @@ func (h *DomainHandler) Delete(c *gin.Context) {
 			"error": "this domain is in use by session " + sessionID + " — delete that agent first",
 		})
 		return
+	}
+
+	// Session teardown keeps the certificate on purpose, so a rebuild costs no
+	// ACME quota. Detaching the domain is where that stops being a kindness:
+	// the account is giving up the names, somebody else may attach them next,
+	// and re-attaching mints a new domains row whose id names a different
+	// Secret — so a kept one would be unreachable key material for names its
+	// holder no longer claims. Both go.
+	//
+	// Before the row, so a failure here doesn't strand a certificate whose
+	// domain we can no longer look up. Logged rather than fatal: the user asked
+	// to detach, and a leftover Secret must not be what stops them.
+	if h.k8s != nil {
+		ns := h.k8s.UserNamespace(strconv.FormatUint(uint64(d.UserID), 10))
+		if err := h.k8s.DeleteDomainCert(c.Request.Context(), ns, k8s.CustomTLSSecret(d.ID)); err != nil {
+			log.Printf("[domains] warn: failed to delete certificate for %s (domain id %d): %v", d.Domain, d.ID, err)
+		}
 	}
 
 	if err := h.db.Delete(d).Error; err != nil {
