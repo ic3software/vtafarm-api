@@ -12,18 +12,19 @@ import (
 )
 
 // This file drives full_stack's post-gate finish phase (design
-// docs/full-stack-with-vtc-setup-design.md §5/§6/§8). The pre-gate pipeline
-// is full_stack's runFullStack, reused unchanged — Start dispatches both
-// modes there, and fsK8sProvision adds the fourth component's PVC/Service/
-// Ingress. Only the finish differs: two offline steps land in the post-gate
-// VTA-store window before deploy_vta (the ephemeral setup key + its
-// context/ACL grant — placing the grant post-gate keeps its 1h expiry window
-// at minutes no matter how long the admin-DID gate takes), then the one
+// docs/full-stack-setup-design.md §5/§6/§8). The pre-gate pipeline is
+// runFullStack in orchestrator_fullstack.go, which Start dispatches to and
+// whose fsK8sProvision creates the VTC's PVC/Service/Ingress alongside the
+// other three components. Only the finish lives here: two offline steps land
+// in the post-gate VTA-store window before deploy_vta (the ephemeral setup key
+// + its context/ACL grant — placing the grant post-gate keeps its 1h expiry
+// window at minutes no matter how long the admin-DID gate takes), then the one
 // genuinely live step of the whole mode (`vtc setup --from`) and the VTC
 // Deployment run after it, when the VTA/mediator/dids are all up.
 
-// runFullStackFinish mirrors runFullStackFinish, wrapping the four
-// VTC steps around the shared import/deploy helpers:
+// runFullStackFinish is Provision's full_stack branch (vta_only's is
+// runProvision), wrapping the four VTC steps around the shared import/deploy
+// helpers:
 // step_import_admin_did → step_vtc_setup_key → step_vtc_acl_grant →
 // deploy_vta → step_vtc_setup → deploy_vtc → running.
 func (o *Orchestrator) runFullStackFinish(ctx context.Context, sessionID uint, adminDid string) {

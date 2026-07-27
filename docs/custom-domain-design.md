@@ -1178,7 +1178,7 @@ nobody can write a TXT record into a public suffix they don't control.
 | `k8s/tls/clusterissuer-http01.yaml` | new (+ staging twin) |
 | `CLAUDE.md`, `.env.example` | env table, routes, structure |
 
-`setup_fullstack_vtc.go` holds only `ReissueVtcInstall` / `AckVtcInstall`; the
+`setup_vtc.go` holds only `ReissueVtcInstall` / `AckVtcInstall`; the
 create path is `createFullStack` in `setup_fullstack.go`, which is where the
 fixed-label branch goes.
 

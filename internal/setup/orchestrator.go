@@ -59,7 +59,7 @@ func (o *Orchestrator) Start(sessionID uint) {
 // Provision launches Phase 2 for a session. Called after the user provides
 // their admin DID. Dispatches to the mode's finishing chain — full_stack's
 // wraps the VTC steps around import-did + deploy_vta
-// (orchestrator_fullstack_vtc.go).
+// (orchestrator_vtc.go).
 func (o *Orchestrator) Provision(sessionID uint, adminDid string) {
 	o.launch(sessionID, func(ctx context.Context) {
 		switch o.sessionMode(sessionID) {
