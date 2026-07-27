@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -146,10 +147,18 @@ func (h *SetupHandler) Images(c *gin.Context) {
 
 type createSetupRequest struct {
 	Mode string `json:"mode"      binding:"required,oneof=vta_only full_stack"`
-	// Required, globally unique, DNS-safe (setup.ValidateName) — becomes the
-	// session's subdomains: vta-<name> (plus mediator-<name> / dids-<name>
-	// for full_stack).
-	VtaName  string `json:"vta_name"`
+	// Required on a managed session, globally unique, DNS-safe
+	// (setup.ValidateName) — becomes the session's subdomains: vta-<name>
+	// (plus mediator-<name> / dids-<name> for full_stack). Must be absent on a
+	// custom domain, whose labels are fixed.
+	VtaName string `json:"vta_name"`
+	// DomainID attaches the session to one of the caller's verified domains.
+	// Omitted → managed, today's behaviour.
+	DomainID *uint `json:"domain_id"`
+	// Label replaces vta_name/vtc_name on a fixed-label domain, where neither
+	// reaches a hostname and their only surviving job is the did:webvh path.
+	// Duplicates across users are fine there.
+	Label    string `json:"label"`
 	VtaImage string `json:"vta_image" binding:"required"`
 	// Optional — if set, Phase 2 (import-did + Deployment) starts automatically after Phase 1.
 	AdminDid string `json:"admin_did"`
@@ -190,23 +199,59 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		return
 	}
 
-	// vta_name is user-chosen and becomes the session's subdomains
-	// (vta-<name>, and mediator-/dids-<name> for full_stack), so it must be
-	// DNS-safe and unique across all users' sessions, not just the caller's
-	// own.
-	if req.VtaName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "vta_name is required"})
+	// The domain is resolved first because it decides what the names mean: on
+	// the managed zone vta_name/vtc_name *are* hostnames and must be globally
+	// unique; on a custom domain the four labels are fixed, so the names reach
+	// no hostname and collapse into one free-form label.
+	domain := h.resolveCreateDomain(c, req, userID)
+	if c.IsAborted() {
 		return
 	}
-	if err := setup.ValidateName(req.VtaName); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid vta_name: " + err.Error()})
-		return
-	}
-	var nameTaken int64
-	h.db.Model(&model.SetupSession{}).Where("vta_name = ?", req.VtaName).Count(&nameTaken)
-	if nameTaken > 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "vta_name already in use"})
-		return
+
+	if domain == nil {
+		if req.Label != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "label applies only to a custom domain — a managed session is named by vta_name"})
+			return
+		}
+		if req.VtaName == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "vta_name is required"})
+			return
+		}
+		if err := setup.ValidateName(req.VtaName); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid vta_name: " + err.Error()})
+			return
+		}
+		var nameTaken int64
+		h.db.Model(&model.SetupSession{}).
+			Where("vta_name = ? AND domain_type = ?", req.VtaName, model.DomainManaged).
+			Count(&nameTaken)
+		if nameTaken > 0 {
+			c.JSON(http.StatusConflict, gin.H{"error": "vta_name already in use"})
+			return
+		}
+	} else {
+		if req.VtaName != "" || req.VtcName != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "vta_name and vtc_name don't apply to a custom domain — its hostnames are fixed; send label instead"})
+			return
+		}
+		if req.Label == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "label is required"})
+			return
+		}
+		// Still DNS-safe: it lands in did:webvh paths and URLs even though no
+		// hostname carries it.
+		if err := setup.ValidateName(req.Label); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid label: " + err.Error()})
+			return
+		}
+		// One session per domain, checked here for the message; the partial
+		// unique index on domain_id is the real gate.
+		var inUse int64
+		h.db.Model(&model.SetupSession{}).Where("domain_id = ?", domain.ID).Count(&inUse)
+		if inUse > 0 {
+			c.JSON(http.StatusConflict, gin.H{"error": "this domain is already in use by another session"})
+			return
+		}
 	}
 
 	if req.Mode == model.ModeFullStack {
@@ -217,7 +262,7 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		if !h.capacityAllows(c, capacity.FullStack) {
 			return
 		}
-		h.createFullStack(c, req)
+		h.createFullStack(c, req, domain)
 		return
 	}
 
@@ -299,6 +344,42 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	})
 }
 
+// resolveCreateDomain turns POST /setup's optional domain_id into the domain
+// row the session will run under, or nil for a managed session. It aborts the
+// request with the response itself on any problem — callers check
+// c.IsAborted().
+//
+// vta_only is deliberately excluded: that mode points at a shared mediator and
+// DID host, so a user's domain would cover only part of their footprint.
+func (h *SetupHandler) resolveCreateDomain(c *gin.Context, req createSetupRequest, userID uint) *model.Domain {
+	if req.DomainID == nil {
+		return nil
+	}
+	if req.Mode != model.ModeFullStack {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "a custom domain requires full_stack — vta_only uses a shared mediator and DID host"})
+		return nil
+	}
+
+	var d model.Domain
+	// Scoped to the caller AND to kind=custom: the platform domain is reachable
+	// only through POST /admin/platform-stack, and no user-facing route may
+	// ever produce a session on our own zone.
+	err := h.db.Where("id = ? AND user_id = ? AND kind = ?", *req.DomainID, userID, model.DomainKindCustom).First(&d).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "domain not found"})
+		return nil
+	}
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to read domain"})
+		return nil
+	}
+	if !d.Verified() {
+		c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": "verify this domain before creating a session"})
+		return nil
+	}
+	return &d
+}
+
 // capacityAllows gates a create on remaining cluster capacity for mode. It
 // fails open: if capacity can't be measured (no k8s client / stats read failed)
 // it returns true rather than blocking. Only a measured "zero fit" writes 503
@@ -360,8 +441,9 @@ func (h *SetupHandler) Availability(c *gin.Context) {
 //	target_ip       the ingress IP a custom domain must ultimately resolve to
 //	target_host     the hostname a custom domain CNAMEs at
 //
-// The last two describe custom domains, which don't exist yet; they're
-// returned now so the hint text has a single source once they do.
+// Also served under /admin/setup/domain-info for the admin panel, which holds
+// a different cookie and needs the same facts to name the platform stack's
+// hostnames before it exists.
 func (h *SetupHandler) DomainInfo(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"managed_domain": h.clusterDomain,

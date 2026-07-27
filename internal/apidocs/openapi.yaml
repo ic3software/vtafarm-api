@@ -190,6 +190,109 @@ components:
           type: string
           example: ok
 
+    DomainRecord:
+      type: object
+      description: One hostname the user must create a CNAME for, plus its last resolution.
+      properties:
+        component:
+          type: string
+          enum: [vta, mediator, dids, vtc]
+        fqdn:
+          type: string
+          example: vta.aaa.com
+        expected_type:
+          type: string
+          enum: [CNAME]
+        expected_value:
+          type: string
+          description: |
+            Always the CNAME target, never an IP. The user's records are
+            effectively permanent — their DID-hosting hostname is embedded in
+            every `did:webvh` the session mints — so they point at a name we
+            control and can repoint later without anyone editing their DNS
+            again.
+          example: lb.firstperson.dev
+        resolved:
+          type: array
+          items: { type: string }
+          description: What the name resolves to, after following CNAMEs. Empty when unchecked or absent.
+        cname:
+          type: string
+          description: Final target of the alias chain, when the name is an alias.
+        ok:
+          type: boolean
+        detail:
+          type: string
+          description: |
+            Why it failed, in words meant for the user. **The UI must render
+            this rather than composing its own DNS advice** — one source of
+            truth, and it stays correct as the checker improves.
+          example: "points at Cloudflare's proxy — switch the record to DNS only (grey cloud)"
+
+    DomainTxt:
+      type: object
+      description: |
+        The control challenge. Accepted at `_vtafarm-challenge.{domain}` **or**
+        at the apex, because a handful of DNS panels can't create
+        underscore-prefixed labels.
+      properties:
+        name:
+          type: string
+          example: _vtafarm-challenge.aaa.com
+        expected:
+          type: string
+          example: vtafarm-verify=a3f9c2e8
+        found:
+          type: array
+          items: { type: string }
+          description: |
+            Every value seen at either name. A match on **any** of them passes —
+            never require it to be the only one: a domain attached from both
+            development and production carries two challenge values, and an apex
+            TXT routinely holds SPF, DMARC and other vendors' tokens.
+        ok:
+          type: boolean
+        detail:
+          type: string
+
+    Domain:
+      type: object
+      properties:
+        id:
+          type: integer
+        domain:
+          type: string
+          example: aaa.com
+        kind:
+          type: string
+          enum: [custom, platform]
+        verified:
+          type: boolean
+        verified_at:
+          type: string
+          format: date-time
+          nullable: true
+        in_use_by:
+          type: string
+          description: unique_id of the session running on this domain, when there is one.
+          example: a1b2c3d4
+        target:
+          type: string
+          description: What all four CNAMEs point at.
+          example: lb.firstperson.dev
+        checked:
+          type: boolean
+          description: |
+            Whether this response performed live lookups. `false` on the list
+            endpoint, which never resolves — so the UI shows a neutral "not
+            checked yet" instead of a red cross on records nobody has looked at.
+        txt:
+          $ref: "#/components/schemas/DomainTxt"
+        records:
+          type: array
+          items:
+            $ref: "#/components/schemas/DomainRecord"
+
     CreateSetupRequest:
       type: object
       properties:
@@ -254,12 +357,42 @@ components:
           pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
           maxLength: 48
           description: |
-            Required for full_stack. User-chosen VTC name — becomes
-            the vtc-{vtc_name} subdomain. Same DNS-safe rules as vta_name and
-            unique across all sessions — 409 if already
+            Required for full_stack **on the managed zone**. User-chosen VTC
+            name — becomes the vtc-{vtc_name} subdomain. Same DNS-safe rules as
+            vta_name and unique across managed sessions — 409 if already
             taken. Also used as the VTA context id the VTC's community lives
-            under.
-      required: [mode, vta_name, vta_image]
+            under. Must be **absent** when `domain_id` is set.
+        domain_id:
+          type: integer
+          description: |
+            Attach the session to one of the caller's **verified** domains
+            (`GET /domains`). Omitted → `managed`, today's behaviour.
+
+            `full_stack` only: `vta_only` points at a shared mediator and DID
+            host, so a user's own domain would cover just part of their
+            footprint.
+
+            409 if the domain isn't verified or already backs a session; 404 if
+            it isn't the caller's. A domain backs at most one session — its four
+            labels are fixed, so a second would want the same hostnames.
+          example: 3
+        label:
+          type: string
+          example: "myagent"
+          pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+          maxLength: 48
+          description: |
+            Required when `domain_id` is set, and forbidden otherwise
+            (`vta_name`/`vtc_name` are mutually exclusive with it — 400).
+
+            On a custom domain the four labels are fixed (`vta.aaa.com` and
+            friends), so no user-chosen name reaches a hostname. This one
+            survives only as a display name and in the `did:webvh` paths
+            (`did:webvh:<scid>:dids.aaa.com:{label}-vta`), which the hostname
+            and the `-vta`/`-mediator`/`-vtc` suffixes already make distinct —
+            so **duplicates across users are allowed** and a 409 on one would
+            be a bug. Still DNS-safe, because it lands in URLs.
+      required: [mode, vta_image]
 
     SetupSessionItem:
       type: object
@@ -289,7 +422,8 @@ components:
             Where the hostnames come from, orthogonal to `mode`. `managed` is
             the default — labels derived from `vta_name` in our own zone.
             `platform` is the farm's own flagship stack on fixed labels.
-            `custom` is a user-owned zone (not yet creatable).
+            `custom` is a user-owned zone, also on fixed labels — attached and
+            verified through `/api/v1/domains`.
           default: managed
         domain:
           type: string
@@ -357,7 +491,8 @@ components:
             Where the hostnames come from, orthogonal to `mode`. `managed` is
             the default — labels derived from `vta_name` in our own zone.
             `platform` is the farm's own flagship stack on fixed labels.
-            `custom` is a user-owned zone (not yet creatable).
+            `custom` is a user-owned zone, also on fixed labels — attached and
+            verified through `/api/v1/domains`.
           default: managed
         domain:
           type: string
@@ -1716,6 +1851,97 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/admin/setup/domain-info:
+    get:
+      summary: Hostname facts for this environment (admin)
+      description: |
+        Admin-cookie variant of `GET /setup/domain-info` — same handler, same
+        response. The admin panel needs it to name the platform stack's four
+        hostnames on the page that creates it, before any of them exist.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      responses:
+        "200":
+          description: Hostname facts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  managed_domain: { type: string }
+                  env_prefix: { type: string }
+                  target_ip: { type: string }
+                  target_host: { type: string }
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/admin/setup-sessions/{id}/logs:
+    get:
+      summary: Stream any session's setup logs (admin)
+      description: |
+        Admin-cookie twin of `GET /setup/{id}/logs`, differing only in the
+        lookup: `unique_id` alone, with no `user_id` filter.
+
+        It exists for the platform stack. That session is owned by a
+        passkey-less system account, so nobody can ever hold its user cookie —
+        without this route the farm's own stack is the one session whose
+        provisioning nobody can watch.
+
+        `full_stack` only (501 otherwise): `vta_only`'s log sources key off
+        statuses no admin surface renders.
+
+        Server-Sent Events, same shape as the user route — `data:` per line,
+        an `error` event on failure, `done` when the stream ends.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The session's 8-char `unique_id`.
+          schema: { type: string }
+        - name: source
+          in: query
+          required: false
+          description: Which step's logs to stream; defaults to whatever the session's status indicates is current.
+          schema: { type: string }
+      responses:
+        "200":
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          description: The session is vta_only
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: k8s not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/v1/admin/upgrades:
     post:
       summary: Create an image upgrade batch
@@ -2752,6 +2978,286 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/domains:
+    get:
+      summary: List the caller's domains
+      description: |
+        At most one row: a user may hold one custom domain. **No DNS lookups** —
+        the records come back with `checked: false` so the UI can show them
+        without a verdict, and resolution happens on `GET /domains/{id}` or
+        `POST /domains/{id}/verify`.
+
+        Every route under `/api/v1/domains` answers **404 while
+        `CUSTOM_DOMAIN_ENABLED` is false** — the feature ships dark until the
+        grey-cloud `lb` records and the ACME issuers exist, and a feature that
+        cannot work is better absent than advertised.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      responses:
+        "200":
+          description: The caller's domains
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Domain"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Custom domains are not enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      summary: Attach a domain
+      description: |
+        Creates the row, mints a fresh TXT token, and returns the five records
+        to create. Nothing is resolved yet: the records don't exist, and
+        checking now would only teach the public resolvers an NXDOMAIN the user
+        then has to wait out.
+
+        The input is normalised first — lowercased, scheme and path stripped,
+        trailing dot removed, IDN punycoded — so `https://AAA.com/` and
+        `aaa.com` are the same domain.
+
+        **A new token on every attach**, and it never rotates while the domain
+        sits pending. That is what closes the dangling-DNS takeover: a user who
+        deletes their session but leaves their CNAMEs behind hands the next
+        person records already pointing at us, but not the ability to write a
+        token into a zone they don't control.
+
+        The TXT record **may be deleted once verification succeeds** — it is
+        checked at verification time only, and never re-checked, so tidying DNS
+        later can't break a running session.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [domain]
+              properties:
+                domain:
+                  type: string
+                  example: aaa.com
+                  description: The registrable domain or any subdomain of it — not a hostname we create under it.
+      responses:
+        "201":
+          description: Domain attached, pending verification
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Domain"
+        "400":
+          description: |
+            Invalid domain; `CLUSTER_DOMAIN` or a subdomain of it (refused for
+            **every** caller, admins included — the only route that may mint a
+            row for our own zone is `POST /admin/platform-stack`); a hostname we
+            would create (`vta.aaa.com`); a name no public CA can issue for
+            (IP literal, `localhost`, `.local`/`.internal`/`.test`/`.invalid`/
+            `.example`); or a domain long enough that one of the four FQDNs
+            would exceed 253 characters.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Custom domains are not enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: The caller already has a custom domain, or this domain is attached to another account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/domains/{id}:
+    get:
+      summary: Domain detail, resolved live
+      description: |
+        Runs the same check as `POST /domains/{id}/verify` and promotes the
+        domain to verified when everything passes, so a portal polling this
+        every 30s shows a ✓ appearing on its own once the user fixes DNS in
+        another tab.
+
+        Cheap after success: an already-verified domain performs **no lookups
+        at all**. Verification is a one-time proof, not a liveness check.
+
+        Rate-limited per IP alongside the verify route, since both do real DNS
+        work.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Current state of the domain and its five records
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Domain"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Not the caller's domain, or custom domains are not enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Too many checks — try again shortly
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      summary: Remove a domain
+      description: |
+        Always allowed while nothing runs on it — a pending domain holds no
+        cluster resources and reserves nothing but its row.
+
+        The four CNAMEs stay in the user's zone: we never created them and have
+        no access. **Tell the user to remove them** — a record left aimed at our
+        ingress is exactly the dangling-DNS setup the per-attach token defuses.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "204":
+          description: Domain removed
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Not the caller's domain, or custom domains are not enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A session is running on this domain — delete that session first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/domains/{id}/verify:
+    post:
+      summary: Check the domain's DNS
+      description: |
+        Resolves the TXT challenge and all four CNAMEs in parallel against
+        public resolvers (1.1.1.1, falling back to 8.8.8.8), and sets
+        `verified_at` when every one passes.
+
+        **Both record types are required.** The CNAMEs prove traffic routes to
+        us; they do not prove the person asking controls the name. The TXT is
+        what makes those two the same claim.
+
+        A failing check answers **200, not 4xx** — it is an expected, retryable
+        state the UI renders record by record, not a client error. Read each
+        record's `detail` for why.
+
+        Two things users hit, worth surfacing in the UI: a domain on Cloudflare
+        must have all four CNAMEs **DNS only (grey cloud)**, and a name checked
+        *before* it existed can take up to an hour to clear from public
+        resolvers' negative cache.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Check performed — read `verified` for the outcome
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Domain"
+              example:
+                id: 3
+                domain: aaa.com
+                kind: custom
+                verified: false
+                verified_at: null
+                target: lb.firstperson.dev
+                checked: true
+                txt:
+                  name: _vtafarm-challenge.aaa.com
+                  expected: vtafarm-verify=a3f9c2e8
+                  found: ["vtafarm-verify=00000000"]
+                  ok: false
+                  detail: no TXT value matches — an older token may still be present
+                records:
+                  - component: vta
+                    fqdn: vta.aaa.com
+                    expected_type: CNAME
+                    expected_value: lb.firstperson.dev
+                    resolved: ["157.180.68.139"]
+                    ok: true
+                  - component: vtc
+                    fqdn: vtc.aaa.com
+                    expected_type: CNAME
+                    expected_value: lb.firstperson.dev
+                    resolved: []
+                    ok: false
+                    detail: no record found
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Not the caller's domain, or custom domains are not enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Too many checks — try again shortly
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/v1/setup/validate:
     post:
       summary: Validate setup prerequisites
@@ -2930,8 +3436,8 @@ paths:
         together.
 
         `target_ip` and `target_host` describe where a user-owned custom domain
-        must point. Custom domains aren't implemented yet — these are returned
-        now so the hint text has one source once they are.
+        must point — `target_host` is what its four CNAMEs name, and
+        `target_ip` what they must ultimately resolve to.
       tags: [User]
       security:
         - CookieAuthUser: []
@@ -2988,6 +3494,13 @@ paths:
         **`mode=full_stack` requires the caller's
         `beta_access` to be `true`** (see `GET /user/me`); an admin grants this via
         `PUT /admin/users/{id}/beta-access`.
+
+        **On a custom domain (`domain_id`) none of the above applies to the
+        names.** The four hostnames are fixed (`vta.aaa.com`, `vtc.`,
+        `mediator.`, `dids.`), so `vta_name`/`vtc_name` must be absent and a
+        single `label` replaces them. No DNS is created either: the records are
+        the user's, already verified, and we never touch their zone — which is
+        also why teardown leaves them behind for the user to remove.
       tags: [User]
       security:
         - CookieAuthUser: []
@@ -3022,8 +3535,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "404":
+          description: "`domain_id` is not one of the caller's domains"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "409":
-          description: vta_name (or vtc_name) already in use
+          description: |
+            `vta_name` (or `vtc_name`) already in use, or the domain is
+            unverified / already backs a session.
           content:
             application/json:
               schema:

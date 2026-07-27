@@ -14,14 +14,27 @@ type Config struct {
 	ClusterIngressIP string
 	ClusterDomain    string
 	MediatorDid      string
-	DB               DBConfig
-	K8s              K8sConfig
-	Cloudflare       CloudflareConfig
-	GHCR             GHCRConfig
-	DidHosting       DidHostingConfig
-	WebAuthn         WebAuthnConfig
-	Vault            VaultConfig
-	Monitor          MonitorConfig
+	// CustomDomainEnabled gates the whole Domains resource. It ships dark: the
+	// routes 404 until the one-off cluster prerequisites are in place — the
+	// grey-cloud lb / dev-lb records, and the ACME ClusterIssuers.
+	CustomDomainEnabled bool
+	// ACMEClusterIssuer names the cert-manager ClusterIssuer that signs custom
+	// domains' certificates.
+	//
+	// **Set this to letsencrypt-http01-staging in development.** Let's Encrypt
+	// counts five authorization failures per hostname per hour and five
+	// certificates per identical name set per week, and those limits are
+	// charged to real production hostnames. Re-attaching a misconfigured domain
+	// a few times in an hour is enough to lock one out.
+	ACMEClusterIssuer string
+	DB                DBConfig
+	K8s               K8sConfig
+	Cloudflare        CloudflareConfig
+	GHCR              GHCRConfig
+	DidHosting        DidHostingConfig
+	WebAuthn          WebAuthnConfig
+	Vault             VaultConfig
+	Monitor           MonitorConfig
 }
 
 // MonitorConfig configures the token-gated /api/v1/monitor/* endpoints polled
@@ -125,6 +138,9 @@ func Load() *Config {
 		ClusterIngressIP: getEnv("CLUSTER_INGRESS_IP", ""),
 		ClusterDomain:    getEnv("CLUSTER_DOMAIN", ""),
 		MediatorDid:      getEnv("MEDIATOR_DID", ""),
+
+		CustomDomainEnabled: getEnvBool("CUSTOM_DOMAIN_ENABLED", false),
+		ACMEClusterIssuer:   getEnv("ACME_CLUSTER_ISSUER", "letsencrypt-http01"),
 		DB: DBConfig{
 			Host:     getEnv("DB_HOST", "localhost"),
 			Port:     getEnv("DB_PORT", "5432"),

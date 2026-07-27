@@ -142,6 +142,10 @@ func Setup(
 		// user's session rather than only the caller's. Deleting the platform
 		// stack additionally requires {"confirm": "<label>"} in the body.
 		adminAuth.DELETE("/admin/setup-sessions/:id", sh.AdminDeleteSession)
+		// Admin-cookie twin of GET /setup/:id/logs. The platform stack belongs
+		// to a passkey-less system account, so its provisioning is otherwise
+		// unwatchable — nobody can hold that user's cookie.
+		adminAuth.GET("/admin/setup-sessions/:id/logs", sh.AdminSessionLogs)
 		// The farm's own flagship stack at vta.{CLUSTER_DOMAIN} and friends —
 		// the mediator and DID host vta_only sessions point at. Created whole
 		// (domain + DNS + session) by one action; the only route that can mint
@@ -152,9 +156,11 @@ func Setup(
 		// how many more sessions of each mode still fit.
 		dashH := handler.NewDashboardHandler(k8sClient)
 		adminAuth.GET("/admin/dashboard", dashH.Get)
-		// Same handler as the user-facing GET /setup/images — admins need the
-		// tag list too (session upgrades), but sit behind a different cookie.
+		// Same handlers as their /setup/... twins — admins need the same facts
+		// (image tags for upgrades, hostname shape for the platform stack page)
+		// but sit behind a different cookie.
 		adminAuth.GET("/admin/setup/images", sh.Images)
+		adminAuth.GET("/admin/setup/domain-info", sh.DomainInfo)
 
 		// Batch image upgrades — background runner, DB-backed queue.
 		adminAuth.POST("/admin/upgrades", uph.Create)
@@ -213,6 +219,30 @@ func Setup(
 		userAuth.POST("/setup/:id/dids/enroll-ack", sh.AckDidsEnroll)
 		userAuth.POST("/setup/:id/vtc/reissue-install", sh.ReissueVtcInstall)
 		userAuth.POST("/setup/:id/vtc/install-ack", sh.AckVtcInstall)
+	}
+
+	// Domains — a zone the user owns, verified on its own before any session
+	// exists. That separation is the point: a session is only ever created
+	// against DNS that is already live, so it starts provisioning immediately
+	// and never parks half-built waiting for a record.
+	//
+	// 404 as a whole until CUSTOM_DOMAIN_ENABLED, since the feature cannot work
+	// before the grey-cloud lb records and the ACME issuers exist.
+	dh := handler.NewDomainHandler(db, cfg.AppEnv, cfg.ClusterDomain, cfg.ClusterIngressIP, cfg.CustomDomainEnabled)
+	domains := v1.Group("/domains",
+		middleware.AuthRequired(cfg.JWTSecret, middleware.CookieUser),
+		middleware.RequireRole(model.RoleUser),
+		dh.Enabled,
+	)
+	{
+		domains.GET("", dh.List)
+		domains.POST("", dh.Create)
+		// Both of these perform live DNS lookups, so they share one limit —
+		// and the portal polls the first every 30s by design.
+		resolveLimit := middleware.RateLimit(40, time.Minute)
+		domains.GET("/:id", resolveLimit, dh.Get)
+		domains.POST("/:id/verify", resolveLimit, dh.Verify)
+		domains.DELETE("/:id", dh.Delete)
 	}
 
 	return r

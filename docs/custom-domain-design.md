@@ -12,10 +12,9 @@ Two things ride along in the same work:
   `dids.`, which is the farm's own flagship stack and the mediator + DID host
   that `vta_only` sessions point at — §3.3.
 
-> **Status: phase 1 shipped, the rest is specification.** The architecture
-> decisions are settled (§16.1); §16.3 lists what is deliberately parked.
-> §17 tracks what is built — the `dev-` rename and `GET /setup/domain-info`
-> landed on 2026-07-26; nothing from phase 2 onward exists yet.
+> **Status: phases 1–3 shipped; phase 4 (TLS) is specification.** The
+> architecture decisions are settled (§16.1); §16.3 lists what is deliberately
+> parked. §17 tracks what is built.
 
 Companion: [`vtafarm/docs/custom-domain-frontend.md`](../../vtafarm/docs/custom-domain-frontend.md).
 
@@ -1158,25 +1157,26 @@ nobody can write a TXT record into a public suffix they don't control.
 
 | File | Change |
 | --- | --- |
-| ✅ `internal/setup/subdomain.go` (+ test) | `EnvPrefix`, rewritten `componentHost`, `CNAMETarget`; `FixedHosts` still to come |
-| ✅ `internal/handler/setup.go` | `DomainInfo`; later, `domain_id` / `label` binding and validation |
-| ✅ `internal/router/router.go` | `GET /setup/domain-info`; later, the rest |
+| ✅ `internal/setup/subdomain.go` (+ test) | `EnvPrefix`, rewritten `componentHost`, `CNAMETarget`, `FixedHosts` |
+| ✅ `internal/setup/domain.go` (+ test) | new — normalisation, validation, token minting, `CustomHosts` (§13) |
+| ✅ `internal/handler/setup.go` | `DomainInfo`; `domain_id` / `label` binding and validation |
+| ✅ `internal/router/router.go` | all of the routes |
 | ✅ `internal/apidocs/openapi.yaml` | document all of them |
-| `internal/model/domain.go` | new — `Domain` model |
-| `internal/model/setup_session.go` | `DomainID`, `DomainType`, constants, helpers |
-| `migrations/000021_domains.{up,down}.sql` | new |
-| `internal/dnscheck/checker.go` (+ test) | new — TXT + CNAME resolution (§6.4) |
-| `internal/handler/domain.go` | new — the six routes in §10.1 |
-| `internal/handler/admin_platform_stack.go` | new — §10.1's two admin routes, incl. the system account (§3.3.6) |
-| `internal/handler/setup_fullstack.go` | fixed-label branch of create; teardown branch; new response fields |
+| ✅ `internal/model/domain.go` | new — `Domain` model |
+| ✅ `internal/model/setup_session.go` | `DomainID`, `DomainType`, constants, helpers |
+| ✅ `migrations/000021_domains.{up,down}.sql` | new |
+| ✅ `internal/dnscheck/checker.go` (+ test) | new — TXT + CNAME resolution (§6.4) |
+| ✅ `internal/handler/domain.go` | new — the five user routes in §10.1 |
+| ✅ `internal/handler/admin_platform_stack.go` | new — §10.1's two admin routes, incl. the system account (§3.3.6) |
+| ✅ `internal/handler/setup_fullstack.go` | fixed-label branch of create; teardown branch; new response fields |
+| ✅ `internal/config/config.go` | two new vars (§12) |
+| ✅ `CLAUDE.md`, `.env.example` | env table, routes, structure |
 | `internal/setup/orchestrator_fullstack.go` | `dns_wait`, `tls_provision` |
 | `internal/k8s/component_resources.go` | `ComponentIngressSpec` + `tls:` block |
 | `internal/k8s/certificates.go` | new — create/poll/delete the session Certificate |
 | `internal/k8s/fullstack_names.go` | `FSTLSSecret` |
-| `internal/config/config.go` | two new vars (§12) |
 | `helm/vtafarm-api/templates/.../clusterrole.yaml` | `cert-manager.io/certificates` |
 | `k8s/tls/clusterissuer-http01.yaml` | new (+ staging twin) |
-| `CLAUDE.md`, `.env.example` | env table, routes, structure |
 
 `setup_vtc.go` holds only `ReissueVtcInstall` / `AckVtcInstall`; the
 create path is `createFullStack` in `setup_fullstack.go`, which is where the
@@ -1220,13 +1220,35 @@ fixed-label branch goes.
 
 | Phase | Contents | Ships independently |
 | --- | --- | --- |
-| **0** | `lb` + `dev-lb` grey-cloud records; both ClusterIssuers; ARI enabled | yes — **not done**, and nothing before phase 3 needs it |
-| **1** | `dev-` rename + tests + `GET /setup/domain-info` + frontend hint fix | ✅ **done 2026-07-26** (`faff4af`; frontend hint fix outstanding) |
-| **2** | `domains` table, `FixedHosts`, single-`label` handling, **`platform` domain end to end** | **yes — and this is the milestone that matters** |
-| **3** | `internal/dnscheck`, the Domains routes, verification | yes |
-| **4** | Certificate creation, `tls_provision`, RBAC, teardown branch | completes the backend |
+| **0** | `lb` + `dev-lb` grey-cloud records; both ClusterIssuers; ARI enabled | yes — **still not done**; it is what `CUSTOM_DOMAIN_ENABLED` waits on |
+| ✅ **1** | `dev-` rename + tests + `GET /setup/domain-info` + frontend hint fix | done 2026-07-26 (`faff4af`) |
+| ✅ **2** | `domains` table, `FixedHosts`, single-`label` handling, **`platform` domain end to end** | done 2026-07-26 (`ee8d0b6`) — the milestone that mattered |
+| ✅ **3** | `internal/dnscheck`, the Domains routes, verification | done 2026-07-26 |
+| **4** | Certificate creation, `dns_wait` + `tls_provision`, RBAC, teardown branch | completes the backend |
 | **5** | Frontend (companion doc) | needs 1–4 |
-| **6** | Polish: Cloudflare-proxy detection, admin domain release | optional |
+| **6** | Polish: admin domain release | optional |
+
+> **Phase 3 notes.**
+>
+> - **Ships behind `CUSTOM_DOMAIN_ENABLED`, default off.** Every
+>   `/api/v1/domains` route answers 404 until phase 0 exists, because without
+>   the grey-cloud `lb` records no verification can ever pass.
+> - **`GET /domains/:id` resolves live and promotes to verified**, so the
+>   portal's 30s poll shows a ✓ appearing on its own. `POST .../verify` is the
+>   same operation behind the button. A verified domain then performs no lookups
+>   at all — §6.2's "no periodic re-verification" falls straight out of that.
+> - **Cloudflare-proxy detection landed early** (was phase 6). It is fifteen
+>   lines against a static IP range list, and without it the most common failure
+>   in the whole feature reads as a bare IP mismatch.
+> - **Two admin-cookie twins were added** that the design didn't anticipate:
+>   `GET /admin/setup/domain-info` and `GET /admin/setup-sessions/:id/logs`. The
+>   platform stack is owned by a passkey-less system account, so the admin panel
+>   could otherwise neither name its hostnames before creating it nor watch it
+>   provision.
+> - **`vta_name`/`vtc_name` uniqueness checks are now scoped to
+>   `domain_type = 'managed'`**, matching the partial indexes migration 000021
+>   created. Without that the handler would answer 409 for a name the database
+>   would have accepted.
 
 **Phase 2 is the one to aim for first.** Standing up the platform stack at
 `vta.firstperson.dev` exercises the entire fixed-label code path — new

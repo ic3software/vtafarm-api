@@ -147,6 +147,36 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 	})
 }
 
+// AdminSessionLogs — GET /api/v1/admin/setup-sessions/:id/logs (admin only).
+//
+// The admin-cookie twin of GET /setup/:id/logs, differing only in the lookup:
+// unique_id alone, with no user_id filter. It exists because the platform stack
+// is owned by a passkey-less system account — nobody can ever hold that user's
+// cookie, so without this route the farm's own stack is the one session whose
+// provisioning nobody can watch.
+func (h *SetupHandler) AdminSessionLogs(c *gin.Context) {
+	publicID := c.Param("id")
+
+	var session model.SetupSession
+	if err := h.db.Where("unique_id = ?", publicID).First(&session).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+		return
+	}
+
+	if h.k8s == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "k8s not configured"})
+		return
+	}
+	if !session.IsFullStack() {
+		// vta_only's log sources are keyed to statuses the admin panel has no
+		// view for; there is no caller for it and no reason to duplicate it.
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "admin log streaming covers full_stack sessions only"})
+		return
+	}
+
+	h.logsFullStack(c, &session)
+}
+
 // AdminDeleteSession — DELETE /api/v1/admin/setup-sessions/:id (admin only).
 // Tears down any user's session, identified by unique_id alone — the one
 // difference from the user-facing DELETE /setup/:id, which is scoped to the
