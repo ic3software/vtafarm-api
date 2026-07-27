@@ -1038,21 +1038,52 @@ func (o *Orchestrator) fsDeployVta(ctx context.Context, ns string, s *model.Setu
 
 // ── Resume ───────────────────────────────────────────────────────────────────
 
-// resumeFullStack re-attaches goroutines for full_stack sessions interrupted
-// mid-run at startup. Every step is idempotent (AlreadyExists ignored,
-// WaitForJob re-attaches by name; the VTC context grant tolerates its
-// Conflict case), so resuming just restarts the relevant phase from its top —
-// see plan decision #3.
-func (o *Orchestrator) resumeFullStack() {
-	preGate := []string{
-		"dns_provision", "env_provision", "k8s_provision", "step_vta_setup",
+// Every status a full_stack session can hold while work is still owed on it,
+// split by which entry point picks it back up. A status missing from both is
+// not a cosmetic gap: nothing re-attaches a goroutine for it, so the session
+// stops dead — and stops *silently*, because the step budgets that would
+// eventually fail it (fsCertWaitBudget and friends) live inside the goroutine
+// that no longer exists. It neither finishes nor fails.
+//
+// That is not hypothetical. dns_wait and tls_provision were both absent here
+// for exactly that reason — one renamed from dns_provision without updating
+// this list, one added without it — and both happen to be the custom-domain
+// steps, so only custom domains could hang. TestResumeCoversEveryStatus pins
+// the invariant so the next added step cannot repeat it.
+//
+// Keep these in pipeline order; it is how you read them against runFullStack.
+var (
+	// fsResumePreGate: before awaiting_admin_did, so Start re-runs the pipeline
+	// from its top. Safe because every step is idempotent — AlreadyExists is
+	// ignored, WaitForJob re-attaches by name, the VTC context grant tolerates
+	// its Conflict case (plan decision #3).
+	fsResumePreGate = []string{
+		"dns_wait", "env_provision", "k8s_provision", "tls_provision",
+		"step_vta_setup",
 		"step_mediator_p1", "step_mediator_reprov", "step_mediator_p2",
 		"step_dids_p1", "step_dids_provision", "step_dids_p2", "step_dids_invite",
 		"step_dids_load_did", "deploy_dids", "deploy_mediator",
 		"step_vta_register_dids",
 	}
+
+	// fsResumePostGate: past the admin DID gate, so Provision continues from
+	// there rather than rebuilding what already exists.
+	fsResumePostGate = []string{
+		"step_import_admin_did", "deploy_vta",
+		"step_vtc_setup_key", "step_vtc_acl_grant", "step_vtc_setup", "deploy_vtc",
+	}
+
+	// fsResumeTerminal: nothing is owed. awaiting_admin_did is only terminal
+	// while admin_did is empty — resumeFullStack queries that case separately,
+	// since supplying the DID is what makes it resumable.
+	fsResumeTerminal = []string{"awaiting_admin_did", "running", "failed"}
+)
+
+// resumeFullStack re-attaches goroutines for full_stack sessions interrupted
+// mid-run at startup.
+func (o *Orchestrator) resumeFullStack() {
 	var inFlight []model.SetupSession
-	if err := o.db.Where("mode = ? AND status IN ?", model.ModeFullStack, preGate).Find(&inFlight).Error; err != nil {
+	if err := o.db.Where("mode = ? AND status IN ?", model.ModeFullStack, fsResumePreGate).Find(&inFlight).Error; err != nil {
 		log.Printf("[orchestrator] resume full_stack: query failed: %v", err)
 	}
 	for _, s := range inFlight {
@@ -1060,12 +1091,8 @@ func (o *Orchestrator) resumeFullStack() {
 		o.Start(s.ID)
 	}
 
-	postGate := []string{
-		"step_import_admin_did", "deploy_vta",
-		"step_vtc_setup_key", "step_vtc_acl_grant", "step_vtc_setup", "deploy_vtc",
-	}
 	var finishing []model.SetupSession
-	if err := o.db.Where("mode = ? AND status IN ?", model.ModeFullStack, postGate).Find(&finishing).Error; err != nil {
+	if err := o.db.Where("mode = ? AND status IN ?", model.ModeFullStack, fsResumePostGate).Find(&finishing).Error; err != nil {
 		log.Printf("[orchestrator] resume full_stack: query failed: %v", err)
 	}
 	for _, s := range finishing {
