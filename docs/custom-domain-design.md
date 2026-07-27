@@ -1171,12 +1171,12 @@ nobody can write a TXT record into a public suffix they don't control.
 | ✅ `internal/handler/setup_fullstack.go` | fixed-label branch of create; teardown branch; new response fields |
 | ✅ `internal/config/config.go` | two new vars (§12) |
 | ✅ `CLAUDE.md`, `.env.example` | env table, routes, structure |
-| `internal/setup/orchestrator_fullstack.go` | `dns_wait`, `tls_provision` |
-| `internal/k8s/component_resources.go` | `ComponentIngressSpec` + `tls:` block |
-| `internal/k8s/certificates.go` | new — create/poll/delete the session Certificate |
-| `internal/k8s/fullstack_names.go` | `FSTLSSecret` |
-| `helm/vtafarm-api/templates/.../clusterrole.yaml` | `cert-manager.io/certificates` |
-| `k8s/tls/clusterissuer-http01.yaml` | new (+ staging twin) |
+| ✅ `internal/setup/orchestrator_fullstack.go` | `dns_wait`, `tls_provision` |
+| ✅ `internal/k8s/component_resources.go` | `ComponentIngressSpec` + `tls:` block |
+| ✅ `internal/k8s/certificates.go` | new — create/poll/delete the session Certificate |
+| ✅ `internal/k8s/fullstack_names.go` | `FSTLSSecret` |
+| ✅ `helm/vtafarm-api/templates/.../clusterrole.yaml` | `cert-manager.io/certificates` |
+| ✅ `k8s/tls/clusterissuer-http01.yaml` | new (+ staging twin) |
 
 `setup_vtc.go` holds only `ReissueVtcInstall` / `AckVtcInstall`; the
 create path is `createFullStack` in `setup_fullstack.go`, which is where the
@@ -1224,7 +1224,7 @@ fixed-label branch goes.
 | ✅ **1** | `dev-` rename + tests + `GET /setup/domain-info` + frontend hint fix | done 2026-07-26 (`faff4af`) |
 | ✅ **2** | `domains` table, `FixedHosts`, single-`label` handling, **`platform` domain end to end** | done 2026-07-26 (`ee8d0b6`) — the milestone that mattered |
 | ✅ **3** | `internal/dnscheck`, the Domains routes, verification | done 2026-07-26 |
-| **4** | Certificate creation, `dns_wait` + `tls_provision`, RBAC, teardown branch | completes the backend |
+| ✅ **4** | Certificate creation, `dns_wait` + `tls_provision`, RBAC, teardown branch | done 2026-07-26 — backend complete |
 | **5** | Frontend (companion doc) | needs 1–4 |
 | **6** | Polish: admin domain release | optional |
 
@@ -1249,6 +1249,25 @@ fixed-label branch goes.
 >   `domain_type = 'managed'`**, matching the partial indexes migration 000021
 >   created. Without that the handler would answer 409 for a name the database
 >   would have accepted.
+>
+> **Phase 4 notes.**
+>
+> - **`dns_wait` applies to every session, and its pass criteria differ by
+>   kind** (§6.4). Managed and platform records are proxied, so they resolve to
+>   Cloudflare's edge and can never equal `CLUSTER_INGRESS_IP` — for those,
+>   resolving at all is the whole test. Budget 2 minutes: a managed session's
+>   records were created seconds earlier, and a custom domain's were verified
+>   before the session could exist, so this is a sanity check rather than a wait
+>   for anyone to go and edit DNS.
+> - **`tls_provision` does not retry.** Once Let's Encrypt's five failures per
+>   hostname per hour is hit, retrying makes the lockout worse. It fails with a
+>   message naming the two actual causes — a DNS change since verification, or a
+>   CAA record forbidding Let's Encrypt.
+> - **Teardown deletes the Certificate and keeps the Secret** (§9.3
+>   mitigation 1). Namespace deletion collects it when the user's last session
+>   goes.
+> - The `helm` ClusterRole and `CLAUDE.md`'s copy of it are both updated. They
+>   have to stay in sync by hand.
 
 **Phase 2 is the one to aim for first.** Standing up the platform stack at
 `vta.firstperson.dev` exercises the entire fixed-label code path — new

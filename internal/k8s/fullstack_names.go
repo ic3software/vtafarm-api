@@ -14,6 +14,12 @@ func FSMediatorName(sessionID uint) string { return fmt.Sprintf("fs-%d-mediator"
 func FSDidsName(sessionID uint) string     { return fmt.Sprintf("fs-%d-dids", sessionID) }
 func FSVtcName(sessionID uint) string      { return fmt.Sprintf("fs-%d-vtc", sessionID) }
 
+// FSTLSSecret names both the session's Certificate and the Secret it writes —
+// cert-manager takes the secretName from us, so keeping them identical means
+// one name to look up when diagnosing issuance. Custom domains only; managed
+// and platform sessions are served by the cluster wildcard.
+func FSTLSSecret(sessionID uint) string { return fmt.Sprintf("fs-%d-tls", sessionID) }
+
 // Per-step setup Job (+ matching ConfigMap) names, in §6 order.
 func FSJobVtaSetup(sessionID uint) string   { return fmt.Sprintf("fs-%d-vta-setup", sessionID) }
 func FSJobMediatorP1(sessionID uint) string { return fmt.Sprintf("fs-%d-mediator-p1", sessionID) }

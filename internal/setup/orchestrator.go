@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/ic3software/vtafarm-api/internal/didhosting"
+	"github.com/ic3software/vtafarm-api/internal/dnscheck"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/model"
 	"github.com/ic3software/vtafarm-api/internal/vault"
@@ -27,17 +28,33 @@ type Orchestrator struct {
 	vault      *vault.Client      // nil when VAULT_ADDR not configured
 	vaultAddr  string             // in-cluster Vault addr rendered into the VTA [secrets] block
 	didHosting *didhosting.Client // nil when DID_HOSTING_CONTROL_URL not configured
+	// ingressIP is what a custom domain's records must resolve to; acmeIssuer
+	// names the cert-manager ClusterIssuer signing its certificate. Both are
+	// used only by the custom-domain branches — dns_wait and tls_provision.
+	ingressIP  string
+	acmeIssuer string
+	dns        *dnscheck.Checker
 	mu         sync.Mutex
 	cancels    map[uint]context.CancelFunc
 }
 
-func NewOrchestrator(db *gorm.DB, k8sClient *k8s.Client, vaultClient *vault.Client, vaultAddr string, dhClient *didhosting.Client) *Orchestrator {
+func NewOrchestrator(
+	db *gorm.DB,
+	k8sClient *k8s.Client,
+	vaultClient *vault.Client,
+	vaultAddr string,
+	dhClient *didhosting.Client,
+	ingressIP, acmeIssuer string,
+) *Orchestrator {
 	return &Orchestrator{
 		db:         db,
 		k8s:        k8sClient,
 		vault:      vaultClient,
 		vaultAddr:  vaultAddr,
 		didHosting: dhClient,
+		ingressIP:  ingressIP,
+		acmeIssuer: acmeIssuer,
+		dns:        dnscheck.New(),
 		cancels:    make(map[uint]context.CancelFunc),
 	}
 }

@@ -260,6 +260,16 @@ edits DNS.
   and **may be deleted once verified** — it's checked at verification time only.
 - **We never touch the user's DNS.** Not on create, not on teardown — which is
   why the UI must tell them to remove the four CNAMEs themselves.
+- **One certificate covers all four names**, issued by cert-manager over
+  HTTP-01 (`ACME_CLUSTER_ISSUER`). The four Ingresses share its Secret and carry
+  **no** `cert-manager.io/cluster-issuer` annotation — with the annotation
+  *and* our own Certificate, ingress-shim would create a second one for the same
+  Secret and the two would re-issue in a loop.
+- **Teardown deletes the Certificate but keeps the Secret.** Recreating a
+  session on the same domain requests the identical four names, which is what
+  Let's Encrypt's unraisable "5 per identical set per 7 days" limit counts;
+  leaving the Secret lets a rebuild reuse the certificate for free. The
+  namespace collects it when the user's last session goes.
 - **The CNAME target is derived, never configured** (`setup.CNAMETarget`). It's a
   name rather than the ingress IP because the user's records are effectively
   permanent, so the cluster IP has to be able to change without anyone editing
@@ -392,4 +402,7 @@ rules:
 - apiGroups: ["storage.k8s.io"]
   resources: ["storageclasses"]
   verbs: ["get", "list"]
+- apiGroups: ["cert-manager.io"]
+  resources: ["certificates"]
+  verbs: ["get", "list", "watch", "create", "delete"]
 ```

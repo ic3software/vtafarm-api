@@ -1,0 +1,58 @@
+# Issuers for CUSTOM domains — zones our users own, which we cannot answer a
+# DNS-01 challenge for. HTTP-01 works here precisely because the user has
+# already pointed the hostname at our ingress: that record IS the proof of
+# control, and nobody without it can obtain the certificate.
+#
+# Distinct from k8s/tls/clusterissuer.yaml, which issues the *.firstperson.dev
+# wildcard over DNS-01 against our own Cloudflare zone. That one covers every
+# managed and platform hostname, so those never reach these issuers at all.
+#
+# The email is OURS, not the customer's. ACME validates control of a name, not
+# ownership of it — we are the subscriber, and putting a customer's address here
+# would misrepresent who operates the certificate. (Let's Encrypt stopped
+# sending expiry notifications in June 2025 anyway; expiry monitoring belongs in
+# our own /api/v1/monitor/* endpoints.)
+#
+#   kubectl apply -f k8s/tls/clusterissuer-http01.yaml
+#
+# Select between them with ACME_CLUSTER_ISSUER. **Development must use the
+# staging issuer** — see the note on it below.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-http01
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: admin@firstperson.dev
+    privateKeySecretRef:
+      name: letsencrypt-http01
+    solvers:
+    - http01:
+        ingress:
+          class: nginx
+---
+# The staging twin. ACME_CLUSTER_ISSUER must name THIS one in development.
+#
+# Two production limits make that non-optional, and neither can be raised:
+# five authorization failures per hostname per hour, and five certificates per
+# identical set of names per week. Custom domains always request the same four
+# names, so re-attaching a misconfigured domain a few times in an hour is enough
+# to lock a real customer hostname out for days.
+#
+# Staging's certificates are not publicly trusted — browsers will warn. That is
+# the point: it exercises the whole path without spending anything real.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-http01-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: admin@firstperson.dev
+    privateKeySecretRef:
+      name: letsencrypt-http01-staging
+    solvers:
+    - http01:
+        ingress:
+          class: nginx

@@ -332,6 +332,18 @@ func (h *SetupHandler) deleteFullStack(c *gin.Context, session *model.SetupSessi
 		h.k8s.DeleteComponentResources(ctx, ns, k8s.FSMediatorName(session.ID))
 		h.k8s.DeleteComponentResources(ctx, ns, k8s.FSDidsName(session.ID))
 		h.k8s.DeleteComponentResources(ctx, ns, k8s.FSVtcName(session.ID))
+
+		// The Certificate goes; **its Secret deliberately stays**. Recreating a
+		// session on the same domain asks for the exact same four names, which
+		// is what Let's Encrypt's "5 per identical set per 7 days" limit counts
+		// — and that one cannot be raised. Leaving the Secret means a rebuild
+		// finds a valid certificate and cert-manager reuses it, at no ACME cost.
+		// Namespace deletion below collects it when the user's last session goes.
+		if session.DomainType == model.DomainCustom {
+			if err := h.k8s.DeleteSessionCert(ctx, ns, k8s.FSTLSSecret(session.ID)); err != nil {
+				log.Printf("[setup] warn: failed to delete certificate for session %d: %v", session.ID, err)
+			}
+		}
 	}
 
 	if h.orch != nil {
