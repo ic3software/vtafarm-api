@@ -146,6 +146,12 @@ func Setup(
 		// to a passkey-less system account, so its provisioning is otherwise
 		// unwatchable — nobody can hold that user's cookie.
 		adminAuth.GET("/admin/setup-sessions/:id/logs", sh.AdminSessionLogs)
+		// Resumes a session parked at awaiting_admin_did. Same reason as the
+		// logs route: the platform stack's owner has no passkey, so the
+		// user-facing POST /setup/:id/admin can never be called for it — and
+		// the admin DID can't be supplied up front, since `pnm setup` mints it
+		// from a VTA DID the pipeline hasn't produced yet.
+		adminAuth.POST("/admin/setup-sessions/:id/admin", sh.AdminProvisionAdmin)
 		// The farm's own flagship stack at vta.{CLUSTER_DOMAIN} and friends —
 		// the mediator and DID host vta_only sessions point at. Created whole
 		// (domain + DNS + session) by one action; the only route that can mint

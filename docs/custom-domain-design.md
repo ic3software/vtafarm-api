@@ -1252,6 +1252,18 @@ fixed-label branch goes.
 >   created. Without that the handler would answer 409 for a name the database
 >   would have accepted.
 >
+> **Correction to phase 2 (2026-07-26).** Phase 2 made `admin_did` required on
+> `POST /admin/platform-stack`, reasoning that the pipeline would otherwise park
+> at `awaiting_admin_did` with no way to resume it — the only route that does is
+> `POST /setup/:id/admin`, which filters by `user_id`, and the platform stack's
+> owner has no passkey. **The problem was real; the fix was impossible to
+> satisfy.** `pnm setup` mints the admin DID locally *from the VTA DID*, which
+> does not exist until `step_vta_setup` has run — so it can never be known at
+> create time. Replaced by `POST /admin/setup-sessions/:id/admin`, the
+> admin-cookie twin that looks a session up by `unique_id` alone. The platform
+> stack now follows exactly the sequence a user's session does; the only
+> difference is that any admin may complete it.
+>
 > **Phase 4 notes.**
 >
 > - **`dns_wait` applies to every session, and its pass criteria differ by

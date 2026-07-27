@@ -1634,6 +1634,14 @@ paths:
         `*.{CLUSTER_DOMAIN}` wildcard already covers these names, so the stack
         consumes no Let's Encrypt quota.
 
+        From here it runs **exactly the sequence a user's session does** and
+        parks at `awaiting_admin_did` like any other `full_stack`. There is no
+        `admin_did` on this request: that DID is minted locally by `pnm setup`
+        from the VTA DID, which does not exist until `step_vta_setup` has run.
+        Resume it with `POST /admin/setup-sessions/{id}/admin` — the only
+        difference from a user's session is that **any admin** may complete it,
+        rather than the one owning user.
+
         Notes:
         - `beta_access` does not apply — that gate is for users.
         - Cluster capacity does apply; 503 when the stack would not fit.
@@ -1649,7 +1657,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [admin_did, vta_image, mediator_image, dids_image, vtc_image]
+              required: [vta_image, mediator_image, dids_image, vtc_image]
               properties:
                 label:
                   type: string
@@ -1660,15 +1668,6 @@ paths:
                     (`did:webvh:<scid>:dids.{CLUSTER_DOMAIN}:<label>-vta`) and is
                     what `DELETE /admin/setup-sessions/{id}` asks you to confirm.
                     Stored as both `vta_name` and `vtc_name`.
-                admin_did:
-                  type: string
-                  description: |
-                    **Required here**, unlike on `POST /setup` where it may be
-                    supplied later. Without it the pipeline parks at
-                    `awaiting_admin_did`, and the only route that resumes a gated
-                    session is the user-facing `POST /setup/{id}/admin`, which
-                    filters by `user_id` — so nobody could ever call it for the
-                    system account and the stack would strand permanently.
                 vta_image: { type: string }
                 mediator_image: { type: string }
                 dids_image: { type: string }
@@ -1779,6 +1778,18 @@ paths:
                       mediator: { type: string }
                       dids: { type: string }
                       vtc: { type: string }
+                  collected:
+                    type: object
+                    description: |
+                      DIDs minted by the pipeline. `vta_did` is the input to
+                      `pnm setup` for the admin DID this stack parks waiting
+                      for, so it has to be on screen before that DID can be
+                      asked for.
+                    properties:
+                      vta_did: { type: string }
+                      mediator_did: { type: string }
+                      did_hosting_did: { type: string }
+                      vtc_did: { type: string }
                   config_values:
                     type: object
                     description: Copy into the environment once the stack is running. Empty strings until the pipeline mints them.
@@ -1873,6 +1884,82 @@ paths:
                 $ref: "#/components/schemas/Error"
         "503":
           description: Image source not configured for the requested component
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/admin/setup-sessions/{id}/admin:
+    post:
+      summary: Resume a session waiting for its admin DID (admin)
+      description: |
+        The admin-cookie twin of `POST /setup/{id}/admin`, differing only in the
+        lookup: `unique_id` alone, with no `user_id` filter.
+
+        It exists for the platform stack. Every `full_stack` session parks at
+        `awaiting_admin_did` — the DID is minted locally by `pnm setup` from the
+        VTA DID, so it cannot be supplied before the pipeline has produced that
+        DID. The platform stack is owned by a passkey-less system account, so
+        nobody can hold the cookie the user-facing route requires; without this
+        one it could never be resumed by anyone.
+
+        Take `collected.vta_did` from `GET /admin/platform-stack` (or
+        `GET /admin/setup-sessions`) as the input to `pnm setup`.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The session's 8-char `unique_id`.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [admin_did]
+              properties:
+                admin_did:
+                  type: string
+                  example: "did:key:z6Mk..."
+      responses:
+        "202":
+          description: Accepted; the pipeline has resumed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: provisioning }
+        "400":
+          description: admin_did missing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: The session isn't waiting for an admin DID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: k8s/orchestrator not configured
           content:
             application/json:
               schema:

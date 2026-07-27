@@ -80,13 +80,13 @@ type createPlatformStackRequest struct {
 	// Label defaults to platformLabelDefault. DNS-safe because it still lands
 	// in did:webvh paths and URLs, even though no hostname uses it.
 	Label string `json:"label"`
-	// AdminDid is required, unlike on POST /setup where it may be supplied
-	// later. The full_stack pipeline parks at awaiting_admin_did without it,
-	// and the only route that resumes a gated session is the user-facing
-	// POST /setup/:id/admin — which filters by user_id and so can never be
-	// called for an account with no passkey. Omitting it would strand the
-	// stack permanently.
-	AdminDid      string `json:"admin_did"      binding:"required"`
+	// There is deliberately no admin_did here. The stack follows exactly the
+	// same sequence a user's session does — provision, park at
+	// awaiting_admin_did, take the DID afterwards — because the admin DID is
+	// minted locally by `pnm setup` from the VTA DID, which does not exist
+	// until step_vta_setup has run. The only thing that differs from a user's
+	// session is who may resume it: any admin, through
+	// POST /admin/setup-sessions/:id/admin, rather than the one owning user.
 	VtaImage      string `json:"vta_image"      binding:"required"`
 	MediatorImage string `json:"mediator_image" binding:"required"`
 	DidsImage     string `json:"dids_image"     binding:"required"`
@@ -103,6 +103,10 @@ type createPlatformStackRequest struct {
 // does not apply (that gate is for users); cluster capacity does — the stack
 // consumes the same resources as any other full stack, and an admin needs to
 // know if it will not fit rather than have it silently over-commit.
+//
+// From here the session runs the ordinary full_stack pipeline and parks at
+// awaiting_admin_did like any other. The one difference is who resumes it:
+// every admin, not one owning user.
 func (h *SetupHandler) CreatePlatformStack(c *gin.Context) {
 	if !h.cfRequired(c) {
 		return
@@ -237,7 +241,6 @@ func (h *SetupHandler) CreatePlatformStack(c *gin.Context) {
 		MediatorImage:    req.MediatorImage,
 		DidsImage:        req.DidsImage,
 		VtcImage:         req.VtcImage,
-		AdminDid:         req.AdminDid,
 		Portable:         portable,
 		PreRotationCount: preRotationCount,
 	}
@@ -328,6 +331,15 @@ func (h *SetupHandler) GetPlatformStack(c *gin.Context) {
 		"label":  session.VtaName,
 		"domain": domain.Domain,
 		"urls":   platformURLs(&session),
+		// vta_did is what the admin feeds to `pnm setup` locally to mint the
+		// admin DID this stack parks waiting for — so the page can't ask for
+		// that DID without showing this one first.
+		"collected": gin.H{
+			"vta_did":         session.VtaDid,
+			"mediator_did":    session.MediatorDid,
+			"did_hosting_did": session.DIDHostingDid,
+			"vtc_did":         session.VtcDid,
+		},
 		"images": gin.H{
 			"vta":      session.VtaImage,
 			"mediator": session.MediatorImage,

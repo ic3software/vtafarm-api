@@ -154,6 +154,7 @@ To create additional admins, an authenticated admin calls `POST /api/v1/admin/ad
 | `GET` | `/api/v1/admin/setup-sessions` | admin | List all users' setup sessions (paginated, 20/page) |
 | `DELETE` | `/api/v1/admin/setup-sessions/:id` | admin | Delete any user's session — same teardown as `DELETE /setup/:id`, but not scoped to the caller. Irreversible; the UI requires typing the session id to confirm. Deleting the **platform stack** additionally requires `{"confirm": "<label>"}` in the body — enforced by the API, not the UI |
 | `GET` | `/api/v1/admin/setup-sessions/:id/logs` | admin | Stream any session's setup logs (`full_stack` only). Exists for the platform stack: it's owned by a passkey-less system account, so nobody can hold the cookie the user-facing route requires |
+| `POST` | `/api/v1/admin/setup-sessions/:id/admin` | admin | Resume a session parked at `awaiting_admin_did`. Same reason as the logs route — and the platform stack always parks there, since the admin DID is minted from a VTA DID the pipeline hasn't produced yet |
 | `POST` | `/api/v1/admin/platform-stack` | admin | Create the platform stack: domain row + 4 proxied DNS records + `full_stack` session, in one action. The only route that mints a `domains` row for our own zone |
 | `GET` | `/api/v1/admin/platform-stack` | admin | Its state, plus the `config_values` to copy into the environment once it's running |
 | `GET` | `/api/v1/admin/setup/domain-info` | admin | Admin-cookie twin of `GET /setup/domain-info` — the platform stack page names its hostnames before they exist |
@@ -305,10 +306,13 @@ arrives here once an admin copies it into configuration.
   to `users` and derives the namespace, while admins are a separate table. The
   account is a `users` row with `unique_id = 'platform'`, created on first use,
   with no passkey and no email. `GET /admin/users` flags it as `system: true`.
-- **`admin_did` is required at create time.** The pipeline parks at
-  `awaiting_admin_did` without it, and the only route that resumes a gated
-  session (`POST /setup/:id/admin`) filters by `user_id` — so nobody could call
-  it for a passkey-less account and the stack would strand permanently.
+- **The admin DID is supplied afterwards, exactly as for a user's session.**
+  `POST /admin/platform-stack` takes no `admin_did`: that DID is minted locally
+  by `pnm setup` from the VTA DID, which doesn't exist until `step_vta_setup`
+  has run. The stack parks at `awaiting_admin_did` like any other `full_stack`.
+  The one difference is who resumes it — **any admin**, through
+  `POST /admin/setup-sessions/:id/admin`, because a passkey-less owner means the
+  user-facing route can never be called for it.
 - **No verification, no ACME, no Let's Encrypt quota** — the zone is ours and
   the `*.firstperson.dev` wildcard already covers the names.
 - `beta_access` doesn't apply (it's a user gate); cluster capacity does.

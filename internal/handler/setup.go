@@ -877,15 +877,40 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 
 // POST /api/v1/setup/:id/admin
 func (h *SetupHandler) ProvisionAdmin(c *gin.Context) {
-	publicID := c.Param("id")
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 
 	var session model.SetupSession
-	if err := h.db.Where("unique_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
+	if err := h.db.Where("unique_id = ? AND user_id = ?", c.Param("id"), userID).First(&session).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
+	h.provisionAdmin(c, &session)
+}
 
+// AdminProvisionAdmin — POST /api/v1/admin/setup-sessions/:id/admin (admin only).
+//
+// The admin-cookie twin of ProvisionAdmin, differing only in the lookup:
+// unique_id alone, with no user_id filter.
+//
+// It exists for the platform stack, which is owned by a passkey-less system
+// account — nobody can ever hold that user's cookie, so without this route a
+// gated platform stack could never be resumed by anyone. An earlier attempt to
+// dodge that by requiring admin_did at create time was impossible to satisfy:
+// the admin DID is minted locally by `pnm setup` from the VTA DID, which does
+// not exist until the pipeline has already run and parked.
+func (h *SetupHandler) AdminProvisionAdmin(c *gin.Context) {
+	var session model.SetupSession
+	if err := h.db.Where("unique_id = ?", c.Param("id")).First(&session).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+		return
+	}
+	h.provisionAdmin(c, &session)
+}
+
+// provisionAdmin resumes a session parked waiting for its PNM admin DID.
+// Ownership is the caller's business — both routes above funnel through here so
+// the state machine has one entry point.
+func (h *SetupHandler) provisionAdmin(c *gin.Context, session *model.SetupSession) {
 	readyStatus := "vta_setup_complete"
 	if session.IsFullStack() {
 		readyStatus = "awaiting_admin_did"
