@@ -44,8 +44,8 @@ var (
 		{Name: "vta", CPUMillis: 10, MemBytes: 64 * mi, StorageBytes: 200 * mi},
 	}}
 
-	// FullStack is the full_stack_with_vtc mode — the plain full_stack mode is
-	// retired for new sessions, so capacity planning targets the VTC variant.
+	// FullStack covers all four components — the VTC is always provisioned,
+	// so there is no lighter full-stack shape to plan for.
 	FullStack = Mode{Name: "full_stack", Components: []Component{
 		{Name: "dids", CPUMillis: 10, MemBytes: 128 * mi, StorageBytes: 200 * mi},
 		{Name: "mediator", CPUMillis: 50, MemBytes: 256 * mi, StorageBytes: gi},

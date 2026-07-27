@@ -46,21 +46,15 @@ func VtaHost(env, vtaName string) string {
 	return componentHost(env, "vta", vtaName)
 }
 
-// FullStackHosts derives the three full_stack subdomains (vta, mediator,
-// dids) under domain from the session's vta_name: vta[-local]-<name> /
-// mediator[-local]-<name> / dids[-local]-<name>.
-func FullStackHosts(env, vtaName string) (vtaSub, mediatorSub, didsSub string) {
+// FullStackHosts derives the four full_stack subdomains under domain:
+// vta[-local]-<vtaName> / mediator[-local]-<vtaName> / dids[-local]-<vtaName>
+// all share the session's vta_name, while the VTC uses its own vtc_name so the
+// community's URL reads independently of the VTA it sits on.
+func FullStackHosts(env, vtaName, vtcName string) (vtaSub, mediatorSub, didsSub, vtcSub string) {
 	return componentHost(env, "vta", vtaName),
 		componentHost(env, "mediator", vtaName),
-		componentHost(env, "dids", vtaName)
-}
-
-// FullStackWithVtcHosts derives the four full_stack_with_vtc subdomains — the
-// same three FullStackHosts produces plus vtc[-local]-<vtcName>, which uses
-// the VTC's own name rather than the vta_name.
-func FullStackWithVtcHosts(env, vtaName, vtcName string) (vtaSub, mediatorSub, didsSub, vtcSub string) {
-	vtaSub, mediatorSub, didsSub = FullStackHosts(env, vtaName)
-	return vtaSub, mediatorSub, didsSub, componentHost(env, "vtc", vtcName)
+		componentHost(env, "dids", vtaName),
+		componentHost(env, "vtc", vtcName)
 }
 
 // DID path components (did:webvh:<scid>:<dids host>:<path>) for the DIDs

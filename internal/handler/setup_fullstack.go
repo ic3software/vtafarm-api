@@ -39,11 +39,30 @@ func strVal(p *string) string {
 }
 
 // createFullStack handles POST /api/v1/setup for mode=full_stack — creates
-// three Cloudflare A-records (vta/mediator/dids) up front, persists the
+// four Cloudflare A-records (vta/mediator/dids/vtc) up front, persists the
 // session, and starts the orchestrator's full_stack state machine.
 func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest) {
 	if h.k8s == nil || h.orch == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "k8s/orchestrator not configured"})
+		return
+	}
+
+	// vta_name has already been validated by Create; vtc_name is validated
+	// here because it's full_stack's own input. It becomes the vtc-<name>
+	// subdomain, so it gets the same treatment — required, DNS-safe, and
+	// unique across all sessions (vta_only rows carry the column default '').
+	if req.VtcName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "vtc_name is required"})
+		return
+	}
+	if err := setup.ValidateName(req.VtcName); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid vtc_name: " + err.Error()})
+		return
+	}
+	var vtcNameTaken int64
+	h.db.Model(&model.SetupSession{}).Where("vtc_name = ?", req.VtcName).Count(&vtcNameTaken)
+	if vtcNameTaken > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "vtc_name already in use"})
 		return
 	}
 
@@ -56,41 +75,45 @@ func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest) {
 		preRotationCount = *req.PreRotationCount
 	}
 
-	if req.MediatorImage == "" || req.DidsImage == "" {
+	if req.MediatorImage == "" || req.DidsImage == "" || req.VtcImage == "" {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{
-			"error": "full_stack requires mediator_image and dids_image (select from GET /setup/images?component=mediator|dids)",
+			"error": "full_stack requires mediator_image, dids_image and vtc_image (select from GET /setup/images?component=mediator|dids|vtc)",
 		})
 		return
 	}
 
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 
-	// vta_name has already been validated (required, DNS-safe, globally
-	// unique) by Create before dispatching here.
-	vtaSub, mediatorSub, didsSub := setup.FullStackHosts(h.appEnv, req.VtaName)
+	vtaSub, mediatorSub, didsSub, vtcSub := setup.FullStackHosts(h.appEnv, req.VtaName, req.VtcName)
 	vtaFQDN := vtaSub + "." + h.clusterDomain
 	mediatorFQDN := mediatorSub + "." + h.clusterDomain
 	didsFQDN := didsSub + "." + h.clusterDomain
+	vtcFQDN := vtcSub + "." + h.clusterDomain
 
-	recordVta, err := h.cf.CreateARecord(c.Request.Context(), vtaFQDN, h.ingressIP)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create DNS record (vta): " + err.Error()})
-		return
+	// All four records are created up front (design §3) — the rendered
+	// recipes embed the final HTTPS URLs. Roll back everything created so
+	// far on the first failure.
+	var created []string
+	rollback := func() {
+		for _, rec := range created {
+			_ = h.cf.DeleteRecord(c.Request.Context(), rec)
+		}
 	}
-	recordMediator, err := h.cf.CreateARecord(c.Request.Context(), mediatorFQDN, h.ingressIP)
-	if err != nil {
-		_ = h.cf.DeleteRecord(c.Request.Context(), recordVta)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create DNS record (mediator): " + err.Error()})
-		return
-	}
-	recordDids, err := h.cf.CreateARecord(c.Request.Context(), didsFQDN, h.ingressIP)
-	if err != nil {
-		_ = h.cf.DeleteRecord(c.Request.Context(), recordVta)
-		_ = h.cf.DeleteRecord(c.Request.Context(), recordMediator)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create DNS record (dids): " + err.Error()})
-		return
+	records := make(map[string]string, 4)
+	for _, host := range []struct{ label, fqdn string }{
+		{"vta", vtaFQDN}, {"mediator", mediatorFQDN}, {"dids", didsFQDN}, {"vtc", vtcFQDN},
+	} {
+		rec, err := h.cf.CreateARecord(c.Request.Context(), host.fqdn, h.ingressIP)
+		if err != nil {
+			rollback()
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create DNS record (" + host.label + "): " + err.Error()})
+			return
+		}
+		created = append(created, rec)
+		records[host.label] = rec
 	}
 
+	recordMediator, recordDids, recordVtc := records["mediator"], records["dids"], records["vtc"]
 	session := model.SetupSession{
 		UserID: userID,
 		Mode:   model.ModeFullStack,
@@ -98,15 +121,19 @@ func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest) {
 		Domain: h.clusterDomain,
 		// VTA reuses Subdomain/CFRecordID — same fields vta_only uses.
 		Subdomain:         vtaSub,
-		CFRecordID:        recordVta,
+		CFRecordID:        records["vta"],
 		MediatorSubdomain: mediatorSub,
 		DidsSubdomain:     didsSub,
+		VtcSubdomain:      vtcSub,
 		CFRecordMediator:  &recordMediator,
 		CFRecordDids:      &recordDids,
+		CFRecordVtc:       &recordVtc,
 		VtaName:           req.VtaName,
+		VtcName:           req.VtcName,
 		VtaImage:          req.VtaImage,
 		MediatorImage:     req.MediatorImage,
 		DidsImage:         req.DidsImage,
+		VtcImage:          req.VtcImage,
 		AdminDid:          req.AdminDid,
 		Portable:          portable,
 		PreRotationCount:  preRotationCount,
@@ -124,13 +151,15 @@ func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest) {
 		}
 	}
 	if createErr != nil {
-		_ = h.cf.DeleteRecord(c.Request.Context(), recordVta)
-		_ = h.cf.DeleteRecord(c.Request.Context(), recordMediator)
-		_ = h.cf.DeleteRecord(c.Request.Context(), recordDids)
-		// The pre-insert count check races with concurrent creates; the DB
-		// unique index is the real gate.
+		rollback()
+		// The pre-insert count checks race with concurrent creates; the DB
+		// unique indexes are the real gate.
 		if strings.Contains(createErr.Error(), "setup_sessions_vta_name_unique") {
 			c.JSON(http.StatusConflict, gin.H{"error": "vta_name already in use"})
+			return
+		}
+		if strings.Contains(createErr.Error(), "setup_sessions_vtc_name_unique") {
+			c.JSON(http.StatusConflict, gin.H{"error": "vtc_name already in use"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist session"})
@@ -146,19 +175,20 @@ func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest) {
 			"vta":      "https://" + vtaFQDN,
 			"mediator": "https://" + mediatorFQDN,
 			"dids":     "https://" + didsFQDN,
+			"vtc":      "https://" + vtcFQDN,
 		},
 	})
 }
 
 // getFullStack implements GET /api/v1/setup/:id's full_stack response shape
-// (design §12), extended in place for full_stack_with_vtc (vtc design §13):
-// a fourth URL, collected.vtc_did, the reveal-once install credentials, and
-// vtc_install_used.
+// (design §12) — four URLs, the collected DIDs, the reveal-once admin keys and
+// VTC install credentials, and the two ack flags.
 func (h *SetupHandler) getFullStack(c *gin.Context, session *model.SetupSession) {
 	urls := gin.H{
 		"vta":      session.PublicURL(),
 		"mediator": "https://" + session.MediatorFQDN(),
 		"dids":     "https://" + session.DidsFQDN(),
+		"vtc":      "https://" + session.VtcFQDN(),
 	}
 	collected := gin.H{
 		"vta_did":               session.VtaDid,
@@ -166,27 +196,36 @@ func (h *SetupHandler) getFullStack(c *gin.Context, session *model.SetupSession)
 		"did_hosting_did":       session.DIDHostingDid,
 		"mediator_admin_did":    session.MediatorAdminDid,
 		"did_hosting_admin_did": session.DIDHostingAdminDid,
+		"vtc_did":               session.VtcDid,
 	}
 	resp := gin.H{
-		"id":         session.UniqueId,
-		"mode":       session.Mode,
-		"status":     session.Status,
-		"urls":       urls,
-		"collected":  collected,
+		"id":        session.UniqueId,
+		"mode":      session.Mode,
+		"status":    session.Status,
+		"urls":      urls,
+		"collected": collected,
 		// Current images per component — the self-service upgrade UI shows
 		// these as the running versions.
 		"vta_image":      session.VtaImage,
 		"mediator_image": session.MediatorImage,
 		"dids_image":     session.DidsImage,
+		"vtc_image":      session.VtcImage,
 		"created_at":     session.CreatedAt,
 		"updated_at":     session.UpdatedAt,
 	}
 
 	resp["dids_enroll_used"] = session.DidsEnrollUsed
+	resp["vtc_install_used"] = session.VtcInstallUsed
 
 	actionRequired := gin.H{}
 	if session.DidsEnrollURL != "" && !session.DidsEnrollUsed {
 		actionRequired["dids_admin_enroll_url"] = session.DidsEnrollURL
+	}
+	// Single-shot like the dids enroll URL — once acked, stop offering a dead
+	// link; reissue-install mints a fresh pair.
+	if session.VtcInstallURL != "" && !session.VtcInstallUsed {
+		actionRequired["install_url"] = session.VtcInstallURL
+		actionRequired["claim_code"] = session.VtcClaimCode
 	}
 	if session.MediatorAdminKey != "" || session.WebvhAdminKey != "" {
 		actionRequired["reveal_keys_once"] = true
@@ -195,19 +234,6 @@ func (h *SetupHandler) getFullStack(c *gin.Context, session *model.SetupSession)
 		}
 		if session.WebvhAdminKey != "" {
 			resp["webvh_admin_key"] = session.WebvhAdminKey
-		}
-	}
-
-	if session.Mode == model.ModeFullStackWithVtc {
-		urls["vtc"] = "https://" + session.VtcFQDN()
-		collected["vtc_did"] = session.VtcDid
-		resp["vtc_image"] = session.VtcImage
-		resp["vtc_install_used"] = session.VtcInstallUsed
-		// Single-shot like the dids enroll URL — once acked, stop offering a
-		// dead link; reissue-install mints a fresh pair.
-		if session.VtcInstallURL != "" && !session.VtcInstallUsed {
-			actionRequired["install_url"] = session.VtcInstallURL
-			actionRequired["claim_code"] = session.VtcClaimCode
 		}
 	}
 
@@ -228,8 +254,8 @@ func (h *SetupHandler) deleteFullStack(c *gin.Context, session *model.SetupSessi
 	ctx := c.Request.Context()
 
 	if h.cf != nil {
-		// cf_record_vtc is nil outside full_stack_with_vtc, so the empty-skip
-		// covers plain full_stack rows.
+		// Empty-skip covers a session torn down before every record was
+		// created (createFullStack rolls back mid-loop failures itself).
 		for label, rec := range map[string]string{"vta": session.CFRecordID, "mediator": strVal(session.CFRecordMediator), "dids": strVal(session.CFRecordDids), "vtc": strVal(session.CFRecordVtc)} {
 			if rec == "" {
 				continue
@@ -246,19 +272,14 @@ func (h *SetupHandler) deleteFullStack(c *gin.Context, session *model.SetupSessi
 		if h.orch != nil {
 			h.orch.TeardownMediatorVault(ctx, session.UserID, session.ID)
 			h.orch.TeardownDidsVault(ctx, session.UserID, session.ID)
+			h.orch.TeardownVtcVault(ctx, session.UserID, session.ID)
 		}
 
 		h.k8s.DeleteAllComponentJobs(ctx, ns, session.ID)
 		h.k8s.DeleteComponentResources(ctx, ns, k8s.FSVtaName(session.ID))
 		h.k8s.DeleteComponentResources(ctx, ns, k8s.FSMediatorName(session.ID))
 		h.k8s.DeleteComponentResources(ctx, ns, k8s.FSDidsName(session.ID))
-
-		if session.Mode == model.ModeFullStackWithVtc {
-			if h.orch != nil {
-				h.orch.TeardownVtcVault(ctx, session.UserID, session.ID)
-			}
-			h.k8s.DeleteComponentResources(ctx, ns, k8s.FSVtcName(session.ID))
-		}
+		h.k8s.DeleteComponentResources(ctx, ns, k8s.FSVtcName(session.ID))
 	}
 
 	if h.orch != nil {
@@ -350,11 +371,9 @@ func (h *SetupHandler) logsFullStack(c *gin.Context, session *model.SetupSession
 		case "deploy_vta":
 			source = "vta"
 		case "running":
-			if session.Mode == model.ModeFullStackWithVtc {
-				source = "vtc"
-			} else {
-				source = "vta"
-			}
+			// The VTC is the last component to come up, so its log is the
+			// one worth tailing once the session is done.
+			source = "vtc"
 		case "deploy_mediator", "awaiting_admin_did":
 			source = "mediator"
 		case "deploy_dids":
@@ -429,7 +448,7 @@ func (h *SetupHandler) ReissueDidsEnroll(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
-	if !session.IsFullStackFamily() {
+	if !session.IsFullStack() {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "reissue-enroll is only available for full-stack sessions"})
 		return
 	}
@@ -527,7 +546,7 @@ func (h *SetupHandler) AckDidsEnroll(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
-	if !session.IsFullStackFamily() {
+	if !session.IsFullStack() {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "enroll-ack is only available for full-stack sessions"})
 		return
 	}

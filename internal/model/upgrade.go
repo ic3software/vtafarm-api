@@ -57,10 +57,10 @@ type UpgradeTask struct {
 // UpgradeComponentModes maps each component to the session modes that run it.
 // A session is only a valid upgrade target for components its mode deploys.
 var UpgradeComponentModes = map[string][]string{
-	"vta":      {ModeVtaOnly, ModeFullStack, ModeFullStackWithVtc},
-	"mediator": {ModeFullStack, ModeFullStackWithVtc},
-	"dids":     {ModeFullStack, ModeFullStackWithVtc},
-	"vtc":      {ModeFullStackWithVtc},
+	"vta":      {ModeVtaOnly, ModeFullStack},
+	"mediator": {ModeFullStack},
+	"dids":     {ModeFullStack},
+	"vtc":      {ModeFullStack},
 }
 
 // UpgradeImageColumn returns the setup_sessions column holding the given

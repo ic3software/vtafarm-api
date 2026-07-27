@@ -11,7 +11,7 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/vault"
 )
 
-// This file drives full_stack_with_vtc's post-gate finish phase (design
+// This file drives full_stack's post-gate finish phase (design
 // docs/full-stack-with-vtc-setup-design.md §5/§6/§8). The pre-gate pipeline
 // is full_stack's runFullStack, reused unchanged — Start dispatches both
 // modes there, and fsK8sProvision adds the fourth component's PVC/Service/
@@ -22,11 +22,11 @@ import (
 // genuinely live step of the whole mode (`vtc setup --from`) and the VTC
 // Deployment run after it, when the VTA/mediator/dids are all up.
 
-// runFullStackWithVtcFinish mirrors runFullStackFinish, wrapping the four
+// runFullStackFinish mirrors runFullStackFinish, wrapping the four
 // VTC steps around the shared import/deploy helpers:
 // step_import_admin_did → step_vtc_setup_key → step_vtc_acl_grant →
 // deploy_vta → step_vtc_setup → deploy_vtc → running.
-func (o *Orchestrator) runFullStackWithVtcFinish(ctx context.Context, sessionID uint, adminDid string) {
+func (o *Orchestrator) runFullStackFinish(ctx context.Context, sessionID uint, adminDid string) {
 	var session model.SetupSession
 	if err := o.db.First(&session, sessionID).Error; err != nil {
 		log.Printf("[orchestrator] fs-vtc finish %d: load failed: %v", sessionID, err)
