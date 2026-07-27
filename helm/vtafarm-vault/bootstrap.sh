@@ -76,11 +76,18 @@ fi
 echo "==> Writing policy '${API_POLICY_NAME}'"
 vault policy write "${API_POLICY_NAME}" - <<EOF
 # Manage one ACL policy per user namespace (vta-user-<userID>). full_stack
-# extends this same policy to also cover the user's mediator and dids KV
-# prefixes (secret/{data,metadata}/{mediator,dids}/user-<id>/*) — see
-# internal/vault.EnsureUserAccess. The mediator and dids daemon both
-# authenticate the same way the VTA does (kubernetes auth, same SA, same
-# role), so there's no separate token-minting policy needed.
+# extends this same policy to also cover the user's mediator, dids and vtc KV
+# prefixes (secret/{data,metadata}/{mediator,dids,vtc}/user-<id>/*) — see
+# internal/vault.EnsureUserAccess. Those components all authenticate the same
+# way the VTA does (kubernetes auth, same SA, same role), so there's no
+# separate token-minting policy needed.
+#
+# Whenever EnsureUserAccess grows a KV prefix, this policy needs the matching
+# teardown grant below. They are two different identities — the components hold
+# the per-user kubernetes-auth token, the API holds this AppRole — so adding a
+# prefix to one and not the other leaves secrets nobody can delete. That is
+# exactly how vtc/* was missed: teardown logs the 403 as a warning and carries
+# on, so the session disappears while its key bundle stays in Vault.
 path "sys/policies/acl/vta-user-*" {
   capabilities = ["create", "read", "update", "delete"]
 }
@@ -111,6 +118,14 @@ path "${KV_MOUNT}/data/dids/*" {
   capabilities = ["delete"]
 }
 path "${KV_MOUNT}/metadata/dids/*" {
+  capabilities = ["delete"]
+}
+
+# full_stack: clean up the VTC key bundle on teardown. No "read" here either.
+path "${KV_MOUNT}/data/vtc/*" {
+  capabilities = ["delete"]
+}
+path "${KV_MOUNT}/metadata/vtc/*" {
   capabilities = ["delete"]
 }
 EOF
