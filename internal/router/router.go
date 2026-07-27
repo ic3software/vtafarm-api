@@ -226,13 +226,14 @@ func Setup(
 	// against DNS that is already live, so it starts provisioning immediately
 	// and never parks half-built waiting for a record.
 	//
-	// 404 as a whole until CUSTOM_DOMAIN_ENABLED, since the feature cannot work
-	// before the grey-cloud lb records and the ACME issuers exist.
-	dh := handler.NewDomainHandler(db, cfg.AppEnv, cfg.ClusterDomain, cfg.ClusterIngressIP, cfg.CustomDomainEnabled)
+	// Always on. The feature still needs its one-off cluster prerequisites (the
+	// grey-cloud lb records, the ACME issuers) before a verification can pass —
+	// but that shows up as a failing check with a reason, which is more useful
+	// than a route that pretends not to exist.
+	dh := handler.NewDomainHandler(db, cfg.AppEnv, cfg.ClusterDomain, cfg.ClusterIngressIP)
 	domains := v1.Group("/domains",
 		middleware.AuthRequired(cfg.JWTSecret, middleware.CookieUser),
 		middleware.RequireRole(model.RoleUser),
-		dh.Enabled,
 	)
 	{
 		domains.GET("", dh.List)

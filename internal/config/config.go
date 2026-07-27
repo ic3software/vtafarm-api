@@ -14,18 +14,9 @@ type Config struct {
 	ClusterIngressIP string
 	ClusterDomain    string
 	MediatorDid      string
-	// CustomDomainEnabled gates the whole Domains resource. It ships dark: the
-	// routes 404 until the one-off cluster prerequisites are in place — the
-	// grey-cloud lb / dev-lb records, and the ACME ClusterIssuers.
-	CustomDomainEnabled bool
 	// ACMEClusterIssuer names the cert-manager ClusterIssuer that signs custom
-	// domains' certificates.
-	//
-	// **Set this to letsencrypt-http01-staging in development.** Let's Encrypt
-	// counts five authorization failures per hostname per hour and five
-	// certificates per identical name set per week, and those limits are
-	// charged to real production hostnames. Re-attaching a misconfigured domain
-	// a few times in an hour is enough to lock one out.
+	// domains' certificates. Defaults to the one matching APP_ENV — see
+	// defaultACMEIssuer for why it is derived rather than configured.
 	ACMEClusterIssuer string
 	DB                DBConfig
 	K8s               K8sConfig
@@ -130,17 +121,34 @@ type K8sConfig struct {
 	NamespacePrefix string
 }
 
+// defaultACMEIssuer names the ClusterIssuer matching the environment.
+//
+// Derived rather than defaulted to a constant, for the same reason
+// setup.CNAMETarget is derived: this is the one setting whose damage cannot be
+// undone. Getting it wrong in development burns Let's Encrypt's per-hostname
+// failure and per-name-set allowances against real customer hostnames, and
+// neither can be raised — so it must not depend on anyone remembering to set an
+// env var. ACME_CLUSTER_ISSUER still overrides, for the rare case of testing
+// production issuance somewhere else.
+func defaultACMEIssuer(appEnv string) string {
+	if appEnv == "production" {
+		return "letsencrypt-http01-production"
+	}
+	return "letsencrypt-http01-dev"
+}
+
 func Load() *Config {
+	appEnv := getEnv("APP_ENV", "development")
+
 	return &Config{
 		AppPort:          getEnv("APP_PORT", "8080"),
-		AppEnv:           getEnv("APP_ENV", "development"),
+		AppEnv:           appEnv,
 		JWTSecret:        getEnv("JWT_SECRET", "change-me-in-production"),
 		ClusterIngressIP: getEnv("CLUSTER_INGRESS_IP", ""),
 		ClusterDomain:    getEnv("CLUSTER_DOMAIN", ""),
 		MediatorDid:      getEnv("MEDIATOR_DID", ""),
 
-		CustomDomainEnabled: getEnvBool("CUSTOM_DOMAIN_ENABLED", false),
-		ACMEClusterIssuer:   getEnv("ACME_CLUSTER_ISSUER", "letsencrypt-http01"),
+		ACMEClusterIssuer: getEnv("ACME_CLUSTER_ISSUER", defaultACMEIssuer(appEnv)),
 		DB: DBConfig{
 			Host:     getEnv("DB_HOST", "localhost"),
 			Port:     getEnv("DB_PORT", "5432"),

@@ -686,7 +686,7 @@ metadata:
 spec:
   secretName: fs-{sid}-tls
   issuerRef:
-    name: letsencrypt-http01        # ACME_CLUSTER_ISSUER
+    name: letsencrypt-http01-production        # ACME_CLUSTER_ISSUER
     kind: ClusterIssuer
   dnsNames:
     - vta.aaa.com
@@ -761,20 +761,20 @@ single object lookup.
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
-  name: letsencrypt-http01
+  name: letsencrypt-http01-production
 spec:
   acme:
     server: https://acme-v02.api.letsencrypt.org/directory
     email: admin@firstperson.dev          # ours, not the customer's — §9.5
     privateKeySecretRef:
-      name: letsencrypt-http01
+      name: letsencrypt-http01-production
     solvers:
     - http01:
         ingress:
           class: nginx
 ```
 
-Ship a `letsencrypt-http01-staging` twin pointed at
+Ship a `letsencrypt-http01-dev` twin pointed at
 `https://acme-staging-v02.api.letsencrypt.org/directory`, selected by
 `ACME_CLUSTER_ISSUER`. §9.4 makes using it in development mandatory, not
 optional.
@@ -1081,8 +1081,8 @@ the action is legible in logs after the fact.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `CUSTOM_DOMAIN_ENABLED` | `false` | Kill switch; ships dark until the phase-0 prerequisites are in place |
-| `ACME_CLUSTER_ISSUER` | `letsencrypt-http01` | **Set to `letsencrypt-http01-staging` in development** (§9.4) |
+| ~~`CUSTOM_DOMAIN_ENABLED`~~ | — | **Dropped 2026-07-26.** The kill switch was specified to ship the feature dark until phase 0 landed. In practice it only hid the routes from the people building against them, and it hid the wrong thing: without phase 0 a verification fails anyway, and a failing check *with a reason* tells an operator more than a route that pretends not to exist. Removed rather than defaulted on, so there is no half-state to reason about |
+| `ACME_CLUSTER_ISSUER` | derived from `APP_ENV` | `letsencrypt-http01-production` in production, `letsencrypt-http01-dev` elsewhere. **Derived, not defaulted to a constant** — §9.4 is the one rule whose damage can't be undone, so it must not depend on remembering an env var. Overridable for the rare cross-environment test |
 
 Two variables, not three. The CNAME target is **derived**, never configured —
 see §4.1.
@@ -1220,7 +1220,7 @@ fixed-label branch goes.
 
 | Phase | Contents | Ships independently |
 | --- | --- | --- |
-| **0** | `lb` + `dev-lb` grey-cloud records; both ClusterIssuers; ARI enabled | yes — **still not done**; it is what `CUSTOM_DOMAIN_ENABLED` waits on |
+| **0** | `lb` + `dev-lb` grey-cloud records; both ClusterIssuers; ARI enabled | yes — **still not done**. Nothing is gated on it now that the kill switch is gone; until it lands, every verification simply fails |
 | ✅ **1** | `dev-` rename + tests + `GET /setup/domain-info` + frontend hint fix | done 2026-07-26 (`faff4af`) |
 | ✅ **2** | `domains` table, `FixedHosts`, single-`label` handling, **`platform` domain end to end** | done 2026-07-26 (`ee8d0b6`) — the milestone that mattered |
 | ✅ **3** | `internal/dnscheck`, the Domains routes, verification | done 2026-07-26 |
@@ -1230,9 +1230,11 @@ fixed-label branch goes.
 
 > **Phase 3 notes.**
 >
-> - **Ships behind `CUSTOM_DOMAIN_ENABLED`, default off.** Every
->   `/api/v1/domains` route answers 404 until phase 0 exists, because without
->   the grey-cloud `lb` records no verification can ever pass.
+> - **No feature flag.** It shipped behind `CUSTOM_DOMAIN_ENABLED` and that was
+>   removed the same day (§12). The switch hid the routes from the people
+>   building against them while hiding the wrong thing: phase 0 missing makes
+>   verification *fail*, and a failing check with a reason is more useful than
+>   a 404.
 > - **`GET /domains/:id` resolves live and promotes to verified**, so the
 >   portal's 30s poll shows a ✓ appearing on its own. `POST .../verify` is the
 >   same operation behind the button. A verified domain then performs no lookups

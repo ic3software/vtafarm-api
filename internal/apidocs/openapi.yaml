@@ -634,7 +634,7 @@ components:
 
     ModeAvailability:
       type: object
-      description: Remaining create capacity for one setup mode.
+      description: Whether one setup mode can be created right now, and if not, why.
       properties:
         count:
           type: integer
@@ -642,8 +642,28 @@ components:
           example: 12
         available:
           type: boolean
-          description: Whether at least one more session fits (`count > 0`). True in the fail-open default.
+          description: |
+            Whether this mode can be created. Covers both capacity and the
+            platform-stack prerequisite — read `reason` to tell them apart.
           example: true
+        reason:
+          type: string
+          description: |
+            Absent when the mode is creatable.
+
+            - `at_capacity` — no room in the cluster. Transient.
+            - `platform_stack_missing` — `vta_only` only. No platform stack
+              exists, so there is no shared mediator or DID hosting to connect to.
+            - `platform_stack_not_ready` — `vta_only` only. It exists but hasn't
+              reached `running`.
+            - `shared_infra_unconfigured` — `vta_only` only. It is running, but
+              this server hasn't been pointed at its collected values
+              (`MEDIATOR_DID` / `DID_HOSTING_SERVER_URL`), so a session created
+              now would carry an empty mediator DID.
+          enum: [at_capacity, platform_stack_missing, platform_stack_not_ready, shared_infra_unconfigured]
+        detail:
+          type: string
+          description: A sentence to show the user. Prefer it over composing copy client-side.
 
 paths:
   /health:
@@ -2994,10 +3014,10 @@ paths:
         without a verdict, and resolution happens on `GET /domains/{id}` or
         `POST /domains/{id}/verify`.
 
-        Every route under `/api/v1/domains` answers **404 while
-        `CUSTOM_DOMAIN_ENABLED` is false** — the feature ships dark until the
-        grey-cloud `lb` records and the ACME issuers exist, and a feature that
-        cannot work is better absent than advertised.
+        The cluster needs its one-off prerequisites — the grey-cloud `lb` /
+        `dev-lb` records and the ACME ClusterIssuers — before any verification
+        can pass. Until then attaching works and the check fails with a reason,
+        which tells an operator more than a hidden route would.
       tags: [User]
       security:
         - CookieAuthUser: []
@@ -3012,12 +3032,6 @@ paths:
                   $ref: "#/components/schemas/Domain"
         "401":
           description: Missing or invalid token
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "404":
-          description: Custom domains are not enabled
           content:
             application/json:
               schema:
@@ -3084,12 +3098,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "404":
-          description: Custom domains are not enabled
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
         "409":
           description: The caller already has a custom domain, or this domain is attached to another account
           content:
@@ -3133,7 +3141,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "404":
-          description: Not the caller's domain, or custom domains are not enabled
+          description: Not the caller's domain
           content:
             application/json:
               schema:
@@ -3171,7 +3179,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "404":
-          description: Not the caller's domain, or custom domains are not enabled
+          description: Not the caller's domain
           content:
             application/json:
               schema:
@@ -3253,7 +3261,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "404":
-          description: Not the caller's domain, or custom domains are not enabled
+          description: Not the caller's domain
           content:
             application/json:
               schema:
@@ -3375,22 +3383,29 @@ paths:
 
   /api/v1/setup/availability:
     get:
-      summary: Remaining create capacity per mode
+      summary: Whether each mode can be created, and why not
       description: |
-        How many more sessions of each creatable mode the cluster can still
-        schedule (a placement simulation, not free/cost division), so the create
-        screen can show "Unavailable" and disable the button before the user
-        submits. `available` is `count > 0`.
+        Drives the create screen's "Unavailable" state, so the button is
+        disabled before the user fills anything in. Two independent things fold
+        into one `available` per mode, with `reason` saying which applies.
 
-        Fails open: when capacity can't be measured (Kubernetes client
-        unavailable, or metrics-server / Longhorn temporarily unreachable so the
-        cluster can't be read at all) it returns `determinable: false` with every
-        mode `available: true`, so a transient outage never wrongly blocks
-        creation. The authoritative gate is `POST /setup`, which returns 503 when
-        the selected mode no longer fits.
+        **Capacity** — how many more sessions of that mode the cluster can still
+        schedule (a placement simulation, not free/cost division). `count` is
+        that number. This **fails open**: when the cluster can't be read at all
+        (no Kubernetes client, or metrics-server / Longhorn unreachable) it
+        returns `determinable: false` and blocks nothing, so a transient outage
+        never wrongly stops creation.
 
-        The `full_stack` figure covers all four components (VTA + mediator +
-        dids daemon + VTC), since every full_stack session provisions them all.
+        **The platform stack** — `vta_only` is only the VTA, wired to the
+        mediator and DID hosting the platform stack provides. Until an admin has
+        created that stack, it has reached `running`, and this server has been
+        pointed at its collected values, a `vta_only` agent could only ever be
+        born unable to deliver a message. That is a hard prerequisite, so unlike
+        capacity it does **not** fail open. `full_stack` provisions its own
+        mediator and DID host and is never gated on it.
+
+        `POST /setup` enforces both and answers 503 either way — this endpoint
+        only makes the refusal visible earlier.
       tags: [User]
       security:
         - CookieAuthUser: []
@@ -3414,9 +3429,16 @@ paths:
                     description: False when Longhorn stats were unavailable (storage then doesn't constrain the estimate).
                   determinable:
                     type: boolean
-                    description: False when the cluster couldn't be read at all; the mode figures are then a fail-open default (all available).
+                    description: False when the cluster couldn't be read at all; the capacity figures are then a fail-open default. Does not affect the platform-stack prerequisite.
                 example:
-                  vta_only: { count: 12, available: true }
+                  vta_only:
+                    count: 12
+                    available: false
+                    reason: platform_stack_missing
+                    detail: >-
+                      VTA-only agents need the platform stack — the shared mediator and DID
+                      hosting they connect to. An admin has to create it before any VTA-only
+                      agent can be provisioned.
                   full_stack: { count: 2, available: true }
                   metrics_available: true
                   storage_available: true
@@ -3570,9 +3592,10 @@ paths:
                 $ref: "#/components/schemas/Error"
         "503":
           description: |
-            Cloudflare not configured on server, or the cluster is at capacity —
-            no resources are available to schedule a new session of the requested
-            mode (see `GET /setup/availability`).
+            Cloudflare not configured on server; the cluster is at capacity; or —
+            for `vta_only` — the platform stack that provides its mediator and
+            DID hosting isn't ready. See `GET /setup/availability`, which reports
+            all three ahead of time with a `reason`.
           content:
             application/json:
               schema:

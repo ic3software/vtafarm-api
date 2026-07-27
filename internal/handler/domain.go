@@ -32,32 +32,17 @@ type DomainHandler struct {
 	appEnv        string
 	clusterDomain string
 	ingressIP     string
-	// enabled is CUSTOM_DOMAIN_ENABLED. While false the routes answer 404:
-	// the feature ships dark until the cluster prerequisites (the grey-cloud
-	// lb records, the ACME issuers) are actually in place, and a 404 says
-	// "there is no such feature here" rather than teasing one that cannot work.
-	enabled bool
-	checker *dnscheck.Checker
+	checker       *dnscheck.Checker
 }
 
-func NewDomainHandler(db *gorm.DB, appEnv, clusterDomain, ingressIP string, enabled bool) *DomainHandler {
+func NewDomainHandler(db *gorm.DB, appEnv, clusterDomain, ingressIP string) *DomainHandler {
 	return &DomainHandler{
 		db:            db,
 		appEnv:        appEnv,
 		clusterDomain: clusterDomain,
 		ingressIP:     ingressIP,
-		enabled:       enabled,
 		checker:       dnscheck.New(),
 	}
-}
-
-// Enabled is the gate every route in this file sits behind.
-func (h *DomainHandler) Enabled(c *gin.Context) {
-	if !h.enabled {
-		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "custom domains are not enabled"})
-		return
-	}
-	c.Next()
 }
 
 // recordSpec is one row of the "create these records" table. expected_value is

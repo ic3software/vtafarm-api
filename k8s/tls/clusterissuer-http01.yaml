@@ -15,24 +15,26 @@
 #
 #   kubectl apply -f k8s/tls/clusterissuer-http01.yaml
 #
-# Select between them with ACME_CLUSTER_ISSUER. **Development must use the
-# staging issuer** — see the note on it below.
+# Select between them with ACME_CLUSTER_ISSUER, which defaults to whichever
+# matches APP_ENV. **Development must use the -dev issuer** — see the note on
+# it below.
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
-  name: letsencrypt-http01
+  name: letsencrypt-http01-production
 spec:
   acme:
     server: https://acme-v02.api.letsencrypt.org/directory
     email: admin@firstperson.dev
     privateKeySecretRef:
-      name: letsencrypt-http01
+      name: letsencrypt-http01-production
     solvers:
     - http01:
         ingress:
           class: nginx
 ---
-# The staging twin. ACME_CLUSTER_ISSUER must name THIS one in development.
+# The development issuer. It points at Let's Encrypt's STAGING endpoint, and
+# ACME_CLUSTER_ISSUER must name this one outside production.
 #
 # Two production limits make that non-optional, and neither can be raised:
 # five authorization failures per hostname per hour, and five certificates per
@@ -40,18 +42,18 @@ spec:
 # names, so re-attaching a misconfigured domain a few times in an hour is enough
 # to lock a real customer hostname out for days.
 #
-# Staging's certificates are not publicly trusted — browsers will warn. That is
-# the point: it exercises the whole path without spending anything real.
+# Certificates from here are NOT publicly trusted — browsers will warn, and that
+# is expected. It exercises the whole path without spending anything real.
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
-  name: letsencrypt-http01-staging
+  name: letsencrypt-http01-dev
 spec:
   acme:
     server: https://acme-staging-v02.api.letsencrypt.org/directory
     email: admin@firstperson.dev
     privateKeySecretRef:
-      name: letsencrypt-http01-staging
+      name: letsencrypt-http01-dev
     solvers:
     - http01:
         ingress:

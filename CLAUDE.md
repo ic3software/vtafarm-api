@@ -41,8 +41,7 @@ See `.env.example` for all options. Key ones:
 | `CLOUDFLARE_API_TOKEN` | — | Cloudflare API token (`Zone:DNS:Edit` permission) |
 | `CLOUDFLARE_ZONE_ID` | — | Cloudflare Zone ID for the user's root domain |
 | `CLUSTER_INGRESS_IP` | — | External IP of the cluster's Ingress-NGINX LoadBalancer |
-| `CUSTOM_DOMAIN_ENABLED` | `false` | Gates the whole Domains resource — every `/api/v1/domains` route 404s while it's off |
-| `ACME_CLUSTER_ISSUER` | `letsencrypt-http01` | **Set to `letsencrypt-http01-staging` in development** — production's rate limits are charged to real hostnames and can't be raised |
+| `ACME_CLUSTER_ISSUER` | derived from `APP_ENV` | `letsencrypt-http01-production` in production, `letsencrypt-http01-dev` everywhere else. Leave unset — it's derived precisely because getting it wrong burns rate limits on real hostnames that can't be raised |
 
 ## Project Structure
 
@@ -278,7 +277,10 @@ edits DNS.
   admins included.** The only route that mints a row for our own zone is
   `POST /admin/platform-stack`. That's enforced at the route, not by role,
   because the two paths produce different objects.
-- Off by default — see `CUSTOM_DOMAIN_ENABLED`.
+- **Always on** — no feature flag. It still needs its one-off cluster
+  prerequisites (the grey-cloud `lb` / `dev-lb` records, the ACME
+  ClusterIssuers) before a verification can pass; until they exist the check
+  fails with a reason, which tells an operator more than a hidden route would.
 
 ### The platform stack
 
@@ -286,6 +288,18 @@ One `full_stack` session per environment at `vta.firstperson.dev` / `vtc.` /
 `mediator.` / `dids.` — the farm's flagship stack, and the mediator + DID host
 that `vta_only` sessions point at. `POST /api/v1/admin/platform-stack` creates
 the domain row, the DNS and the session in one action.
+
+**`vta_only` cannot be created until it exists.** That mode is only the VTA,
+wired to the mediator and DID host the platform stack provides, so an agent
+created before it would never deliver a message. `GET /setup/availability`
+reports `vta_only.available: false` with a `reason`
+(`platform_stack_missing` / `platform_stack_not_ready` /
+`shared_infra_unconfigured`), and `POST /setup` answers 503 — the UI is not the
+gate. `full_stack` provisions its own and is never blocked on it.
+
+The third reason exists because the stack running is not the same as this API
+being able to reach it: `MEDIATOR_DID` is minted by the pipeline and only
+arrives here once an admin copies it into configuration.
 
 - **Owned by a system account**, not an admin: `setup_sessions.user_id` is a FK
   to `users` and derives the namespace, while admins are a separate table. The

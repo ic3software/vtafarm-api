@@ -266,6 +266,14 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		return
 	}
 
+	// The UI disables this, but the UI is not the gate: a vta_only agent whose
+	// mediator and DID host don't exist can never deliver a message, and it
+	// would consume cluster resources looking healthy while it did so.
+	if ready, _, detail := h.sharedInfra(); !ready {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": detail})
+		return
+	}
+
 	if !h.capacityAllows(c, capacity.VtaOnly) {
 		return
 	}
@@ -380,6 +388,75 @@ func (h *SetupHandler) resolveCreateDomain(c *gin.Context, req createSetupReques
 	return &d
 }
 
+// Reasons a mode can't be created right now, beyond cluster capacity. Returned
+// by GET /setup/availability so the create screen can say *why* rather than a
+// bare "Unavailable", and echoed by POST /setup when it refuses.
+const (
+	reasonAtCapacity         = "at_capacity"
+	reasonPlatformMissing    = "platform_stack_missing"
+	reasonPlatformNotReady   = "platform_stack_not_ready"
+	reasonSharedUnconfigured = "shared_infra_unconfigured"
+)
+
+// sharedInfra reports whether the mediator and DID host that every vta_only
+// session points at are actually usable.
+//
+// That shared infrastructure IS the platform stack (design §3.3) — a vta_only
+// agent is only the VTA, wired to a mediator and DID-hosting daemon it does not
+// run itself. Creating one before those exist produces an agent that can never
+// deliver a message.
+//
+// Two conditions, because the stack existing is not the same as it being
+// reachable. Its DIDs are minted by the pipeline and only reach this API once an
+// admin copies them into configuration (§3.3.4), so a session created in the
+// window between "running" and "configured" would be written with an empty
+// mediator DID. Reading those values straight from the platform session row
+// would collapse both checks into one and remove the copy step entirely —
+// deliberately parked by §3.3.4 until the platform stack has proven itself.
+//
+// full_stack is unaffected: it provisions its own mediator and DID host.
+func (h *SetupHandler) sharedInfra() (ready bool, reason, detail string) {
+	domain, err := h.platformDomain()
+	if err != nil {
+		// Can't tell — fail open rather than blocking every create on a
+		// transient DB read, the same way capacity does.
+		return true, "", ""
+	}
+	if domain == nil {
+		return false, reasonPlatformMissing,
+			"VTA-only agents need the platform stack — the shared mediator and DID hosting they connect to. " +
+				"An admin has to create it before any VTA-only agent can be provisioned."
+	}
+
+	var session model.SetupSession
+	err = h.db.Where("domain_id = ?", domain.ID).First(&session).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		// The domains row outlives its session: the name is still ours, but
+		// nothing is running on it.
+		return false, reasonPlatformMissing,
+			"VTA-only agents need the platform stack — the shared mediator and DID hosting they connect to. " +
+				"An admin has to create it before any VTA-only agent can be provisioned."
+	}
+	if err != nil {
+		return true, "", ""
+	}
+	if session.Status != "running" {
+		return false, reasonPlatformNotReady,
+			"The platform stack — the shared mediator and DID hosting VTA-only agents connect to — is still being set up. " +
+				"Try again once it's running."
+	}
+
+	// Running, but its collected values haven't reached this API's environment
+	// yet, so a session created now would carry an empty mediator DID.
+	if h.mediatorDid == "" || h.didHostingBase == "" {
+		return false, reasonSharedUnconfigured,
+			"The platform stack is running, but this server hasn't been pointed at it yet " +
+				"(MEDIATOR_DID / DID_HOSTING_SERVER_URL). An admin needs to copy its values into configuration."
+	}
+
+	return true, "", ""
+}
+
 // capacityAllows gates a create on remaining cluster capacity for mode. It
 // fails open: if capacity can't be measured (no k8s client / stats read failed)
 // it returns true rather than blocking. Only a measured "zero fit" writes 503
@@ -408,26 +485,48 @@ func (h *SetupHandler) Availability(c *gin.Context) {
 	type modeAvail struct {
 		Count     int  `json:"count"`
 		Available bool `json:"available"`
+		// Why it's unavailable, and a sentence to show the user. Absent when
+		// the mode is creatable.
+		Reason string `json:"reason,omitempty"`
+		Detail string `json:"detail,omitempty"`
 	}
 
+	// Fail open on capacity, as before: a transient metrics/Longhorn outage
+	// must never wrongly block creation.
+	vtaOnly := modeAvail{Available: true}
+	fullStack := modeAvail{Available: true}
+
 	est, meta, determinable := h.capacity.Estimates(c.Request.Context())
-	if !determinable {
-		c.JSON(http.StatusOK, gin.H{
-			"vta_only":          modeAvail{Available: true},
-			"full_stack":        modeAvail{Available: true},
-			"metrics_available": false,
-			"storage_available": false,
-			"determinable":      false,
-		})
-		return
+	if determinable {
+		vtaOnly.Count = est[capacity.VtaOnly.Name].Count
+		vtaOnly.Available = vtaOnly.Count >= 1
+		fullStack.Count = est[capacity.FullStack.Name].Count
+		fullStack.Available = fullStack.Count >= 1
+	}
+
+	atCapacity := "The cluster is at capacity and can't provision a new agent right now. " +
+		"Please try again later or contact an admin."
+	if !vtaOnly.Available {
+		vtaOnly.Reason, vtaOnly.Detail = reasonAtCapacity, atCapacity
+	}
+	if !fullStack.Available {
+		fullStack.Reason, fullStack.Detail = reasonAtCapacity, atCapacity
+	}
+
+	// The shared mediator and DID host is a hard dependency of vta_only, not a
+	// capacity question — so it overrides the fail-open above rather than
+	// sitting alongside it. full_stack runs its own and is never gated on it.
+	if ready, reason, detail := h.sharedInfra(); !ready {
+		vtaOnly.Available = false
+		vtaOnly.Reason, vtaOnly.Detail = reason, detail
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"vta_only":          modeAvail{Count: est[capacity.VtaOnly.Name].Count, Available: est[capacity.VtaOnly.Name].Count >= 1},
-		"full_stack":        modeAvail{Count: est[capacity.FullStack.Name].Count, Available: est[capacity.FullStack.Name].Count >= 1},
+		"vta_only":          vtaOnly,
+		"full_stack":        fullStack,
 		"metrics_available": meta.MetricsAvailable,
 		"storage_available": meta.StorageAvailable,
-		"determinable":      true,
+		"determinable":      determinable,
 	})
 }
 
