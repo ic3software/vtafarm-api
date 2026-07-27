@@ -145,12 +145,26 @@ func (o *Orchestrator) runFullStack(ctx context.Context, sessionID uint) {
 	}
 
 	// dns_wait — confirm the hostnames resolve before spending any cluster
-	// resources on them. Cheap insurance: everything downstream assumes these
-	// names work, and a DNS problem found here is one error message instead of
-	// a pipeline failure five steps deep.
+	// resources on them. Everything downstream assumes these names work, so a
+	// DNS problem caught here is one clear error instead of a pipeline failure
+	// five steps deep.
+	//
+	// Only a custom domain fails on it. On our own zone we just created the
+	// records ourselves through the Cloudflare API and hold their record ids —
+	// there is no user error left to catch, and the one thing that can still go
+	// wrong is a public resolver holding a negative answer for a name someone
+	// looked up before it existed. Cloudflare's SOA minimum outlives this
+	// budget, so failing there would turn a caching artifact into a dead
+	// session on a path that has always worked. Log it and carry on.
 	o.fsSetStatus(sessionID, "dns_wait")
-	if fail("DNS not resolving", o.fsWaitDNS(ctx, s)) {
-		return
+	if err := o.fsWaitDNS(ctx, s); err != nil {
+		if s.DomainType == model.DomainCustom {
+			if fail("DNS not resolving", err) {
+				return
+			}
+		} else if ctx.Err() == nil {
+			log.Printf("[orchestrator] fs session %d: dns_wait did not settle, continuing: %v", sessionID, err)
+		}
 	}
 
 	// env_provision
@@ -365,7 +379,9 @@ func (o *Orchestrator) fsK8sProvision(ctx context.Context, ns string, s *model.S
 	return nil
 }
 
-// fsWaitDNS blocks until the session's hostnames resolve.
+// fsWaitDNS blocks until the session's hostnames resolve, or the budget runs
+// out. Only the custom-domain caller treats a non-nil error as fatal — see the
+// call site.
 //
 // The pass criteria differ by domain kind, and this is the easiest thing in the
 // whole feature to get wrong. Managed and platform records are **proxied**

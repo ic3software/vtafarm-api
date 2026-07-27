@@ -1259,6 +1259,14 @@ fixed-label branch goes.
 >   records were created seconds earlier, and a custom domain's were verified
 >   before the session could exist, so this is a sanity check rather than a wait
 >   for anyone to go and edit DNS.
+> - **Deviation: only a custom domain *fails* on `dns_wait`.** §7.1 says the
+>   status applies to all, and it does — but on our own zone the records were
+>   just created through the Cloudflare API and their ids are in hand, so there
+>   is no user error left to catch. What can still go wrong there is a public
+>   resolver holding a negative answer for a name queried before it existed
+>   (§6.6), and Cloudflare's SOA minimum outlives any budget worth waiting.
+>   Failing would turn a caching artifact into a dead session on a path that has
+>   always worked, so managed and platform log the timeout and continue.
 > - **`tls_provision` does not retry.** Once Let's Encrypt's five failures per
 >   hostname per hour is hit, retrying makes the lockout worse. It fails with a
 >   message naming the two actual causes — a DNS change since verification, or a
