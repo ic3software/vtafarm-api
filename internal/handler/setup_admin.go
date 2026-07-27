@@ -104,9 +104,12 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 		VtaName      string `json:"vta_name"`
 		VtcName      string `json:"vtc_name,omitempty"`
 		Mode         string `json:"mode"`
-		Status       string `json:"status"`
-		ErrorMsg     string `json:"error_msg,omitempty"`
-		Fqdn         string `json:"fqdn"`
+		// managed | custom | platform — the platform row is the farm's own
+		// stack and the one deletion that needs an explicit confirm.
+		DomainType string `json:"domain_type"`
+		Status     string `json:"status"`
+		ErrorMsg   string `json:"error_msg,omitempty"`
+		Fqdn       string `json:"fqdn"`
 		// Per-component images — empty for components the mode doesn't run.
 		VtaImage      string `json:"vta_image,omitempty"`
 		MediatorImage string `json:"mediator_image,omitempty"`
@@ -123,6 +126,7 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 			VtaName:       s.VtaName,
 			VtcName:       s.VtcName,
 			Mode:          s.Mode,
+			DomainType:    s.DomainType,
 			Status:        s.Status,
 			ErrorMsg:      s.ErrorMsg,
 			Fqdn:          s.FQDN(),
@@ -143,11 +147,47 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 	})
 }
 
+// AdminSessionLogs — GET /api/v1/admin/setup-sessions/:id/logs (admin only).
+//
+// The admin-cookie twin of GET /setup/:id/logs, differing only in the lookup:
+// unique_id alone, with no user_id filter. It exists because the platform stack
+// is owned by a passkey-less system account — nobody can ever hold that user's
+// cookie, so without this route the farm's own stack is the one session whose
+// provisioning nobody can watch.
+func (h *SetupHandler) AdminSessionLogs(c *gin.Context) {
+	publicID := c.Param("id")
+
+	var session model.SetupSession
+	if err := h.db.Where("unique_id = ?", publicID).First(&session).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+		return
+	}
+
+	if h.k8s == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "k8s not configured"})
+		return
+	}
+	if !session.IsFullStack() {
+		// vta_only's log sources are keyed to statuses the admin panel has no
+		// view for; there is no caller for it and no reason to duplicate it.
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "admin log streaming covers full_stack sessions only"})
+		return
+	}
+
+	h.logsFullStack(c, &session)
+}
+
 // AdminDeleteSession — DELETE /api/v1/admin/setup-sessions/:id (admin only).
 // Tears down any user's session, identified by unique_id alone — the one
 // difference from the user-facing DELETE /setup/:id, which is scoped to the
 // caller. Destructive and irreversible: the frontend gates it behind a
 // type-the-session-id confirmation.
+//
+// Deleting the platform stack additionally requires {"confirm": "<label>"} in
+// the body. That one is not left to the UI: it is the only deletion in the
+// product that degrades every other user's service — every vta_only session
+// loses its mediator and DID host — and it sits one mis-click away in an admin
+// table.
 func (h *SetupHandler) AdminDeleteSession(c *gin.Context) {
 	publicID := c.Param("id")
 
@@ -157,7 +197,24 @@ func (h *SetupHandler) AdminDeleteSession(c *gin.Context) {
 		return
 	}
 
-	log.Printf("[admin] deleting session %d (%s) owned by user %d", session.ID, session.UniqueId, session.UserID)
+	if session.DomainType == model.DomainPlatform {
+		var body struct {
+			Confirm string `json:"confirm"`
+		}
+		// A missing/!JSON body is the mis-click case, so bind errors are not
+		// distinguished from a wrong value — both mean "not confirmed".
+		_ = c.ShouldBindJSON(&body)
+		if body.Confirm != session.VtaName {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "deleting the platform stack takes every vta_only session's mediator and DID host with it — " +
+					`send {"confirm": "` + session.VtaName + `"} to proceed`,
+			})
+			return
+		}
+	}
+
+	log.Printf("[admin] deleting %s session %d (%s), domain_type=%s, owned by user %d",
+		session.Mode, session.ID, session.UniqueId, session.DomainType, session.UserID)
 
 	h.teardownSession(c, &session)
 }

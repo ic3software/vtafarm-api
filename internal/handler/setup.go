@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -146,10 +147,18 @@ func (h *SetupHandler) Images(c *gin.Context) {
 
 type createSetupRequest struct {
 	Mode string `json:"mode"      binding:"required,oneof=vta_only full_stack"`
-	// Required, globally unique, DNS-safe (setup.ValidateName) — becomes the
-	// session's subdomains: vta-<name> (plus mediator-<name> / dids-<name>
-	// for full_stack).
-	VtaName  string `json:"vta_name"`
+	// Required on a managed session, globally unique, DNS-safe
+	// (setup.ValidateName) — becomes the session's subdomains: vta-<name>
+	// (plus mediator-<name> / dids-<name> for full_stack). Must be absent on a
+	// custom domain, whose labels are fixed.
+	VtaName string `json:"vta_name"`
+	// DomainID attaches the session to one of the caller's verified domains.
+	// Omitted → managed, today's behaviour.
+	DomainID *uint `json:"domain_id"`
+	// Label replaces vta_name/vtc_name on a fixed-label domain, where neither
+	// reaches a hostname and their only surviving job is the did:webvh path.
+	// Duplicates across users are fine there.
+	Label    string `json:"label"`
 	VtaImage string `json:"vta_image" binding:"required"`
 	// Optional — if set, Phase 2 (import-did + Deployment) starts automatically after Phase 1.
 	AdminDid string `json:"admin_did"`
@@ -190,23 +199,59 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		return
 	}
 
-	// vta_name is user-chosen and becomes the session's subdomains
-	// (vta-<name>, and mediator-/dids-<name> for full_stack), so it must be
-	// DNS-safe and unique across all users' sessions, not just the caller's
-	// own.
-	if req.VtaName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "vta_name is required"})
+	// The domain is resolved first because it decides what the names mean: on
+	// the managed zone vta_name/vtc_name *are* hostnames and must be globally
+	// unique; on a custom domain the four labels are fixed, so the names reach
+	// no hostname and collapse into one free-form label.
+	domain := h.resolveCreateDomain(c, req, userID)
+	if c.IsAborted() {
 		return
 	}
-	if err := setup.ValidateName(req.VtaName); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid vta_name: " + err.Error()})
-		return
-	}
-	var nameTaken int64
-	h.db.Model(&model.SetupSession{}).Where("vta_name = ?", req.VtaName).Count(&nameTaken)
-	if nameTaken > 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "vta_name already in use"})
-		return
+
+	if domain == nil {
+		if req.Label != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "label applies only to a custom domain — a managed session is named by vta_name"})
+			return
+		}
+		if req.VtaName == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "vta_name is required"})
+			return
+		}
+		if err := setup.ValidateName(req.VtaName); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid vta_name: " + err.Error()})
+			return
+		}
+		var nameTaken int64
+		h.db.Model(&model.SetupSession{}).
+			Where("vta_name = ? AND domain_type = ?", req.VtaName, model.DomainManaged).
+			Count(&nameTaken)
+		if nameTaken > 0 {
+			c.JSON(http.StatusConflict, gin.H{"error": "vta_name already in use"})
+			return
+		}
+	} else {
+		if req.VtaName != "" || req.VtcName != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "vta_name and vtc_name don't apply to a custom domain — its hostnames are fixed; send label instead"})
+			return
+		}
+		if req.Label == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "label is required"})
+			return
+		}
+		// Still DNS-safe: it lands in did:webvh paths and URLs even though no
+		// hostname carries it.
+		if err := setup.ValidateName(req.Label); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid label: " + err.Error()})
+			return
+		}
+		// One session per domain, checked here for the message; the partial
+		// unique index on domain_id is the real gate.
+		var inUse int64
+		h.db.Model(&model.SetupSession{}).Where("domain_id = ?", domain.ID).Count(&inUse)
+		if inUse > 0 {
+			c.JSON(http.StatusConflict, gin.H{"error": "this domain is already in use by another session"})
+			return
+		}
 	}
 
 	if req.Mode == model.ModeFullStack {
@@ -217,7 +262,15 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		if !h.capacityAllows(c, capacity.FullStack) {
 			return
 		}
-		h.createFullStack(c, req)
+		h.createFullStack(c, req, domain)
+		return
+	}
+
+	// The UI disables this, but the UI is not the gate: a vta_only agent whose
+	// mediator and DID host don't exist can never deliver a message, and it
+	// would consume cluster resources looking healthy while it did so.
+	if ready, _, detail := h.sharedInfra(); !ready {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": detail})
 		return
 	}
 
@@ -246,9 +299,12 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	}
 
 	session := model.SetupSession{
-		UserID:           userID,
-		Mode:             req.Mode,
-		Status:           "dns_provisioned",
+		UserID: userID,
+		Mode:   req.Mode,
+		Status: "dns_provisioned",
+		// Set explicitly rather than left to the column default: the field
+		// would otherwise read "" in memory for the rest of this request.
+		DomainType:       model.DomainManaged,
 		Domain:           h.clusterDomain,
 		Subdomain:        subdomain,
 		CFRecordID:       recordID,
@@ -296,6 +352,111 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	})
 }
 
+// resolveCreateDomain turns POST /setup's optional domain_id into the domain
+// row the session will run under, or nil for a managed session. It aborts the
+// request with the response itself on any problem — callers check
+// c.IsAborted().
+//
+// vta_only is deliberately excluded: that mode points at a shared mediator and
+// DID host, so a user's domain would cover only part of their footprint.
+func (h *SetupHandler) resolveCreateDomain(c *gin.Context, req createSetupRequest, userID uint) *model.Domain {
+	if req.DomainID == nil {
+		return nil
+	}
+	if req.Mode != model.ModeFullStack {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "a custom domain requires full_stack — vta_only uses a shared mediator and DID host"})
+		return nil
+	}
+
+	var d model.Domain
+	// Scoped to the caller AND to kind=custom: the platform domain is reachable
+	// only through POST /admin/platform-stack, and no user-facing route may
+	// ever produce a session on our own zone.
+	err := h.db.Where("id = ? AND user_id = ? AND kind = ?", *req.DomainID, userID, model.DomainKindCustom).First(&d).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "domain not found"})
+		return nil
+	}
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to read domain"})
+		return nil
+	}
+	if !d.Verified() {
+		c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": "verify this domain before creating a session"})
+		return nil
+	}
+	return &d
+}
+
+// Reasons a mode can't be created right now, beyond cluster capacity. Returned
+// by GET /setup/availability so the create screen can say *why* rather than a
+// bare "Unavailable", and echoed by POST /setup when it refuses.
+const (
+	reasonAtCapacity         = "at_capacity"
+	reasonPlatformMissing    = "platform_stack_missing"
+	reasonPlatformNotReady   = "platform_stack_not_ready"
+	reasonSharedUnconfigured = "shared_infra_unconfigured"
+)
+
+// sharedInfra reports whether the mediator and DID host that every vta_only
+// session points at are actually usable.
+//
+// That shared infrastructure IS the platform stack (design §3.3) — a vta_only
+// agent is only the VTA, wired to a mediator and DID-hosting daemon it does not
+// run itself. Creating one before those exist produces an agent that can never
+// deliver a message.
+//
+// Two conditions, because the stack existing is not the same as it being
+// reachable. Its DIDs are minted by the pipeline and only reach this API once an
+// admin copies them into configuration (§3.3.4), so a session created in the
+// window between "running" and "configured" would be written with an empty
+// mediator DID. Reading those values straight from the platform session row
+// would collapse both checks into one and remove the copy step entirely —
+// deliberately parked by §3.3.4 until the platform stack has proven itself.
+//
+// full_stack is unaffected: it provisions its own mediator and DID host.
+func (h *SetupHandler) sharedInfra() (ready bool, reason, detail string) {
+	domain, err := h.platformDomain()
+	if err != nil {
+		// Can't tell — fail open rather than blocking every create on a
+		// transient DB read, the same way capacity does.
+		return true, "", ""
+	}
+	if domain == nil {
+		return false, reasonPlatformMissing,
+			"VTA-only agents need the platform stack — the shared mediator and DID hosting they connect to. " +
+				"An admin has to create it before any VTA-only agent can be provisioned."
+	}
+
+	var session model.SetupSession
+	err = h.db.Where("domain_id = ?", domain.ID).First(&session).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		// The domains row outlives its session: the name is still ours, but
+		// nothing is running on it.
+		return false, reasonPlatformMissing,
+			"VTA-only agents need the platform stack — the shared mediator and DID hosting they connect to. " +
+				"An admin has to create it before any VTA-only agent can be provisioned."
+	}
+	if err != nil {
+		return true, "", ""
+	}
+	if session.Status != "running" {
+		return false, reasonPlatformNotReady,
+			"The platform stack — the shared mediator and DID hosting VTA-only agents connect to — is still being set up. " +
+				"Try again once it's running."
+	}
+
+	// Running, but its collected values haven't reached this API's environment
+	// yet, so a session created now would carry an empty mediator DID.
+	if h.mediatorDid == "" || h.didHostingBase == "" {
+		return false, reasonSharedUnconfigured,
+			"The platform stack is running, but this server hasn't been pointed at it yet " +
+				"(MEDIATOR_DID / DID_HOSTING_SERVER_URL). An admin needs to copy its values into configuration."
+	}
+
+	return true, "", ""
+}
+
 // capacityAllows gates a create on remaining cluster capacity for mode. It
 // fails open: if capacity can't be measured (no k8s client / stats read failed)
 // it returns true rather than blocking. Only a measured "zero fit" writes 503
@@ -324,26 +485,70 @@ func (h *SetupHandler) Availability(c *gin.Context) {
 	type modeAvail struct {
 		Count     int  `json:"count"`
 		Available bool `json:"available"`
+		// Why it's unavailable, and a sentence to show the user. Absent when
+		// the mode is creatable.
+		Reason string `json:"reason,omitempty"`
+		Detail string `json:"detail,omitempty"`
 	}
 
+	// Fail open on capacity, as before: a transient metrics/Longhorn outage
+	// must never wrongly block creation.
+	vtaOnly := modeAvail{Available: true}
+	fullStack := modeAvail{Available: true}
+
 	est, meta, determinable := h.capacity.Estimates(c.Request.Context())
-	if !determinable {
-		c.JSON(http.StatusOK, gin.H{
-			"vta_only":          modeAvail{Available: true},
-			"full_stack":        modeAvail{Available: true},
-			"metrics_available": false,
-			"storage_available": false,
-			"determinable":      false,
-		})
-		return
+	if determinable {
+		vtaOnly.Count = est[capacity.VtaOnly.Name].Count
+		vtaOnly.Available = vtaOnly.Count >= 1
+		fullStack.Count = est[capacity.FullStack.Name].Count
+		fullStack.Available = fullStack.Count >= 1
+	}
+
+	atCapacity := "The cluster is at capacity and can't provision a new agent right now. " +
+		"Please try again later or contact an admin."
+	if !vtaOnly.Available {
+		vtaOnly.Reason, vtaOnly.Detail = reasonAtCapacity, atCapacity
+	}
+	if !fullStack.Available {
+		fullStack.Reason, fullStack.Detail = reasonAtCapacity, atCapacity
+	}
+
+	// The shared mediator and DID host is a hard dependency of vta_only, not a
+	// capacity question — so it overrides the fail-open above rather than
+	// sitting alongside it. full_stack runs its own and is never gated on it.
+	if ready, reason, detail := h.sharedInfra(); !ready {
+		vtaOnly.Available = false
+		vtaOnly.Reason, vtaOnly.Detail = reason, detail
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"vta_only":          modeAvail{Count: est[capacity.VtaOnly.Name].Count, Available: est[capacity.VtaOnly.Name].Count >= 1},
-		"full_stack":        modeAvail{Count: est[capacity.FullStack.Name].Count, Available: est[capacity.FullStack.Name].Count >= 1},
+		"vta_only":          vtaOnly,
+		"full_stack":        fullStack,
 		"metrics_available": meta.MetricsAvailable,
 		"storage_available": meta.StorageAvailable,
-		"determinable":      true,
+		"determinable":      determinable,
+	})
+}
+
+// GET /api/v1/setup/domain-info — the environment's hostname facts, so the
+// portal can render accurate hints instead of hardcoding the production shape
+// (`vta-<name>.firstperson.dev`), which is wrong in development and will be
+// wrong again for custom and platform domains.
+//
+//	managed_domain  the zone managed sessions live under (CLUSTER_DOMAIN)
+//	env_prefix      "dev-" locally, "" in production — prefixed onto every label
+//	target_ip       the ingress IP a custom domain must ultimately resolve to
+//	target_host     the hostname a custom domain CNAMEs at
+//
+// Also served under /admin/setup/domain-info for the admin panel, which holds
+// a different cookie and needs the same facts to name the platform stack's
+// hostnames before it exists.
+func (h *SetupHandler) DomainInfo(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"managed_domain": h.clusterDomain,
+		"env_prefix":     setup.EnvPrefix(h.appEnv),
+		"target_ip":      h.ingressIP,
+		"target_host":    setup.CNAMETarget(h.appEnv, h.clusterDomain),
 	})
 }
 
@@ -358,9 +563,13 @@ func (h *SetupHandler) List(c *gin.Context) {
 	}
 
 	type item struct {
-		ID          string `json:"id"`
-		Status      string `json:"status"`
-		Mode        string `json:"mode"`
+		ID     string `json:"id"`
+		Status string `json:"status"`
+		Mode   string `json:"mode"`
+		// Where the hostnames come from — managed | custom | platform.
+		// Orthogonal to mode; `domain` is the zone they sit under.
+		DomainType  string `json:"domain_type"`
+		Domain      string `json:"domain"`
 		URL         string `json:"url,omitempty"`
 		URLs        gin.H  `json:"urls,omitempty"` // full_stack only
 		VtaName     string `json:"vta_name"`
@@ -379,6 +588,8 @@ func (h *SetupHandler) List(c *gin.Context) {
 			ID:          s.UniqueId,
 			Status:      s.Status,
 			Mode:        s.Mode,
+			DomainType:  s.DomainType,
+			Domain:      s.Domain,
 			VtaName:     s.VtaName,
 			VtaImage:    s.VtaImage,
 			MediatorDid: s.MediatorDid,
@@ -420,14 +631,16 @@ func (h *SetupHandler) Get(c *gin.Context) {
 	}
 
 	resp := gin.H{
-		"id":         session.UniqueId,
-		"status":     session.Status,
-		"mode":       session.Mode,
-		"url":        session.PublicURL(),
-		"vta_image":  session.VtaImage,
-		"vta_did":    session.VtaDid,
-		"created_at": session.CreatedAt,
-		"updated_at": session.UpdatedAt,
+		"id":          session.UniqueId,
+		"status":      session.Status,
+		"mode":        session.Mode,
+		"domain_type": session.DomainType,
+		"domain":      session.Domain,
+		"url":         session.PublicURL(),
+		"vta_image":   session.VtaImage,
+		"vta_did":     session.VtaDid,
+		"created_at":  session.CreatedAt,
+		"updated_at":  session.UpdatedAt,
 	}
 	if session.ErrorMsg != "" {
 		resp["error_msg"] = session.ErrorMsg
@@ -663,16 +876,56 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 }
 
 // POST /api/v1/setup/:id/admin
-func (h *SetupHandler) ProvisionAdmin(c *gin.Context) {
-	publicID := c.Param("id")
+// userSession loads the session named by :id, scoped to the calling user, and
+// adminSession loads it by unique_id alone.
+//
+// Every session action exists in both cookie families: the user-facing route
+// owns the caller's session, and the admin twin reaches any of them. The twins
+// are not a convenience — the platform stack is owned by a passkey-less system
+// account, so a route that filters by user_id can never be called for it.
+// Splitting the lookup from the action keeps one implementation of each action;
+// a divergent second copy is how the two drift.
+//
+// Both write the 404 themselves and return nil when they do.
+func (h *SetupHandler) userSession(c *gin.Context) *model.SetupSession {
 	userID := c.MustGet(middleware.ContextUserID).(uint)
+	return h.findSession(c, h.db.Where("unique_id = ? AND user_id = ?", c.Param("id"), userID))
+}
 
+func (h *SetupHandler) adminSession(c *gin.Context) *model.SetupSession {
+	return h.findSession(c, h.db.Where("unique_id = ?", c.Param("id")))
+}
+
+func (h *SetupHandler) findSession(c *gin.Context, q *gorm.DB) *model.SetupSession {
 	var session model.SetupSession
-	if err := h.db.Where("unique_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
+	if err := q.First(&session).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
-		return
+		return nil
 	}
+	return &session
+}
 
+func (h *SetupHandler) ProvisionAdmin(c *gin.Context) {
+	if s := h.userSession(c); s != nil {
+		h.provisionAdmin(c, s)
+	}
+}
+
+// AdminProvisionAdmin — POST /api/v1/admin/setup-sessions/:id/admin (admin only).
+//
+// An earlier attempt to dodge needing this — requiring admin_did at create time
+// — was impossible to satisfy: `pnm setup` mints that DID locally from the VTA
+// DID, which does not exist until the pipeline has already run and parked.
+func (h *SetupHandler) AdminProvisionAdmin(c *gin.Context) {
+	if s := h.adminSession(c); s != nil {
+		h.provisionAdmin(c, s)
+	}
+}
+
+// provisionAdmin resumes a session parked waiting for its PNM admin DID.
+// Ownership is the caller's business — both routes above funnel through here so
+// the state machine has one entry point.
+func (h *SetupHandler) provisionAdmin(c *gin.Context, session *model.SetupSession) {
 	readyStatus := "vta_setup_complete"
 	if session.IsFullStack() {
 		readyStatus = "awaiting_admin_did"

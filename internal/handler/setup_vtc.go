@@ -10,7 +10,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/ic3software/vtafarm-api/internal/k8s"
-	"github.com/ic3software/vtafarm-api/internal/middleware"
 	"github.com/ic3software/vtafarm-api/internal/model"
 	"github.com/ic3software/vtafarm-api/internal/setup"
 )
@@ -29,14 +28,19 @@ import (
 // local store, so the VTC Deployment is scaled to 0 first, restarted via
 // defer so it comes back even if the Job fails.
 func (h *SetupHandler) ReissueVtcInstall(c *gin.Context) {
-	publicID := c.Param("id")
-	userID := c.MustGet(middleware.ContextUserID).(uint)
-
-	var session model.SetupSession
-	if err := h.db.Where("unique_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
-		return
+	if s := h.userSession(c); s != nil {
+		h.reissueVtcInstall(c, s)
 	}
+}
+
+// AdminReissueVtcInstall — the admin-cookie twin, reaching any user's session.
+func (h *SetupHandler) AdminReissueVtcInstall(c *gin.Context) {
+	if s := h.adminSession(c); s != nil {
+		h.reissueVtcInstall(c, s)
+	}
+}
+
+func (h *SetupHandler) reissueVtcInstall(c *gin.Context, session *model.SetupSession) {
 	if !session.IsFullStack() {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "reissue-install is only available for full_stack sessions"})
 		return
@@ -128,14 +132,19 @@ func (h *SetupHandler) ReissueVtcInstall(c *gin.Context) {
 // this just lets the UI stop offering a dead link — reissue-install mints a
 // fresh pair. Mirrors AckDidsEnroll.
 func (h *SetupHandler) AckVtcInstall(c *gin.Context) {
-	publicID := c.Param("id")
-	userID := c.MustGet(middleware.ContextUserID).(uint)
-
-	var session model.SetupSession
-	if err := h.db.Where("unique_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
-		return
+	if s := h.userSession(c); s != nil {
+		h.ackVtcInstall(c, s)
 	}
+}
+
+// AdminAckVtcInstall — the admin-cookie twin, reaching any user's session.
+func (h *SetupHandler) AdminAckVtcInstall(c *gin.Context) {
+	if s := h.adminSession(c); s != nil {
+		h.ackVtcInstall(c, s)
+	}
+}
+
+func (h *SetupHandler) ackVtcInstall(c *gin.Context, session *model.SetupSession) {
 	if !session.IsFullStack() {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "install-ack is only available for full_stack sessions"})
 		return
@@ -145,7 +154,7 @@ func (h *SetupHandler) AckVtcInstall(c *gin.Context) {
 		return
 	}
 
-	if err := h.db.Model(&session).Update("vtc_install_used", true).Error; err != nil {
+	if err := h.db.Model(session).Update("vtc_install_used", true).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update session"})
 		return
 	}

@@ -139,15 +139,42 @@ func Setup(
 		adminAuth.GET("/admin/invitations", ih.List)
 		adminAuth.GET("/admin/setup-sessions", sh.AdminListSessions)
 		// Same teardown as the user-facing DELETE /setup/:id, but reaches any
-		// user's session rather than only the caller's.
+		// user's session rather than only the caller's. Deleting the platform
+		// stack additionally requires {"confirm": "<label>"} in the body.
 		adminAuth.DELETE("/admin/setup-sessions/:id", sh.AdminDeleteSession)
+		// Admin-cookie twin of GET /setup/:id/logs. The platform stack belongs
+		// to a passkey-less system account, so its provisioning is otherwise
+		// unwatchable — nobody can hold that user's cookie.
+		adminAuth.GET("/admin/setup-sessions/:id/logs", sh.AdminSessionLogs)
+		// Resumes a session parked at awaiting_admin_did. Same reason as the
+		// logs route: the platform stack's owner has no passkey, so the
+		// user-facing POST /setup/:id/admin can never be called for it — and
+		// the admin DID can't be supplied up front, since `pnm setup` mints it
+		// from a VTA DID the pipeline hasn't produced yet.
+		adminAuth.POST("/admin/setup-sessions/:id/admin", sh.AdminProvisionAdmin)
+		// The rest of the post-provisioning actions, same reasoning: without
+		// them an admin can see the platform stack's single-use enrollment and
+		// install links but never acknowledge or reissue one, which is most of
+		// what finishing the stack consists of.
+		adminAuth.POST("/admin/setup-sessions/:id/dids/reissue-enroll", sh.AdminReissueDidsEnroll)
+		adminAuth.POST("/admin/setup-sessions/:id/dids/enroll-ack", sh.AdminAckDidsEnroll)
+		adminAuth.POST("/admin/setup-sessions/:id/vtc/reissue-install", sh.AdminReissueVtcInstall)
+		adminAuth.POST("/admin/setup-sessions/:id/vtc/install-ack", sh.AdminAckVtcInstall)
+		// The farm's own flagship stack at vta.{CLUSTER_DOMAIN} and friends —
+		// the mediator and DID host vta_only sessions point at. Created whole
+		// (domain + DNS + session) by one action; the only route that can mint
+		// a domains row for our own zone.
+		adminAuth.POST("/admin/platform-stack", sh.CreatePlatformStack)
+		adminAuth.GET("/admin/platform-stack", sh.GetPlatformStack)
 		// Cluster capacity overview: CPU/memory/storage totals per node plus
 		// how many more sessions of each mode still fit.
 		dashH := handler.NewDashboardHandler(k8sClient)
 		adminAuth.GET("/admin/dashboard", dashH.Get)
-		// Same handler as the user-facing GET /setup/images — admins need the
-		// tag list too (session upgrades), but sit behind a different cookie.
+		// Same handlers as their /setup/... twins — admins need the same facts
+		// (image tags for upgrades, hostname shape for the platform stack page)
+		// but sit behind a different cookie.
 		adminAuth.GET("/admin/setup/images", sh.Images)
+		adminAuth.GET("/admin/setup/domain-info", sh.DomainInfo)
 
 		// Batch image upgrades — background runner, DB-backed queue.
 		adminAuth.POST("/admin/upgrades", uph.Create)
@@ -189,6 +216,9 @@ func Setup(
 		// Remaining per-mode cluster capacity — the create screen checks this to
 		// show "Unavailable" and disable the button before submitting.
 		userAuth.GET("/setup/availability", sh.Availability)
+		// Hostname facts for this environment, so the create screen's hints
+		// don't hardcode the production shape.
+		userAuth.GET("/setup/domain-info", sh.DomainInfo)
 		userAuth.GET("/setup", sh.List)
 		userAuth.POST("/setup", sh.Create)
 		userAuth.GET("/setup/:id", sh.Get)
@@ -203,6 +233,31 @@ func Setup(
 		userAuth.POST("/setup/:id/dids/enroll-ack", sh.AckDidsEnroll)
 		userAuth.POST("/setup/:id/vtc/reissue-install", sh.ReissueVtcInstall)
 		userAuth.POST("/setup/:id/vtc/install-ack", sh.AckVtcInstall)
+	}
+
+	// Domains — a zone the user owns, verified on its own before any session
+	// exists. That separation is the point: a session is only ever created
+	// against DNS that is already live, so it starts provisioning immediately
+	// and never parks half-built waiting for a record.
+	//
+	// Always on. The feature still needs its one-off cluster prerequisites (the
+	// grey-cloud lb records, the ACME issuers) before a verification can pass —
+	// but that shows up as a failing check with a reason, which is more useful
+	// than a route that pretends not to exist.
+	dh := handler.NewDomainHandler(db, cfg.AppEnv, cfg.ClusterDomain, cfg.ClusterIngressIP)
+	domains := v1.Group("/domains",
+		middleware.AuthRequired(cfg.JWTSecret, middleware.CookieUser),
+		middleware.RequireRole(model.RoleUser),
+	)
+	{
+		domains.GET("", dh.List)
+		domains.POST("", dh.Create)
+		// Both of these perform live DNS lookups, so they share one limit —
+		// and the portal polls the first every 30s by design.
+		resolveLimit := middleware.RateLimit(40, time.Minute)
+		domains.GET("/:id", resolveLimit, dh.Get)
+		domains.POST("/:id/verify", resolveLimit, dh.Verify)
+		domains.DELETE("/:id", dh.Delete)
 	}
 
 	return r

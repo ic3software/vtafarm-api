@@ -217,25 +217,44 @@ func (c *Client) CreateComponentService(ctx context.Context, ns, name string, la
 	return nil
 }
 
-// CreateComponentIngress creates an nginx Ingress routing host to svcName on
-// port. TLS is handled by the cluster-wide wildcard default-ssl-certificate
-// (no tls: block needed — matches CreateVtaIngress). Idempotent.
-func (c *Client) CreateComponentIngress(ctx context.Context, ns, name, svcName string, port int32, host string) error {
+// ComponentIngressSpec describes one component's Ingress. A struct rather than
+// seven positional arguments, which is what this took before TLS joined them.
+type ComponentIngressSpec struct {
+	Namespace, Name, ServiceName, Host string
+	Port                               int32
+	// TLSSecret names the Secret serving this host's certificate. Empty selects
+	// the cluster-wide wildcard that ingress-nginx serves as its
+	// default-ssl-certificate — which covers every managed and platform
+	// hostname, so only custom domains ever set this.
+	TLSSecret string
+}
+
+// CreateComponentIngress creates an nginx Ingress routing Host to ServiceName
+// on Port. Idempotent.
+func (c *Client) CreateComponentIngress(ctx context.Context, spec ComponentIngressSpec) error {
 	pathType := networkingv1.PathTypePrefix
 	ingressClass := "nginx"
 
-	_, err := c.kube.NetworkingV1().Ingresses(ns).Create(ctx, &networkingv1.Ingress{
+	ingress := &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: ns,
+			Name:      spec.Name,
+			Namespace: spec.Namespace,
 			Annotations: map[string]string{
+				// cert-manager's HTTP-01 solver claims the more specific
+				// /.well-known/acme-challenge/ path, so this doesn't interfere
+				// with issuance.
 				"nginx.ingress.kubernetes.io/ssl-redirect": "true",
 			},
+			// Deliberately NO cert-manager.io/cluster-issuer annotation. We
+			// create the Certificate ourselves (one covering all four hosts);
+			// leaving the annotation here as well would have ingress-shim make
+			// a second Certificate for the same Secret, and two owners of one
+			// Secret re-issue in a loop.
 		},
 		Spec: networkingv1.IngressSpec{
 			IngressClassName: &ingressClass,
 			Rules: []networkingv1.IngressRule{{
-				Host: host,
+				Host: spec.Host,
 				IngressRuleValue: networkingv1.IngressRuleValue{
 					HTTP: &networkingv1.HTTPIngressRuleValue{
 						Paths: []networkingv1.HTTPIngressPath{{
@@ -243,8 +262,8 @@ func (c *Client) CreateComponentIngress(ctx context.Context, ns, name, svcName s
 							PathType: &pathType,
 							Backend: networkingv1.IngressBackend{
 								Service: &networkingv1.IngressServiceBackend{
-									Name: svcName,
-									Port: networkingv1.ServiceBackendPort{Number: port},
+									Name: spec.ServiceName,
+									Port: networkingv1.ServiceBackendPort{Number: spec.Port},
 								},
 							},
 						}},
@@ -252,9 +271,19 @@ func (c *Client) CreateComponentIngress(ctx context.Context, ns, name, svcName s
 				},
 			}},
 		},
-	}, metav1.CreateOptions{})
+	}
+	if spec.TLSSecret != "" {
+		// Just this Ingress's own host, but the same Secret on all four — one
+		// certificate covers the set.
+		ingress.Spec.TLS = []networkingv1.IngressTLS{{
+			Hosts:      []string{spec.Host},
+			SecretName: spec.TLSSecret,
+		}}
+	}
+
+	_, err := c.kube.NetworkingV1().Ingresses(spec.Namespace).Create(ctx, ingress, metav1.CreateOptions{})
 	if err != nil && !k8serrors.IsAlreadyExists(err) {
-		return fmt.Errorf("create ingress %s: %w", name, err)
+		return fmt.Errorf("create ingress %s: %w", spec.Name, err)
 	}
 	return nil
 }

@@ -23,6 +23,22 @@ import (
 // three components instead of one. orchestrator.go's runSetup/runProvision
 // are left completely unchanged.
 
+// Waiting budgets for the two pre-flight steps.
+const (
+	// A managed session's records were created moments ago and mostly resolve
+	// within seconds; a custom domain's were verified before the session could
+	// exist. Neither needs long — this is a sanity check, not a wait for the
+	// user to go and edit DNS.
+	fsDNSWaitBudget   = 2 * time.Minute
+	fsDNSWaitInterval = 5 * time.Second
+
+	// ACME issuance is an HTTP-01 challenge per name plus Let's Encrypt's own
+	// queue. Five minutes is generous for four names and short enough that a
+	// genuinely broken zone fails while the user is still watching.
+	fsCertWaitBudget   = 5 * time.Minute
+	fsCertWaitInterval = 10 * time.Second
+)
+
 // fsLabels returns the selector labels shared by a component's Service and
 // its Deployment — they must match exactly for the Service to route traffic.
 func fsLabels(component string, sessionID uint) map[string]string {
@@ -128,6 +144,29 @@ func (o *Orchestrator) runFullStack(ctx context.Context, sessionID uint) {
 		return true
 	}
 
+	// dns_wait — confirm the hostnames resolve before spending any cluster
+	// resources on them. Everything downstream assumes these names work, so a
+	// DNS problem caught here is one clear error instead of a pipeline failure
+	// five steps deep.
+	//
+	// Only a custom domain fails on it. On our own zone we just created the
+	// records ourselves through the Cloudflare API and hold their record ids —
+	// there is no user error left to catch, and the one thing that can still go
+	// wrong is a public resolver holding a negative answer for a name someone
+	// looked up before it existed. Cloudflare's SOA minimum outlives this
+	// budget, so failing there would turn a caching artifact into a dead
+	// session on a path that has always worked. Log it and carry on.
+	o.fsSetStatus(sessionID, "dns_wait")
+	if err := o.fsWaitDNS(ctx, s); err != nil {
+		if s.DomainType == model.DomainCustom {
+			if fail("DNS not resolving", err) {
+				return
+			}
+		} else if ctx.Err() == nil {
+			log.Printf("[orchestrator] fs session %d: dns_wait did not settle, continuing: %v", sessionID, err)
+		}
+	}
+
 	// env_provision
 	o.fsSetStatus(sessionID, "env_provision")
 	if fail("failed to ensure k8s namespace", o.k8s.EnsureUserEnvironment(ctx, userIDStr)) {
@@ -141,6 +180,18 @@ func (o *Orchestrator) runFullStack(ctx context.Context, sessionID uint) {
 	o.fsSetStatus(sessionID, "k8s_provision")
 	if fail("failed to provision k8s resources", o.fsK8sProvision(ctx, ns, s)) {
 		return
+	}
+
+	// tls_provision — custom domains only. After k8s_provision because the
+	// Ingresses must exist for the HTTP-01 challenge to be served, and before
+	// step_vta_setup because from step_vta_register_dids onward the components
+	// resolve each other's did:webvh identifiers over HTTPS — an untrusted
+	// certificate there fails the pipeline somewhere far harder to diagnose.
+	if s.DomainType == model.DomainCustom {
+		o.fsSetStatus(sessionID, "tls_provision")
+		if fail("TLS certificate issuance failed", o.fsWaitCert(ctx, ns, s)) {
+			return
+		}
 	}
 
 	// step_vta_setup
@@ -297,15 +348,128 @@ func (o *Orchestrator) fsK8sProvision(ctx context.Context, ns string, s *model.S
 		{k8s.FSDidsName(s.ID), s.DidsFQDN(), 8534, fsLabels("dids", s.ID)},
 		{k8s.FSVtcName(s.ID), s.VtcFQDN(), 8200, fsLabels("vtc", s.ID)},
 	}
+
+	// Only a custom domain needs a certificate of its own. Managed and platform
+	// hostnames sit under our zone, which the cluster wildcard already covers —
+	// so they name no Secret here and reach ACME never.
+	tlsSecret := ""
+	if s.DomainType == model.DomainCustom {
+		tlsSecret = k8s.FSTLSSecret(s.ID)
+		hosts := []string{s.FQDN(), s.MediatorFQDN(), s.DidsFQDN(), s.VtcFQDN()}
+		if err := o.k8s.CreateSessionCert(ctx, ns, tlsSecret, o.acmeIssuer, hosts); err != nil {
+			return err
+		}
+	}
+
 	for _, sv := range svcs {
 		if err := o.k8s.CreateComponentService(ctx, ns, sv.name, sv.labels, sv.port); err != nil {
 			return err
 		}
-		if err := o.k8s.CreateComponentIngress(ctx, ns, sv.name, sv.name, sv.port, sv.fqdn); err != nil {
+		if err := o.k8s.CreateComponentIngress(ctx, k8s.ComponentIngressSpec{
+			Namespace:   ns,
+			Name:        sv.name,
+			ServiceName: sv.name,
+			Host:        sv.fqdn,
+			Port:        sv.port,
+			TLSSecret:   tlsSecret,
+		}); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// fsWaitDNS blocks until the session's hostnames resolve, or the budget runs
+// out. Only the custom-domain caller treats a non-nil error as fatal — see the
+// call site.
+//
+// The pass criteria differ by domain kind, and this is the easiest thing in the
+// whole feature to get wrong. Managed and platform records are **proxied**
+// through Cloudflare, so they resolve to Cloudflare's anycast IPs and can never
+// equal CLUSTER_INGRESS_IP — for those, resolving at all is the whole test. A
+// shared "must equal the ingress IP" rule would break every managed session.
+func (o *Orchestrator) fsWaitDNS(ctx context.Context, s *model.SetupSession) error {
+	hosts := []string{s.FQDN(), s.MediatorFQDN(), s.DidsFQDN(), s.VtcFQDN()}
+
+	// A custom domain was verified against this exact IP before the session
+	// could be created, so this is a re-check rather than a wait. Managed
+	// records were created seconds ago and may genuinely need a moment.
+	wantIP := ""
+	if s.DomainType == model.DomainCustom {
+		wantIP = o.ingressIP
+	}
+
+	deadline := time.Now().Add(fsDNSWaitBudget)
+	var lastDetail string
+	for {
+		results := o.dns.CheckHosts(ctx, hosts, wantIP)
+		lastDetail = ""
+		allOK := true
+		for _, r := range results {
+			ok := r.OK
+			if wantIP == "" {
+				// Proxied: any answer means the record exists and is live.
+				ok = len(r.IPs) > 0
+			}
+			if !ok {
+				allOK = false
+				if lastDetail == "" {
+					lastDetail = r.FQDN + ": " + r.Detail
+				}
+			}
+		}
+		if allOK {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			if lastDetail == "" {
+				lastDetail = "hostnames did not resolve in time"
+			}
+			return fmt.Errorf("%s", lastDetail)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(fsDNSWaitInterval):
+		}
+	}
+}
+
+// fsWaitCert polls the session's one Certificate until cert-manager reports it
+// Ready.
+//
+// It does **not** retry on failure, deliberately. Let's Encrypt allows five
+// authorization failures per hostname per hour, and retrying past that locks
+// the hostname out for longer. Failing with something the user can act on is
+// worth more than another attempt.
+func (o *Orchestrator) fsWaitCert(ctx context.Context, ns string, s *model.SetupSession) error {
+	name := k8s.FSTLSSecret(s.ID)
+	deadline := time.Now().Add(fsCertWaitBudget)
+
+	for {
+		ready, message, err := o.k8s.CertReady(ctx, ns, name)
+		if err == nil && ready {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			detail := message
+			if err != nil {
+				detail = err.Error()
+			}
+			// The cause is almost always the user's DNS having changed since
+			// verification, or a CAA record on their zone forbidding Let's
+			// Encrypt — so name both rather than reporting a bare timeout.
+			return fmt.Errorf(
+				"timed out for %s. Check that the record still points at %s (DNS only, not proxied) "+
+					"and that any CAA record on %s allows letsencrypt.org. %s",
+				s.FQDN(), o.ingressIP, s.Domain, detail)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(fsCertWaitInterval):
+		}
+	}
 }
 
 // fsStepVtaSetup runs `vta setup` with [messaging] kind=create_mediator,

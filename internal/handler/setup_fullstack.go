@@ -38,10 +38,16 @@ func strVal(p *string) string {
 	return *p
 }
 
-// createFullStack handles POST /api/v1/setup for mode=full_stack — creates
-// four Cloudflare A-records (vta/mediator/dids/vtc) up front, persists the
-// session, and starts the orchestrator's full_stack state machine.
-func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest) {
+// createFullStack handles POST /api/v1/setup for mode=full_stack.
+//
+// On the managed zone it creates the four Cloudflare A-records up front, then
+// persists the session and starts the orchestrator. On a custom domain it
+// creates no DNS at all — the records are the user's, already verified, and we
+// never touch their zone.
+//
+// domain is nil for a managed session; Create has already validated the names
+// against whichever form applies.
+func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest, domain *model.Domain) {
 	if h.k8s == nil || h.orch == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "k8s/orchestrator not configured"})
 		return
@@ -51,19 +57,25 @@ func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest) {
 	// here because it's full_stack's own input. It becomes the vtc-<name>
 	// subdomain, so it gets the same treatment — required, DNS-safe, and
 	// unique across all sessions (vta_only rows carry the column default '').
-	if req.VtcName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "vtc_name is required"})
-		return
-	}
-	if err := setup.ValidateName(req.VtcName); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid vtc_name: " + err.Error()})
-		return
-	}
-	var vtcNameTaken int64
-	h.db.Model(&model.SetupSession{}).Where("vtc_name = ?", req.VtcName).Count(&vtcNameTaken)
-	if vtcNameTaken > 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "vtc_name already in use"})
-		return
+	// None of that applies on a custom domain, where the single label already
+	// stands in for both names.
+	if domain == nil {
+		if req.VtcName == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "vtc_name is required"})
+			return
+		}
+		if err := setup.ValidateName(req.VtcName); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid vtc_name: " + err.Error()})
+			return
+		}
+		var vtcNameTaken int64
+		h.db.Model(&model.SetupSession{}).
+			Where("vtc_name = ? AND domain_type = ?", req.VtcName, model.DomainManaged).
+			Count(&vtcNameTaken)
+		if vtcNameTaken > 0 {
+			c.JSON(http.StatusConflict, gin.H{"error": "vtc_name already in use"})
+			return
+		}
 	}
 
 	portable := true
@@ -84,15 +96,29 @@ func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest) {
 
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 
+	// Which zone, and which label shape. A custom domain uses the four fixed
+	// labels — no user-chosen name reaches a hostname — and one free-form
+	// label stands in for both names (design §4.3).
+	zone := h.clusterDomain
+	vtaName, vtcName := req.VtaName, req.VtcName
 	vtaSub, mediatorSub, didsSub, vtcSub := setup.FullStackHosts(h.appEnv, req.VtaName, req.VtcName)
-	vtaFQDN := vtaSub + "." + h.clusterDomain
-	mediatorFQDN := mediatorSub + "." + h.clusterDomain
-	didsFQDN := didsSub + "." + h.clusterDomain
-	vtcFQDN := vtcSub + "." + h.clusterDomain
+	if domain != nil {
+		zone = domain.Domain
+		vtaName, vtcName = req.Label, req.Label
+		vtaSub, mediatorSub, didsSub, vtcSub = setup.FixedHosts(h.appEnv)
+	}
+	vtaFQDN := vtaSub + "." + zone
+	mediatorFQDN := mediatorSub + "." + zone
+	didsFQDN := didsSub + "." + zone
+	vtcFQDN := vtcSub + "." + zone
 
-	// All four records are created up front (design §3) — the rendered
+	// All four managed records are created up front (design §3) — the rendered
 	// recipes embed the final HTTPS URLs. Roll back everything created so
 	// far on the first failure.
+	//
+	// A custom domain creates nothing: the user made those records themselves
+	// and we verified them, so there is no DNS of ours to roll back — or, on
+	// teardown, to delete.
 	var created []string
 	rollback := func() {
 		for _, rec := range created {
@@ -100,17 +126,26 @@ func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest) {
 		}
 	}
 	records := make(map[string]string, 4)
-	for _, host := range []struct{ label, fqdn string }{
-		{"vta", vtaFQDN}, {"mediator", mediatorFQDN}, {"dids", didsFQDN}, {"vtc", vtcFQDN},
-	} {
-		rec, err := h.cf.CreateARecord(c.Request.Context(), host.fqdn, h.ingressIP)
-		if err != nil {
-			rollback()
-			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create DNS record (" + host.label + "): " + err.Error()})
-			return
+	if domain == nil {
+		for _, host := range []struct{ label, fqdn string }{
+			{"vta", vtaFQDN}, {"mediator", mediatorFQDN}, {"dids", didsFQDN}, {"vtc", vtcFQDN},
+		} {
+			rec, err := h.cf.CreateARecord(c.Request.Context(), host.fqdn, h.ingressIP)
+			if err != nil {
+				rollback()
+				c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create DNS record (" + host.label + "): " + err.Error()})
+				return
+			}
+			created = append(created, rec)
+			records[host.label] = rec
 		}
-		created = append(created, rec)
-		records[host.label] = rec
+	}
+
+	domainType := model.DomainManaged
+	var domainID *uint
+	if domain != nil {
+		domainType = model.DomainCustom
+		domainID = &domain.ID
 	}
 
 	recordMediator, recordDids, recordVtc := records["mediator"], records["dids"], records["vtc"]
@@ -118,7 +153,12 @@ func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest) {
 		UserID: userID,
 		Mode:   model.ModeFullStack,
 		Status: "dns_provision",
-		Domain: h.clusterDomain,
+		// Explicit, not left to the column default — GORM omits a zero value
+		// that carries a default tag, so the in-memory struct would read "" for
+		// the rest of this request.
+		DomainID:   domainID,
+		DomainType: domainType,
+		Domain:     zone,
 		// VTA reuses Subdomain/CFRecordID — same fields vta_only uses.
 		Subdomain:         vtaSub,
 		CFRecordID:        records["vta"],
@@ -128,8 +168,8 @@ func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest) {
 		CFRecordMediator:  &recordMediator,
 		CFRecordDids:      &recordDids,
 		CFRecordVtc:       &recordVtc,
-		VtaName:           req.VtaName,
-		VtcName:           req.VtcName,
+		VtaName:           vtaName,
+		VtcName:           vtcName,
 		VtaImage:          req.VtaImage,
 		MediatorImage:     req.MediatorImage,
 		DidsImage:         req.DidsImage,
@@ -154,12 +194,16 @@ func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest) {
 		rollback()
 		// The pre-insert count checks race with concurrent creates; the DB
 		// unique indexes are the real gate.
-		if strings.Contains(createErr.Error(), "setup_sessions_vta_name_unique") {
+		if isUniqueViolation(createErr, "setup_sessions_vta_name_unique") {
 			c.JSON(http.StatusConflict, gin.H{"error": "vta_name already in use"})
 			return
 		}
-		if strings.Contains(createErr.Error(), "setup_sessions_vtc_name_unique") {
+		if isUniqueViolation(createErr, "setup_sessions_vtc_name_unique") {
 			c.JSON(http.StatusConflict, gin.H{"error": "vtc_name already in use"})
+			return
+		}
+		if isUniqueViolation(createErr, "setup_sessions_domain_unique") {
+			c.JSON(http.StatusConflict, gin.H{"error": "this domain is already in use by another session"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist session"})
@@ -169,8 +213,10 @@ func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest) {
 	h.orch.Start(session.ID)
 
 	c.JSON(http.StatusCreated, gin.H{
-		"id":     session.UniqueId,
-		"status": session.Status,
+		"id":          session.UniqueId,
+		"status":      session.Status,
+		"domain_type": session.DomainType,
+		"domain":      session.Domain,
 		"urls": gin.H{
 			"vta":      "https://" + vtaFQDN,
 			"mediator": "https://" + mediatorFQDN,
@@ -199,11 +245,13 @@ func (h *SetupHandler) getFullStack(c *gin.Context, session *model.SetupSession)
 		"vtc_did":               session.VtcDid,
 	}
 	resp := gin.H{
-		"id":        session.UniqueId,
-		"mode":      session.Mode,
-		"status":    session.Status,
-		"urls":      urls,
-		"collected": collected,
+		"id":          session.UniqueId,
+		"mode":        session.Mode,
+		"domain_type": session.DomainType,
+		"domain":      session.Domain,
+		"status":      session.Status,
+		"urls":        urls,
+		"collected":   collected,
 		// Current images per component — the self-service upgrade UI shows
 		// these as the running versions.
 		"vta_image":      session.VtaImage,
@@ -253,7 +301,11 @@ func (h *SetupHandler) getFullStack(c *gin.Context, session *model.SetupSession)
 func (h *SetupHandler) deleteFullStack(c *gin.Context, session *model.SetupSession) {
 	ctx := c.Request.Context()
 
-	if h.cf != nil {
+	// A custom domain's records belong to the user: we never created them and
+	// have no access to their zone. Removing the four CNAMEs is theirs to do,
+	// and the UI has to say so — a record left aimed at our ingress is a
+	// dangling-DNS liability.
+	if h.cf != nil && session.OwnsDNS() {
 		// Empty-skip covers a session torn down before every record was
 		// created (createFullStack rolls back mid-loop failures itself).
 		for label, rec := range map[string]string{"vta": session.CFRecordID, "mediator": strVal(session.CFRecordMediator), "dids": strVal(session.CFRecordDids), "vtc": strVal(session.CFRecordVtc)} {
@@ -280,6 +332,18 @@ func (h *SetupHandler) deleteFullStack(c *gin.Context, session *model.SetupSessi
 		h.k8s.DeleteComponentResources(ctx, ns, k8s.FSMediatorName(session.ID))
 		h.k8s.DeleteComponentResources(ctx, ns, k8s.FSDidsName(session.ID))
 		h.k8s.DeleteComponentResources(ctx, ns, k8s.FSVtcName(session.ID))
+
+		// The Certificate goes; **its Secret deliberately stays**. Recreating a
+		// session on the same domain asks for the exact same four names, which
+		// is what Let's Encrypt's "5 per identical set per 7 days" limit counts
+		// — and that one cannot be raised. Leaving the Secret means a rebuild
+		// finds a valid certificate and cert-manager reuses it, at no ACME cost.
+		// Namespace deletion below collects it when the user's last session goes.
+		if session.DomainType == model.DomainCustom {
+			if err := h.k8s.DeleteSessionCert(ctx, ns, k8s.FSTLSSecret(session.ID)); err != nil {
+				log.Printf("[setup] warn: failed to delete certificate for session %d: %v", session.ID, err)
+			}
+		}
 	}
 
 	if h.orch != nil {
@@ -440,14 +504,19 @@ func (h *SetupHandler) logsFullStack(c *gin.Context, session *model.SetupSession
 // lock isn't released until then), runs the invite Job, then scales back to
 // 1 — via defer, so the daemon comes back up even if the Job itself fails.
 func (h *SetupHandler) ReissueDidsEnroll(c *gin.Context) {
-	publicID := c.Param("id")
-	userID := c.MustGet(middleware.ContextUserID).(uint)
-
-	var session model.SetupSession
-	if err := h.db.Where("unique_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
-		return
+	if s := h.userSession(c); s != nil {
+		h.reissueDidsEnroll(c, s)
 	}
+}
+
+// AdminReissueDidsEnroll — the admin-cookie twin, reaching any user's session.
+func (h *SetupHandler) AdminReissueDidsEnroll(c *gin.Context) {
+	if s := h.adminSession(c); s != nil {
+		h.reissueDidsEnroll(c, s)
+	}
+}
+
+func (h *SetupHandler) reissueDidsEnroll(c *gin.Context, session *model.SetupSession) {
 	if !session.IsFullStack() {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "reissue-enroll is only available for full-stack sessions"})
 		return
@@ -538,14 +607,19 @@ func (h *SetupHandler) ReissueDidsEnroll(c *gin.Context) {
 // same invite; this just lets the UI know not to offer that same link again
 // after a refresh — reissue-enroll is what mints a fresh one.
 func (h *SetupHandler) AckDidsEnroll(c *gin.Context) {
-	publicID := c.Param("id")
-	userID := c.MustGet(middleware.ContextUserID).(uint)
-
-	var session model.SetupSession
-	if err := h.db.Where("unique_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
-		return
+	if s := h.userSession(c); s != nil {
+		h.ackDidsEnroll(c, s)
 	}
+}
+
+// AdminAckDidsEnroll — the admin-cookie twin, reaching any user's session.
+func (h *SetupHandler) AdminAckDidsEnroll(c *gin.Context) {
+	if s := h.adminSession(c); s != nil {
+		h.ackDidsEnroll(c, s)
+	}
+}
+
+func (h *SetupHandler) ackDidsEnroll(c *gin.Context, session *model.SetupSession) {
 	if !session.IsFullStack() {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "enroll-ack is only available for full-stack sessions"})
 		return
@@ -555,7 +629,7 @@ func (h *SetupHandler) AckDidsEnroll(c *gin.Context) {
 		return
 	}
 
-	if err := h.db.Model(&session).Update("dids_enroll_used", true).Error; err != nil {
+	if err := h.db.Model(session).Update("dids_enroll_used", true).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update session"})
 		return
 	}

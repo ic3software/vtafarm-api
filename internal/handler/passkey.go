@@ -114,7 +114,8 @@ func contextIDAndRole(c *gin.Context) (uint, string) {
 }
 
 // RegisterBegin — POST /api/v1/user/passkeys/register/begin
-//               — POST /api/v1/admin/passkeys/register/begin
+//
+//	— POST /api/v1/admin/passkeys/register/begin
 func (h *PasskeyHandler) RegisterBegin(c *gin.Context) {
 	uid, role := contextIDAndRole(c)
 
@@ -146,7 +147,8 @@ func (h *PasskeyHandler) RegisterBegin(c *gin.Context) {
 }
 
 // RegisterComplete — POST /api/v1/user/passkeys/register/complete?name=...
-//                  — POST /api/v1/admin/passkeys/register/complete?name=...
+//
+//	— POST /api/v1/admin/passkeys/register/complete?name=...
 func (h *PasskeyHandler) RegisterComplete(c *gin.Context) {
 	uid, role := contextIDAndRole(c)
 
@@ -197,7 +199,8 @@ func (h *PasskeyHandler) RegisterComplete(c *gin.Context) {
 }
 
 // List — GET /api/v1/user/passkeys
-//       — GET /api/v1/admin/passkeys
+//
+//	— GET /api/v1/admin/passkeys
 func (h *PasskeyHandler) List(c *gin.Context) {
 	uid, role := contextIDAndRole(c)
 
@@ -242,7 +245,8 @@ func (h *PasskeyHandler) List(c *gin.Context) {
 }
 
 // Delete — DELETE /api/v1/user/passkeys/:id
-//        — DELETE /api/v1/admin/passkeys/:id
+//
+//	— DELETE /api/v1/admin/passkeys/:id
 func (h *PasskeyHandler) Delete(c *gin.Context) {
 	uid, role := contextIDAndRole(c)
 

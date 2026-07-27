@@ -41,6 +41,7 @@ See `.env.example` for all options. Key ones:
 | `CLOUDFLARE_API_TOKEN` | — | Cloudflare API token (`Zone:DNS:Edit` permission) |
 | `CLOUDFLARE_ZONE_ID` | — | Cloudflare Zone ID for the user's root domain |
 | `CLUSTER_INGRESS_IP` | — | External IP of the cluster's Ingress-NGINX LoadBalancer |
+| `ACME_CLUSTER_ISSUER` | derived from `APP_ENV` | `letsencrypt-http01-production` in production, `letsencrypt-http01-dev` everywhere else. Leave unset — it's derived precisely because getting it wrong burns rate limits on real hostnames that can't be raised |
 
 ## Project Structure
 
@@ -56,6 +57,7 @@ See `.env.example` for all options. Key ones:
 ├── docs/
 │   ├── vta-setup-design.md          # API design for VTA setup automation (Mode A + shared shape)
 │   ├── full-stack-setup-design.md   # Authoritative design for the full_stack mode (all 4 components)
+│   ├── custom-domain-design.md      # Custom + platform domains, the dev- prefix (§17 = what has shipped)
 │   └── vault-transit-upgrade.md     # Vault / transit upgrade + restore runbook
 └── internal/
     ├── apidocs/
@@ -64,14 +66,18 @@ See `.env.example` for all options. Key ones:
     ├── config/config.go        # Config struct loaded from env vars
     ├── database/database.go    # DB connect + migrate on startup
     ├── cloudflare/client.go    # Cloudflare API: CreateARecord, DeleteRecord
+    ├── dnscheck/checker.go     # TXT + CNAME resolution, straight to public resolvers
     ├── model/
     │   ├── admin.go
     │   ├── user.go
+    │   ├── domain.go           # custom / platform domains a session can run under
     │   └── setup_session.go    # GORM model for VTA setup sessions
     ├── handler/
     │   ├── health.go
     │   ├── auth.go             # AdminLogin, UserLogin
     │   ├── user.go             # Create user (admin only)
+    │   ├── admin_platform_stack.go  # The farm's own stack + its system account
+    │   ├── domain.go           # Attach / verify / release a user-owned domain
     │   └── setup.go            # VTA setup wizard endpoints
     ├── middleware/
     │   └── auth.go             # JWT auth + role enforcement
@@ -146,7 +152,16 @@ To create additional admins, an authenticated admin calls `POST /api/v1/admin/ad
 | `POST` | `/api/v1/admin/invitations` | admin | Create a user invitation link |
 | `GET` | `/api/v1/admin/invitations` | admin | List invitation links |
 | `GET` | `/api/v1/admin/setup-sessions` | admin | List all users' setup sessions (paginated, 20/page) |
-| `DELETE` | `/api/v1/admin/setup-sessions/:id` | admin | Delete any user's session — same teardown as `DELETE /setup/:id`, but not scoped to the caller. Irreversible; the UI requires typing the session id to confirm |
+| `DELETE` | `/api/v1/admin/setup-sessions/:id` | admin | Delete any user's session — same teardown as `DELETE /setup/:id`, but not scoped to the caller. Irreversible; the UI requires typing the session id to confirm. Deleting the **platform stack** additionally requires `{"confirm": "<label>"}` in the body — enforced by the API, not the UI |
+| `GET` | `/api/v1/admin/setup-sessions/:id/logs` | admin | Stream any session's setup logs (`full_stack` only). Exists for the platform stack: it's owned by a passkey-less system account, so nobody can hold the cookie the user-facing route requires |
+| `POST` | `/api/v1/admin/setup-sessions/:id/admin` | admin | Resume a session parked at `awaiting_admin_did`. Same reason as the logs route — and the platform stack always parks there, since the admin DID is minted from a VTA DID the pipeline hasn't produced yet |
+| `POST` | `/api/v1/admin/setup-sessions/:id/dids/reissue-enroll` | admin | Admin twin of the user route |
+| `POST` | `/api/v1/admin/setup-sessions/:id/dids/enroll-ack` | admin | Admin twin of the user route |
+| `POST` | `/api/v1/admin/setup-sessions/:id/vtc/reissue-install` | admin | Admin twin. The one that matters most: without an install URL + claim code nobody can claim the platform community |
+| `POST` | `/api/v1/admin/setup-sessions/:id/vtc/install-ack` | admin | Admin twin of the user route |
+| `POST` | `/api/v1/admin/platform-stack` | admin | Create the platform stack: domain row + 4 proxied DNS records + `full_stack` session, in one action. The only route that mints a `domains` row for our own zone |
+| `GET` | `/api/v1/admin/platform-stack` | admin | Its state, plus the `config_values` to copy into the environment once it's running |
+| `GET` | `/api/v1/admin/setup/domain-info` | admin | Admin-cookie twin of `GET /setup/domain-info` — the platform stack page names its hostnames before they exist |
 
 Every route an authenticated admin calls lives under `/api/v1/admin/...` — that
 prefix is the signal that the route requires the admin role, regardless of
@@ -180,7 +195,13 @@ the account and logs the holder in to register a fresh one.
 | --- | --- | --- | --- |
 | `GET` | `/api/v1/user/me` | user | Get own profile, incl. `beta_access` (read-only) |
 | `POST` | `/api/v1/setup/validate` | user | Check Cloudflare connectivity |
-| `POST` | `/api/v1/setup` | user | Create session + provision DNS (`mode=vta_only` or `full_stack`; `full_stack` requires `beta_access`) |
+| `GET` | `/api/v1/setup/domain-info` | user | Hostname facts for this environment (`managed_domain`, `env_prefix`, `target_ip`, `target_host`) so the portal never hardcodes the production hostname shape |
+| `POST` | `/api/v1/setup` | user | Create session + provision DNS (`mode=vta_only` or `full_stack`; `full_stack` requires `beta_access`). Optional `domain_id` runs it on a verified custom domain — then `label` replaces `vta_name`/`vtc_name`, and no DNS is created |
+| `GET` | `/api/v1/domains` | user | The caller's domains (at most one) |
+| `POST` | `/api/v1/domains` | user | Attach a domain → row + fresh TXT token + the 5 records to create |
+| `GET` | `/api/v1/domains/:id` | user | Detail, resolved live; promotes to verified when everything passes |
+| `POST` | `/api/v1/domains/:id/verify` | user | Run the check. A failure is **200**, not 4xx — it's a retryable state, not a client error |
+| `DELETE` | `/api/v1/domains/:id` | user | 409 while a session runs on it |
 | `DELETE` | `/api/v1/setup/:id` | user | Cancel session + tear down DNS |
 | `POST` | `/api/v1/setup/:id/upgrade` | user | Self-service image upgrade/downgrade of the user's **own** session (looked up by `unique_id AND user_id` — never another user's) |
 | `GET` | `/api/v1/setup/:id/upgrade` | user | Latest self-service upgrade of that session, for progress polling |
@@ -202,6 +223,103 @@ the frontend.
 
 Design: `docs/full-stack-setup-design.md` (authoritative for `full_stack`),
 `docs/vta-setup-design.md` (Mode A / shared shape).
+
+## Domains
+
+`domain_type` on a session says where its hostnames come from. It is
+**orthogonal to mode** — any `full_stack` session is also exactly one of:
+
+| `domain_type` | Hostnames | Zone | DNS | TLS |
+| --- | --- | --- | --- | --- |
+| `managed` (default) | `vta-<name>.firstperson.dev` | ours | we create it | cluster wildcard |
+| `platform` | `vta.firstperson.dev` (fixed labels) | ours | we create it | cluster wildcard |
+| `custom` | `vta.aaa.com` (fixed labels) | **theirs** | they create it, we verify | cert-manager + Let's Encrypt |
+
+In development every label additionally carries a `dev-` prefix
+(`setup.EnvPrefix`), so `dev-vta-alice.firstperson.dev` and
+`dev-vta.firstperson.dev`. It's a prefix, not an infix, so every record a
+locally run API created sorts together in the Cloudflare dashboard.
+
+Rows live in `domains` (`kind` = `custom` | `platform`; `managed` sessions have
+`domain_id IS NULL`). A domain backs **at most one session** — its four labels
+are fixed, so a second session would want the same hostnames.
+
+Design: `docs/custom-domain-design.md` (§17 tracks what has shipped).
+
+### Custom domains
+
+A user attaches a zone they own on its own page (`/api/v1/domains`), proves
+control, and only then creates a session against it. Keeping verification
+**out of** session creation is what removes a whole state from the session state
+machine: a session is only ever created against DNS that is already live, so it
+starts provisioning immediately instead of parking half-built while someone
+edits DNS.
+
+- **Two records, both required.** Four `CNAME → {env_prefix}lb.{CLUSTER_DOMAIN}`
+  prove traffic routes to us; one TXT at `_vtafarm-challenge.<domain>` (or the
+  apex) proves the person asking controls the zone. The CNAMEs alone don't:
+  someone who deletes their session but leaves their records behind would
+  otherwise hand the next attacher a passing check on a name they never
+  controlled. The token is minted fresh per attach, never rotates while pending,
+  and **may be deleted once verified** — it's checked at verification time only.
+- **We never touch the user's DNS.** Not on create, not on teardown — which is
+  why the UI must tell them to remove the four CNAMEs themselves.
+- **One certificate covers all four names**, issued by cert-manager over
+  HTTP-01 (`ACME_CLUSTER_ISSUER`). The four Ingresses share its Secret and carry
+  **no** `cert-manager.io/cluster-issuer` annotation — with the annotation
+  *and* our own Certificate, ingress-shim would create a second one for the same
+  Secret and the two would re-issue in a loop.
+- **Teardown deletes the Certificate but keeps the Secret.** Recreating a
+  session on the same domain requests the identical four names, which is what
+  Let's Encrypt's unraisable "5 per identical set per 7 days" limit counts;
+  leaving the Secret lets a rebuild reuse the certificate for free. The
+  namespace collects it when the user's last session goes.
+- **The CNAME target is derived, never configured** (`setup.CNAMETarget`). It's a
+  name rather than the ingress IP because the user's records are effectively
+  permanent, so the cluster IP has to be able to change without anyone editing
+  DNS again.
+- **`CLUSTER_DOMAIN` and every subdomain of it are refused for every caller,
+  admins included.** The only route that mints a row for our own zone is
+  `POST /admin/platform-stack`. That's enforced at the route, not by role,
+  because the two paths produce different objects.
+- **Always on** — no feature flag. It still needs its one-off cluster
+  prerequisites (the grey-cloud `lb` / `dev-lb` records, the ACME
+  ClusterIssuers) before a verification can pass; until they exist the check
+  fails with a reason, which tells an operator more than a hidden route would.
+
+### The platform stack
+
+One `full_stack` session per environment at `vta.firstperson.dev` / `vtc.` /
+`mediator.` / `dids.` — the farm's flagship stack, and the mediator + DID host
+that `vta_only` sessions point at. `POST /api/v1/admin/platform-stack` creates
+the domain row, the DNS and the session in one action.
+
+**`vta_only` cannot be created until it exists.** That mode is only the VTA,
+wired to the mediator and DID host the platform stack provides, so an agent
+created before it would never deliver a message. `GET /setup/availability`
+reports `vta_only.available: false` with a `reason`
+(`platform_stack_missing` / `platform_stack_not_ready` /
+`shared_infra_unconfigured`), and `POST /setup` answers 503 — the UI is not the
+gate. `full_stack` provisions its own and is never blocked on it.
+
+The third reason exists because the stack running is not the same as this API
+being able to reach it: `MEDIATOR_DID` is minted by the pipeline and only
+arrives here once an admin copies it into configuration.
+
+- **Owned by a system account**, not an admin: `setup_sessions.user_id` is a FK
+  to `users` and derives the namespace, while admins are a separate table. The
+  account is a `users` row with `unique_id = 'platform'`, created on first use,
+  with no passkey and no email. `GET /admin/users` flags it as `system: true`.
+- **The admin DID is supplied afterwards, exactly as for a user's session.**
+  `POST /admin/platform-stack` takes no `admin_did`: that DID is minted locally
+  by `pnm setup` from the VTA DID, which doesn't exist until `step_vta_setup`
+  has run. The stack parks at `awaiting_admin_did` like any other `full_stack`.
+  The one difference is who resumes it — **any admin**, through
+  `POST /admin/setup-sessions/:id/admin`, because a passkey-less owner means the
+  user-facing route can never be called for it.
+- **No verification, no ACME, no Let's Encrypt quota** — the zone is ours and
+  the `*.firstperson.dev` wildcard already covers the names.
+- `beta_access` doesn't apply (it's a user gate); cluster capacity does.
 
 ## Beta Access
 
@@ -306,4 +424,7 @@ rules:
 - apiGroups: ["storage.k8s.io"]
   resources: ["storageclasses"]
   verbs: ["get", "list"]
+- apiGroups: ["cert-manager.io"]
+  resources: ["certificates"]
+  verbs: ["get", "list", "watch", "create", "delete"]
 ```

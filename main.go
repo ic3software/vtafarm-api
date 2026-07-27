@@ -93,7 +93,8 @@ func main() {
 
 	var orch *setup.Orchestrator
 	if k8sClient != nil {
-		orch = setup.NewOrchestrator(db, k8sClient, vaultClient, cfg.Vault.VTAAddr, dhClient)
+		orch = setup.NewOrchestrator(db, k8sClient, vaultClient, cfg.Vault.VTAAddr, dhClient,
+			cfg.ClusterIngressIP, cfg.ACMEClusterIssuer)
 		orch.Resume(context.Background())
 	}
 

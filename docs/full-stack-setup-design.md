@@ -46,7 +46,7 @@ The mediator's *message* storage is still **fjall** (file-backed on its PVC) —
 only holds the mediator's secrets, not its message store. No Redis/Valkey.
 
 > Status: **implemented** (`internal/setup/orchestrator_fullstack.go` +
-> `internal/setup/orchestrator_fullstack_vtc.go` + the `internal/k8s/component_*.go`
+> `internal/setup/orchestrator_vtc.go` + the `internal/k8s/component_*.go`
 > helpers). This document is the authoritative design reference; the §5 state machine
 > matches the code. One **external** prerequisite is standing: the VTC image must be
 > published built with `--features vault-secrets`
@@ -154,13 +154,15 @@ dids-{vta_name}.{domain}
 vtc-{vtc_name}.{domain}
 ```
 
-In development (`APP_ENV=development`) each gets a `-local-` infix —
-`vta-local-{vta_name}`, `mediator-local-{vta_name}`, `dids-local-{vta_name}`,
-`vtc-local-{vtc_name}` — distinguishing local DNS records from production.
+In development (`APP_ENV=development`) each gets a `dev-` prefix —
+`dev-vta-{vta_name}`, `dev-mediator-{vta_name}`, `dev-dids-{vta_name}`,
+`dev-vtc-{vtc_name}` — distinguishing local DNS records from production. It's a
+prefix rather than an infix so every dev record sorts together in the zone; see
+`setup.EnvPrefix` and `docs/custom-domain-design.md` §2.
 
 `vta_name` and `vtc_name` are both validated by `setup.ValidateName`: lowercase letters
 and digits joined by single hyphens, at most 48 characters (the longest component prefix,
-`mediator-local-`, is 15 chars against DNS's 63-char label limit). `vtc_name` is
+`dev-mediator-`, is 13 chars against DNS's 63-char label limit). `vtc_name` is
 additionally **unique across all sessions** — it becomes a public community identity, so
 a collision is a 409 at `POST /setup`, not a silently shared name.
 
@@ -1374,11 +1376,11 @@ granted by the API itself ([§5](#5-state-machine),
    `FSVtcName`, the `FSJob*` helpers (incl. `FSJobVtaRegisterDids`, `FSJobVtcSetupKey`,
    `FSJobVtcAclGrant`, `FSJobVtcSetup`, `FSJobVtcInvite`), and `allFSJobNames` for
    teardown.
-6. `internal/setup/templates_fullstack.go` + `templates_fullstack_vtc.go` — the
+6. `internal/setup/templates_fullstack.go` + `templates_vtc.go` — the
    `create_mediator` VTA variant, the mediator recipe (fjall message store, Vault
    `vault://` secrets, kubernetes auth), the webvh p1/p3 recipes, and `RenderVtcSetupTOML`
    ([§7](#7-recipe-templates)).
-7. `internal/setup/parser_fullstack.go` + `parser_fullstack_vtc.go` — the regexes from
+7. `internal/setup/parser_fullstack.go` + `parser_vtc.go` — the regexes from
    [§8](#8-output-parsing-regex), including `ParseVtcSetupKeyDid`, the five-field
    `ParseVtcSetupOutput`, and the reissue parser for `vtc admin invite`. (`4a` is a user
    input, not parsed.)
@@ -1393,11 +1395,11 @@ granted by the API itself ([§5](#5-state-machine),
 10. `internal/setup/orchestrator_fullstack.go` — `runFullStack`: the pre-gate pipeline
     through `step_vta_register_dids`, the shared `fsStepImportAdminDid`/`fsDeployVta`
     helpers, the `Teardown*Vault` wrappers, and `Resume` for every `full_stack` status.
-11. `internal/setup/orchestrator_fullstack_vtc.go` — `runFullStackWithVtcFinish`: the
+11. `internal/setup/orchestrator_vtc.go` — `runFullStackFinish`: the
     post-gate finish `step_import_admin_did` → `step_vtc_setup_key` → `step_vtc_acl_grant`
     → `deploy_vta` → `step_vtc_setup` → `deploy_vtc` → `running`, plus `TeardownVtcVault`
     and the context-grant Conflict fallback ([§6](#6-per-step-jobs)).
-12. `internal/handler/setup.go` + `setup_fullstack.go` + `setup_fullstack_vtc.go` — mode
+12. `internal/handler/setup.go` + `setup_fullstack.go` + `setup_vtc.go` — mode
     dispatch; 4 DNS records; required `mediator_image`/`dids_image`/`vtc_image`; unique
     `vtc_name`; the reveal-once fields and required `vta_did` / dids-enroll-URL / vtc DID in
     `GET /setup/:id`; the dids reissue/ack and vtc reissue/ack endpoints; teardown

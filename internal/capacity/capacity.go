@@ -32,7 +32,7 @@ const (
 //
 //	vta_only:   internal/k8s/vta_resources.go   CreateVtaDeployment
 //	full_stack: internal/setup/orchestrator_fullstack.go     (dids, mediator, vta)
-//	            internal/setup/orchestrator_fullstack_vtc.go (vtc)
+//	            internal/setup/orchestrator_vtc.go (vtc)
 //
 // and the per-component PVC sizes (internal/k8s/setup_jobs.go and
 // internal/setup/orchestrator_fullstack.go).
