@@ -41,7 +41,7 @@ See `.env.example` for all options. Key ones:
 | `CLOUDFLARE_API_TOKEN` | — | Cloudflare API token (`Zone:DNS:Edit` permission) |
 | `CLOUDFLARE_ZONE_ID` | — | Cloudflare Zone ID for the user's root domain |
 | `CLUSTER_INGRESS_IP` | — | External IP of the cluster's Ingress-NGINX LoadBalancer |
-| `ACME_CLUSTER_ISSUER` | derived from `APP_ENV` | `letsencrypt-http01-production` in production, `letsencrypt-http01-dev` everywhere else. Leave unset — it's derived precisely because getting it wrong burns rate limits on real hostnames that can't be raised |
+| `ACME_CLUSTER_ISSUER` | `letsencrypt-http01` | The same issuer in every environment — there is no staging variant. A staging certificate passes `tls_provision` and then crash-loops the mediator, because the components resolve each other's `did:webvh` over HTTPS and reject an untrusted chain. Every environment therefore shares Let's Encrypt's unraisable allowances (5 certs per identical name set per week), so keep iteration on domains we own |
 
 ## Project Structure
 

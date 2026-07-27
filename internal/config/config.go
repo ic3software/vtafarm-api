@@ -15,8 +15,8 @@ type Config struct {
 	ClusterDomain    string
 	MediatorDid      string
 	// ACMEClusterIssuer names the cert-manager ClusterIssuer that signs custom
-	// domains' certificates. Defaults to the one matching APP_ENV — see
-	// defaultACMEIssuer for why it is derived rather than configured.
+	// domains' certificates. The same one in every environment — see
+	// DefaultACMEIssuer for why there is no staging variant to pick between.
 	ACMEClusterIssuer string
 	DB                DBConfig
 	K8s               K8sConfig
@@ -121,21 +121,25 @@ type K8sConfig struct {
 	NamespacePrefix string
 }
 
-// defaultACMEIssuer names the ClusterIssuer matching the environment.
+// DefaultACMEIssuer is the ClusterIssuer that signs custom domains, in every
+// environment. See k8s/tls/clusterissuer-http01.yaml.
 //
-// Derived rather than defaulted to a constant, for the same reason
-// setup.CNAMETarget is derived: this is the one setting whose damage cannot be
-// undone. Getting it wrong in development burns Let's Encrypt's per-hostname
-// failure and per-name-set allowances against real customer hostnames, and
-// neither can be raised — so it must not depend on anyone remembering to set an
-// env var. ACME_CLUSTER_ISSUER still overrides, for the rare case of testing
-// production issuance somewhere else.
-func defaultACMEIssuer(appEnv string) string {
-	if appEnv == "production" {
-		return "letsencrypt-http01-production"
-	}
-	return "letsencrypt-http01-dev"
-}
+// It used to be derived from APP_ENV, picking a Let's Encrypt *staging* issuer
+// outside production to keep real allowances safe. That protected the quota and
+// broke the feature: a staging certificate chains to a root nothing trusts, and
+// from step_vta_register_dids onward the components resolve each other's
+// did:webvh identifiers over HTTPS. tls_provision passed (cert-manager only
+// asks whether the certificate was issued), then the mediator crash-looped on
+// what looked like a network error. A custom-domain session could not complete
+// outside production at all.
+//
+// So every environment shares this issuer and its allowances — five
+// authorization failures per hostname per hour, five certificates per identical
+// set of names per week, neither raisable. The four names a domain requests never
+// vary, so that weekly limit caps rebuilds per domain across all environments
+// at once. ACME_CLUSTER_ISSUER overrides it where a cluster names its issuer
+// something else.
+const DefaultACMEIssuer = "letsencrypt-http01"
 
 func Load() *Config {
 	appEnv := getEnv("APP_ENV", "development")
@@ -148,7 +152,7 @@ func Load() *Config {
 		ClusterDomain:    getEnv("CLUSTER_DOMAIN", ""),
 		MediatorDid:      getEnv("MEDIATOR_DID", ""),
 
-		ACMEClusterIssuer: getEnv("ACME_CLUSTER_ISSUER", defaultACMEIssuer(appEnv)),
+		ACMEClusterIssuer: getEnv("ACME_CLUSTER_ISSUER", DefaultACMEIssuer),
 		DB: DBConfig{
 			Host:     getEnv("DB_HOST", "localhost"),
 			Port:     getEnv("DB_PORT", "5432"),
