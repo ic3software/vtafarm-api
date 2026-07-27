@@ -118,7 +118,11 @@ func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest) {
 		UserID: userID,
 		Mode:   model.ModeFullStack,
 		Status: "dns_provision",
-		Domain: h.clusterDomain,
+		// Explicit, not left to the column default — see setup.go's Create.
+		// The platform stack's own create path is the only one that writes
+		// anything else today (admin_platform_stack.go).
+		DomainType: model.DomainManaged,
+		Domain:     h.clusterDomain,
 		// VTA reuses Subdomain/CFRecordID — same fields vta_only uses.
 		Subdomain:         vtaSub,
 		CFRecordID:        records["vta"],
@@ -199,11 +203,13 @@ func (h *SetupHandler) getFullStack(c *gin.Context, session *model.SetupSession)
 		"vtc_did":               session.VtcDid,
 	}
 	resp := gin.H{
-		"id":        session.UniqueId,
-		"mode":      session.Mode,
-		"status":    session.Status,
-		"urls":      urls,
-		"collected": collected,
+		"id":          session.UniqueId,
+		"mode":        session.Mode,
+		"domain_type": session.DomainType,
+		"domain":      session.Domain,
+		"status":      session.Status,
+		"urls":        urls,
+		"collected":   collected,
 		// Current images per component — the self-service upgrade UI shows
 		// these as the running versions.
 		"vta_image":      session.VtaImage,

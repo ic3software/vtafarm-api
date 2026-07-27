@@ -56,6 +56,7 @@ See `.env.example` for all options. Key ones:
 ├── docs/
 │   ├── vta-setup-design.md          # API design for VTA setup automation (Mode A + shared shape)
 │   ├── full-stack-setup-design.md   # Authoritative design for the full_stack mode (all 4 components)
+│   ├── custom-domain-design.md      # Custom + platform domains, the dev- prefix (§17 = what has shipped)
 │   └── vault-transit-upgrade.md     # Vault / transit upgrade + restore runbook
 └── internal/
     ├── apidocs/
@@ -67,11 +68,13 @@ See `.env.example` for all options. Key ones:
     ├── model/
     │   ├── admin.go
     │   ├── user.go
+    │   ├── domain.go           # custom / platform domains a session can run under
     │   └── setup_session.go    # GORM model for VTA setup sessions
     ├── handler/
     │   ├── health.go
     │   ├── auth.go             # AdminLogin, UserLogin
     │   ├── user.go             # Create user (admin only)
+    │   ├── admin_platform_stack.go  # The farm's own stack + its system account
     │   └── setup.go            # VTA setup wizard endpoints
     ├── middleware/
     │   └── auth.go             # JWT auth + role enforcement
@@ -146,7 +149,9 @@ To create additional admins, an authenticated admin calls `POST /api/v1/admin/ad
 | `POST` | `/api/v1/admin/invitations` | admin | Create a user invitation link |
 | `GET` | `/api/v1/admin/invitations` | admin | List invitation links |
 | `GET` | `/api/v1/admin/setup-sessions` | admin | List all users' setup sessions (paginated, 20/page) |
-| `DELETE` | `/api/v1/admin/setup-sessions/:id` | admin | Delete any user's session — same teardown as `DELETE /setup/:id`, but not scoped to the caller. Irreversible; the UI requires typing the session id to confirm |
+| `DELETE` | `/api/v1/admin/setup-sessions/:id` | admin | Delete any user's session — same teardown as `DELETE /setup/:id`, but not scoped to the caller. Irreversible; the UI requires typing the session id to confirm. Deleting the **platform stack** additionally requires `{"confirm": "<label>"}` in the body — enforced by the API, not the UI |
+| `POST` | `/api/v1/admin/platform-stack` | admin | Create the platform stack: domain row + 4 proxied DNS records + `full_stack` session, in one action. The only route that mints a `domains` row for our own zone |
+| `GET` | `/api/v1/admin/platform-stack` | admin | Its state, plus the `config_values` to copy into the environment once it's running |
 
 Every route an authenticated admin calls lives under `/api/v1/admin/...` — that
 prefix is the signal that the route requires the admin role, regardless of
@@ -203,6 +208,48 @@ the frontend.
 
 Design: `docs/full-stack-setup-design.md` (authoritative for `full_stack`),
 `docs/vta-setup-design.md` (Mode A / shared shape).
+
+## Domains
+
+`domain_type` on a session says where its hostnames come from. It is
+**orthogonal to mode** — any `full_stack` session is also exactly one of:
+
+| `domain_type` | Hostnames | Zone | DNS | TLS |
+| --- | --- | --- | --- | --- |
+| `managed` (default) | `vta-<name>.firstperson.dev` | ours | we create it | cluster wildcard |
+| `platform` | `vta.firstperson.dev` (fixed labels) | ours | we create it | cluster wildcard |
+| `custom` | `vta.aaa.com` (fixed labels) | **theirs** | they create it, we verify | cert-manager + Let's Encrypt |
+
+In development every label additionally carries a `dev-` prefix
+(`setup.EnvPrefix`), so `dev-vta-alice.firstperson.dev` and
+`dev-vta.firstperson.dev`. It's a prefix, not an infix, so every record a
+locally run API created sorts together in the Cloudflare dashboard.
+
+Rows live in `domains` (`kind` = `custom` | `platform`; `managed` sessions have
+`domain_id IS NULL`). A domain backs **at most one session** — its four labels
+are fixed, so a second session would want the same hostnames.
+
+`custom` is **not implemented yet**: nothing can create such a row. Design:
+`docs/custom-domain-design.md` (§17 tracks what has shipped).
+
+### The platform stack
+
+One `full_stack` session per environment at `vta.firstperson.dev` / `vtc.` /
+`mediator.` / `dids.` — the farm's flagship stack, and the mediator + DID host
+that `vta_only` sessions point at. `POST /api/v1/admin/platform-stack` creates
+the domain row, the DNS and the session in one action.
+
+- **Owned by a system account**, not an admin: `setup_sessions.user_id` is a FK
+  to `users` and derives the namespace, while admins are a separate table. The
+  account is a `users` row with `unique_id = 'platform'`, created on first use,
+  with no passkey and no email. `GET /admin/users` flags it as `system: true`.
+- **`admin_did` is required at create time.** The pipeline parks at
+  `awaiting_admin_did` without it, and the only route that resumes a gated
+  session (`POST /setup/:id/admin`) filters by `user_id` — so nobody could call
+  it for a passkey-less account and the stack would strand permanently.
+- **No verification, no ACME, no Let's Encrypt quota** — the zone is ours and
+  the `*.firstperson.dev` wildcard already covers the names.
+- `beta_access` doesn't apply (it's a user gate); cluster capacity does.
 
 ## Beta Access
 

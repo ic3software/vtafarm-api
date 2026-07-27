@@ -31,7 +31,6 @@ func NewUserHandler(db *gorm.DB) *UserHandler {
 	return &UserHandler{db: db}
 }
 
-
 func (h *UserHandler) List(c *gin.Context) {
 	var users []model.User
 	if err := h.db.Order("id asc").Find(&users).Error; err != nil {
@@ -44,8 +43,12 @@ func (h *UserHandler) List(c *gin.Context) {
 		UniqueId   string  `json:"unique_id"`
 		Email      *string `json:"email"` // null for pre-email and admin-invited accounts
 		BetaAccess bool    `json:"beta_access"`
-		CreatedAt  string  `json:"created_at"`
-		UpdatedAt  string  `json:"updated_at"`
+		// System is true for the account that owns the platform stack. It is
+		// not a login — no passkey, no email — so the UI should not offer it
+		// beta access, a recovery link, or anything else meant for a person.
+		System    bool   `json:"system"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
 	}
 	result := make([]userItem, len(users))
 	for i, u := range users {
@@ -54,6 +57,7 @@ func (h *UserHandler) List(c *gin.Context) {
 			UniqueId:   u.UniqueId,
 			Email:      u.Email,
 			BetaAccess: u.BetaAccess,
+			System:     u.UniqueId == systemAccountUniqueID,
 			CreatedAt:  u.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 			UpdatedAt:  u.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		}

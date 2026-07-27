@@ -246,9 +246,12 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	}
 
 	session := model.SetupSession{
-		UserID:           userID,
-		Mode:             req.Mode,
-		Status:           "dns_provisioned",
+		UserID: userID,
+		Mode:   req.Mode,
+		Status: "dns_provisioned",
+		// Set explicitly rather than left to the column default: the field
+		// would otherwise read "" in memory for the rest of this request.
+		DomainType:       model.DomainManaged,
 		Domain:           h.clusterDomain,
 		Subdomain:        subdomain,
 		CFRecordID:       recordID,
@@ -379,9 +382,13 @@ func (h *SetupHandler) List(c *gin.Context) {
 	}
 
 	type item struct {
-		ID          string `json:"id"`
-		Status      string `json:"status"`
-		Mode        string `json:"mode"`
+		ID     string `json:"id"`
+		Status string `json:"status"`
+		Mode   string `json:"mode"`
+		// Where the hostnames come from — managed | custom | platform.
+		// Orthogonal to mode; `domain` is the zone they sit under.
+		DomainType  string `json:"domain_type"`
+		Domain      string `json:"domain"`
 		URL         string `json:"url,omitempty"`
 		URLs        gin.H  `json:"urls,omitempty"` // full_stack only
 		VtaName     string `json:"vta_name"`
@@ -400,6 +407,8 @@ func (h *SetupHandler) List(c *gin.Context) {
 			ID:          s.UniqueId,
 			Status:      s.Status,
 			Mode:        s.Mode,
+			DomainType:  s.DomainType,
+			Domain:      s.Domain,
 			VtaName:     s.VtaName,
 			VtaImage:    s.VtaImage,
 			MediatorDid: s.MediatorDid,
@@ -441,14 +450,16 @@ func (h *SetupHandler) Get(c *gin.Context) {
 	}
 
 	resp := gin.H{
-		"id":         session.UniqueId,
-		"status":     session.Status,
-		"mode":       session.Mode,
-		"url":        session.PublicURL(),
-		"vta_image":  session.VtaImage,
-		"vta_did":    session.VtaDid,
-		"created_at": session.CreatedAt,
-		"updated_at": session.UpdatedAt,
+		"id":          session.UniqueId,
+		"status":      session.Status,
+		"mode":        session.Mode,
+		"domain_type": session.DomainType,
+		"domain":      session.Domain,
+		"url":         session.PublicURL(),
+		"vta_image":   session.VtaImage,
+		"vta_did":     session.VtaDid,
+		"created_at":  session.CreatedAt,
+		"updated_at":  session.UpdatedAt,
 	}
 	if session.ErrorMsg != "" {
 		resp["error_msg"] = session.ErrorMsg

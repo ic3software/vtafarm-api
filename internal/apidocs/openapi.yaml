@@ -282,6 +282,19 @@ components:
         mode:
           type: string
           enum: [vta_only, full_stack]
+        domain_type:
+          type: string
+          enum: [managed, custom, platform]
+          description: |
+            Where the hostnames come from, orthogonal to `mode`. `managed` is
+            the default — labels derived from `vta_name` in our own zone.
+            `platform` is the farm's own flagship stack on fixed labels.
+            `custom` is a user-owned zone (not yet creatable).
+          default: managed
+        domain:
+          type: string
+          description: The zone the session's hostnames sit under.
+          example: "example.com"
         url:
           type: string
           description: vta_only only.
@@ -337,6 +350,19 @@ components:
         mode:
           type: string
           enum: [vta_only, full_stack]
+        domain_type:
+          type: string
+          enum: [managed, custom, platform]
+          description: |
+            Where the hostnames come from, orthogonal to `mode`. `managed` is
+            the default — labels derived from `vta_name` in our own zone.
+            `platform` is the farm's own flagship stack on fixed labels.
+            `custom` is a user-owned zone (not yet creatable).
+          default: managed
+        domain:
+          type: string
+          description: The zone the session's hostnames sit under.
+          example: "example.com"
         url:
           type: string
           description: vta_only only.
@@ -959,6 +985,13 @@ paths:
                     beta_access:
                       type: boolean
                       description: Whether this user can create full_stack setup sessions.
+                    system:
+                      type: boolean
+                      description: >
+                        True for the account that owns the platform stack
+                        (`unique_id: platform`). Not a login — no passkey, no
+                        email — so the UI should not offer it beta access, a
+                        recovery link, or anything else meant for a person.
                     created_at:
                       type: string
                       format: date-time
@@ -1271,6 +1304,13 @@ paths:
                         mode:
                           type: string
                           enum: [vta_only, full_stack]
+                        domain_type:
+                          type: string
+                          enum: [managed, custom, platform]
+                          description: >
+                            The `platform` row is the farm's own stack — deleting
+                            it needs an explicit confirm, and it is owned by the
+                            system account rather than a person.
                         status:
                           type: string
                           example: "running"
@@ -1349,6 +1389,13 @@ paths:
 
         **Irreversible** — there is no undo and no soft delete. The admin UI
         requires the admin to type the session's `unique_id` to confirm.
+
+        **The platform stack additionally requires a request body.** When the
+        session's `domain_type` is `platform`, send `{"confirm": "<label>"}`
+        with the stack's label (its `vta_name`) or the call answers 400. That
+        one is enforced by the API rather than left to the UI: it is the only
+        deletion in the product that degrades every other user's service, since
+        every `vta_only` session loses its mediator and DID host.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
@@ -1360,9 +1407,27 @@ paths:
           schema:
             type: string
           example: "a1b2c3d4"
+      requestBody:
+        required: false
+        description: Required only when deleting the platform stack.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                confirm:
+                  type: string
+                  description: Must equal the platform stack's label.
+                  example: firstperson
       responses:
         "204":
           description: Session deleted
+        "400":
+          description: Platform stack deletion without a matching `confirm`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "401":
           description: Missing or invalid token
           content:
@@ -1383,6 +1448,205 @@ paths:
                 $ref: "#/components/schemas/Error"
         "502":
           description: Failed to delete the DNS record upstream
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/admin/platform-stack:
+    post:
+      summary: Create the platform stack
+      description: |
+        The farm's own flagship `full_stack`, running under our zone's fixed
+        labels — `vta.{CLUSTER_DOMAIN}`, `vtc.`, `mediator.`, `dids.` (each
+        prefixed `dev-` in development). It is the mediator and DID host that
+        every `vta_only` session points at, which is what makes that shared
+        infrastructure a stable name rather than a deletable dev session.
+
+        One action creates the whole thing: the `domains` row, the four proxied
+        Cloudflare A records, and the session — then the orchestrator starts.
+        This is the only route that can mint a `domains` row for our own zone,
+        and it always writes `kind: platform`.
+
+        Because the zone is ours there is **no verification and no ACME**: the
+        `*.{CLUSTER_DOMAIN}` wildcard already covers these names, so the stack
+        consumes no Let's Encrypt quota.
+
+        Notes:
+        - `beta_access` does not apply — that gate is for users.
+        - Cluster capacity does apply; 503 when the stack would not fit.
+        - Exactly one per environment. 409 while one exists.
+        - The session is owned by a dedicated **system account** (a `users` row
+          with `unique_id: platform`), created on first use. It is not a login.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [admin_did, vta_image, mediator_image, dids_image, vtc_image]
+              properties:
+                label:
+                  type: string
+                  default: firstperson
+                  description: |
+                    Reaches no hostname — the labels are fixed. It survives only
+                    in `did:webvh` paths
+                    (`did:webvh:<scid>:dids.{CLUSTER_DOMAIN}:<label>-vta`) and is
+                    what `DELETE /admin/setup-sessions/{id}` asks you to confirm.
+                    Stored as both `vta_name` and `vtc_name`.
+                admin_did:
+                  type: string
+                  description: |
+                    **Required here**, unlike on `POST /setup` where it may be
+                    supplied later. Without it the pipeline parks at
+                    `awaiting_admin_did`, and the only route that resumes a gated
+                    session is the user-facing `POST /setup/{id}/admin`, which
+                    filters by `user_id` — so nobody could ever call it for the
+                    system account and the stack would strand permanently.
+                vta_image: { type: string }
+                mediator_image: { type: string }
+                dids_image: { type: string }
+                vtc_image: { type: string }
+                portable: { type: boolean, default: true }
+                pre_rotation_count: { type: integer, default: 1 }
+      responses:
+        "201":
+          description: Stack created; the orchestrator has started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, description: The session's 8-char unique_id }
+                  status: { type: string, example: dns_provision }
+                  label: { type: string }
+                  domain: { type: string, example: firstperson.dev }
+                  urls:
+                    type: object
+                    properties:
+                      vta: { type: string }
+                      mediator: { type: string }
+                      dids: { type: string }
+                      vtc: { type: string }
+        "400":
+          description: Invalid label, or a required field is missing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: A platform stack already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: CLUSTER_INGRESS_IP / CLUSTER_DOMAIN not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Cloudflare rejected a record creation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Cloudflare/k8s not configured, or the cluster is at capacity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      summary: Platform stack state
+      description: |
+        Whether the stack exists and how far it has got, plus `config_values` —
+        what to paste into the environment once `status` is `running`.
+
+        Those values cannot be known upfront: `MEDIATOR_DID` and
+        `DID_HOSTING_DID` are minted by the pipeline, so they stay empty until
+        the corresponding step completes.
+
+        `exists: false` covers both "never created" and "created then torn
+        down" — the `domains` row outlives its session, so `domain` may still be
+        present in the second case.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      responses:
+        "200":
+          description: Current state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exists: { type: boolean }
+                  id: { type: string }
+                  status: { type: string }
+                  label: { type: string }
+                  domain: { type: string }
+                  urls:
+                    type: object
+                    properties:
+                      vta: { type: string }
+                      mediator: { type: string }
+                      dids: { type: string }
+                      vtc: { type: string }
+                  images:
+                    type: object
+                    properties:
+                      vta: { type: string }
+                      mediator: { type: string }
+                      dids: { type: string }
+                      vtc: { type: string }
+                  config_values:
+                    type: object
+                    description: Copy into the environment once the stack is running. Empty strings until the pipeline mints them.
+                    properties:
+                      MEDIATOR_DID: { type: string }
+                      DID_HOSTING_SERVER_URL: { type: string }
+                      DID_HOSTING_CONTROL_URL: { type: string }
+                      DID_HOSTING_DID: { type: string }
+                  error_msg: { type: string }
+                  created_at: { type: string, format: date-time }
+                  updated_at: { type: string, format: date-time }
+                example:
+                  exists: true
+                  id: a1b2c3d4
+                  status: running
+                  label: firstperson
+                  domain: firstperson.dev
+                  urls:
+                    vta: https://vta.firstperson.dev
+                    mediator: https://mediator.firstperson.dev
+                    dids: https://dids.firstperson.dev
+                    vtc: https://vtc.firstperson.dev
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role
           content:
             application/json:
               schema:

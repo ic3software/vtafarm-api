@@ -12,6 +12,20 @@ const (
 	ModeFullStack = "full_stack"
 )
 
+// Where a session's hostnames come from. Orthogonal to Mode: a session is
+// vta_only or full_stack, and independently managed, custom or platform.
+const (
+	// DomainManaged is the default — labels derived from the user's chosen
+	// name in our own zone (vta-<name>.firstperson.dev). DomainID is NULL.
+	DomainManaged = "managed"
+	// DomainCustom is a user-owned zone under fixed labels. Reaches ACME.
+	DomainCustom = "custom"
+	// DomainPlatform is our own zone under fixed labels — the flagship stack.
+	// DNS is ours to create, and the wildcard already covers TLS, so it costs
+	// no verification and no certificate work.
+	DomainPlatform = "platform"
+)
+
 type SetupSession struct {
 	ID         uint   `gorm:"primaryKey;autoIncrement" json:"-"`
 	UniqueId   string `gorm:"column:unique_id;size:8;not null;uniqueIndex" json:"id"`
@@ -22,6 +36,14 @@ type SetupSession struct {
 	Subdomain  string `gorm:"not null"                 json:"subdomain"`
 	CFRecordID string `                                json:"-"`
 	ErrorMsg   string `gorm:"not null;default:''"      json:"error_msg,omitempty"`
+
+	// DomainID links to the domains row backing this session; NULL exactly
+	// when DomainType is managed (enforced by setup_sessions_domain_link_check).
+	// DomainType is denormalised from that row's kind so dispatch stays a
+	// single column read. Domain/Subdomain/*Subdomain above keep holding the
+	// rendered values either way, so every FQDN accessor works unchanged.
+	DomainID   *uint  `gorm:"column:domain_id"                            json:"-"`
+	DomainType string `gorm:"column:domain_type;not null;default:managed" json:"domain_type"`
 	// VTA config inputs
 	VtaName          string `gorm:"not null;default:'personal-vta'" json:"vta_name"`
 	MediatorDid      string `gorm:"column:mediator_did;not null;default:''"  json:"mediator_did"`
@@ -130,4 +152,20 @@ func (s *SetupSession) VtcFQDN() string {
 // used wherever handlers and the orchestrator dispatch vta_only vs full_stack.
 func (s *SetupSession) IsFullStack() bool {
 	return s.Mode == ModeFullStack
+}
+
+// IsFixedLabel reports whether the session's hostnames are the four fixed
+// labels rather than name-derived ones. True for custom and platform domains,
+// which is also exactly when VtaName/VtcName carry no hostname meaning and are
+// free to duplicate across users.
+func (s *SetupSession) IsFixedLabel() bool {
+	return s.DomainType == DomainCustom || s.DomainType == DomainPlatform
+}
+
+// OwnsDNS reports whether vtafarm-api created this session's DNS records and
+// must therefore delete them on teardown. False for custom domains, where the
+// records are the user's to manage — and to remove, since one left pointing at
+// us is a dangling-DNS liability.
+func (s *SetupSession) OwnsDNS() bool {
+	return s.DomainType != DomainCustom
 }

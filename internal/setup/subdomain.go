@@ -88,6 +88,17 @@ func FullStackHosts(env, vtaName, vtcName string) (vtaSub, mediatorSub, didsSub,
 		componentHost(env, "vtc", vtcName)
 }
 
+// FixedHosts derives the four labels shared by custom and platform domains:
+// vta / mediator / dids / vtc, each with the environment prefix and nothing
+// else. There is no user-chosen name in them, which is precisely why one
+// domain backs one session — a second would want the same four hostnames.
+func FixedHosts(env string) (vtaSub, mediatorSub, didsSub, vtcSub string) {
+	return componentHost(env, "vta", ""),
+		componentHost(env, "mediator", ""),
+		componentHost(env, "dids", ""),
+		componentHost(env, "vtc", "")
+}
+
 // DID path components (did:webvh:<scid>:<dids host>:<path>) for the DIDs
 // hosted on the session's own dids daemon. Every producer must agree on
 // these: the webvh URLs rendered into the setup TOMLs mint the DIDs with

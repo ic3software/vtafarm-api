@@ -139,8 +139,15 @@ func Setup(
 		adminAuth.GET("/admin/invitations", ih.List)
 		adminAuth.GET("/admin/setup-sessions", sh.AdminListSessions)
 		// Same teardown as the user-facing DELETE /setup/:id, but reaches any
-		// user's session rather than only the caller's.
+		// user's session rather than only the caller's. Deleting the platform
+		// stack additionally requires {"confirm": "<label>"} in the body.
 		adminAuth.DELETE("/admin/setup-sessions/:id", sh.AdminDeleteSession)
+		// The farm's own flagship stack at vta.{CLUSTER_DOMAIN} and friends —
+		// the mediator and DID host vta_only sessions point at. Created whole
+		// (domain + DNS + session) by one action; the only route that can mint
+		// a domains row for our own zone.
+		adminAuth.POST("/admin/platform-stack", sh.CreatePlatformStack)
+		adminAuth.GET("/admin/platform-stack", sh.GetPlatformStack)
 		// Cluster capacity overview: CPU/memory/storage totals per node plus
 		// how many more sessions of each mode still fit.
 		dashH := handler.NewDashboardHandler(k8sClient)

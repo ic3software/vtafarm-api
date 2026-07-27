@@ -108,6 +108,25 @@ func TestFixedLabelHosts(t *testing.T) {
 	}
 }
 
+func TestFixedHosts(t *testing.T) {
+	vta, med, dids, vtc := FixedHosts("production")
+	if vta != "vta" || med != "mediator" || dids != "dids" || vtc != "vtc" {
+		t.Errorf("FixedHosts(production) = %q, %q, %q, %q", vta, med, dids, vtc)
+	}
+
+	vta, med, dids, vtc = FixedHosts("development")
+	if vta != "dev-vta" || med != "dev-mediator" || dids != "dev-dids" || vtc != "dev-vtc" {
+		t.Errorf("FixedHosts(development) = %q, %q, %q, %q", vta, med, dids, vtc)
+	}
+
+	// No user-chosen name reaches these labels — that is what makes a domain
+	// back exactly one session, so the two environments must be the only
+	// thing that can vary.
+	if a, _, _, _ := FixedHosts("production"); a != "vta" {
+		t.Errorf("FixedHosts is not deterministic: %q", a)
+	}
+}
+
 func TestCNAMETarget(t *testing.T) {
 	if got := CNAMETarget("production", "firstperson.dev"); got != "lb.firstperson.dev" {
 		t.Errorf("CNAMETarget(production) = %q, want lb.firstperson.dev", got)
