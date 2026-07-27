@@ -1,6 +1,6 @@
 # Custom Domain Attachment — Design
 
-Lets a **`full_stack_with_vtc`** session run under a domain the user owns
+Lets a **`full_stack`** session run under a domain the user owns
 (`vta.aaa.com`, `vtc.aaa.com`, `mediator.aaa.com`, `dids.aaa.com`) instead of a
 generated name in the farm's `firstperson.dev` zone.
 
@@ -12,8 +12,10 @@ Two things ride along in the same work:
   `dids.`, which is the farm's own flagship stack and the mediator + DID host
   that `vta_only` sessions point at — §3.3.
 
-> **Status: specification.** The architecture decisions are settled (§16.1);
-> §16.3 lists what is deliberately parked. Nothing is implemented yet.
+> **Status: phase 1 shipped, the rest is specification.** The architecture
+> decisions are settled (§16.1); §16.3 lists what is deliberately parked.
+> §17 tracks what is built — the `dev-` rename and `GET /setup/domain-info`
+> landed on 2026-07-26; nothing from phase 2 onward exists yet.
 
 Companion: [`vtafarm/docs/custom-domain-frontend.md`](../../vtafarm/docs/custom-domain-frontend.md).
 
@@ -23,7 +25,7 @@ Companion: [`vtafarm/docs/custom-domain-frontend.md`](../../vtafarm/docs/custom-
 
 | In scope | Out of scope |
 | --- | --- |
-| `full_stack_with_vtc` sessions | `vta_only` sessions — §18 |
+| `full_stack` sessions | `vta_only` sessions — §18 |
 | A standalone **Domains** page/resource, verified before any session exists | Verification inside the session-create flow (an earlier draft; §5 explains why it moved) |
 | CNAME + TXT verification, records created **manually** by the user | Automatic DNS provisioning via the user's registrar API |
 | Per-host TLS via cert-manager + Let's Encrypt HTTP-01 | Cloudflare for SaaS — evaluated and deferred, §8.5 |
@@ -67,7 +69,8 @@ func componentHost(env, component, name string) string {
 }
 ```
 
-`VtaHost`, `FullStackHosts` and `FullStackWithVtcHosts` keep their signatures.
+`VtaHost` and `FullStackHosts` keep their signatures, so neither call site
+(`handler/setup.go`, `handler/setup_fullstack.go`) changes.
 
 **Compatibility.** No migration needed: the rendered labels live in
 `setup_sessions.subdomain` / `mediator_subdomain` / `dids_subdomain` /
@@ -75,6 +78,10 @@ func componentHost(env, component, name string) string {
 stays 48 (the longest prefix shrinks from `mediator-local-` to `dev-mediator-`,
 so 48 becomes conservative rather than exact — update the comment).
 `subdomain_test.go` expectations change, plus new fixed-label cases.
+
+> **Shipped 2026-07-26** (`faff4af`), together with `GET /setup/domain-info`
+> (§10.2). Existing dev sessions keep their old `-local-` labels, exactly as
+> the compatibility note predicts.
 
 `.env` values still pointing at the old dev session
 (`MEDIATOR_DID`, `DID_HOSTING_CONTROL_URL`, `DID_HOSTING_SERVER_URL` →
@@ -172,9 +179,10 @@ ceremony for something that only ever happens once per environment:
 
 ```text
 POST /api/v1/admin/platform-stack { label, vta_image, mediator_image, dids_image, vtc_image }
+   ├─ get-or-create the system account (§3.3.6) → its user id owns everything below
    ├─ upsert the firstperson.dev domain row (kind=platform, verified_at=now)
    ├─ create the four proxied Cloudflare A records
-   └─ create the full_stack_with_vtc session against it → orchestrator starts
+   └─ create the full_stack session against it → orchestrator starts
 ```
 
 - `label` defaults to `firstperson`; it never appears in a hostname and only
@@ -221,6 +229,40 @@ not worth coupling the two before then.
 Deleting a platform stack takes every `vta_only` session's mediator and DID
 host with it. It requires the strongest confirmation in the product — see
 §11.1.
+
+#### 3.3.6 Who owns it: a dedicated system account
+
+An earlier draft said the `platform` rows belong to "the admin who created it".
+That cannot be implemented as written:
+
+```sql
+-- migrations/000003
+user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE
+```
+
+Admins live in the **`admins`** table, users in **`users`**. Storing an admin's
+id in `setup_sessions.user_id` would point at whichever *user* happens to hold
+that id — and since the namespace is derived as
+`{K8S_NAMESPACE_PREFIX}-{user_id}`, the platform stack would land inside a real
+customer's namespace.
+
+**Decision (2026-07-26): the platform stack is owned by a dedicated system
+account.** `POST /api/v1/admin/platform-stack` gets-or-creates one row in
+`users` — `unique_id = 'platform'`, `email` NULL — and both the `domains` row
+and the `setup_sessions` row hang off that id.
+
+- Nothing about the FK, the namespace derivation, teardown, or capacity
+  accounting needs a `platform` special case: it is an ordinary session in an
+  ordinary per-user namespace.
+- It is not tied to a person. Binding the farm's flagship stack to a real
+  admin's user account would mean deleting that account cascade-deletes the
+  platform stack.
+- `beta_access` on that row is meaningless and never checked (§3.3.2).
+- `GET /api/v1/admin/users` should mark or filter the row so it doesn't read as
+  a real signup.
+
+The alternative — letting an admin nominate an existing user account — was
+rejected for the cascade-delete reason above.
 
 ### 3.4 Why a domain is immutable once a session runs on it
 
@@ -273,8 +315,12 @@ and Cloudflare answers `Host: vta.aaa.com` with **Error 1014 (CNAME Cross-User
 Banned)** because that hostname isn't in any zone on our account. Serving it
 through Cloudflare would require Cloudflare for SaaS (§8.5).
 
-Derived by default as `EnvPrefix(env) + "lb." + CLUSTER_DOMAIN`, overridable
-via `CUSTOM_DOMAIN_CNAME_TARGET` (§12).
+Always derived, as `EnvPrefix(env) + "lb." + CLUSTER_DOMAIN` — that's
+`setup.CNAMETarget(env, clusterDomain)`, shipped in phase 1. An earlier draft
+made it overridable via a `CUSTOM_DOMAIN_CNAME_TARGET` env var; that was
+dropped, because the value is a pure function of config we already set and a
+knob nobody sets is still a knob somebody can set wrong. If the load balancer
+is ever renamed, change the derivation.
 
 **Why a CNAME to a hostname rather than an A record to the IP:** the user's
 records are effectively permanent (§3.4), so pointing them at a name we control
@@ -353,7 +399,7 @@ step.
 | Column | Type | Notes |
 | --- | --- | --- |
 | `id` | `bigserial` PK | |
-| `user_id` | `bigint NOT NULL` | owner; for `platform` rows, the admin who created it |
+| `user_id` | `bigint NOT NULL` | owner; for `platform` rows, the system account (§3.3.6) |
 | `domain` | `text NOT NULL` | `aaa.com` — the registrable domain or any subdomain of it |
 | `kind` | `varchar(16) NOT NULL` | `custom` \| `platform` |
 | `verify_token` | `text NOT NULL DEFAULT ''` | the TXT value; `custom` only |
@@ -415,7 +461,11 @@ A `pending` domain holds **no** cluster resources and reserves nothing except
 its row. Deleting it is always allowed; deleting a domain that a session
 references is a 409.
 
-### 5.4 Migration `000020_domains`
+### 5.4 Migration `000021_domains`
+
+`000020_vtc_name_index_full_stack` is the highest migration on disk, so this
+one is **000021**. (An earlier draft said 000020 — written before that
+migration existed.)
 
 ```sql
 -- up
@@ -439,13 +489,30 @@ CREATE UNIQUE INDEX setup_sessions_vta_name_unique
   ON setup_sessions (vta_name) WHERE domain_type = 'managed';
 CREATE UNIQUE INDEX setup_sessions_vtc_name_unique
   ON setup_sessions (vtc_name)
-  WHERE domain_type = 'managed' AND mode = 'full_stack_with_vtc';
+  WHERE domain_type = 'managed' AND vtc_name <> '';
 ```
 
-> Verify the two existing index names against the live schema first —
-> `internal/handler/setup.go` matches on the strings
-> `setup_sessions_vta_name_unique` / `setup_sessions_vtc_name_unique` to turn a
-> constraint violation into a 409, and those checks must keep matching.
+The `vtc_name` predicate keys on **the value, not the mode string** — that is
+what `000020` changed it to, and the reasoning carries over verbatim: "a
+session that has a `vtc_name` must own it exclusively" is the actual invariant,
+and it survives the next mode rename. A draft of this section still said
+`mode = 'full_stack_with_vtc'`, which by now matches no rows at all and would
+have silently disabled the index.
+
+Live definitions this migration replaces, for reference:
+
+```sql
+-- 000013
+CREATE UNIQUE INDEX setup_sessions_vta_name_unique ON setup_sessions (vta_name);
+-- 000020
+CREATE UNIQUE INDEX setup_sessions_vtc_name_unique ON setup_sessions (vtc_name)
+    WHERE vtc_name <> '';
+```
+
+> Both names are load-bearing beyond the database: `internal/handler/setup.go`
+> matches on the strings `setup_sessions_vta_name_unique` /
+> `setup_sessions_vtc_name_unique` to turn a constraint violation into a 409,
+> so they must be recreated under exactly these names.
 
 Every existing row becomes `managed` with `domain_id = NULL`.
 
@@ -1016,8 +1083,10 @@ the action is legible in logs after the fact.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `CUSTOM_DOMAIN_ENABLED` | `false` | Kill switch; ships dark until the phase-0 prerequisites are in place |
-| `CUSTOM_DOMAIN_CNAME_TARGET` | derived: `{envPrefix}lb.{CLUSTER_DOMAIN}` | Explicit override for the CNAME target |
 | `ACME_CLUSTER_ISSUER` | `letsencrypt-http01` | **Set to `letsencrypt-http01-staging` in development** (§9.4) |
+
+Two variables, not three. The CNAME target is **derived**, never configured —
+see §4.1.
 
 Existing `CLUSTER_INGRESS_IP`, `CLUSTER_DOMAIN` and `APP_ENV` keep their
 meanings. `.env.example` and the `CLAUDE.md` env table need the new rows.
@@ -1026,6 +1095,12 @@ meanings. `.env.example` and the `CLAUDE.md` env table need the new rows.
 
 - `lb.firstperson.dev` → `A` → `CLUSTER_INGRESS_IP`, **grey cloud**
 - `dev-lb.firstperson.dev` → `A` → `CLUSTER_INGRESS_IP`, **grey cloud**
+
+  Both must be created by hand in the dashboard. `cloudflare.CreateARecord`
+  hardcodes `Proxied: true`, so the API cannot create them even though it holds
+  a token for the zone — and a proxied `lb` is precisely the error-1014 failure
+  §4.1 describes.
+
 - Apply both ClusterIssuers
 - Enable ARI in cert-manager (§9.2)
 
@@ -1079,25 +1154,33 @@ nobody can write a TXT record into a public suffix they don't control.
 
 | File | Change |
 | --- | --- |
-| `internal/setup/subdomain.go` (+ test) | `EnvPrefix`, rewritten `componentHost`, `FixedHosts` |
+✅ marks what phase 1 already landed.
+
+| File | Change |
+| --- | --- |
+| ✅ `internal/setup/subdomain.go` (+ test) | `EnvPrefix`, rewritten `componentHost`, `CNAMETarget`; `FixedHosts` still to come |
+| ✅ `internal/handler/setup.go` | `DomainInfo`; later, `domain_id` / `label` binding and validation |
+| ✅ `internal/router/router.go` | `GET /setup/domain-info`; later, the rest |
+| ✅ `internal/apidocs/openapi.yaml` | document all of them |
 | `internal/model/domain.go` | new — `Domain` model |
 | `internal/model/setup_session.go` | `DomainID`, `DomainType`, constants, helpers |
-| `migrations/000020_domains.{up,down}.sql` | new |
+| `migrations/000021_domains.{up,down}.sql` | new |
 | `internal/dnscheck/checker.go` (+ test) | new — TXT + CNAME resolution (§6.4) |
 | `internal/handler/domain.go` | new — the six routes in §10.1 |
-| `internal/handler/setup.go` | `domain_id` / `label` binding and validation |
-| `internal/handler/setup_fullstack_vtc.go` | fixed-label branch of create |
-| `internal/handler/setup_fullstack.go` | teardown branch; new response fields |
+| `internal/handler/admin_platform_stack.go` | new — §10.1's two admin routes, incl. the system account (§3.3.6) |
+| `internal/handler/setup_fullstack.go` | fixed-label branch of create; teardown branch; new response fields |
 | `internal/setup/orchestrator_fullstack.go` | `dns_wait`, `tls_provision` |
 | `internal/k8s/component_resources.go` | `ComponentIngressSpec` + `tls:` block |
 | `internal/k8s/certificates.go` | new — create/poll/delete the session Certificate |
 | `internal/k8s/fullstack_names.go` | `FSTLSSecret` |
-| `internal/config/config.go` | three new vars (§12) |
-| `internal/router/router.go` | new routes |
-| `internal/apidocs/openapi.yaml` | document all of them |
+| `internal/config/config.go` | two new vars (§12) |
 | `helm/vtafarm-api/templates/.../clusterrole.yaml` | `cert-manager.io/certificates` |
 | `k8s/tls/clusterissuer-http01.yaml` | new (+ staging twin) |
 | `CLAUDE.md`, `.env.example` | env table, routes, structure |
+
+`setup_fullstack_vtc.go` holds only `ReissueVtcInstall` / `AckVtcInstall`; the
+create path is `createFullStack` in `setup_fullstack.go`, which is where the
+fixed-label branch goes.
 
 ---
 
@@ -1113,7 +1196,9 @@ nobody can write a TXT record into a public suffix they don't control.
 | **Domains are a separate resource** | Verified on their own page before any session exists. `awaiting_dns` is gone from the session state machine. |
 | **One custom domain per account** | And one live session per domain. |
 | **`firstperson.dev` is a `platform` domain** | Admin-only, no verification, no ACME, no quota. |
+| **The platform stack is owned by a system account** | A dedicated `users` row, not an admin id — which the FK on `setup_sessions.user_id` makes impossible (§3.3.6). |
 | **Names** | Fixed-label domains take a single `label`; duplicates across users allowed; unique indexes become managed-only. |
+| **The CNAME target is derived, not configured** | No `CUSTOM_DOMAIN_CNAME_TARGET` env var; `setup.CNAMETarget` computes it (§4.1). |
 | **Legacy sessions** | All deleted before rollout — no compatibility work owed. |
 
 ### 16.2 Open
@@ -1135,8 +1220,8 @@ nobody can write a TXT record into a public suffix they don't control.
 
 | Phase | Contents | Ships independently |
 | --- | --- | --- |
-| **0** | `lb` + `dev-lb` grey-cloud records; both ClusterIssuers; ARI enabled | yes |
-| **1** | `dev-` rename + tests + `GET /setup/domain-info` + frontend hint fix | yes — small, no schema change |
+| **0** | `lb` + `dev-lb` grey-cloud records; both ClusterIssuers; ARI enabled | yes — **not done**, and nothing before phase 3 needs it |
+| **1** | `dev-` rename + tests + `GET /setup/domain-info` + frontend hint fix | ✅ **done 2026-07-26** (`faff4af`; frontend hint fix outstanding) |
 | **2** | `domains` table, `FixedHosts`, single-`label` handling, **`platform` domain end to end** | **yes — and this is the milestone that matters** |
 | **3** | `internal/dnscheck`, the Domains routes, verification | yes |
 | **4** | Certificate creation, `tls_provision`, RBAC, teardown branch | completes the backend |
