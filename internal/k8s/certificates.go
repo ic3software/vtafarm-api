@@ -103,13 +103,49 @@ func (c *Client) CertReady(ctx context.Context, ns, name string) (ready bool, me
 // domain asks for a certificate covering the exact same four names, which is
 // precisely what Let's Encrypt's "5 per identical set of identifiers per 7
 // days" limit counts — and that limit cannot be raised. If the user's namespace
-// survives (they still have other sessions), the next session finds a valid
-// certificate already there and cert-manager reuses it, costing no ACME traffic
-// at all. Namespace deletion cleans it up when their last session goes.
+// survives (they still have other sessions), the next session names the same
+// Secret (CustomTLSSecret is keyed by domain), finds a valid certificate
+// already in it, and cert-manager adopts it at no ACME cost. Namespace deletion
+// cleans it up when their last session goes — or DeleteDomainCert does, when
+// the domain itself is detached.
 func (c *Client) DeleteSessionCert(ctx context.Context, ns, name string) error {
 	err := c.dyn.Resource(certificateGVR).Namespace(ns).Delete(ctx, name, metav1.DeleteOptions{})
 	if err != nil && !k8serrors.IsNotFound(err) {
 		return fmt.Errorf("delete certificate %s: %w", name, err)
+	}
+	return nil
+}
+
+// DeleteDomainCert removes the Certificate **and** its Secret.
+//
+// This is the counterpart to DeleteSessionCert, for when the domain itself is
+// detached rather than the session on it. Keeping the certificate then would be
+// wrong twice over: it is key material for names the account no longer claims —
+// and a domain can be attached by somebody else afterwards — and it is
+// unreachable anyway, since re-attaching mints a new domains row whose id names
+// a different Secret. Deleting it also means a re-attach genuinely starts over,
+// which is what someone who detached to fix something expects.
+//
+// Errors are returned per resource but neither aborts the other: a leftover of
+// either kind is worth reporting and worth not compounding.
+func (c *Client) DeleteDomainCert(ctx context.Context, ns, name string) error {
+	certErr := c.dyn.Resource(certificateGVR).Namespace(ns).Delete(ctx, name, metav1.DeleteOptions{})
+	if certErr != nil && k8serrors.IsNotFound(certErr) {
+		certErr = nil
+	}
+
+	secretErr := c.kube.CoreV1().Secrets(ns).Delete(ctx, name, metav1.DeleteOptions{})
+	if secretErr != nil && k8serrors.IsNotFound(secretErr) {
+		secretErr = nil
+	}
+
+	switch {
+	case certErr != nil && secretErr != nil:
+		return fmt.Errorf("delete certificate %s: %w (and its secret: %v)", name, certErr, secretErr)
+	case certErr != nil:
+		return fmt.Errorf("delete certificate %s: %w", name, certErr)
+	case secretErr != nil:
+		return fmt.Errorf("delete tls secret %s: %w", name, secretErr)
 	}
 	return nil
 }

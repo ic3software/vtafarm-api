@@ -37,6 +37,12 @@ type Domain struct {
 	// re-verification, so a user tidying their DNS later never breaks a
 	// running session.
 	VerifiedAt *time.Time `json:"verified_at"`
+	// LastCheckedAt is when the last check that actually resolved anything ran,
+	// NULL until the first. It backs the server-side cooldown between checks
+	// (handler.VerifyCooldown) and the "last checked" the portal shows —
+	// keeping it here rather than in the browser is what makes a reload, a
+	// second tab and the API agree on when the next check is allowed.
+	LastCheckedAt *time.Time `json:"last_checked_at"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

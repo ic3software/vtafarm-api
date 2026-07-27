@@ -2,9 +2,11 @@ package k8s
 
 import "fmt"
 
-// full_stack K8s resource names. All keyed by sessionID, which is a globally
+// full_stack K8s resource names. Keyed by sessionID, which is a globally
 // unique PK shared across vta_only and full_stack rows in the same table, so
 // these never collide with vta_only's "vta-*" names even for the same ID.
+//
+// CustomTLSSecret is the exception and is keyed by domain — see its comment.
 
 // FSVtaName, FSMediatorName, FSDidsName, FSVtcName are the PVC/Deployment/
 // Service/Ingress names for each component (FSVtcName is
@@ -14,11 +16,28 @@ func FSMediatorName(sessionID uint) string { return fmt.Sprintf("fs-%d-mediator"
 func FSDidsName(sessionID uint) string     { return fmt.Sprintf("fs-%d-dids", sessionID) }
 func FSVtcName(sessionID uint) string      { return fmt.Sprintf("fs-%d-vtc", sessionID) }
 
-// FSTLSSecret names both the session's Certificate and the Secret it writes —
+// CustomTLSSecret names both the Certificate and the Secret it writes —
 // cert-manager takes the secretName from us, so keeping them identical means
 // one name to look up when diagnosing issuance. Custom domains only; managed
-// and platform sessions are served by the cluster wildcard.
-func FSTLSSecret(sessionID uint) string { return fmt.Sprintf("fs-%d-tls", sessionID) }
+// and platform sessions are served by the cluster wildcard and reach ACME never.
+//
+// Keyed on the DOMAIN, not the session, and that is the whole point. A
+// certificate belongs to the four names, which belong to the domain — the
+// session is just what happens to be running on them. Teardown keeps the Secret
+// so a rebuild costs no ACME quota, and that only works if the next session
+// asks for the same name: under the old fs-<sessionID>-tls the rebuild named a
+// Secret that had never existed, cert-manager issued from scratch every time,
+// and the kept Secret sat there unread.
+//
+// What that cost: CustomHosts is a pure function of (env, domain), so every
+// session on one domain requests a byte-identical set of four names — exactly
+// what Let's Encrypt's duplicate-certificate limit counts. Five per identical
+// set, refilling one per ~34 hours, and not raisable by asking. Reuse takes a
+// rebuild from one of those five to none of them.
+//
+// Safe as a key because setup_sessions_domain_unique makes a domain back at
+// most one session — two sessions can never contend for this name.
+func CustomTLSSecret(domainID uint) string { return fmt.Sprintf("custom-%d-tls", domainID) }
 
 // Per-step setup Job (+ matching ConfigMap) names, in §6 order.
 func FSJobVtaSetup(sessionID uint) string   { return fmt.Sprintf("fs-%d-vta-setup", sessionID) }

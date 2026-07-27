@@ -686,7 +686,7 @@ metadata:
 spec:
   secretName: fs-{sid}-tls
   issuerRef:
-    name: letsencrypt-http01-production        # ACME_CLUSTER_ISSUER
+    name: letsencrypt-http01        # ACME_CLUSTER_ISSUER
     kind: ClusterIssuer
   dnsNames:
     - vta.aaa.com
@@ -761,23 +761,39 @@ single object lookup.
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
-  name: letsencrypt-http01-production
+  name: letsencrypt-http01
 spec:
   acme:
     server: https://acme-v02.api.letsencrypt.org/directory
     email: admin@firstperson.dev          # ours, not the customer's — §9.5
     privateKeySecretRef:
-      name: letsencrypt-http01-production
+      name: letsencrypt-http01
     solvers:
     - http01:
         ingress:
           class: nginx
 ```
 
-Ship a `letsencrypt-http01-dev` twin pointed at
-`https://acme-staging-v02.api.letsencrypt.org/directory`, selected by
-`ACME_CLUSTER_ISSUER`. §9.4 makes using it in development mandatory, not
-optional.
+**One issuer, every environment — there is deliberately no staging twin.**
+
+An earlier revision shipped a `letsencrypt-http01-dev` twin on Let's Encrypt's
+staging endpoint and made it mandatory outside production, to keep §9.4's
+allowances safe. It protected the quota and broke the feature. A staging
+certificate chains to a root no public trust store carries, and this pipeline
+does not merely *serve* TLS: from `step_vta_register_dids` onward the components
+resolve each other's `did:webvh` identifiers over HTTPS, and those clients reject
+an untrusted chain outright. So the certificate issued, `tls_provision` passed —
+cert-manager only asks whether it was issued — and the mediator then crash-looped
+several steps later on an error that named a network failure rather than a
+certificate one. A custom-domain session could not complete outside production
+at all.
+
+The cost is that every environment now spends the same unraisable allowances
+(§9.4), and the five-per-identical-name-set-per-week limit is the binding one:
+the four names never vary, so it caps rebuilds **per domain, counted across
+every environment sharing this issuer**. Two things follow — keep development
+iteration on domains we own rather than a customer's, and prefer reusing an
+already-issued Secret over requesting again (§8.4).
 
 HTTP-01 works precisely because the user already pointed the hostname at our
 ingress — that record *is* the proof of control, and `ssl-redirect: "true"`
@@ -1082,7 +1098,7 @@ the action is legible in logs after the fact.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | ~~`CUSTOM_DOMAIN_ENABLED`~~ | — | **Dropped 2026-07-26.** The kill switch was specified to ship the feature dark until phase 0 landed. In practice it only hid the routes from the people building against them, and it hid the wrong thing: without phase 0 a verification fails anyway, and a failing check *with a reason* tells an operator more than a route that pretends not to exist. Removed rather than defaulted on, so there is no half-state to reason about |
-| `ACME_CLUSTER_ISSUER` | derived from `APP_ENV` | `letsencrypt-http01-production` in production, `letsencrypt-http01-dev` elsewhere. **Derived, not defaulted to a constant** — §9.4 is the one rule whose damage can't be undone, so it must not depend on remembering an env var. Overridable for the rare cross-environment test |
+| `ACME_CLUSTER_ISSUER` | `letsencrypt-http01` | The same issuer in every environment — §8.2 explains why the staging twin was withdrawn. Every environment therefore shares §9.4's unraisable allowances, so keep iteration on domains we own. Overridable where a cluster names its issuer something else |
 
 Two variables, not three. The CNAME target is **derived**, never configured —
 see §4.1.
@@ -1176,7 +1192,7 @@ nobody can write a TXT record into a public suffix they don't control.
 | ✅ `internal/k8s/certificates.go` | new — create/poll/delete the session Certificate |
 | ✅ `internal/k8s/fullstack_names.go` | `FSTLSSecret` |
 | ✅ `helm/vtafarm-api/templates/.../clusterrole.yaml` | `cert-manager.io/certificates` |
-| ✅ `k8s/tls/clusterissuer-http01.yaml` | new (+ staging twin) |
+| ✅ `k8s/tls/clusterissuer-http01.yaml` | new — one issuer for every environment, no staging twin (§8.2) |
 
 `setup_vtc.go` holds only `ReissueVtcInstall` / `AckVtcInstall`; the
 create path is `createFullStack` in `setup_fullstack.go`, which is where the

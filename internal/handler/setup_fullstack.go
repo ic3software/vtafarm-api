@@ -336,11 +336,16 @@ func (h *SetupHandler) deleteFullStack(c *gin.Context, session *model.SetupSessi
 		// The Certificate goes; **its Secret deliberately stays**. Recreating a
 		// session on the same domain asks for the exact same four names, which
 		// is what Let's Encrypt's "5 per identical set per 7 days" limit counts
-		// — and that one cannot be raised. Leaving the Secret means a rebuild
-		// finds a valid certificate and cert-manager reuses it, at no ACME cost.
-		// Namespace deletion below collects it when the user's last session goes.
-		if session.DomainType == model.DomainCustom {
-			if err := h.k8s.DeleteSessionCert(ctx, ns, k8s.FSTLSSecret(session.ID)); err != nil {
+		// — and that one cannot be raised. Leaving the Secret means the rebuild
+		// finds a valid certificate and cert-manager adopts it at no ACME cost.
+		//
+		// Both are named for the domain, not this session, which is what makes
+		// that true: the rebuild asks for the same name and finds it. The Secret
+		// outlives the session on purpose and is cleaned up when the domain goes
+		// (DomainHandler.Delete) or with the namespace when the user's last
+		// session does.
+		if domainID, ok := session.CustomDomainID(); ok {
+			if err := h.k8s.DeleteSessionCert(ctx, ns, k8s.CustomTLSSecret(domainID)); err != nil {
 				log.Printf("[setup] warn: failed to delete certificate for session %d: %v", session.ID, err)
 			}
 		}
