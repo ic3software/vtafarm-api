@@ -23,11 +23,15 @@ import (
 // Phase 2 (Provision):  vta_setup_complete → provisioning → running
 // Cancellation stops the goroutine; the Delete handler owns K8s + DB cleanup.
 type Orchestrator struct {
-	db         *gorm.DB
-	k8s        *k8s.Client
-	vault      *vault.Client      // nil when VAULT_ADDR not configured
-	vaultAddr  string             // in-cluster Vault addr rendered into the VTA [secrets] block
-	didHosting *didhosting.Client // nil when DID_HOSTING_CONTROL_URL not configured
+	db        *gorm.DB
+	k8s       *k8s.Client
+	vault     *vault.Client // nil when VAULT_ADDR not configured
+	vaultAddr string        // in-cluster Vault addr rendered into the VTA [secrets] block
+	// didHosting builds a client for the control URL a session was provisioned
+	// against, rather than one fixed at startup — the daemon a vta_only session
+	// uploads to is the platform stack's, which does not exist on first boot.
+	// nil when no client keypair is configured.
+	didHosting *didhosting.Factory
 	// ingressIP is what a custom domain's records must resolve to; acmeIssuer
 	// names the cert-manager ClusterIssuer signing its certificate. Both are
 	// used only by the custom-domain branches — dns_wait and tls_provision.
@@ -43,7 +47,7 @@ func NewOrchestrator(
 	k8sClient *k8s.Client,
 	vaultClient *vault.Client,
 	vaultAddr string,
-	dhClient *didhosting.Client,
+	dhFactory *didhosting.Factory,
 	ingressIP, acmeIssuer string,
 ) *Orchestrator {
 	return &Orchestrator{
@@ -51,7 +55,7 @@ func NewOrchestrator(
 		k8s:        k8sClient,
 		vault:      vaultClient,
 		vaultAddr:  vaultAddr,
-		didHosting: dhClient,
+		didHosting: dhFactory,
 		ingressIP:  ingressIP,
 		acmeIssuer: acmeIssuer,
 		dns:        dnscheck.New(),
@@ -276,16 +280,24 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 	log.Printf("[orchestrator] session %d: did-hosting=%v didLog_len=%d vtaDidUrl=%q",
 		sessionID, o.didHosting != nil, len(didLog), session.VtaDidUrl)
 	if o.didHosting != nil && didLog != "" && session.VtaDidUrl != "" {
-		// Extract path from the full URL e.g. https://dids.fpp2.ic3.dev/abc123/pvta → abc123/pvta
+		// Extract path from the full URL e.g. https://dids.fpp2.ic3.dev/pvta-vta → pvta-vta
 		path := session.VtaDidUrl
 		if u, err := url.Parse(path); err == nil {
 			path = strings.TrimPrefix(u.Path, "/")
 		}
-		log.Printf("[orchestrator] session %d: uploading DID log to hosting service (path=%s)", sessionID, path)
-		if err := o.didHosting.RegisterDid(ctx, path, didLog); err != nil {
-			log.Printf("[orchestrator] session %d: DID upload FAILED: %v", sessionID, err)
+		// The daemon this session was provisioned against, not whichever one is
+		// current — the two differ the moment the platform stack is rebuilt.
+		dh, err := o.didHosting.For(session.DidHostingControlURL)
+		if err != nil {
+			log.Printf("[orchestrator] session %d: DID upload FAILED (no client for %q): %v",
+				sessionID, session.DidHostingControlURL, err)
 		} else {
-			log.Printf("[orchestrator] session %d: DID log uploaded to hosting service", sessionID)
+			log.Printf("[orchestrator] session %d: uploading DID log to hosting service (path=%s)", sessionID, path)
+			if err := dh.RegisterDid(ctx, path, didLog); err != nil {
+				log.Printf("[orchestrator] session %d: DID upload FAILED: %v", sessionID, err)
+			} else {
+				log.Printf("[orchestrator] session %d: DID log uploaded to hosting service", sessionID)
+			}
 		}
 	} else if o.didHosting != nil {
 		log.Printf("[orchestrator] session %d: skipping DID upload — didLog_empty=%v vtaDidUrl_empty=%v",
@@ -323,9 +335,14 @@ func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDi
 	var controlDid string
 	log.Printf("[orchestrator] session %d: did-hosting configured=%v vta_did=%q", sessionID, o.didHosting != nil, session.VtaDid)
 	if o.didHosting != nil {
+		dh, err := o.didHosting.For(session.DidHostingControlURL)
+		if err != nil {
+			o.markFailed(sessionID, "failed to reach DID hosting control API: "+err.Error())
+			return
+		}
 		aclLabel := fmt.Sprintf("VTA user-%d session-%d", session.UserID, sessionID)
 		log.Printf("[orchestrator] session %d: adding VTA DID to hosting ACL (did=%s label=%s)", sessionID, session.VtaDid, aclLabel)
-		if err := o.didHosting.CreateAcl(ctx, session.VtaDid, "service", aclLabel); err != nil {
+		if err := dh.CreateAcl(ctx, session.VtaDid, "service", aclLabel); err != nil {
 			if ctx.Err() != nil {
 				return
 			}
@@ -333,9 +350,9 @@ func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDi
 			return
 		}
 		log.Printf("[orchestrator] session %d: VTA DID added to hosting ACL", sessionID)
-		controlDid = o.didHosting.ServerDid()
+		controlDid = dh.ServerDid()
 	} else {
-		log.Printf("[orchestrator] session %d: skipping did-hosting steps (DID_HOSTING_CONTROL_URL not configured)", sessionID)
+		log.Printf("[orchestrator] session %d: skipping did-hosting steps (no client keypair configured)", sessionID)
 	}
 
 	provisionJobName := k8s.ProvisionJobName(sessionID)

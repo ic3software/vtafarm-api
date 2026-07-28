@@ -22,18 +22,20 @@ import (
 )
 
 type SetupHandler struct {
-	db             *gorm.DB
-	cf             *cloudflare.Client
-	appEnv         string
-	ingressIP      string
-	clusterDomain  string
-	mediatorDid    string
-	didHostingBase string             // DID_HOSTING_SERVER_URL — public server URL used to build vta_did_url
-	didHosting     *didhosting.Client // nil when not configured
-	k8s            *k8s.Client
-	orch           *setup.Orchestrator
-	ghcr           *ghcr.Client // nil when not configured
-	capacity       *CapacityService
+	db            *gorm.DB
+	cf            *cloudflare.Client
+	appEnv        string
+	ingressIP     string
+	clusterDomain string
+	// The mediator DID and DID-hosting URLs a vta_only session is wired to are
+	// no longer configuration: they are read from the platform stack that
+	// actually provides them (sharedInfra). What remains global is the client
+	// keypair the factory authenticates with — vtafarm-api's own identity.
+	didHosting *didhosting.Factory // nil when no keypair configured
+	k8s        *k8s.Client
+	orch       *setup.Orchestrator
+	ghcr       *ghcr.Client // nil when not configured
+	capacity   *CapacityService
 
 	// full_stack mode
 	mediatorGhcr *ghcr.Client // nil when not configured
@@ -44,8 +46,8 @@ type SetupHandler struct {
 func NewSetupHandler(
 	db *gorm.DB,
 	cf *cloudflare.Client,
-	appEnv, ingressIP, clusterDomain, mediatorDid, didHostingBase string,
-	dhClient *didhosting.Client,
+	appEnv, ingressIP, clusterDomain string,
+	dhFactory *didhosting.Factory,
 	k8sClient *k8s.Client,
 	orch *setup.Orchestrator,
 	ghcrClient *ghcr.Client,
@@ -54,18 +56,16 @@ func NewSetupHandler(
 	vtcGhcrClient *ghcr.Client,
 ) *SetupHandler {
 	return &SetupHandler{
-		db:             db,
-		cf:             cf,
-		appEnv:         appEnv,
-		ingressIP:      ingressIP,
-		clusterDomain:  clusterDomain,
-		mediatorDid:    mediatorDid,
-		didHostingBase: didHostingBase,
-		didHosting:     dhClient,
-		k8s:            k8sClient,
-		orch:           orch,
-		ghcr:           ghcrClient,
-		capacity:       NewCapacityService(k8sClient),
+		db:            db,
+		cf:            cf,
+		appEnv:        appEnv,
+		ingressIP:     ingressIP,
+		clusterDomain: clusterDomain,
+		didHosting:    dhFactory,
+		k8s:           k8sClient,
+		orch:          orch,
+		ghcr:          ghcrClient,
+		capacity:      NewCapacityService(k8sClient),
 
 		mediatorGhcr: mediatorGhcrClient,
 		didsGhcr:     didsGhcrClient,
@@ -269,7 +269,11 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	// The UI disables this, but the UI is not the gate: a vta_only agent whose
 	// mediator and DID host don't exist can never deliver a message, and it
 	// would consume cluster resources looking healthy while it did so.
-	if ready, _, detail := h.sharedInfra(); !ready {
+	// It also yields the values the session is built from, so the gate and the
+	// source are the same read — there is no window where the check passes and
+	// the write then uses something else.
+	infra, ready, _, detail := h.resolveSharedInfra()
+	if !ready {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": detail})
 		return
 	}
@@ -287,7 +291,14 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		preRotationCount = *req.PreRotationCount
 	}
 
-	vtaDidUrl := h.didHostingBase + "/" + user.UniqueId + "/" + req.VtaName
+	// One path component, not two: the owner's unique_id used to prefix it so
+	// that per-user namespacing made the path unique for free, which put an
+	// opaque id in the middle of every DID this mode mints
+	// (did:webvh:<scid>:<host>:ex9re34d:myvta). The -vta suffix replaces it —
+	// the same shape full_stack's own daemon serves, and the thing that lets
+	// setup_sessions_did_path_unique compare these paths against the platform
+	// stack's exactly.
+	vtaDidUrl := infra.ServerURL + "/" + setup.VtaDidPath(req.VtaName)
 
 	subdomain := setup.VtaHost(h.appEnv, req.VtaName)
 	fqdn := subdomain + "." + h.clusterDomain
@@ -304,35 +315,31 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		Status: "dns_provisioned",
 		// Set explicitly rather than left to the column default: the field
 		// would otherwise read "" in memory for the rest of this request.
-		DomainType:       model.DomainManaged,
-		Domain:           h.clusterDomain,
-		Subdomain:        subdomain,
-		CFRecordID:       recordID,
-		VtaName:          req.VtaName,
-		MediatorDid:      h.mediatorDid,
-		VtaDidUrl:        vtaDidUrl,
-		VtaImage:         req.VtaImage,
-		AdminDid:         req.AdminDid,
-		Portable:         portable,
-		PreRotationCount: preRotationCount,
+		DomainType:  model.DomainManaged,
+		Domain:      h.clusterDomain,
+		Subdomain:   subdomain,
+		CFRecordID:  recordID,
+		VtaName:     req.VtaName,
+		MediatorDid: infra.MediatorDid,
+		VtaDidUrl:   vtaDidUrl,
+		// The shared daemon — this mode deploys none of its own. Snapshotted
+		// rather than looked up later: a rebuilt platform stack is a different
+		// daemon, and this session's DID stays on the one that minted it.
+		DidHostingServerURL:  infra.ServerURL,
+		DidHostingControlURL: infra.ControlURL,
+		VtaImage:             req.VtaImage,
+		AdminDid:             req.AdminDid,
+		Portable:             portable,
+		PreRotationCount:     preRotationCount,
 	}
-	const maxAttempts = 5
-	var createErr error
-	for range maxAttempts {
-		session.UniqueId = generateUniqueId()
-		createErr = h.db.Create(&session).Error
-		if createErr == nil {
-			break
-		}
-		if !strings.Contains(createErr.Error(), "setup_sessions_unique_id_unique") {
-			break
-		}
-	}
-	if createErr != nil {
+	// A single insert: there is no random id left to collide, so the retry loop
+	// that used to wrap this went with unique_id.
+	if createErr := h.db.Create(&session).Error; createErr != nil {
 		_ = h.cf.DeleteRecord(c.Request.Context(), recordID)
 		// The pre-insert count check races with concurrent creates; the DB
 		// unique index is the real gate.
-		if strings.Contains(createErr.Error(), "setup_sessions_vta_name_unique") {
+		if isUniqueViolation(createErr, "setup_sessions_vta_name_unique") ||
+			isUniqueViolation(createErr, "setup_sessions_did_path_unique") {
 			c.JSON(http.StatusConflict, gin.H{"error": "vta_name already in use"})
 			return
 		}
@@ -345,7 +352,7 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"id":        session.UniqueId,
+		"id":        session.VtaName,
 		"url":       "https://" + fqdn,
 		"status":    session.Status,
 		"vta_image": req.VtaImage,
@@ -398,34 +405,46 @@ const (
 	reasonSharedUnconfigured = "shared_infra_unconfigured"
 )
 
-// sharedInfra reports whether the mediator and DID host that every vta_only
-// session points at are actually usable.
+// sharedInfra is what a vta_only session is wired to — read from the platform
+// stack that actually provides it, never from configuration.
+//
+// These used to be MEDIATOR_DID / DID_HOSTING_SERVER_URL / DID_HOSTING_CONTROL_URL
+// in the environment, pasted in by an admin from the platform stack page once
+// the pipeline had minted them. Reading the row directly removes that copy step,
+// and with it the whole class of "the stack is running but this server is still
+// pointed at the last one" failure.
+//
+// ControlURL and ServerURL are the same value today because the daemon build
+// answers both roles on one host; they are carried separately so a standalone
+// DID-hosting service can split them without a schema change.
+type sharedInfra struct {
+	MediatorDid string
+	ServerURL   string
+	ControlURL  string
+}
+
+// resolveSharedInfra reports whether the mediator and DID host that every
+// vta_only session points at are actually usable, and returns their values.
 //
 // That shared infrastructure IS the platform stack (design §3.3) — a vta_only
 // agent is only the VTA, wired to a mediator and DID-hosting daemon it does not
 // run itself. Creating one before those exist produces an agent that can never
 // deliver a message.
 //
-// Two conditions, because the stack existing is not the same as it being
-// reachable. Its DIDs are minted by the pipeline and only reach this API once an
-// admin copies them into configuration (§3.3.4), so a session created in the
-// window between "running" and "configured" would be written with an empty
-// mediator DID. Reading those values straight from the platform session row
-// would collapse both checks into one and remove the copy step entirely —
-// deliberately parked by §3.3.4 until the platform stack has proven itself.
-//
 // full_stack is unaffected: it provisions its own mediator and DID host.
-func (h *SetupHandler) sharedInfra() (ready bool, reason, detail string) {
+func (h *SetupHandler) resolveSharedInfra() (v sharedInfra, ready bool, reason, detail string) {
+	const missing = "VTA-only agents need the platform stack — the shared mediator and DID hosting they connect to. " +
+		"An admin has to create it before any VTA-only agent can be provisioned."
+
 	domain, err := h.platformDomain()
 	if err != nil {
 		// Can't tell — fail open rather than blocking every create on a
-		// transient DB read, the same way capacity does.
-		return true, "", ""
+		// transient DB read, the same way capacity does. Create re-reads the
+		// row anyway and refuses if the values it needs aren't there.
+		return v, true, "", ""
 	}
 	if domain == nil {
-		return false, reasonPlatformMissing,
-			"VTA-only agents need the platform stack — the shared mediator and DID hosting they connect to. " +
-				"An admin has to create it before any VTA-only agent can be provisioned."
+		return v, false, reasonPlatformMissing, missing
 	}
 
 	var session model.SetupSession
@@ -433,28 +452,37 @@ func (h *SetupHandler) sharedInfra() (ready bool, reason, detail string) {
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		// The domains row outlives its session: the name is still ours, but
 		// nothing is running on it.
-		return false, reasonPlatformMissing,
-			"VTA-only agents need the platform stack — the shared mediator and DID hosting they connect to. " +
-				"An admin has to create it before any VTA-only agent can be provisioned."
+		return v, false, reasonPlatformMissing, missing
 	}
 	if err != nil {
-		return true, "", ""
+		return v, true, "", ""
 	}
 	if session.Status != "running" {
-		return false, reasonPlatformNotReady,
+		return v, false, reasonPlatformNotReady,
 			"The platform stack — the shared mediator and DID hosting VTA-only agents connect to — is still being set up. " +
 				"Try again once it's running."
 	}
 
-	// Running, but its collected values haven't reached this API's environment
-	// yet, so a session created now would carry an empty mediator DID.
-	if h.mediatorDid == "" || h.didHostingBase == "" {
-		return false, reasonSharedUnconfigured,
-			"The platform stack is running, but this server hasn't been pointed at it yet " +
-				"(MEDIATOR_DID / DID_HOSTING_SERVER_URL). An admin needs to copy its values into configuration."
+	v = sharedInfra{
+		MediatorDid: session.MediatorDid,
+		// The stack's own daemon. Both roles on one host — see sharedInfra.
+		ServerURL:  session.DidsURL(),
+		ControlURL: session.DidsURL(),
 	}
 
-	return true, "", ""
+	// Running, yet its mediator DID is missing. This used to mean "an admin
+	// hasn't copied the values into the environment yet" and was the normal
+	// state for a while after provisioning; reading the row instead makes it a
+	// narrow, transient one — a stack marked running whose 1b output never
+	// landed. Kept rather than dropped because a session created here would
+	// still carry an empty mediator DID and never deliver a message.
+	if v.MediatorDid == "" || v.ServerURL == "" {
+		return sharedInfra{}, false, reasonSharedUnconfigured,
+			"The platform stack is running but hasn't published its mediator DID yet. " +
+				"Try again shortly; if it persists, an admin should check the stack."
+	}
+
+	return v, true, "", ""
 }
 
 // capacityAllows gates a create on remaining cluster capacity for mode. It
@@ -516,7 +544,7 @@ func (h *SetupHandler) Availability(c *gin.Context) {
 	// The shared mediator and DID host is a hard dependency of vta_only, not a
 	// capacity question — so it overrides the fail-open above rather than
 	// sitting alongside it. full_stack runs its own and is never gated on it.
-	if ready, reason, detail := h.sharedInfra(); !ready {
+	if _, ready, reason, detail := h.resolveSharedInfra(); !ready {
 		vtaOnly.Available = false
 		vtaOnly.Reason, vtaOnly.Detail = reason, detail
 	}
@@ -585,7 +613,7 @@ func (h *SetupHandler) List(c *gin.Context) {
 	result := make([]item, len(sessions))
 	for i, s := range sessions {
 		it := item{
-			ID:          s.UniqueId,
+			ID:          s.VtaName,
 			Status:      s.Status,
 			Mode:        s.Mode,
 			DomainType:  s.DomainType,
@@ -620,7 +648,7 @@ func (h *SetupHandler) Get(c *gin.Context) {
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 
 	var session model.SetupSession
-	if err := h.db.Where("unique_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
+	if err := h.db.Where("vta_name = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
@@ -631,7 +659,7 @@ func (h *SetupHandler) Get(c *gin.Context) {
 	}
 
 	resp := gin.H{
-		"id":          session.UniqueId,
+		"id":          session.VtaName,
 		"status":      session.Status,
 		"mode":        session.Mode,
 		"domain_type": session.DomainType,
@@ -654,7 +682,7 @@ func (h *SetupHandler) Delete(c *gin.Context) {
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 
 	var session model.SetupSession
-	if err := h.db.Where("unique_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
+	if err := h.db.Where("vta_name = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
@@ -687,19 +715,29 @@ func (h *SetupHandler) teardownSession(c *gin.Context, session *model.SetupSessi
 		}
 	}
 
-	if h.didHosting != nil {
-		if session.VtaDidUrl != "" {
-			path := session.VtaDidUrl
-			if u, err := url.Parse(path); err == nil {
-				path = strings.TrimPrefix(u.Path, "/")
+	// Through the control URL this session was provisioned against, not the
+	// current one: a platform stack rebuilt since then is a different daemon,
+	// and deleting from it would leave this session's DID log behind on the old
+	// one while removing somebody else's.
+	if h.didHosting != nil && (session.VtaDidUrl != "" || session.VtaDid != "") {
+		dh, err := h.didHosting.For(session.DidHostingControlURL)
+		if err != nil {
+			log.Printf("[setup] warn: no DID hosting client for session %d (%q): %v",
+				session.ID, session.DidHostingControlURL, err)
+		} else {
+			if session.VtaDidUrl != "" {
+				path := session.VtaDidUrl
+				if u, err := url.Parse(path); err == nil {
+					path = strings.TrimPrefix(u.Path, "/")
+				}
+				if err := dh.DeleteDid(c.Request.Context(), path); err != nil {
+					log.Printf("[setup] warn: failed to delete DID from hosting for session %d: %v", session.ID, err)
+				}
 			}
-			if err := h.didHosting.DeleteDid(c.Request.Context(), path); err != nil {
-				log.Printf("[setup] warn: failed to delete DID from hosting for session %d: %v", session.ID, err)
-			}
-		}
-		if session.VtaDid != "" {
-			if err := h.didHosting.DeleteAcl(c.Request.Context(), session.VtaDid); err != nil {
-				log.Printf("[setup] warn: failed to delete ACL entry for session %d: %v", session.ID, err)
+			if session.VtaDid != "" {
+				if err := dh.DeleteAcl(c.Request.Context(), session.VtaDid); err != nil {
+					log.Printf("[setup] warn: failed to delete ACL entry for session %d: %v", session.ID, err)
+				}
 			}
 		}
 	}
@@ -741,7 +779,7 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 
 	var session model.SetupSession
-	if err := h.db.Where("unique_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
+	if err := h.db.Where("vta_name = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
@@ -877,7 +915,7 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 
 // POST /api/v1/setup/:id/admin
 // userSession loads the session named by :id, scoped to the calling user, and
-// adminSession loads it by unique_id alone.
+// adminSession loads it by vta_name alone.
 //
 // Every session action exists in both cookie families: the user-facing route
 // owns the caller's session, and the admin twin reaches any of them. The twins
@@ -889,11 +927,11 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 // Both write the 404 themselves and return nil when they do.
 func (h *SetupHandler) userSession(c *gin.Context) *model.SetupSession {
 	userID := c.MustGet(middleware.ContextUserID).(uint)
-	return h.findSession(c, h.db.Where("unique_id = ? AND user_id = ?", c.Param("id"), userID))
+	return h.findSession(c, h.db.Where("vta_name = ? AND user_id = ?", c.Param("id"), userID))
 }
 
 func (h *SetupHandler) adminSession(c *gin.Context) *model.SetupSession {
-	return h.findSession(c, h.db.Where("unique_id = ?", c.Param("id")))
+	return h.findSession(c, h.db.Where("vta_name = ?", c.Param("id")))
 }
 
 func (h *SetupHandler) findSession(c *gin.Context, q *gorm.DB) *model.SetupSession {

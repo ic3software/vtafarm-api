@@ -43,6 +43,35 @@ func TestDidPaths(t *testing.T) {
 	}
 }
 
+// setup_sessions_did_path_unique indexes vta_name, not the rendered path, and
+// only one path per row. That is sound only because every path on the shared
+// daemon ends in a suffix its neighbours cannot produce: a vta_only session's
+// path (indexed) can never equal the platform stack's -mediator or -vtc paths
+// (not indexed), whatever name either side picks. Lose the suffix on vta_only
+// and a session named "<platform label>-mediator" slips straight past the
+// index and collides on the daemon.
+func TestDidPathSuffixesCannotCollide(t *testing.T) {
+	// Names chosen to collide if the suffixes did not disambiguate: each is the
+	// other's name with a component suffix already baked in.
+	names := []string{"alice", "alice-vta", "alice-mediator", "alice-vtc", "firstperson"}
+
+	seen := map[string]string{}
+	for _, name := range names {
+		for _, p := range []struct{ kind, path string }{
+			{"vta", VtaDidPath(name)},
+			{"mediator", MediatorDidPath(name)},
+			{"vtc", VtcDidPath(name)},
+		} {
+			// Distinct (name, kind) pairs must render distinct paths — that is
+			// what lets one index over names stand in for all three.
+			if prev, dup := seen[p.path]; dup {
+				t.Errorf("path %q produced by both %s and %s/%s", p.path, prev, name, p.kind)
+			}
+			seen[p.path] = name + "/" + p.kind
+		}
+	}
+}
+
 func TestEnvPrefix(t *testing.T) {
 	if got := EnvPrefix("development"); got != "dev-" {
 		t.Errorf("EnvPrefix(development) = %q, want dev-", got)

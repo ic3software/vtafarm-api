@@ -283,6 +283,33 @@ func (o *Orchestrator) runFullStack(ctx context.Context, sessionID uint) {
 	// a dedicated step_dids_grant_vta trying to add the same DID again just
 	// 409s against that entry. Admin is a superset of the "service" role this
 	// used to request, so nothing is lost by removing it.
+	//
+	// Verified in the daemon source rather than taken on trust, because this is
+	// the sort of claim that quietly stops being true: webvh-build-pipeline's
+	// did-hosting-daemon/src/setup_recipe.rs takes vta_did out of the armor
+	// bundle into config.vta.did, then calls
+	// did-hosting-common acl::seed_provisioning_vta_acl with it — which writes
+	// role=Admin, label "provisioning VTA", and returns early if any entry for
+	// that DID already exists.
+	//
+	// vtafarm-api's own DID is a different matter. The finalizer knows nothing
+	// about it, and it is needed on EVERY full_stack daemon, not just the
+	// platform stack's — the farm operates these deployments, which means being
+	// able to manage the did.jsonl documents they serve.
+	if farmDid := o.didHosting.ClientDid(); farmDid != "" {
+		o.fsSetStatus(sessionID, "step_dids_grant_farm")
+		if fail("granting vtafarm-api access to the DID host failed",
+			o.fsStepDidsGrantFarm(ctx, ns, s, farmDid)) {
+			return
+		}
+	} else {
+		// Not fatal — a session with no farm ACL entry still runs, it just
+		// cannot be operated through the control API afterwards, and on the
+		// platform stack it additionally breaks every vta_only session's DID
+		// upload. Loud, because both failures surface far from here.
+		log.Printf("[orchestrator] session %d: DID_HOSTING_DID unset — this daemon's ACL will not "+
+			"grant vtafarm-api access; DID management through the control API will fail", sessionID)
+	}
 
 	// deploy_dids
 	o.fsSetStatus(sessionID, "deploy_dids")
@@ -894,6 +921,66 @@ func (o *Orchestrator) fsStepDidsLoadDid(ctx context.Context, ns string, s *mode
 	return nil
 }
 
+// fsStepDidsGrantFarm puts vtafarm-api's own client DID in this daemon's ACL
+// with role=admin, offline, before the daemon ever starts.
+//
+// Runs for every full_stack session, not only the platform stack. The farm
+// operates these deployments on its customers' behalf, and managing the
+// did.jsonl documents a daemon serves means holding an entry in its ACL —
+// role=admin specifically, because that is the role that bypasses the per-DID
+// ownership check on the publish endpoints. Nothing about the deployment's
+// trust boundary changes: the pod, its PVC and its Vault access are all ours
+// already, so this only makes control we necessarily have reachable through the
+// API instead of only through the cluster.
+//
+// The platform stack additionally *depends* on it. That daemon is the shared
+// DID host, and every vta_only session's DID log is uploaded to it under this
+// same keypair — without the entry those sessions provision and then silently
+// fail to publish.
+//
+// It cannot be done over the control API: authenticating there requires already
+// being in the ACL. Hence a Job on the PVC in the same window as
+// fsStepDidsInvite and fsStepDidsLoadDid — after the store exists
+// (step_dids_p2) and before any daemon pod holds it (deploy_dids).
+//
+// The daemon's own finalizer seeds an entry for the provisioning VTA, never for
+// this: it derives that DID from the armor bundle and knows nothing about the
+// farm's keypair.
+//
+// `add-acl` refuses an existing DID outright ("delete it first to change the
+// role") rather than treating it as satisfied, so the list-acl probe is what
+// makes a resumed or retried run safe.
+func (o *Orchestrator) fsStepDidsGrantFarm(ctx context.Context, ns string, s *model.SetupSession, farmDid string) error {
+	jobName := k8s.FSJobDidsGrantFarm(s.ID)
+	// list-acl prints to stderr, hence 2>&1. -F because a DID is full of
+	// characters a regex would read as syntax.
+	cmd := fmt.Sprintf(
+		"did-hosting-daemon list-acl 2>&1 | grep -qF %s"+
+			" || did-hosting-daemon add-acl --did %s --role admin --label vtafarm",
+		shellQuote(farmDid), shellQuote(farmDid))
+
+	if err := o.k8s.CreateComponentJob(ctx, ns, k8s.ComponentJobSpec{
+		Name:           jobName,
+		Image:          s.DidsImage,
+		Command:        []string{"sh", "-c", cmd},
+		WorkingDir:     "/work/dids",
+		ServiceAccount: k8s.PodOperatorServiceAccount,
+		PVCMounts:      []k8s.PVCMount{{Name: "dids-data", ClaimName: k8s.FSDidsName(s.ID), MountPath: "/work/dids"}},
+		Env:            fsNoColorEnv(),
+	}); err != nil {
+		return fmt.Errorf("create job: %w", err)
+	}
+
+	succeeded, failMsg, err := o.k8s.WaitForJob(ctx, ns, jobName)
+	if err != nil {
+		return err
+	}
+	if !succeeded {
+		return o.fsJobFailErr(ctx, ns, jobName, failMsg)
+	}
+	return nil
+}
+
 // fsStepVtaRegisterDids registers the session's dids daemon (3d) in the VTA's
 // webvh server registry (`vta did-mgmt servers add --id dids`) — the
 // full_stack counterpart of vta_only's `--id control` registration in
@@ -1062,7 +1149,7 @@ var (
 		"step_vta_setup",
 		"step_mediator_p1", "step_mediator_reprov", "step_mediator_p2",
 		"step_dids_p1", "step_dids_provision", "step_dids_p2", "step_dids_invite",
-		"step_dids_load_did", "deploy_dids", "deploy_mediator",
+		"step_dids_load_did", "step_dids_grant_farm", "deploy_dids", "deploy_mediator",
 		"step_vta_register_dids",
 	}
 

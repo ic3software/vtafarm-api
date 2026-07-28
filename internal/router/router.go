@@ -33,7 +33,7 @@ func Setup(
 	mediatorGhcrClient *ghcr.Client,
 	didsGhcrClient *ghcr.Client,
 	vtcGhcrClient *ghcr.Client,
-	dhClient *didhosting.Client,
+	dhFactory *didhosting.Factory,
 	cfg *config.Config,
 ) *gin.Engine {
 	r := gin.Default()
@@ -56,7 +56,7 @@ func Setup(
 
 	sh := handler.NewSetupHandler(
 		db, cfClient, cfg.AppEnv, cfg.ClusterIngressIP, cfg.ClusterDomain,
-		cfg.MediatorDid, cfg.DidHosting.ServerUrl, dhClient, k8sClient, orch, ghcrClient,
+		dhFactory, k8sClient, orch, ghcrClient,
 		mediatorGhcrClient, didsGhcrClient, vtcGhcrClient,
 	)
 

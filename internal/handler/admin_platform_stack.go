@@ -235,29 +235,24 @@ func (h *SetupHandler) CreatePlatformStack(c *gin.Context) {
 		// One label stands in for both names on a fixed-label domain: neither
 		// reaches a hostname, and the did:webvh paths they do reach are already
 		// distinct by their -vta / -mediator / -vtc suffixes (design §4.3).
-		VtaName:          label,
-		VtcName:          label,
-		VtaImage:         req.VtaImage,
-		MediatorImage:    req.MediatorImage,
-		DidsImage:        req.DidsImage,
-		VtcImage:         req.VtcImage,
-		Portable:         portable,
-		PreRotationCount: preRotationCount,
+		VtaName: label,
+		VtcName: label,
+		// The stack's own daemon is also the shared one every vta_only session
+		// uploads to, so this value is what puts those rows in one namespace —
+		// resolveSharedInfra hands the same URL to each of them.
+		DidHostingServerURL:  "https://" + didsFQDN,
+		DidHostingControlURL: "https://" + didsFQDN,
+		VtaImage:             req.VtaImage,
+		MediatorImage:        req.MediatorImage,
+		DidsImage:            req.DidsImage,
+		VtcImage:             req.VtcImage,
+		Portable:             portable,
+		PreRotationCount:     preRotationCount,
 	}
 
-	const maxAttempts = 5
-	var createErr error
-	for range maxAttempts {
-		session.UniqueId = generateUniqueId()
-		createErr = h.db.Create(&session).Error
-		if createErr == nil {
-			break
-		}
-		if !strings.Contains(createErr.Error(), "setup_sessions_unique_id_unique") {
-			break
-		}
-	}
-	if createErr != nil {
+	// A single insert: there is no random id left to collide, so the retry loop
+	// that used to wrap this went with unique_id.
+	if createErr := h.db.Create(&session).Error; createErr != nil {
 		rollback()
 		// Races with a concurrent create of the same stack; the partial unique
 		// index on domain_id is the real gate.
@@ -271,12 +266,12 @@ func (h *SetupHandler) CreatePlatformStack(c *gin.Context) {
 	}
 
 	log.Printf("[platform] created stack: session %d (%s), label %q, owner user %d",
-		session.ID, session.UniqueId, label, owner.ID)
+		session.ID, session.VtaName, label, owner.ID)
 
 	h.orch.Start(session.ID)
 
 	c.JSON(http.StatusCreated, gin.H{
-		"id":     session.UniqueId,
+		"id":     session.VtaName,
 		"status": session.Status,
 		"label":  label,
 		"domain": h.clusterDomain,
@@ -326,7 +321,7 @@ func (h *SetupHandler) GetPlatformStack(c *gin.Context) {
 
 	resp := gin.H{
 		"exists": true,
-		"id":     session.UniqueId,
+		"id":     session.VtaName,
 		"status": session.Status,
 		"label":  session.VtaName,
 		"domain": domain.Domain,
@@ -348,14 +343,26 @@ func (h *SetupHandler) GetPlatformStack(c *gin.Context) {
 			"dids":     session.DidsImage,
 			"vtc":      session.VtcImage,
 		},
-		// What to paste into configuration. Empty until the pipeline mints
-		// them, which is why the admin page has to surface them rather than
-		// the values being known upfront.
-		"config_values": gin.H{
-			"MEDIATOR_DID":            session.MediatorDid,
-			"DID_HOSTING_SERVER_URL":  "https://" + session.DidsFQDN(),
-			"DID_HOSTING_CONTROL_URL": "https://" + session.DidsFQDN(),
-			"DID_HOSTING_DID":         session.DIDHostingDid,
+		// What this stack provides to every vta_only session, read straight off
+		// this row at create time. It is reported rather than pasted anywhere:
+		// MEDIATOR_DID / DID_HOSTING_SERVER_URL / DID_HOSTING_CONTROL_URL used to
+		// be environment values an admin copied here, and the window between
+		// "running" and "copied" was its own failure mode.
+		"provides": gin.H{
+			"mediator_did":            session.MediatorDid,
+			"did_hosting_server_url":  session.DidsURL(),
+			"did_hosting_control_url": session.DidsURL(),
+		},
+		// vtafarm-api authenticates to this daemon with its own keypair
+		// (DID_HOSTING_DID / DID_HOSTING_PRIVATE_KEY) to upload every vta_only
+		// session's DID log, so that DID has to hold an admin ACL entry here.
+		// step_dids_grant_farm enrolls it offline while provisioning, so it is
+		// reported rather than asked for — including the one case that still
+		// needs a human: no keypair configured when the stack was built.
+		"farm_acl": gin.H{
+			"server_did": session.DIDHostingDid,
+			"client_did": h.didHosting.ClientDid(),
+			"granted":    h.didHosting.ClientDid() != "" && session.Status == "running",
 		},
 		"created_at": session.CreatedAt,
 		"updated_at": session.UpdatedAt,

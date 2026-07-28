@@ -98,8 +98,9 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 	}
 
 	type sessionItem struct {
+		// The numeric PK, for ordering only — never an address. vta_name is what
+		// the routes take, so there is no separate identifier field here.
 		ID           uint   `json:"id"`
-		UniqueId     string `json:"unique_id"`
 		UserUniqueId string `json:"user_unique_id"`
 		VtaName      string `json:"vta_name"`
 		VtcName      string `json:"vtc_name,omitempty"`
@@ -121,7 +122,6 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 	for i, s := range sessions {
 		items[i] = sessionItem{
 			ID:            s.ID,
-			UniqueId:      s.UniqueId,
 			UserUniqueId:  userUniqueIds[s.UserID],
 			VtaName:       s.VtaName,
 			VtcName:       s.VtcName,
@@ -150,7 +150,7 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 // AdminSessionLogs — GET /api/v1/admin/setup-sessions/:id/logs (admin only).
 //
 // The admin-cookie twin of GET /setup/:id/logs, differing only in the lookup:
-// unique_id alone, with no user_id filter. It exists because the platform stack
+// vta_name alone, with no user_id filter. It exists because the platform stack
 // is owned by a passkey-less system account — nobody can ever hold that user's
 // cookie, so without this route the farm's own stack is the one session whose
 // provisioning nobody can watch.
@@ -158,7 +158,7 @@ func (h *SetupHandler) AdminSessionLogs(c *gin.Context) {
 	publicID := c.Param("id")
 
 	var session model.SetupSession
-	if err := h.db.Where("unique_id = ?", publicID).First(&session).Error; err != nil {
+	if err := h.db.Where("vta_name = ?", publicID).First(&session).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
@@ -178,7 +178,7 @@ func (h *SetupHandler) AdminSessionLogs(c *gin.Context) {
 }
 
 // AdminDeleteSession — DELETE /api/v1/admin/setup-sessions/:id (admin only).
-// Tears down any user's session, identified by unique_id alone — the one
+// Tears down any user's session, identified by vta_name alone — the one
 // difference from the user-facing DELETE /setup/:id, which is scoped to the
 // caller. Destructive and irreversible: the frontend gates it behind a
 // type-the-session-id confirmation.
@@ -192,7 +192,7 @@ func (h *SetupHandler) AdminDeleteSession(c *gin.Context) {
 	publicID := c.Param("id")
 
 	var session model.SetupSession
-	if err := h.db.Where("unique_id = ?", publicID).First(&session).Error; err != nil {
+	if err := h.db.Where("vta_name = ?", publicID).First(&session).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
@@ -214,7 +214,7 @@ func (h *SetupHandler) AdminDeleteSession(c *gin.Context) {
 	}
 
 	log.Printf("[admin] deleting %s session %d (%s), domain_type=%s, owned by user %d",
-		session.Mode, session.ID, session.UniqueId, session.DomainType, session.UserID)
+		session.Mode, session.ID, session.VtaName, session.DomainType, session.UserID)
 
 	h.teardownSession(c, &session)
 }

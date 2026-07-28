@@ -40,16 +40,16 @@ User provides (form):
 Backend derives (not user input):
   subdomain        → "vta-{vta_name}" ("dev-vta-{vta_name}" in dev), under CLUSTER_DOMAIN
   vta public URL   → https://{subdomain}.{CLUSTER_DOMAIN}
-  did_hosting_url  → {DID_HOSTING_SERVER_URL}/{user_unique_id}/{vta_name}   (external shared host)
-  mediator         → the shared external mediator MEDIATOR_DID
+  did_hosting_url  → {platform stack's dids URL}/{vta_name}-vta            (shared host)
+  mediator         → the platform stack's mediator DID
 
 VTA TOML uses:
   [secrets]
   backend = "vault"            ← master seed in HashiCorp Vault (kubernetes auth), not plaintext
 
   [messaging]
-  kind = "existing"            ← points at the shared external mediator
-  did  = "{MEDIATOR_DID}"
+  kind = "existing"            ← points at the shared mediator
+  did  = "{mediator_did}"
 
   [vta_did]
   kind = "create_webvh"
@@ -147,8 +147,8 @@ after).
 | --- | --- | --- |
 | VTA subdomain | `vta-{vta_name}` via `setup.VtaHost` (`dev-vta-{vta_name}` in dev) | `vta-personal-vta` |
 | VTA public URL | `https://{subdomain}.{CLUSTER_DOMAIN}` | `https://vta-personal-vta.example.com` |
-| DID hosting URL | `{DID_HOSTING_SERVER_URL}/{user_unique_id}/{vta_name}` | `https://dids.example.com/ab12cd34/personal-vta` |
-| Mediator DID | the shared `MEDIATOR_DID` env value | `did:webvh:…:mediator` |
+| DID hosting URL | the platform stack's dids URL + `/{vta_name}-vta` via `setup.VtaDidPath` | `https://dids.example.com/personal-vta-vta` |
+| Mediator DID | the platform stack's `mediator_did`, read from its row | `did:webvh:…:mediator` |
 
 (Full Stack instead derives four named hosts and grows its own mediator, dids daemon, and
 VTC — see [`full-stack-setup-design.md` §3](full-stack-setup-design.md#3-urls--dns).)
@@ -417,7 +417,7 @@ the state machine and Job specs that consume them.
 The full list (including the reveal-once admin private keys and the reissue parsers) is in
 [`full-stack-setup-design.md` §8](full-stack-setup-design.md#8-output-parsing-regex).
 
-In `vta_only` the **Mediator DID is not parsed** — it's the shared `MEDIATOR_DID` env value
+In `vta_only` the **Mediator DID is not parsed** — it is the platform stack's, read from its row
 written straight into the config. Only the VTA DID (1a) and its DID log come from the Job
 output (`internal/setup/parser.go`).
 
@@ -445,8 +445,10 @@ type SetupSession struct {
     PreRotationCount int    // default 1
 
     // Derived / shared
-    MediatorDid string // shared MEDIATOR_DID (vta_only)
-    VtaDidUrl   string // {DID_HOSTING_SERVER_URL}/{unique_id}/{vta_name}
+    MediatorDid string // the platform stack's, snapshotted at create (vta_only)
+    VtaDidUrl   string // {DidHostingServerURL}/{vta_name}-vta
+    DidHostingServerURL  string // where these DIDs resolve      (json "-")
+    DidHostingControlURL string // where the daemon is managed   (json "-")
     CFRecordID  string // single Cloudflare record id (json "-")
 
     // Outputs
@@ -477,7 +479,9 @@ type SetupSession struct {
 | `GET` | `/api/v1/setup/:id/logs` | SSE stream of step output (`?source=setup\|provision\|vta`) |
 | `DELETE` | `/api/v1/setup/:id` | Tear down DNS + K8s + Vault seed, delete session |
 
-`:id` is the 8-char `unique_id`, **not** the numeric PK.
+`:id` is the session's `vta_name`, **not** the numeric PK. There is no opaque id:
+the name addresses the session and is what a delete confirmation asks for, which
+is why it is globally unique rather than unique only among managed sessions.
 
 ### GET /api/v1/setup/:id — response shape
 
@@ -497,6 +501,61 @@ type SetupSession struct {
 `error_msg` is included only when `status = "failed"`. The live URL is reachable once
 `status = "running"`. The list endpoint `GET /setup` additionally returns `vta_name`,
 `mediator_did`, and `vta_did_url` per session.
+
+---
+
+## DID hosting credentials
+
+Two different things are easy to confuse, and mixing them up leads to the wrong
+design:
+
+| | Whose identity | Where it lives |
+| --- | --- | --- |
+| `did_hosting_admin_did` (3b) + `webvh_admin_key` (3c) | the **daemon's** own bootstrap admin, handed to a human for offline backup | the session row |
+| `did_hosting_did` (3d) | the **daemon's** own DID | the session row (and the control client fetches it from `/api/server-info` anyway) |
+| `DID_HOSTING_DID` + `DID_HOSTING_PRIVATE_KEY` | **vtafarm-api's own**, from `make gen-keypair`, enrolled in a daemon's ACL with `role=admin` | configuration only |
+
+Because the last one is ours and not something a daemon issued, **one keypair
+serves every daemon it is enrolled in**. That is why the URLs moved onto the
+session row while the keypair stayed in configuration: which daemon to talk to
+varies per session, the identity we talk with does not.
+
+It also means rebuilding the platform stack does **not** invalidate the keypair
+— it produces a fresh daemon with an empty ACL, so the same keypair has to be
+enrolled again. **The pipeline does that itself**: `step_dids_grant_farm` runs
+`did-hosting-daemon add-acl --did <DID_HOSTING_DID> --role admin --label vtafarm`
+as an offline Job on the dids PVC, in the same window as `step_dids_invite` and
+`step_dids_load_did` — after the store exists and before any daemon pod holds
+it.
+
+Offline is not a convenience: the control API authenticates callers *from* the
+ACL, so enrolling over HTTP would require already being enrolled. Writing the
+store directly is the only way in.
+
+The step runs for **every** `full_stack` session, not just the platform stack:
+the farm operates these deployments and needs to manage the `did.jsonl`
+documents they serve. `GET /admin/platform-stack` reports the platform stack's
+own result under `farm_acl`; `granted: false` means no keypair was configured
+when it was built, which is the one case still needing a human.
+
+### Open: a user-supplied DID host
+
+Once a user can point a session at a DID-hosting service of their own, uploading
+its DID log requires vtafarm-api to be an admin in **their** daemon's ACL. Two
+shapes, neither chosen:
+
+1. **Publish our client DID and have the user enroll it.** No new secrets, and
+   the same keypair everywhere. But it hands one identity admin rights across
+   every user's daemon, so a compromise is not contained, and it puts a manual
+   enrollment step in a user-facing flow.
+2. **Mint a keypair per session (or per user) and enroll that.** Contained by
+   construction and revocable per session. Costs a private key per session,
+   which belongs in Vault next to the master seed rather than in a column — the
+   same rule the rest of the design already follows.
+
+The schema does not prejudge it: `did_hosting_control_url` is already per
+session, so only the credential lookup changes. Decide when the feature is
+actually built.
 
 ---
 

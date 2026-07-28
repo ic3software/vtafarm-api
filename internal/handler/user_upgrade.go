@@ -14,7 +14,7 @@ import (
 
 // User-facing self-service upgrades. A user changes the images of ONE session
 // they own — every handler here loads the session with
-// `unique_id = ? AND user_id = ?` (the same ownership rule as the rest of the
+// `vta_name = ? AND user_id = ?` (the same ownership rule as the rest of the
 // setup routes), so a user can never touch another user's session. The
 // machinery underneath (UpgradeBatch/UpgradeTask + the background runner) is
 // shared with the admin batch API; user batches are marked with UserID and
@@ -32,7 +32,7 @@ type createSessionUpgradeRequest struct {
 func (h *UpgradeHandler) ownSession(c *gin.Context) (*model.SetupSession, uint, bool) {
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 	var session model.SetupSession
-	if err := h.db.Where("unique_id = ? AND user_id = ?", c.Param("id"), userID).
+	if err := h.db.Where("vta_name = ? AND user_id = ?", c.Param("id"), userID).
 		First(&session).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return nil, 0, false

@@ -99,12 +99,21 @@ func FixedHosts(env string) (vtaSub, mediatorSub, didsSub, vtcSub string) {
 		componentHost(env, "vtc", "")
 }
 
-// DID path components (did:webvh:<scid>:<dids host>:<path>) for the DIDs
-// hosted on the session's own dids daemon. Every producer must agree on
-// these: the webvh URLs rendered into the setup TOMLs mint the DIDs with
-// this path, and step_dids_load_did's `load-did --path` must load each log
-// at the SAME path or webvh resolution 404s (the daemon serves the log at
-// the --path value, while resolvers derive the URL from the DID identifier).
+// DID path components (did:webvh:<scid>:<dids host>:<path>). Every producer
+// must agree on these: the webvh URLs rendered into the setup TOMLs mint the
+// DIDs with this path, and step_dids_load_did's `load-did --path` must load
+// each log at the SAME path or webvh resolution 404s (the daemon serves the
+// log at the --path value, while resolvers derive the URL from the DID
+// identifier).
+//
+// VtaDidPath serves both modes, and the suffix is what makes that safe.
+// full_stack mints all three on a daemon of its own, where the suffixes only
+// have to tell the three apart. vta_only has no daemon and uploads to the
+// shared one — sharing it with the platform stack, itself a full_stack minting
+// all three. Giving vta_only the same -vta suffix rather than a bare name
+// keeps every path in that shared namespace the same shape, so comparing the
+// names behind them (setup_sessions_did_path_unique) is exact: a -vta path can
+// never equal somebody's -mediator or -vtc.
 func VtaDidPath(vtaName string) string      { return vtaName + "-vta" }
 func MediatorDidPath(vtaName string) string { return vtaName + "-mediator" }
 func VtcDidPath(vtcName string) string      { return vtcName + "-vtc" }

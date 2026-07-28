@@ -27,8 +27,9 @@ const (
 )
 
 type SetupSession struct {
-	ID         uint   `gorm:"primaryKey;autoIncrement" json:"-"`
-	UniqueId   string `gorm:"column:unique_id;size:8;not null;uniqueIndex" json:"id"`
+	ID uint `gorm:"primaryKey;autoIncrement" json:"-"`
+	// VtaName below is the public identifier — there is no opaque id. See its
+	// comment for why that makes it globally unique.
 	UserID     uint   `gorm:"not null;index"           json:"user_id"`
 	Status     string `gorm:"not null;default:pending" json:"status"`
 	Mode       string `gorm:"not null"                 json:"mode"`
@@ -45,11 +46,33 @@ type SetupSession struct {
 	DomainID   *uint  `gorm:"column:domain_id"                            json:"-"`
 	DomainType string `gorm:"column:domain_type;not null;default:managed" json:"domain_type"`
 	// VTA config inputs
-	VtaName          string `gorm:"not null;default:'personal-vta'" json:"vta_name"`
-	MediatorDid      string `gorm:"column:mediator_did;not null;default:''"  json:"mediator_did"`
-	VtaDidUrl        string `gorm:"column:vta_did_url;not null;default:''"   json:"vta_did_url"`
-	Portable         bool   `gorm:"not null;default:true"           json:"portable"`
-	PreRotationCount int    `gorm:"not null;default:1"              json:"pre_rotation_count"`
+	// VtaName is the session's public identifier as well as its name: it is the
+	// :id in /setup/<name> and the word typed to confirm a delete. Globally
+	// unique — not merely per-user and not merely among managed sessions —
+	// because the admin routes resolve a session by name with no user_id to
+	// scope the lookup. On a fixed-label domain that means a label two users
+	// might both want ("main") is first-come.
+	VtaName     string `gorm:"not null;default:'personal-vta'" json:"vta_name"`
+	MediatorDid string `gorm:"column:mediator_did;not null;default:''"  json:"mediator_did"`
+	VtaDidUrl   string `gorm:"column:vta_did_url;not null;default:''"   json:"vta_did_url"`
+	// Where this session's did:webvh identifiers are served, and where the
+	// daemon serving them is administered — the shared daemon for vta_only, the
+	// session's own for full_stack. Recorded per session rather than read from
+	// configuration because a did:webvh bakes its host into the identifier at
+	// mint time: these are facts about the session, not current settings, so a
+	// teardown reaches the daemon the DID was actually uploaded to.
+	//
+	// Two fields because a standalone DID-hosting service splits resolution from
+	// its management API. The daemon build deployed today answers both roles on
+	// one host, so they are equal for every session that exists so far.
+	//
+	// ServerURL scopes setup_sessions_did_path_unique: a DID path only has to be
+	// distinct among the DIDs served at the same URL, and which sessions those
+	// are follows from neither Mode nor DomainType alone.
+	DidHostingServerURL  string `gorm:"column:did_hosting_server_url;not null;default:''"  json:"-"`
+	DidHostingControlURL string `gorm:"column:did_hosting_control_url;not null;default:''" json:"-"`
+	Portable             bool   `gorm:"not null;default:true"           json:"portable"`
+	PreRotationCount     int    `gorm:"not null;default:1"              json:"pre_rotation_count"`
 	// Image used for the vta-setup K8s Job
 	VtaImage string `gorm:"not null;default:''"             json:"vta_image,omitempty"`
 	// Output populated after vta setup runs
@@ -141,6 +164,14 @@ func (s *SetupSession) MediatorFQDN() string {
 
 func (s *SetupSession) DidsFQDN() string {
 	return s.DidsSubdomain + "." + s.Domain
+}
+
+// DidsURL is the public base URL of the session's own DID-hosting daemon —
+// what gets recorded as DidHostingServerURL/DidHostingControlURL, both for the
+// session itself and, when this is the platform stack, for every vta_only
+// session wired to it.
+func (s *SetupSession) DidsURL() string {
+	return "https://" + s.DidsFQDN()
 }
 
 // VtcFQDN is full_stack-only, same convention as MediatorFQDN/DidsFQDN.
