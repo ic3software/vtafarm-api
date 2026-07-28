@@ -489,10 +489,10 @@ components:
           description: Populated after vta setup completes
         mediator_did:
           type: string
-          description: Shared MEDIATOR_DID (vta_only)
+          description: Mediator DID, read from the platform stack at create time (vta_only)
         vta_did_url:
           type: string
-          description: Derived DID-hosting URL — {DID_HOSTING_SERVER_URL}/{vta_name}-vta
+          description: Derived DID-hosting URL — {the platform stack's dids URL}/{vta_name}-vta
         error_msg:
           type: string
           description: Present only when status is `failed`
@@ -688,10 +688,11 @@ components:
               exists, so there is no shared mediator or DID hosting to connect to.
             - `platform_stack_not_ready` — `vta_only` only. It exists but hasn't
               reached `running`.
-            - `shared_infra_unconfigured` — `vta_only` only. It is running, but
-              this server hasn't been pointed at its collected values
-              (`MEDIATOR_DID` / `DID_HOSTING_SERVER_URL`), so a session created
-              now would carry an empty mediator DID.
+            - `shared_infra_unconfigured` — `vta_only` only. It is running but
+              hasn't published its mediator DID, so a session created now would
+              carry an empty one. Transient — this used to mean "an admin hasn't
+              copied its values into this server's environment", which is no
+              longer a step: the values are read off the platform stack's row.
           enum: [at_capacity, platform_stack_missing, platform_stack_not_ready, shared_infra_unconfigured]
         detail:
           type: string
@@ -1770,12 +1771,16 @@ paths:
     get:
       summary: Platform stack state
       description: |
-        Whether the stack exists and how far it has got, plus `config_values` —
-        what to paste into the environment once `status` is `running`.
+        Whether the stack exists and how far it has got, plus `provides` — the
+        mediator DID and DID-hosting URLs every `vta_only` session is wired to,
+        read off this row when that session is created. Nothing here is copied
+        anywhere; `mediator_did` is minted by the pipeline, so it stays empty
+        until that step completes.
 
-        Those values cannot be known upfront: `MEDIATOR_DID` and
-        `DID_HOSTING_DID` are minted by the pipeline, so they stay empty until
-        the corresponding step completes.
+        `acl_enrollment_required` is the one manual step left: vtafarm-api
+        authenticates to this daemon with its own keypair (`DID_HOSTING_DID`),
+        which must be in the daemon's ACL with `role=admin`. A rebuilt stack is
+        a fresh daemon with an empty ACL, so the same keypair is enrolled again.
 
         `exists: false` covers both "never created" and "created then torn
         down" — the `domains` row outlives its session, so `domain` may still be
@@ -1822,14 +1827,26 @@ paths:
                       mediator_did: { type: string }
                       did_hosting_did: { type: string }
                       vtc_did: { type: string }
-                  config_values:
+                  provides:
                     type: object
-                    description: Copy into the environment once the stack is running. Empty strings until the pipeline mints them.
+                    description: >-
+                      What every vta_only session is wired to at create time.
+                      mediator_did is empty until the pipeline mints it. The two
+                      URLs are equal while the daemon answers both roles on one
+                      host; they are separate fields so a standalone DID-hosting
+                      service can split them.
                     properties:
-                      MEDIATOR_DID: { type: string }
-                      DID_HOSTING_SERVER_URL: { type: string }
-                      DID_HOSTING_CONTROL_URL: { type: string }
-                      DID_HOSTING_DID: { type: string }
+                      mediator_did: { type: string }
+                      did_hosting_server_url: { type: string }
+                      did_hosting_control_url: { type: string }
+                  acl_enrollment_required:
+                    type: object
+                    description: >-
+                      The remaining manual step — enroll DID_HOSTING_DID in this
+                      daemon's ACL with role=admin.
+                    properties:
+                      server_did: { type: string }
+                      enroll: { type: string }
                   error_msg: { type: string }
                   created_at: { type: string, format: date-time }
                   updated_at: { type: string, format: date-time }

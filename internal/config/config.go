@@ -13,7 +13,6 @@ type Config struct {
 	JWTSecret        string
 	ClusterIngressIP string
 	ClusterDomain    string
-	MediatorDid      string
 	// ACMEClusterIssuer names the cert-manager ClusterIssuer that signs custom
 	// domains' certificates. The same one in every environment — see
 	// DefaultACMEIssuer for why there is no staging variant to pick between.
@@ -68,10 +67,17 @@ type WebAuthnConfig struct {
 // CookieSecure returns true when running in production (requires HTTPS).
 func (c *Config) CookieSecure() bool { return c.AppEnv == "production" }
 
+// DidHostingConfig is vtafarm-api's OWN identity for talking to a DID-hosting
+// control API: a keypair from `make gen-keypair`, enrolled in that daemon's ACL
+// with role=admin. It is not anything a daemon issued, so one keypair serves
+// every host it is enrolled in.
+//
+// The URLs are deliberately absent. Which daemon to talk to is a property of the
+// session — the shared one comes from the platform stack, a full_stack's from
+// itself — so it is recorded on the row (setup_sessions.did_hosting_*_url) and
+// resolved per use through didhosting.Factory, not fixed here at startup.
 type DidHostingConfig struct {
-	ControlUrl string // e.g. https://control.fpp2.ic3.dev — management API (auth + upload)
-	ServerUrl  string // e.g. https://dids.fpp2.ic3.dev — public DID resolution (used in vta_did_url)
-	Did        string // did:key:z6Mk... of this server
+	Did        string // did:key:z6Mk... of vtafarm-api itself
 	PrivateKey string // base64 ed25519 seed
 }
 
@@ -150,7 +156,6 @@ func Load() *Config {
 		JWTSecret:        getEnv("JWT_SECRET", "change-me-in-production"),
 		ClusterIngressIP: getEnv("CLUSTER_INGRESS_IP", ""),
 		ClusterDomain:    getEnv("CLUSTER_DOMAIN", ""),
-		MediatorDid:      getEnv("MEDIATOR_DID", ""),
 
 		ACMEClusterIssuer: getEnv("ACME_CLUSTER_ISSUER", DefaultACMEIssuer),
 		DB: DBConfig{
@@ -178,8 +183,6 @@ func Load() *Config {
 			VtcPackageName:              getEnv("GITHUB_VTC_PACKAGE_NAME", "vtc"),
 		},
 		DidHosting: DidHostingConfig{
-			ControlUrl: getEnv("DID_HOSTING_CONTROL_URL", ""),
-			ServerUrl:  getEnv("DID_HOSTING_SERVER_URL", ""),
 			Did:        getEnv("DID_HOSTING_DID", ""),
 			PrivateKey: getEnv("DID_HOSTING_PRIVATE_KEY", ""),
 		},

@@ -238,14 +238,16 @@ func (h *SetupHandler) CreatePlatformStack(c *gin.Context) {
 		VtaName: label,
 		VtcName: label,
 		// The stack's own daemon is also the shared one every vta_only session
-		// uploads to, so this value is what puts those rows in one namespace.
-		DidHost:          didsFQDN,
-		VtaImage:         req.VtaImage,
-		MediatorImage:    req.MediatorImage,
-		DidsImage:        req.DidsImage,
-		VtcImage:         req.VtcImage,
-		Portable:         portable,
-		PreRotationCount: preRotationCount,
+		// uploads to, so this value is what puts those rows in one namespace —
+		// resolveSharedInfra hands the same URL to each of them.
+		DidHostingServerURL:  "https://" + didsFQDN,
+		DidHostingControlURL: "https://" + didsFQDN,
+		VtaImage:             req.VtaImage,
+		MediatorImage:        req.MediatorImage,
+		DidsImage:            req.DidsImage,
+		VtcImage:             req.VtcImage,
+		Portable:             portable,
+		PreRotationCount:     preRotationCount,
 	}
 
 	const maxAttempts = 5
@@ -351,14 +353,25 @@ func (h *SetupHandler) GetPlatformStack(c *gin.Context) {
 			"dids":     session.DidsImage,
 			"vtc":      session.VtcImage,
 		},
-		// What to paste into configuration. Empty until the pipeline mints
-		// them, which is why the admin page has to surface them rather than
-		// the values being known upfront.
-		"config_values": gin.H{
-			"MEDIATOR_DID":            session.MediatorDid,
-			"DID_HOSTING_SERVER_URL":  "https://" + session.DidsFQDN(),
-			"DID_HOSTING_CONTROL_URL": "https://" + session.DidsFQDN(),
-			"DID_HOSTING_DID":         session.DIDHostingDid,
+		// What this stack provides to every vta_only session, read straight off
+		// this row at create time. It is reported rather than pasted anywhere:
+		// MEDIATOR_DID / DID_HOSTING_SERVER_URL / DID_HOSTING_CONTROL_URL used to
+		// be environment values an admin copied here, and the window between
+		// "running" and "copied" was its own failure mode.
+		"provides": gin.H{
+			"mediator_did":            session.MediatorDid,
+			"did_hosting_server_url":  session.DidsURL(),
+			"did_hosting_control_url": session.DidsURL(),
+		},
+		// Still a manual step, and the only one left: vtafarm-api authenticates
+		// to this daemon with its own keypair (DID_HOSTING_DID /
+		// DID_HOSTING_PRIVATE_KEY), which has to be enrolled in the daemon's ACL
+		// with role=admin. A rebuilt stack is a fresh daemon with an empty ACL,
+		// so the same keypair must be enrolled again — see
+		// docs/vta-setup-design.md §"DID hosting credentials".
+		"acl_enrollment_required": gin.H{
+			"server_did": session.DIDHostingDid,
+			"enroll":     "add DID_HOSTING_DID to this daemon's ACL with role=admin",
 		},
 		"created_at": session.CreatedAt,
 		"updated_at": session.UpdatedAt,

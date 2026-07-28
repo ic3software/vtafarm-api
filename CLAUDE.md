@@ -38,6 +38,7 @@ See `.env.example` for all options. Key ones:
 | `JWT_SECRET` | `change-me-in-production` | HS256 signing secret |
 | `KUBECONFIG` | `~/.kube/config` | Leave empty; auto-detected |
 | `K8S_NAMESPACE_PREFIX` | `vtafarm-user` | Per-user namespace prefix |
+| `DID_HOSTING_DID` / `DID_HOSTING_PRIVATE_KEY` | — | vtafarm-api's **own** keypair (`make gen-keypair`) for the DID-hosting control API, enrolled in a daemon's ACL with `role=admin`. Not anything a daemon issued, so one keypair serves every daemon it is enrolled in. There are deliberately no DID-hosting **URLs** here — see "Shared infrastructure comes from the platform stack" below |
 | `CLOUDFLARE_API_TOKEN` | — | Cloudflare API token (`Zone:DNS:Edit` permission) |
 | `CLOUDFLARE_ZONE_ID` | — | Cloudflare Zone ID for the user's root domain |
 | `CLUSTER_INGRESS_IP` | — | External IP of the cluster's Ingress-NGINX LoadBalancer |
@@ -287,16 +288,49 @@ edits DNS.
   ClusterIssuers) before a verification can pass; until they exist the check
   fails with a reason, which tells an operator more than a hidden route would.
 
+### Shared infrastructure comes from the platform stack, not configuration
+
+What a `vta_only` session is wired to — the mediator DID and the DID-hosting
+resolution + control URLs — is read from the platform stack's own session row
+when the session is created, and snapshotted onto it
+(`setup_sessions.mediator_did` / `did_hosting_server_url` /
+`did_hosting_control_url`).
+
+These were `MEDIATOR_DID` / `DID_HOSTING_SERVER_URL` / `DID_HOSTING_CONTROL_URL`
+in the environment, pasted in by an admin from the platform stack page once the
+pipeline had minted them. Removing that copy step removes the whole class of
+"the stack is running but this server is still pointed at the last one".
+
+Two consequences worth holding onto:
+
+- **`didhosting.Client` cannot be a startup singleton**, because no URL is known
+  at boot — on a first boot the platform stack does not exist. `didhosting.Factory`
+  builds one per control URL and caches it; the keypair it authenticates with
+  stays global because it is vtafarm-api's own identity.
+- **Snapshotted, not looked up.** A `did:webvh` bakes its host into the
+  identifier at mint time, so the URLs are facts about the session, not current
+  settings. Teardown deletes through the control URL the row carries — a
+  rebuilt platform stack is a different daemon, and deleting from it would strip
+  somebody else's DID while leaving this one behind.
+
+Two URL columns rather than one because a standalone DID-hosting service splits
+resolution from its management API. The daemon build deployed today answers both
+on one host, so they are equal for every session that exists so far.
+
+The credentials story — and the open question of how a **user-supplied** DID host
+would authorise us — is in `docs/vta-setup-design.md` §"DID hosting credentials".
+
 ### DID paths and where they must be unique
 
 A `did:webvh` path only has to be distinct among the DIDs served by the **same**
 daemon. Which daemon that is follows from neither mode nor `domain_type` alone,
-so `setup_sessions.did_host` records it and
-`UNIQUE (did_host, vta_name) WHERE did_host <> ''` is the whole rule:
+so `setup_sessions.did_hosting_server_url` records it and
+`UNIQUE (did_hosting_server_url, vta_name) WHERE did_hosting_server_url <> ''`
+is the whole rule:
 
 | session | daemon | shares with |
 | --- | --- | --- |
-| `vta_only` (managed, and custom once allowed) | the shared one — `DID_HOSTING_SERVER_URL` | every other `vta_only` **and the platform stack** |
+| `vta_only` (managed, and custom once allowed) | the shared one — the platform stack's | every other `vta_only` **and the platform stack** |
 | `full_stack` managed / custom | its own `dids[-<name>].<zone>` | nothing |
 | `platform` | its own — which **is** the shared one | every `vta_only` |
 
@@ -330,9 +364,10 @@ reports `vta_only.available: false` with a `reason`
 `shared_infra_unconfigured`), and `POST /setup` answers 503 — the UI is not the
 gate. `full_stack` provisions its own and is never blocked on it.
 
-The third reason exists because the stack running is not the same as this API
-being able to reach it: `MEDIATOR_DID` is minted by the pipeline and only
-arrives here once an admin copies it into configuration.
+The third reason is now narrow and transient: a stack marked running whose
+mediator DID has not landed on its row. It used to mean "an admin hasn't pasted
+`MEDIATOR_DID` into this server's environment yet" — that step is gone (see
+below).
 
 - **Owned by a system account**, not an admin: `setup_sessions.user_id` is a FK
   to `users` and derives the namespace, while admins are a separate table. The

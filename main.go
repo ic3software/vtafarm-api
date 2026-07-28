@@ -55,18 +55,15 @@ func main() {
 		log.Printf("K8s client initialised")
 	}
 
-	var dhClient *didhosting.Client
-	if cfg.DidHosting.ControlUrl != "" && cfg.DidHosting.Did != "" && cfg.DidHosting.PrivateKey != "" {
-		var dhErr error
-		dhClient, dhErr = didhosting.New(cfg.DidHosting.ControlUrl, cfg.DidHosting.Did, cfg.DidHosting.PrivateKey)
-		if dhErr != nil {
-			log.Printf("warn: DID hosting client init failed: %v — auto-upload disabled", dhErr)
-			dhClient = nil
-		} else {
-			log.Printf("DID hosting auto-upload enabled (%s)", cfg.DidHosting.ControlUrl)
-		}
+	// A factory, not a client: which DID-hosting daemon to talk to is a property
+	// of the session, so no URL is known here. Nothing is dialled at startup —
+	// the shared daemon belongs to the platform stack, which on a first boot
+	// does not exist yet.
+	dhFactory := didhosting.NewFactory(cfg.DidHosting.Did, cfg.DidHosting.PrivateKey)
+	if dhFactory != nil {
+		log.Printf("DID hosting auto-upload enabled (client %s)", cfg.DidHosting.Did)
 	} else {
-		log.Printf("warn: DID_HOSTING_CONTROL_URL/DID/PRIVATE_KEY not set — DID auto-upload disabled")
+		log.Printf("warn: DID_HOSTING_DID/PRIVATE_KEY not set — DID auto-upload disabled")
 	}
 
 	// Vault client provisions per-user secret isolation; setup requires it.
@@ -93,7 +90,7 @@ func main() {
 
 	var orch *setup.Orchestrator
 	if k8sClient != nil {
-		orch = setup.NewOrchestrator(db, k8sClient, vaultClient, cfg.Vault.VTAAddr, dhClient,
+		orch = setup.NewOrchestrator(db, k8sClient, vaultClient, cfg.Vault.VTAAddr, dhFactory,
 			cfg.ClusterIngressIP, cfg.ACMEClusterIssuer)
 		orch.Resume(context.Background())
 	}
@@ -133,7 +130,7 @@ func main() {
 		log.Printf("warn: GITHUB_PACKAGE_OWNER or GITHUB_VTC_PACKAGE_NAME not set — vtc image listing disabled")
 	}
 
-	r := router.Setup(db, cfClient, k8sClient, orch, upgradeRunner, ghcrClient, mediatorGhcrClient, didsGhcrClient, vtcGhcrClient, dhClient, cfg)
+	r := router.Setup(db, cfClient, k8sClient, orch, upgradeRunner, ghcrClient, mediatorGhcrClient, didsGhcrClient, vtcGhcrClient, dhFactory, cfg)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.AppPort,
