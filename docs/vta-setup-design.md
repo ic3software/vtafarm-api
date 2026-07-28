@@ -479,7 +479,9 @@ type SetupSession struct {
 | `GET` | `/api/v1/setup/:id/logs` | SSE stream of step output (`?source=setup\|provision\|vta`) |
 | `DELETE` | `/api/v1/setup/:id` | Tear down DNS + K8s + Vault seed, delete session |
 
-`:id` is the 8-char `unique_id`, **not** the numeric PK.
+`:id` is the session's `vta_name`, **not** the numeric PK. There is no opaque id:
+the name addresses the session and is what a delete confirmation asks for, which
+is why it is globally unique rather than unique only among managed sessions.
 
 ### GET /api/v1/setup/:id — response shape
 
@@ -520,8 +522,21 @@ varies per session, the identity we talk with does not.
 
 It also means rebuilding the platform stack does **not** invalidate the keypair
 — it produces a fresh daemon with an empty ACL, so the same keypair has to be
-enrolled again. That enrollment is the one manual step left in the flow;
-`GET /admin/platform-stack` reports it under `acl_enrollment_required`.
+enrolled again. **The pipeline does that itself**: `step_dids_grant_farm` runs
+`did-hosting-daemon add-acl --did <DID_HOSTING_DID> --role admin --label vtafarm`
+as an offline Job on the dids PVC, in the same window as `step_dids_invite` and
+`step_dids_load_did` — after the store exists and before any daemon pod holds
+it.
+
+Offline is not a convenience: the control API authenticates callers *from* the
+ACL, so enrolling over HTTP would require already being enrolled. Writing the
+store directly is the only way in.
+
+The step runs for **every** `full_stack` session, not just the platform stack:
+the farm operates these deployments and needs to manage the `did.jsonl`
+documents they serve. `GET /admin/platform-stack` reports the platform stack's
+own result under `farm_acl`; `granted: false` means no keypair was configured
+when it was built, which is the one case still needing a human.
 
 ### Open: a user-supplied DID host
 

@@ -51,6 +51,9 @@ func FSJobDidsProvision(sessionID uint) string { return fmt.Sprintf("fs-%d-dids-
 func FSJobDidsP2(sessionID uint) string        { return fmt.Sprintf("fs-%d-dids-p2", sessionID) }
 func FSJobDidsInvite(sessionID uint) string    { return fmt.Sprintf("fs-%d-dids-invite", sessionID) }
 func FSJobDidsLoadDid(sessionID uint) string   { return fmt.Sprintf("fs-%d-dids-load-did", sessionID) }
+func FSJobDidsGrantFarm(sessionID uint) string {
+	return fmt.Sprintf("fs-%d-dids-grant-farm", sessionID)
+}
 func FSJobVtaRegisterDids(sessionID uint) string {
 	return fmt.Sprintf("fs-%d-vta-register-dids", sessionID)
 }
@@ -79,6 +82,7 @@ func allFSJobNames(sessionID uint) []string {
 		FSJobDidsP2(sessionID),
 		FSJobDidsInvite(sessionID),
 		FSJobDidsLoadDid(sessionID),
+		FSJobDidsGrantFarm(sessionID),
 		FSJobVtaRegisterDids(sessionID),
 		FSJobImportAdminDid(sessionID),
 		FSJobVtcSetupKey(sessionID),

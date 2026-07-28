@@ -27,8 +27,9 @@ const (
 )
 
 type SetupSession struct {
-	ID         uint   `gorm:"primaryKey;autoIncrement" json:"-"`
-	UniqueId   string `gorm:"column:unique_id;size:8;not null;uniqueIndex" json:"id"`
+	ID uint `gorm:"primaryKey;autoIncrement" json:"-"`
+	// VtaName below is the public identifier — there is no opaque id. See its
+	// comment for why that makes it globally unique.
 	UserID     uint   `gorm:"not null;index"           json:"user_id"`
 	Status     string `gorm:"not null;default:pending" json:"status"`
 	Mode       string `gorm:"not null"                 json:"mode"`
@@ -45,6 +46,12 @@ type SetupSession struct {
 	DomainID   *uint  `gorm:"column:domain_id"                            json:"-"`
 	DomainType string `gorm:"column:domain_type;not null;default:managed" json:"domain_type"`
 	// VTA config inputs
+	// VtaName is the session's public identifier as well as its name: it is the
+	// :id in /setup/<name> and the word typed to confirm a delete. Globally
+	// unique — not merely per-user and not merely among managed sessions —
+	// because the admin routes resolve a session by name with no user_id to
+	// scope the lookup. On a fixed-label domain that means a label two users
+	// might both want ("main") is first-come.
 	VtaName     string `gorm:"not null;default:'personal-vta'" json:"vta_name"`
 	MediatorDid string `gorm:"column:mediator_did;not null;default:''"  json:"mediator_did"`
 	VtaDidUrl   string `gorm:"column:vta_did_url;not null;default:''"   json:"vta_did_url"`

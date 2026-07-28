@@ -39,6 +39,17 @@ func NewFactory(clientDid, privKeyB64 string) *Factory {
 	return &Factory{clientDid: clientDid, privKeyB64: privKeyB64, byBase: map[string]*Client{}}
 }
 
+// ClientDid is the DID that has to be present in a daemon's ACL for anything
+// this factory builds to authenticate. Exposed so the platform stack's pipeline
+// can enroll it offline while provisioning that daemon, rather than leaving an
+// operator to do it by hand.
+func (f *Factory) ClientDid() string {
+	if f == nil {
+		return ""
+	}
+	return f.clientDid
+}
+
 // For returns a Client for controlURL, reusing one already built for that URL.
 //
 // Caching is not just to save a round trip: New fetches the server's DID from

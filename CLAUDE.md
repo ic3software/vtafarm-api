@@ -153,7 +153,7 @@ To create additional admins, an authenticated admin calls `POST /api/v1/admin/ad
 | `POST` | `/api/v1/admin/invitations` | admin | Create a user invitation link |
 | `GET` | `/api/v1/admin/invitations` | admin | List invitation links |
 | `GET` | `/api/v1/admin/setup-sessions` | admin | List all users' setup sessions (paginated, 20/page) |
-| `DELETE` | `/api/v1/admin/setup-sessions/:id` | admin | Delete any user's session — same teardown as `DELETE /setup/:id`, but not scoped to the caller. Irreversible; the UI requires typing the session id to confirm. Deleting the **platform stack** additionally requires `{"confirm": "<label>"}` in the body — enforced by the API, not the UI |
+| `DELETE` | `/api/v1/admin/setup-sessions/:id` | admin | Delete any user's session — same teardown as `DELETE /setup/:id`, but not scoped to the caller. Irreversible; the UI requires typing the session's `vta_name` to confirm. Deleting the **platform stack** additionally requires `{"confirm": "<label>"}` in the body — enforced by the API, not the UI |
 | `GET` | `/api/v1/admin/setup-sessions/:id/logs` | admin | Stream any session's setup logs (`full_stack` only). Exists for the platform stack: it's owned by a passkey-less system account, so nobody can hold the cookie the user-facing route requires |
 | `POST` | `/api/v1/admin/setup-sessions/:id/admin` | admin | Resume a session parked at `awaiting_admin_did`. Same reason as the logs route — and the platform stack always parks there, since the admin DID is minted from a VTA DID the pipeline hasn't produced yet |
 | `POST` | `/api/v1/admin/setup-sessions/:id/dids/reissue-enroll` | admin | Admin twin of the user route |
@@ -204,7 +204,7 @@ the account and logs the holder in to register a fresh one.
 | `POST` | `/api/v1/domains/:id/verify` | user | Run the check. A failure is **200**, not 4xx — it's a retryable state, not a client error |
 | `DELETE` | `/api/v1/domains/:id` | user | 409 while a session runs on it |
 | `DELETE` | `/api/v1/setup/:id` | user | Cancel session + tear down DNS |
-| `POST` | `/api/v1/setup/:id/upgrade` | user | Self-service image upgrade/downgrade of the user's **own** session (looked up by `unique_id AND user_id` — never another user's) |
+| `POST` | `/api/v1/setup/:id/upgrade` | user | Self-service image upgrade/downgrade of the user's **own** session (looked up by `vta_name AND user_id` — never another user's) |
 | `GET` | `/api/v1/setup/:id/upgrade` | user | Latest self-service upgrade of that session, for progress polling |
 
 ## Setup Modes
@@ -288,6 +288,25 @@ edits DNS.
   ClusterIssuers) before a verification can pass; until they exist the check
   fails with a reason, which tells an operator more than a hidden route would.
 
+### A session is addressed by its name
+
+`vta_name` is the session's public identifier: the `:id` in `/setup/<name>` and
+`/admin/setup-sessions/<name>`, and the word the UI makes you type to confirm a
+delete. There is no opaque id — `setup_sessions.unique_id` is gone.
+
+That is why `setup_sessions_vta_name_unique` is **global**, not partial on
+`domain_type = 'managed'` as it was while the name was only a hostname. The admin
+routes resolve a session by name with no `user_id` to scope the query, so two
+rows sharing a name would make them ambiguous. The cost, stated plainly: a label
+on a fixed-label domain now lives in a global namespace, so two users cannot both
+call their session `main`.
+
+`setup_sessions_did_path_unique` is implied by that global index and kept anyway
+— it states the narrower, permanent rule (DID paths collide per daemon), which
+must survive if sessions ever stop being addressed by name.
+
+Users and admins keep their own `unique_id`; only sessions lost theirs.
+
 ### Shared infrastructure comes from the platform stack, not configuration
 
 What a `vta_only` session is wired to — the mediator DID and the DID-hosting
@@ -316,6 +335,22 @@ Two consequences worth holding onto:
 Two URL columns rather than one because a standalone DID-hosting service splits
 resolution from its management API. The daemon build deployed today answers both
 on one host, so they are equal for every session that exists so far.
+
+**Every `full_stack` session enrolls this API in its own daemon's ACL.**
+`step_dids_grant_farm` runs `did-hosting-daemon add-acl --did <DID_HOSTING_DID>
+--role admin --label vtafarm` as an offline Job on the dids PVC. Offline is
+forced: the control API authenticates callers *from* the ACL, so doing it over
+HTTP would require already being in it.
+
+It runs for customers' stacks too, not just the platform one — the farm operates
+these deployments and manages the `did.jsonl` documents they serve, which is
+what `role=admin` grants (it bypasses the per-DID ownership check on publish).
+That does not widen the trust boundary; the pod, PVC and Vault access are ours
+regardless. The platform stack additionally *depends* on the entry, since every
+`vta_only` DID upload authenticates with that keypair.
+
+`add-acl` errors on an existing entry rather than passing, so the step probes
+`list-acl` first — without that, any resume would fail the session.
 
 The credentials story — and the open question of how a **user-supplied** DID host
 would authorise us — is in `docs/vta-setup-design.md` §"DID hosting credentials".

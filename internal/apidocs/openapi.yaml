@@ -113,7 +113,7 @@ components:
       properties:
         session_id:
           type: string
-          description: The session's 8-char unique_id.
+          description: The session's `vta_name`.
           example: "a1b2c3d4"
         vta_name:
           type: string
@@ -298,7 +298,7 @@ components:
             should derive its "try again in Ns" from rather than a local timer.
         in_use_by:
           type: string
-          description: unique_id of the session running on this domain, when there is one.
+          description: vta_name of the session running on this domain, when there is one.
           example: a1b2c3d4
         target:
           type: string
@@ -1483,9 +1483,6 @@ paths:
                         id:
                           type: integer
                           description: Numeric PK — the sort key.
-                        unique_id:
-                          type: string
-                          example: "a1b2c3d4"
                         user_unique_id:
                           type: string
                           description: The owning user's 8-char unique_id.
@@ -1580,10 +1577,10 @@ paths:
         removed too.
 
         Identical to the user-facing `DELETE /setup/{id}` except the session is
-        looked up by `unique_id` alone rather than being scoped to the caller.
+        looked up by `vta_name` alone rather than being scoped to the caller.
 
         **Irreversible** — there is no undo and no soft delete. The admin UI
-        requires the admin to type the session's `unique_id` to confirm.
+        requires the admin to type the session's `vta_name` to confirm.
 
         **The platform stack additionally requires a request body.** When the
         session's `domain_type` is `platform`, send `{"confirm": "<label>"}`
@@ -1598,7 +1595,7 @@ paths:
         - name: id
           in: path
           required: true
-          description: The session's 8-char `unique_id` (not the numeric PK).
+          description: The session's `vta_name`.
           schema:
             type: string
           example: "a1b2c3d4"
@@ -1715,7 +1712,7 @@ paths:
               schema:
                 type: object
                 properties:
-                  id: { type: string, description: The session's 8-char unique_id }
+                  id: { type: string, description: The session's vta_name }
                   status: { type: string, example: dns_provision }
                   label: { type: string }
                   domain: { type: string, example: firstperson.dev }
@@ -1777,10 +1774,12 @@ paths:
         anywhere; `mediator_did` is minted by the pipeline, so it stays empty
         until that step completes.
 
-        `acl_enrollment_required` is the one manual step left: vtafarm-api
-        authenticates to this daemon with its own keypair (`DID_HOSTING_DID`),
-        which must be in the daemon's ACL with `role=admin`. A rebuilt stack is
-        a fresh daemon with an empty ACL, so the same keypair is enrolled again.
+        `farm_acl` reports DID-upload access. vtafarm-api authenticates to this
+        daemon with its own keypair (`DID_HOSTING_DID`) to upload every
+        `vta_only` session's DID log, so that DID needs an `admin` ACL entry
+        here. `step_dids_grant_farm` enrolls it offline while provisioning —
+        `granted: false` means no keypair was configured when the stack was
+        built, which is the one case still needing a human.
 
         `exists: false` covers both "never created" and "created then torn
         down" — the `domains` row outlives its session, so `domain` may still be
@@ -1839,14 +1838,16 @@ paths:
                       mediator_did: { type: string }
                       did_hosting_server_url: { type: string }
                       did_hosting_control_url: { type: string }
-                  acl_enrollment_required:
+                  farm_acl:
                     type: object
                     description: >-
-                      The remaining manual step — enroll DID_HOSTING_DID in this
-                      daemon's ACL with role=admin.
+                      DID-upload access. The stack enrolls vtafarm-api's client
+                      DID in this daemon's ACL as admin while provisioning
+                      (step_dids_grant_farm), so this reports rather than asks.
                     properties:
                       server_did: { type: string }
-                      enroll: { type: string }
+                      client_did: { type: string }
+                      granted: { type: boolean }
                   error_msg: { type: string }
                   created_at: { type: string, format: date-time }
                   updated_at: { type: string, format: date-time }
@@ -1943,7 +1944,7 @@ paths:
       summary: Resume a session waiting for its admin DID (admin)
       description: |
         The admin-cookie twin of `POST /setup/{id}/admin`, differing only in the
-        lookup: `unique_id` alone, with no `user_id` filter.
+        lookup: `vta_name` alone, with no `user_id` filter.
 
         It exists for the platform stack. Every `full_stack` session parks at
         `awaiting_admin_did` — the DID is minted locally by `pnm setup` from the
@@ -1961,7 +1962,7 @@ paths:
         - name: id
           in: path
           required: true
-          description: The session's 8-char `unique_id`.
+          description: The session's `vta_name`.
           schema: { type: string }
       requestBody:
         required: true
@@ -2019,7 +2020,7 @@ paths:
       summary: Reissue the DID-hosting enrollment link (admin)
       description: |
         Admin-cookie twin of `POST /setup/{id}/dids/reissue-enroll`, looked up by
-        `unique_id` alone.
+        `vta_name` alone.
 
         Exists for the platform stack: it is owned by a passkey-less system
         account, so the user-facing route can never be called for it — and
@@ -2151,7 +2152,7 @@ paths:
       summary: Stream any session's setup logs (admin)
       description: |
         Admin-cookie twin of `GET /setup/{id}/logs`, differing only in the
-        lookup: `unique_id` alone, with no `user_id` filter.
+        lookup: `vta_name` alone, with no `user_id` filter.
 
         It exists for the platform stack. That session is owned by a
         passkey-less system account, so nobody can ever hold its user cookie —
@@ -2170,7 +2171,7 @@ paths:
         - name: id
           in: path
           required: true
-          description: The session's 8-char `unique_id`.
+          description: The session's `vta_name`.
           schema: { type: string }
         - name: source
           in: query
@@ -2222,7 +2223,7 @@ paths:
         first task failure the batch pauses (fail-fast) so a broken image
         stops after at most `concurrency` tasks.
 
-        Targets: either `session_ids` (explicit unique_ids — ineligible pairs
+        Targets: either `session_ids` (explicit vta_names — ineligible pairs
         are reported in `skipped` with a reason) or `all=true` (every running
         session whose mode runs the component and isn't already on the
         image). Every image must exist in its component's GHCR tag list.
@@ -2257,7 +2258,7 @@ paths:
                   type: array
                   items:
                     type: string
-                  description: Sessions' 8-char unique_ids. Mutually exclusive with `all`.
+                  description: Sessions' vta_names. Mutually exclusive with `all`.
                 all:
                   type: boolean
                   description: Target every eligible session. Mutually exclusive with `session_ids`.
@@ -2434,7 +2435,7 @@ paths:
                       properties:
                         session_id:
                           type: string
-                          description: Session unique_id; empty if the session was deleted.
+                          description: Session vta_name; empty if the session was deleted.
                         vta_name:
                           type: string
                         component:
@@ -3969,7 +3970,7 @@ paths:
       summary: Change the session's component images (self-service)
       description: |
         Upgrades or downgrades components of the caller's OWN session to the
-        requested images — the session is looked up by unique_id AND the
+        requested images — the session is looked up by vta_name AND the
         authenticated user's id, so a user can never change another user's
         session. Each image must exist in its component's GHCR tag list
         (`GET /setup/images?component=…`), the component must belong to the

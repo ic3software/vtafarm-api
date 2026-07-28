@@ -67,7 +67,7 @@ type createUpgradeRequest struct {
 	// vta + mediator + dids upgraded in a single batch.
 	Components []componentImage `json:"components" binding:"required,min=1,dive"`
 	// Exactly one of SessionIDs / All selects the targets. SessionIDs are the
-	// sessions' 8-char unique_ids; All means every eligible session (running,
+	// sessions' names; All means every eligible session (running,
 	// mode has the component, not already on the target image).
 	SessionIDs []string `json:"session_ids"`
 	All        bool     `json:"all"`
@@ -77,7 +77,7 @@ type createUpgradeRequest struct {
 }
 
 type upgradeTargetItem struct {
-	SessionID string `json:"session_id"` // unique_id
+	SessionID string `json:"session_id"` // vta_name
 	VtaName   string `json:"vta_name"`
 	Component string `json:"component"`
 	FromImage string `json:"from_image"`
@@ -152,7 +152,7 @@ func (h *UpgradeHandler) Create(c *gin.Context) {
 	targetItems := make([]upgradeTargetItem, len(targets))
 	for i, t := range targets {
 		targetItems[i] = upgradeTargetItem{
-			SessionID: t.session.UniqueId,
+			SessionID: t.session.VtaName,
 			VtaName:   t.session.VtaName,
 			Component: t.component,
 			FromImage: t.session.ComponentImage(t.component),
@@ -221,15 +221,15 @@ func (h *UpgradeHandler) resolveTargets(req *createUpgradeRequest) ([]upgradeTar
 		}
 	} else {
 		var found []model.SetupSession
-		if err := h.db.Where("unique_id IN ?", req.SessionIDs).Order("id").Find(&found).Error; err != nil {
+		if err := h.db.Where("vta_name IN ?", req.SessionIDs).Order("id").Find(&found).Error; err != nil {
 			return nil, nil, err
 		}
-		byUniqueId := make(map[string]*model.SetupSession, len(found))
+		byName := make(map[string]*model.SetupSession, len(found))
 		for i := range found {
-			byUniqueId[found[i].UniqueId] = &found[i]
+			byName[found[i].VtaName] = &found[i]
 		}
 		for _, id := range req.SessionIDs {
-			s, ok := byUniqueId[id]
+			s, ok := byName[id]
 			switch {
 			case !ok:
 				skipped = append(skipped, skippedItem{SessionID: id, Reason: "session not found"})
@@ -247,12 +247,12 @@ func (h *UpgradeHandler) resolveTargets(req *createUpgradeRequest) ([]upgradeTar
 			switch {
 			case !slices.Contains(model.UpgradeComponentModes[ci.Component], s.Mode):
 				if !req.All {
-					skipped = append(skipped, skippedItem{SessionID: s.UniqueId, Component: ci.Component,
+					skipped = append(skipped, skippedItem{SessionID: s.VtaName, Component: ci.Component,
 						Reason: "mode " + s.Mode + " has no " + ci.Component + " component"})
 				}
 			case s.ComponentImage(ci.Component) == ci.Image:
 				if !req.All {
-					skipped = append(skipped, skippedItem{SessionID: s.UniqueId, Component: ci.Component,
+					skipped = append(skipped, skippedItem{SessionID: s.VtaName, Component: ci.Component,
 						Reason: "already on the target image"})
 				}
 			default:
@@ -358,7 +358,7 @@ func (h *UpgradeHandler) Get(c *gin.Context) {
 	}
 
 	type taskItem struct {
-		SessionID string `json:"session_id"` // unique_id; "" if session deleted
+		SessionID string `json:"session_id"` // vta_name; "" if session deleted
 		VtaName   string `json:"vta_name,omitempty"`
 		Component string `json:"component"`
 		FromImage string `json:"from_image"`
@@ -378,7 +378,7 @@ func (h *UpgradeHandler) Get(c *gin.Context) {
 			UpdatedAt: t.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		}
 		if s := sessionInfo[t.SessionID]; s != nil {
-			item.SessionID = s.UniqueId
+			item.SessionID = s.VtaName
 			item.VtaName = s.VtaName
 		}
 		items[i] = item

@@ -184,19 +184,9 @@ func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest, d
 		Portable:             portable,
 		PreRotationCount:     preRotationCount,
 	}
-	const maxAttempts = 5
-	var createErr error
-	for range maxAttempts {
-		session.UniqueId = generateUniqueId()
-		createErr = h.db.Create(&session).Error
-		if createErr == nil {
-			break
-		}
-		if !strings.Contains(createErr.Error(), "setup_sessions_unique_id_unique") {
-			break
-		}
-	}
-	if createErr != nil {
+	// A single insert: there is no random id left to collide, so the retry loop
+	// that used to wrap this went with unique_id.
+	if createErr := h.db.Create(&session).Error; createErr != nil {
 		rollback()
 		// The pre-insert count checks race with concurrent creates; the DB
 		// unique indexes are the real gate.
@@ -219,7 +209,7 @@ func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest, d
 	h.orch.Start(session.ID)
 
 	c.JSON(http.StatusCreated, gin.H{
-		"id":          session.UniqueId,
+		"id":          session.VtaName,
 		"status":      session.Status,
 		"domain_type": session.DomainType,
 		"domain":      session.Domain,
@@ -251,7 +241,7 @@ func (h *SetupHandler) getFullStack(c *gin.Context, session *model.SetupSession)
 		"vtc_did":               session.VtcDid,
 	}
 	resp := gin.H{
-		"id":          session.UniqueId,
+		"id":          session.VtaName,
 		"mode":        session.Mode,
 		"domain_type": session.DomainType,
 		"domain":      session.Domain,

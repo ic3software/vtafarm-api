@@ -557,6 +557,43 @@ Parse: **3b** Admin DID (`Generated admin did:key:\s+(did:\S+)`), **3c** Admin p
 key (`Private key \(save now, not re-shown\):\s+(\S+)` → return to user once), **3d**
 Daemon DID (the `server_did` value from `config.toml`).
 
+### Step `step_dids_grant_farm` — DIDS Job (`did-hosting-daemon add-acl`, workingDir `/work/dids`, SA `pod-operator`)
+
+Puts vtafarm-api's own client DID (`DID_HOSTING_DID`) in this daemon's ACL as
+`admin`, before the daemon ever starts:
+
+```sh
+did-hosting-daemon list-acl 2>&1 | grep -qF {{DID_HOSTING_DID}} \
+  || did-hosting-daemon add-acl --did {{DID_HOSTING_DID}} --role admin --label vtafarm
+```
+
+Runs for **every** `full_stack` session. The farm operates these deployments on
+its customers' behalf, and managing the `did.jsonl` documents a daemon serves
+means holding an ACL entry on it — `admin` specifically, since that is the role
+that bypasses the per-DID ownership check on the publish endpoints. It does not
+widen the trust boundary: the pod, its PVC and its Vault access are already
+ours, so this only makes control we necessarily have reachable through the API
+rather than only through the cluster.
+
+The platform stack additionally **depends** on it, because that daemon is the
+**shared** DID host: every `vta_only` session's DID log is uploaded to it by
+this API under the same keypair, and without the entry those sessions provision
+and then silently fail to publish.
+
+The daemon's own finalizer seeds an entry for the provisioning VTA (§4a), never
+for this one — it derives that DID from the armor bundle and knows nothing about
+the farm's keypair.
+
+It has to be offline, in the same no-pod window as `step_dids_invite` and
+`step_dids_load_did`: the control API authenticates callers *from* the ACL, so
+enrolling over HTTP would require already being enrolled.
+
+The `list-acl` probe is not decoration — `add-acl` **fails** on an existing DID
+("ACL entry already exists — delete it first to change the role") rather than
+treating it as satisfied, so without the probe a resumed or retried run would
+fail the whole stack. This is the same sharp edge that killed the earlier
+`step_dids_grant_vta` (§4a).
+
 ### Step `step_dids_invite` — DIDS Job (`did-hosting-daemon invite`, workingDir `/work/dids`, SA `pod-operator`)
 
 Mints **3e**, the dids admin-panel enrollment URL — the value the user logs in with:

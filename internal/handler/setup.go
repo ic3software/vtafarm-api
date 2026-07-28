@@ -332,31 +332,15 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		Portable:             portable,
 		PreRotationCount:     preRotationCount,
 	}
-	const maxAttempts = 5
-	var createErr error
-	for range maxAttempts {
-		session.UniqueId = generateUniqueId()
-		createErr = h.db.Create(&session).Error
-		if createErr == nil {
-			break
-		}
-		if !strings.Contains(createErr.Error(), "setup_sessions_unique_id_unique") {
-			break
-		}
-	}
-	if createErr != nil {
+	// A single insert: there is no random id left to collide, so the retry loop
+	// that used to wrap this went with unique_id.
+	if createErr := h.db.Create(&session).Error; createErr != nil {
 		_ = h.cf.DeleteRecord(c.Request.Context(), recordID)
 		// The pre-insert count check races with concurrent creates; the DB
 		// unique index is the real gate.
-		if isUniqueViolation(createErr, "setup_sessions_vta_name_unique") {
+		if isUniqueViolation(createErr, "setup_sessions_vta_name_unique") ||
+			isUniqueViolation(createErr, "setup_sessions_did_path_unique") {
 			c.JSON(http.StatusConflict, gin.H{"error": "vta_name already in use"})
-			return
-		}
-		// Reachable where the hostname index is not: the platform stack's own
-		// DIDs sit on the same shared daemon, and its row is excluded from that
-		// index because its hostnames are the fixed labels.
-		if isUniqueViolation(createErr, "setup_sessions_did_path_unique") {
-			c.JSON(http.StatusConflict, gin.H{"error": "vta_name already in use on the shared DID host"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist session"})
@@ -368,7 +352,7 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"id":        session.UniqueId,
+		"id":        session.VtaName,
 		"url":       "https://" + fqdn,
 		"status":    session.Status,
 		"vta_image": req.VtaImage,
@@ -629,7 +613,7 @@ func (h *SetupHandler) List(c *gin.Context) {
 	result := make([]item, len(sessions))
 	for i, s := range sessions {
 		it := item{
-			ID:          s.UniqueId,
+			ID:          s.VtaName,
 			Status:      s.Status,
 			Mode:        s.Mode,
 			DomainType:  s.DomainType,
@@ -664,7 +648,7 @@ func (h *SetupHandler) Get(c *gin.Context) {
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 
 	var session model.SetupSession
-	if err := h.db.Where("unique_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
+	if err := h.db.Where("vta_name = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
@@ -675,7 +659,7 @@ func (h *SetupHandler) Get(c *gin.Context) {
 	}
 
 	resp := gin.H{
-		"id":          session.UniqueId,
+		"id":          session.VtaName,
 		"status":      session.Status,
 		"mode":        session.Mode,
 		"domain_type": session.DomainType,
@@ -698,7 +682,7 @@ func (h *SetupHandler) Delete(c *gin.Context) {
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 
 	var session model.SetupSession
-	if err := h.db.Where("unique_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
+	if err := h.db.Where("vta_name = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
@@ -795,7 +779,7 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 
 	var session model.SetupSession
-	if err := h.db.Where("unique_id = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
+	if err := h.db.Where("vta_name = ? AND user_id = ?", publicID, userID).First(&session).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		return
 	}
@@ -931,7 +915,7 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 
 // POST /api/v1/setup/:id/admin
 // userSession loads the session named by :id, scoped to the calling user, and
-// adminSession loads it by unique_id alone.
+// adminSession loads it by vta_name alone.
 //
 // Every session action exists in both cookie families: the user-facing route
 // owns the caller's session, and the admin twin reaches any of them. The twins
@@ -943,11 +927,11 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 // Both write the 404 themselves and return nil when they do.
 func (h *SetupHandler) userSession(c *gin.Context) *model.SetupSession {
 	userID := c.MustGet(middleware.ContextUserID).(uint)
-	return h.findSession(c, h.db.Where("unique_id = ? AND user_id = ?", c.Param("id"), userID))
+	return h.findSession(c, h.db.Where("vta_name = ? AND user_id = ?", c.Param("id"), userID))
 }
 
 func (h *SetupHandler) adminSession(c *gin.Context) *model.SetupSession {
-	return h.findSession(c, h.db.Where("unique_id = ?", c.Param("id")))
+	return h.findSession(c, h.db.Where("vta_name = ?", c.Param("id")))
 }
 
 func (h *SetupHandler) findSession(c *gin.Context, q *gorm.DB) *model.SetupSession {

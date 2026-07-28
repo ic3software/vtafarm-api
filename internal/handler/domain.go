@@ -86,7 +86,7 @@ type domainResponse struct {
 	Kind       string     `json:"kind"`
 	Verified   bool       `json:"verified"`
 	VerifiedAt *time.Time `json:"verified_at"`
-	// InUseBy is the unique_id of the session running on this domain, if any.
+	// InUseBy is the name of the session running on this domain, if any.
 	// A domain backs at most one — its four labels are fixed.
 	InUseBy string `json:"in_use_by,omitempty"`
 	// Target is what all four CNAMEs point at.
@@ -134,13 +134,13 @@ func (h *DomainHandler) specs(domain string) []recordSpec {
 	return out
 }
 
-// inUseBy returns the unique_id of the session on this domain, or "".
+// inUseBy returns the name of the session on this domain, or "".
 func (h *DomainHandler) inUseBy(domainID uint) string {
 	var s model.SetupSession
 	if err := h.db.Where("domain_id = ?", domainID).First(&s).Error; err != nil {
 		return ""
 	}
-	return s.UniqueId
+	return s.VtaName
 }
 
 // respond builds the payload without touching DNS.

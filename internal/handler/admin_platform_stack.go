@@ -250,19 +250,9 @@ func (h *SetupHandler) CreatePlatformStack(c *gin.Context) {
 		PreRotationCount:     preRotationCount,
 	}
 
-	const maxAttempts = 5
-	var createErr error
-	for range maxAttempts {
-		session.UniqueId = generateUniqueId()
-		createErr = h.db.Create(&session).Error
-		if createErr == nil {
-			break
-		}
-		if !strings.Contains(createErr.Error(), "setup_sessions_unique_id_unique") {
-			break
-		}
-	}
-	if createErr != nil {
+	// A single insert: there is no random id left to collide, so the retry loop
+	// that used to wrap this went with unique_id.
+	if createErr := h.db.Create(&session).Error; createErr != nil {
 		rollback()
 		// Races with a concurrent create of the same stack; the partial unique
 		// index on domain_id is the real gate.
@@ -276,12 +266,12 @@ func (h *SetupHandler) CreatePlatformStack(c *gin.Context) {
 	}
 
 	log.Printf("[platform] created stack: session %d (%s), label %q, owner user %d",
-		session.ID, session.UniqueId, label, owner.ID)
+		session.ID, session.VtaName, label, owner.ID)
 
 	h.orch.Start(session.ID)
 
 	c.JSON(http.StatusCreated, gin.H{
-		"id":     session.UniqueId,
+		"id":     session.VtaName,
 		"status": session.Status,
 		"label":  label,
 		"domain": h.clusterDomain,
@@ -331,7 +321,7 @@ func (h *SetupHandler) GetPlatformStack(c *gin.Context) {
 
 	resp := gin.H{
 		"exists": true,
-		"id":     session.UniqueId,
+		"id":     session.VtaName,
 		"status": session.Status,
 		"label":  session.VtaName,
 		"domain": domain.Domain,
@@ -363,15 +353,16 @@ func (h *SetupHandler) GetPlatformStack(c *gin.Context) {
 			"did_hosting_server_url":  session.DidsURL(),
 			"did_hosting_control_url": session.DidsURL(),
 		},
-		// Still a manual step, and the only one left: vtafarm-api authenticates
-		// to this daemon with its own keypair (DID_HOSTING_DID /
-		// DID_HOSTING_PRIVATE_KEY), which has to be enrolled in the daemon's ACL
-		// with role=admin. A rebuilt stack is a fresh daemon with an empty ACL,
-		// so the same keypair must be enrolled again — see
-		// docs/vta-setup-design.md §"DID hosting credentials".
-		"acl_enrollment_required": gin.H{
+		// vtafarm-api authenticates to this daemon with its own keypair
+		// (DID_HOSTING_DID / DID_HOSTING_PRIVATE_KEY) to upload every vta_only
+		// session's DID log, so that DID has to hold an admin ACL entry here.
+		// step_dids_grant_farm enrolls it offline while provisioning, so it is
+		// reported rather than asked for — including the one case that still
+		// needs a human: no keypair configured when the stack was built.
+		"farm_acl": gin.H{
 			"server_did": session.DIDHostingDid,
-			"enroll":     "add DID_HOSTING_DID to this daemon's ACL with role=admin",
+			"client_did": h.didHosting.ClientDid(),
+			"granted":    h.didHosting.ClientDid() != "" && session.Status == "running",
 		},
 		"created_at": session.CreatedAt,
 		"updated_at": session.UpdatedAt,
