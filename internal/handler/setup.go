@@ -180,13 +180,13 @@ type createSetupRequest struct {
 	DidsImage     string `json:"dids_image"`
 	VtcImage      string `json:"vtc_image"`
 	VtcName       string `json:"vtc_name"`
-	// Connection points a vta_only session at a full_stack in this farm other
+	// ShareCode points a vta_only session at a full_stack in this farm other
 	// than the platform one. Omitted → the platform stack, unchanged.
 	//
-	// An object rather than the pasted text: the frontend owns "the user pasted
-	// something" and this owns "is that stack usable", which is the split that
-	// lets the create form confirm a bundle before submitting it.
-	Connection *connectionBundle `json:"connection"`
+	// One code and nothing else: it is globally unique, so it identifies its
+	// stack on its own, and every value the session is built from comes off that
+	// row. There is deliberately nothing here naming a host.
+	ShareCode string `json:"share_code"`
 }
 
 // POST /api/v1/setup
@@ -271,12 +271,12 @@ func (h *SetupHandler) Create(c *gin.Context) {
 
 	if req.Mode == model.ModeFullStack {
 		// A full_stack provisions its own mediator and DID host, so there is
-		// nothing for a connection bundle to point at. Refused rather than
-		// ignored: silently dropping it would let someone believe their new
-		// stack was wired to somebody else's.
-		if req.Connection != nil {
+		// nothing for a share code to point at. Refused rather than ignored:
+		// silently dropping it would let someone believe their new stack was
+		// wired to somebody else's.
+		if req.ShareCode != "" {
 			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "a full-stack session runs its own mediator and DID host — connection applies only to a VTA-only agent"})
+				"error": "a full-stack session runs its own mediator and DID host — share_code applies only to a VTA-only agent"})
 			return
 		}
 		if !user.BetaAccess {
@@ -300,12 +300,12 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	// Re-run in full even when the frontend already called
 	// POST /setup/connection/validate: a stack can stop running, rotate its code
 	// or fill up in between. Validate is a courtesy; this is the gate.
-	infra, provider, reason, detail := h.resolveProvider(req.Connection)
+	infra, provider, reason, detail := h.resolveProvider(req.ShareCode)
 	if reason != "" {
-		// A refused bundle is the caller's problem and says which; a missing or
+		// A refused code is the caller's problem and says which; a missing or
 		// unready platform stack is the farm's, and has always been a 503.
 		status := http.StatusServiceUnavailable
-		if req.Connection != nil {
+		if req.ShareCode != "" {
 			status = connectionRefusalStatus(reason)
 		}
 		c.JSON(status, gin.H{"error": detail, "reason": reason})
@@ -368,18 +368,18 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		// provider never recorded one, which keeps the previous behaviour of
 		// accepting whatever the daemon claims.
 		DIDHostingDid: infra.DaemonDid,
-		// Default; overridden just below when the caller named a stack. Keyed on
-		// the bundle rather than on whether resolveProvider returned a row,
-		// because it returns one on the platform path too — and a platform
-		// session must keep provider_session_id NULL, or model.IsOrphaned would
-		// eventually read it as a provider that had been deleted.
+		// Default; overridden just below when the caller supplied a code. Keyed
+		// on that rather than on whether resolveProvider returned a row, because
+		// it returns one on the platform path too — and a platform session must
+		// keep provider_session_id NULL, or model.IsOrphaned would eventually
+		// read it as a provider that had been deleted.
 		ConnectionSource: model.ConnectionPlatform,
 		VtaImage:         req.VtaImage,
 		AdminDid:         req.AdminDid,
 		Portable:         portable,
 		PreRotationCount: preRotationCount,
 	}
-	if req.Connection != nil {
+	if req.ShareCode != "" {
 		session.ConnectionSource = model.ConnectionInFarm
 		session.ProviderSessionID = &provider.ID
 	}
@@ -522,9 +522,9 @@ type sharedInfra struct {
 // the connection has to be recorded against a row, not a URL.
 //
 // full_stack is unaffected: it provisions its own mediator and DID host.
-func (h *SetupHandler) resolveProvider(ref *connectionBundle) (v sharedInfra, provider *model.SetupSession, reason, detail string) {
-	if ref != nil {
-		return h.resolveBundleProvider(ref)
+func (h *SetupHandler) resolveProvider(shareCode string) (v sharedInfra, provider *model.SetupSession, reason, detail string) {
+	if shareCode != "" {
+		return h.resolveShareCode(shareCode)
 	}
 
 	const missing = "VTA-only agents need the platform stack — the shared mediator and DID hosting they connect to. " +
@@ -680,7 +680,7 @@ func (h *SetupHandler) Availability(c *gin.Context) {
 	// needs no platform stack, so that option survives every reason below —
 	// cluster capacity, decided above, is the only thing that can close it.
 	vtaOnly.CustomTargetAllowed = vtaOnly.Available || vtaOnly.Reason != reasonAtCapacity
-	if _, _, reason, detail := h.resolveProvider(nil); reason != "" && reason != reasonProviderUnknown {
+	if _, _, reason, detail := h.resolveProvider(""); reason != "" && reason != reasonProviderUnknown {
 		vtaOnly.Available = false
 		vtaOnly.Reason, vtaOnly.Detail = reason, detail
 	}

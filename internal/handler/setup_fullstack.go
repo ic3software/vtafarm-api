@@ -256,17 +256,17 @@ func (h *SetupHandler) getFullStack(c *gin.Context, session *model.SetupSession)
 		"vtc_image":      session.VtcImage,
 		"created_at":     session.CreatedAt,
 		"updated_at":     session.UpdatedAt,
-		// Whether this stack is currently shared, and by what. The bundle is
-		// absent — not merely empty — when it is not shareable, so the UI cannot
-		// offer one that would be refused the moment somebody pasted it.
+		// Whether this stack is currently shared. The code is absent — not merely
+		// empty — when it is not shareable, so the UI cannot offer one that would
+		// be refused the moment somebody used it.
 		"shared": session.IsShared(),
 		// Other people's agents connected to this stack. Deleting it is allowed
 		// and breaks every one of them, so this list is what lets the delete
 		// confirmation name them.
 		"connections": h.listConnections(session.ID),
 	}
-	if bundle := buildConnectionBundle(session, h.clusterDomain); bundle != nil {
-		resp["connection"] = bundle
+	if code := displayShareCode(session); code != "" {
+		resp["share_code"] = code
 	}
 
 	resp["dids_enroll_used"] = session.DidsEnrollUsed

@@ -21,41 +21,31 @@ func sharedStack() *model.SetupSession {
 	}
 }
 
-func TestBuildConnectionBundle(t *testing.T) {
-	got := buildConnectionBundle(sharedStack(), "firstperson.dev")
-	if got == nil {
-		t.Fatal("a shared, running stack must produce a bundle")
-	}
-
-	want := connectionBundle{
-		Version:             connectionBundleVersion,
-		Kind:                connectionBundleKind,
-		Farm:                "firstperson.dev",
-		Stack:               "alice",
-		Code:                "K7M2-9XQP-4B8W-3NR",
-		MediatorDid:         "did:webvh:mediator-alice",
-		DidHostingServerURL: "https://dids-alice.firstperson.dev",
-		DidHostingDid:       "did:webvh:dids-alice",
-	}
-	if *got != want {
-		t.Errorf("bundle = %+v\nwant     %+v", *got, want)
+func TestDisplayShareCode(t *testing.T) {
+	if got, want := displayShareCode(sharedStack()), "K7M2-9XQP-4B8W-3NR"; got != want {
+		t.Errorf("displayShareCode() = %q, want %q", got, want)
 	}
 }
 
 // The code is stored normalised and displayed grouped. A recipient must be able
-// to paste the displayed form straight back and have it match.
-func TestBundleCodeRoundTripsToStored(t *testing.T) {
+// to paste the displayed form straight back and have it match — that round trip
+// is the entire handover now that nothing else travels with it.
+func TestShareCodeRoundTripsToStored(t *testing.T) {
 	s := sharedStack()
-	bundle := buildConnectionBundle(s, "firstperson.dev")
+	shown := displayShareCode(s)
 
-	if !setup.ShareCodeMatches(bundle.Code, *s.ShareCode) {
-		t.Errorf("displayed code %q does not match stored %q", bundle.Code, *s.ShareCode)
+	if !setup.ShareCodeMatches(shown, *s.ShareCode) {
+		t.Errorf("displayed code %q does not match stored %q", shown, *s.ShareCode)
+	}
+	if setup.NormalizeShareCode(shown) != *s.ShareCode {
+		t.Errorf("normalising the displayed form gives %q, want the stored %q",
+			setup.NormalizeShareCode(shown), *s.ShareCode)
 	}
 }
 
-// Absent, not empty: a bundle that would be refused on arrival must not be
-// offered at all, or the UI shows a green "copy this" for something broken.
-func TestBuildConnectionBundleRefusesUnshareableStacks(t *testing.T) {
+// Absent, not empty: a code that would be refused on use must not be offered at
+// all, or the UI shows a green "copy this" for something broken.
+func TestDisplayShareCodeRefusesUnshareableStacks(t *testing.T) {
 	empty := ""
 	tests := []struct {
 		name   string
@@ -73,8 +63,8 @@ func TestBuildConnectionBundleRefusesUnshareableStacks(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := sharedStack()
 			tc.mutate(s)
-			if got := buildConnectionBundle(s, "firstperson.dev"); got != nil {
-				t.Errorf("expected no bundle, got %+v", *got)
+			if got := displayShareCode(s); got != "" {
+				t.Errorf("expected no code, got %q", got)
 			}
 		})
 	}

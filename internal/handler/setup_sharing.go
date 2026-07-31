@@ -11,57 +11,29 @@ import (
 )
 
 // The provider half of stack connections: a full_stack owner mints a share code
-// and hands out the bundle a vta_only session pastes on create. Design:
-// docs/custom-stack-connection-design.md §4.
-
-// connectionBundleKind and connectionBundleVersion tag the bundle so that
-// pasting the wrong thing — a DID, a URL, a JWT, a bundle from a future
-// version — fails with a sentence rather than five steps later with a 500.
-const (
-	connectionBundleKind    = "vtafarm.stack-connection"
-	connectionBundleVersion = 1
-)
-
-// connectionBundle is what a provider hands out and a consumer pastes.
+// and hands it to somebody, who pastes that one code when creating a vta_only
+// agent. Design: docs/custom-stack-connection-design.md §4.
 //
-// Only Stack and Code are load-bearing: the connection is resolved by looking
-// Stack up in this farm's own database and checking Code against it, and the
-// three values a session is actually built from come from that row. The rest is
-// shown to the recipient so they can see whose stack they are joining before
-// they commit, and compared on arrival so a bundle displaying values the stack
-// no longer has is refused rather than silently connecting to different ones.
+// The code is the whole handover. An earlier cut passed a JSON bundle carrying
+// the stack name, the farm and the three DID/URL values a session is built
+// from — but a globally unique code already identifies its stack, those three
+// values were only ever compared and never used (the row is authoritative), and
+// the confirmation the recipient sees has always been rendered from this
+// server's own answer rather than from the pasted text. Everything except the
+// code was doing no work, and one code is what a person can read down a phone.
 //
-// That split is the reason this feature has no SSRF surface: nothing here ever
-// becomes a URL this server connects to. See design §3.
-type connectionBundle struct {
-	Version int    `json:"v"`
-	Kind    string `json:"kind"`
-	Farm    string `json:"farm"`
-	Stack   string `json:"stack"`
-	Code    string `json:"code"`
+// Dropping it also removes a hazard rather than only weight: with nothing
+// pasted worth rendering, a UI *cannot* present the sender's claims as facts
+// about a stack.
 
-	MediatorDid         string `json:"mediator_did"`
-	DidHostingServerURL string `json:"did_hosting_server_url"`
-	DidHostingDid       string `json:"did_hosting_did"`
-}
-
-// buildConnectionBundle renders a shared, ready stack as a bundle. Returns nil
-// when the stack is not currently shareable, so a caller can drop the field
-// rather than offer a bundle that would be refused on arrival.
-func buildConnectionBundle(s *model.SetupSession, farm string) *connectionBundle {
+// displayShareCode is the grouped form handed to a person. Returns "" when the
+// stack is not currently shareable, so a caller can drop the field rather than
+// offer a code that would be refused the moment it was used.
+func displayShareCode(s *model.SetupSession) string {
 	if !s.IsShared() {
-		return nil
+		return ""
 	}
-	return &connectionBundle{
-		Version:             connectionBundleVersion,
-		Kind:                connectionBundleKind,
-		Farm:                farm,
-		Stack:               s.VtaName,
-		Code:                setup.GroupShareCode(*s.ShareCode),
-		MediatorDid:         s.MediatorDid,
-		DidHostingServerURL: s.DidsURL(),
-		DidHostingDid:       s.DIDHostingDid,
-	}
+	return setup.GroupShareCode(*s.ShareCode)
 }
 
 // connectionSummary is one entry in a provider's dependent list: another user's
@@ -98,54 +70,50 @@ func (h *SetupHandler) listConnections(providerID uint) []connectionSummary {
 	return out
 }
 
-// resolveBundleProvider turns a pasted bundle into the stack it names, in two
-// tiers.
+// resolveShareCode turns a share code into the stack it opens, in two tiers.
 //
-// Everything decided before the share code is verified must answer identically,
-// or this becomes a directory of which stacks exist and which are shared —
-// exactly what the share code exists to prevent. Once the caller has proved they
-// hold a current code, specificity costs nothing and every remaining refusal
-// says precisely what is wrong.
+// Everything decided before the code is verified must answer identically, or
+// this becomes a directory of which stacks exist and which are shared — exactly
+// what the code exists to prevent. Once the caller has proved they hold a
+// current one, specificity costs nothing and every remaining refusal says
+// precisely what is wrong.
 //
-// No check here reaches the network. The stack is found in this farm's own
-// database and the values come off that row, so a pasted URL never becomes a
-// socket — see design §3.
-func (h *SetupHandler) resolveBundleProvider(ref *connectionBundle) (v sharedInfra, provider *model.SetupSession, reason, detail string) {
-	// ── Tier 1: does this bundle open anything ──────────────────────────────
-	if ref.Kind != connectionBundleKind || ref.Version != connectionBundleVersion {
-		return v, nil, reasonBadBundle,
-			"That doesn't look like a connection bundle. Ask for the text from the stack's Share panel."
+// No check here reaches the network, and none can: a code names no host. Every
+// value a session is built from comes off the row this finds, so there is
+// nothing a caller could type that becomes a socket — see design §3.
+func (h *SetupHandler) resolveShareCode(code string) (v sharedInfra, provider *model.SetupSession, reason, detail string) {
+	// ── Tier 1: does this code open anything ────────────────────────────────
+	//
+	// Shape first, so a mistyped code is diagnosed as itself. The check
+	// character makes that a local, certain answer rather than a guess, and
+	// keeps a single hand-copied glyph out of the deliberately vague message
+	// below — which is the one place a user has nothing to act on.
+	if strings.TrimSpace(code) == "" {
+		return v, nil, reasonBadBundle, "Enter the share code you were given."
 	}
-	if ref.Stack == "" || ref.Code == "" {
+	if err := setup.ValidateShareCode(code); err != nil {
 		return v, nil, reasonBadBundle,
-			"That connection bundle is incomplete. Ask for the text from the stack's Share panel."
-	}
-	// Checked before the farm comparison so a mistyped code is diagnosed as
-	// itself rather than as whatever the next check happens to be.
-	if err := setup.ValidateShareCode(ref.Code); err != nil {
-		return v, nil, reasonBadBundle,
-			"The share code looks mistyped — check it against what you were sent."
-	}
-	if !strings.EqualFold(ref.Farm, h.clusterDomain) {
-		return v, nil, reasonWrongFarm,
-			"This bundle is for a different VTA Farm. You can only connect to stacks running here."
+			"That doesn't look like a share code — check it against what you were sent."
 	}
 
-	const invalid = "This bundle doesn't open anything here. It may have been deleted, or its owner may have " +
-		"turned sharing off or issued a new code — ask them for a current one."
+	const invalid = "That code doesn't open anything here. The stack may have been deleted, or its owner may " +
+		"have turned sharing off or issued a new code — ask them for a current one."
 
+	// One lookup, keyed on the code alone: it is globally unique
+	// (setup_sessions_share_code_unique), so it identifies its stack without a
+	// name alongside it.
+	//
+	// This is also what makes tier 1 answer identically for every way a code can
+	// fail — no such stack, never shared, sharing turned off, rotated, or simply
+	// wrong. There is one query and one answer, so the endpoint cannot be used
+	// to discover which stacks exist or which are shared. A database error lands
+	// here too, for the same reason: its own reason would leak that a code
+	// matched whenever the read happened to fail.
 	var session model.SetupSession
 	err := h.db.
-		Where("vta_name = ? AND mode = ?", ref.Stack, model.ModeFullStack).
+		Where("share_code = ? AND mode = ?", setup.NormalizeShareCode(code), model.ModeFullStack).
 		First(&session).Error
 	if err != nil {
-		// Includes ErrRecordNotFound. A database failure lands here too and is
-		// reported as "invalid" rather than as its own reason: this route is
-		// reachable by anyone with an account, so the alternative leaks that the
-		// name exists whenever the read happens to fail.
-		return v, nil, reasonInvalidBundle, invalid
-	}
-	if session.ShareCode == nil || !setup.ShareCodeMatches(ref.Code, *session.ShareCode) {
 		return v, nil, reasonInvalidBundle, invalid
 	}
 
@@ -158,16 +126,10 @@ func (h *SetupHandler) resolveBundleProvider(ref *connectionBundle) (v sharedInf
 			"That stack isn't ready right now. Ask its owner to check it, then try again."
 	}
 
-	// The bundle showed the recipient three values. If the stack no longer has
-	// them, what they agreed to join is not what they would be joining — most
-	// often because the stack was rebuilt, which also means a different daemon
-	// with an empty ACL.
-	if ref.MediatorDid != session.MediatorDid ||
-		ref.DidHostingServerURL != session.DidsURL() ||
-		ref.DidHostingDid != session.DIDHostingDid {
-		return sharedInfra{}, nil, reasonStackChanged,
-			"This bundle is out of date — the stack has changed since it was copied. Ask for a fresh one."
-	}
+	// No staleness comparison is needed. Deleting and recreating a stack mints a
+	// fresh code, so a code from before a rebuild simply fails to resolve above
+	// rather than reaching a daemon that no longer exists. The three values the
+	// old bundle carried were belt to this braces.
 
 	if h.maxStackConnections > 0 {
 		var connected int64
@@ -184,28 +146,28 @@ func (h *SetupHandler) resolveBundleProvider(ref *connectionBundle) (v sharedInf
 // POST /api/v1/setup/connection/validate
 //
 // Runs the same checks as create and creates nothing, so the create form can
-// confirm a bundle at paste time.
+// tell the user which stack a code opens before they fill the rest of it in.
 //
-// It exists because of a flaw in the obvious alternative. The bundle is JSON, so
-// a frontend can parse it and render "connecting to alice, mediator did:webvh:…"
-// the moment it is pasted — but every one of those values came out of the pasted
-// text. A card built that way shows a confident green tick for a bundle whose
-// code is pure garbage, and the user finds out only after naming their agent,
-// picking an image and pressing Create. This makes the card render values this
-// server read from its own database, which is the only version of it worth
-// showing.
+// This is the only way that confirmation can exist. A share code carries no
+// information — the stack's name, its mediator and its DID host are all facts
+// this server holds and the sender does not transmit — so a UI has nothing to
+// render from except this response. That is a property worth keeping: it makes
+// presenting the sender's claims as facts about a stack structurally
+// impossible, rather than merely something the client is asked not to do.
 //
 // Not authoritative: POST /setup re-runs everything. A stack can stop running,
 // rotate its code or fill up in between, so this is a courtesy and create is the
 // gate.
 func (h *SetupHandler) ValidateConnection(c *gin.Context) {
-	var ref connectionBundle
-	if err := c.ShouldBindJSON(&ref); err != nil {
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "reason": reasonBadBundle})
 		return
 	}
 
-	infra, provider, reason, detail := h.resolveBundleProvider(&ref)
+	infra, provider, reason, detail := h.resolveShareCode(req.Code)
 	if reason != "" {
 		c.JSON(connectionRefusalStatus(reason), gin.H{"error": detail, "reason": reason})
 		return
@@ -322,7 +284,7 @@ func (h *SetupHandler) setSharing(c *gin.Context, session *model.SetupSession) {
 	if req.Action == "enable" && session.ShareCode != nil && *session.ShareCode != "" {
 		c.JSON(http.StatusOK, gin.H{
 			"shared":      true,
-			"connection":  buildConnectionBundle(session, h.clusterDomain),
+			"share_code":  displayShareCode(session),
 			"connections": h.listConnections(session.ID),
 		})
 		return
@@ -342,7 +304,7 @@ func (h *SetupHandler) setSharing(c *gin.Context, session *model.SetupSession) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"shared":      true,
-		"connection":  buildConnectionBundle(session, h.clusterDomain),
+		"share_code":  displayShareCode(session),
 		"connections": h.listConnections(session.ID),
 	})
 }

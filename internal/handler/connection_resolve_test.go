@@ -7,74 +7,34 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/setup"
 )
 
-// validBundle is a well-formed bundle for the farm the handler below serves.
-// Its share code is real, so the check-symbol test passes and the tier-1
-// refusals under test are the ones actually being exercised.
-func validBundle(t *testing.T) *connectionBundle {
-	t.Helper()
-	code, err := setup.NewShareCode()
-	if err != nil {
-		t.Fatalf("NewShareCode: %v", err)
-	}
-	return &connectionBundle{
-		Version:             connectionBundleVersion,
-		Kind:                connectionBundleKind,
-		Farm:                "firstperson.dev",
-		Stack:               "alice",
-		Code:                code,
-		MediatorDid:         "did:webvh:mediator-alice",
-		DidHostingServerURL: "https://dids-alice.firstperson.dev",
-		DidHostingDid:       "did:webvh:dids-alice",
-	}
-}
-
 // Every case here is refused before the database is touched, which is why a
 // handler with a nil db is a valid fixture — and is itself worth asserting:
 // malformed input must not reach a query.
-func TestResolveBundleProviderRejectsBeforeAnyQuery(t *testing.T) {
+func TestResolveShareCodeRejectsBeforeAnyQuery(t *testing.T) {
 	h := &SetupHandler{clusterDomain: "firstperson.dev"}
 
-	tests := []struct {
-		name       string
-		mutate     func(*connectionBundle)
-		wantReason string
-	}{{
-		name:       "not a connection bundle",
-		mutate:     func(b *connectionBundle) { b.Kind = "something.else" },
-		wantReason: reasonBadBundle,
-	}, {
-		name:       "from a future version",
-		mutate:     func(b *connectionBundle) { b.Version = 99 },
-		wantReason: reasonBadBundle,
-	}, {
-		name:       "no stack named",
-		mutate:     func(b *connectionBundle) { b.Stack = "" },
-		wantReason: reasonBadBundle,
-	}, {
-		name:       "no code",
-		mutate:     func(b *connectionBundle) { b.Code = "" },
-		wantReason: reasonBadBundle,
-	}, {
-		// The check symbol earns its keep here: a single mistyped character is
-		// diagnosed as a typo instead of falling through to the deliberately
-		// vague invalid_bundle.
-		name:       "mistyped code",
-		mutate:     func(b *connectionBundle) { b.Code = mistype(b.Code) },
-		wantReason: reasonBadBundle,
-	}, {
-		name:       "another farm's bundle",
-		mutate:     func(b *connectionBundle) { b.Farm = "someone-else.example" },
-		wantReason: reasonWrongFarm,
-	}}
+	good, err := setup.NewShareCode()
+	if err != nil {
+		t.Fatalf("NewShareCode: %v", err)
+	}
+
+	tests := []struct{ name, code string }{
+		{"empty", ""},
+		{"whitespace only", "   "},
+		{"not a code at all", "did:key:z6MkSomething"},
+		{"a pasted JSON bundle", `{"v":1,"kind":"vtafarm.stack-connection"}`},
+		{"too short", setup.NormalizeShareCode(good)[:10]},
+		// The check character earns its keep here: one wrong glyph is diagnosed
+		// as a typo instead of falling through to the deliberately vague
+		// invalid_bundle, which is the one message a user cannot act on.
+		{"one character mistyped", mistype(good)},
+	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			b := validBundle(t)
-			tc.mutate(b)
-
-			infra, provider, reason, detail := h.resolveBundleProvider(b)
-			if reason != tc.wantReason {
-				t.Fatalf("reason = %q, want %q", reason, tc.wantReason)
+			infra, provider, reason, detail := h.resolveShareCode(tc.code)
+			if reason != reasonBadBundle {
+				t.Fatalf("reason = %q, want %q", reason, reasonBadBundle)
 			}
 			if detail == "" {
 				t.Error("a refusal must carry a sentence for the user")
@@ -86,25 +46,34 @@ func TestResolveBundleProviderRejectsBeforeAnyQuery(t *testing.T) {
 	}
 }
 
-// The farm name is compared case-insensitively — hostnames are, and a bundle
-// that travelled through a mail client that title-cased it is still ours.
-func TestResolveBundleProviderFarmMatchIsCaseInsensitive(t *testing.T) {
-	h := &SetupHandler{clusterDomain: "firstperson.dev"}
-	b := validBundle(t)
-	b.Farm = "FirstPerson.DEV"
+// A well-formed code has to reach the lookup — including in every transcription
+// a person might produce, since the code is meant to survive being read aloud.
+// A nil db panics there, which is what these assert against.
+func TestResolveShareCodeReachesLookupForWellFormedCodes(t *testing.T) {
+	code, err := setup.NewShareCode()
+	if err != nil {
+		t.Fatalf("NewShareCode: %v", err)
+	}
 
-	// Reaches the database lookup, so it must not have been refused as
-	// wrong_farm first. A nil db panics there, which is what we assert against.
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected the lookup to be reached (nil db panics); it was refused earlier instead")
-		}
-	}()
-	_, _, reason, _ := h.resolveBundleProvider(b)
-	t.Fatalf("expected to reach the database, got reason %q", reason)
+	for _, variant := range []string{
+		code,
+		lower(code),
+		strip(code),
+	} {
+		t.Run(variant, func(t *testing.T) {
+			h := &SetupHandler{clusterDomain: "firstperson.dev"}
+			defer func() {
+				if r := recover(); r == nil {
+					t.Error("expected the lookup to be reached (nil db panics); refused earlier instead")
+				}
+			}()
+			_, _, reason, _ := h.resolveShareCode(variant)
+			t.Fatalf("expected to reach the database, got reason %q", reason)
+		})
+	}
 }
 
-// The five situations behind invalid_bundle must not be distinguishable, or
+// The five ways a code can fail to open a stack must not be distinguishable, or
 // this becomes a way to discover which stacks exist and which are shared. The
 // status has to be uniform too — a different code per case leaks just as much.
 func TestConnectionRefusalStatus(t *testing.T) {
@@ -116,8 +85,6 @@ func TestConnectionRefusalStatus(t *testing.T) {
 		{reasonInvalidBundle, http.StatusForbidden},
 		{reasonStackNotRunning, http.StatusConflict},
 		{reasonStackAtConnLimit, http.StatusConflict},
-		{reasonWrongFarm, http.StatusUnprocessableEntity},
-		{reasonStackChanged, http.StatusUnprocessableEntity},
 	}
 	for _, tc := range tests {
 		if got := connectionRefusalStatus(tc.reason); got != tc.want {
@@ -127,7 +94,7 @@ func TestConnectionRefusalStatus(t *testing.T) {
 }
 
 // mistype changes one data character of a share code to a different valid
-// symbol, leaving the check symbol stale.
+// symbol, leaving the check character stale.
 func mistype(code string) string {
 	n := []byte(setup.NormalizeShareCode(code))
 	if n[0] == 'A' {
@@ -136,4 +103,24 @@ func mistype(code string) string {
 		n[0] = 'A'
 	}
 	return string(n)
+}
+
+func lower(s string) string {
+	out := []rune(s)
+	for i, r := range out {
+		if r >= 'A' && r <= 'Z' {
+			out[i] = r + 32
+		}
+	}
+	return string(out)
+}
+
+func strip(s string) string {
+	out := ""
+	for _, r := range s {
+		if r != '-' {
+			out += string(r)
+		}
+	}
+	return out
 }

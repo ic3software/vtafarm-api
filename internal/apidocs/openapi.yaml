@@ -326,24 +326,27 @@ components:
     CreateSetupRequest:
       type: object
       properties:
-        connection:
-          allOf:
-            - $ref: "#/components/schemas/ConnectionBundle"
+        share_code:
+          type: string
           description: |
             `vta_only` only. Points the agent at a `full_stack` in this farm
             other than the platform one. **Omit for today's behaviour** — the
             platform stack, unchanged.
 
-            Sent as an object, not as the pasted text: the client owns "the user
-            pasted something", this owns "is that stack usable". Validate it
-            first with `POST /setup/connection/validate` so the user sees which
-            stack they are joining before filling in the rest of the form; this
-            route re-runs every check regardless, and returns the same `reason`
-            values.
+            One code and nothing else. It is globally unique, so it identifies
+            its stack without a name alongside it, and every value the session is
+            built from comes off that row — there is deliberately nothing here
+            naming a host.
+
+            Check it first with `POST /setup/connection/validate` so the user
+            sees which stack they are joining before filling in the rest of the
+            form; this route re-runs every check regardless, and returns the same
+            `reason` values.
 
             Refused with 400 on a `full_stack` request — that mode provisions
             its own mediator and DID host, so there is nothing to point at, and
             ignoring the field would let someone believe otherwise.
+          example: "K7M2-9XQP-4B8W-3NRT"
         mode:
           type: string
           enum: [vta_only, full_stack]
@@ -653,54 +656,6 @@ components:
           type: string
           description: full_stack only. 3c — shown once for offline backup.
 
-    ConnectionBundle:
-      type: object
-      description: |
-        What a `full_stack` owner copies and hands to somebody else out of band,
-        and what that person pastes into the VTA-only create form.
-
-        Only `stack` and `code` are load-bearing. The connection is resolved by
-        looking `stack` up in this farm's own database and checking `code`
-        against it; the values a session is actually built from come from that
-        row, never from this document. The remaining fields are shown to the
-        recipient so they can see whose stack they are joining before they
-        commit, and compared on arrival so a bundle displaying values the stack
-        no longer has is refused rather than quietly connecting to different
-        ones.
-
-        Nothing here ever becomes a URL this server connects to.
-      properties:
-        v:
-          type: integer
-          example: 1
-        kind:
-          type: string
-          example: "vtafarm.stack-connection"
-        farm:
-          type: string
-          description: The farm this bundle is for. A bundle from another deployment is refused.
-          example: "firstperson.dev"
-        stack:
-          type: string
-          description: The provider session's `vta_name` — its public identifier everywhere else in this API.
-          example: "alice"
-        code:
-          type: string
-          description: |
-            The share code, grouped for display. Crockford base32 with a check
-            symbol, so a mistyped character is caught before it is sent.
-          example: "K7M2-9XQP-4B8W-3NRT"
-        mediator_did:
-          type: string
-          example: "did:webvh:...:mediator-alice.firstperson.dev"
-        did_hosting_server_url:
-          type: string
-          example: "https://dids-alice.firstperson.dev"
-        did_hosting_did:
-          type: string
-          description: The DID the daemon at that URL reports as its own.
-          example: "did:webvh:...:dids-alice.firstperson.dev"
-
     StackConnection:
       type: object
       description: One agent connected to a stack. Name and status only — these sessions belong to other users.
@@ -714,13 +669,15 @@ components:
         shared:
           type: boolean
           description: Whether this stack currently accepts new connections.
-        connection:
-          allOf:
-            - $ref: "#/components/schemas/ConnectionBundle"
+        share_code:
+          type: string
           description: |
+            The code to hand out, grouped for display. Crockford base32 with a
+            check character, so a mistyped one is caught before it is sent.
+
             Absent — not empty — when the stack is not shareable, so the UI
-            cannot offer a bundle that would be refused the moment it was
-            pasted.
+            cannot offer a code that would be refused the moment it was used.
+          example: "K7M2-9XQP-4B8W-3NRT"
         connections:
           type: array
           items:
@@ -4744,17 +4701,16 @@ paths:
       summary: Check a connection bundle without creating anything
       description: |
         Runs the same checks `POST /setup` runs and creates nothing, so the
-        create form can confirm a pasted bundle before the user has filled the
-        rest of it in.
+        create form can tell the user which stack a code opens before they fill
+        the rest of it in.
 
-        **Why this exists.** The bundle is JSON, so a frontend can parse it and
-        render "connecting to *alice*, mediator `did:webvh:…`" the moment it is
-        pasted — but every one of those values came out of the pasted text. A
-        confirmation built that way shows a confident green tick for a bundle
-        whose code is pure garbage, and the user finds out only after naming
-        their agent, choosing an image and pressing Create. The response here
-        comes from this server's own database, which is the only version of that
-        confirmation worth showing.
+        **This is the only way that confirmation can exist.** A share code
+        carries no information — the stack's name, its mediator and its DID host
+        are all facts this server holds and the sender does not transmit — so a
+        client has nothing to render from except this response. That is a
+        property worth keeping: it makes presenting the sender's claims as facts
+        about a stack structurally impossible rather than merely something a
+        client is asked not to do.
 
         **Not authoritative.** `POST /setup` re-runs everything: a stack can stop
         running, rotate its code or reach its connection limit in between. Treat
@@ -4767,19 +4723,17 @@ paths:
 
         | reason | status | |
         | --- | --- | --- |
-        | `bad_bundle` | 400 | not a bundle, incomplete, or a mistyped share code |
-        | `wrong_farm` | 422 | a bundle for a different VTA Farm |
+        | `bad_bundle` | 400 | empty, malformed, or a mistyped code (caught by its check character) |
         | `invalid_bundle` | 403 | does not open anything here — see below |
         | `stack_not_running` | 409 | the stack isn't ready |
-        | `stack_changed` | 422 | the stack has changed since the bundle was copied |
         | `stack_at_connection_limit` | 409 | it has as many agents as it may have |
 
         `invalid_bundle` deliberately covers five situations — no such stack, a
         stack that never shared, one that turned sharing off, a rotated code,
-        and a code that is simply wrong. Distinguishing them would turn this
-        route into a way to discover which stacks exist and which are shared.
-        From the holder's side they are one fact with one next step: ask for a
-        current bundle. **Client copy must not try to narrow it.**
+        and a code that is simply wrong. There is one lookup and one answer, so
+        this route cannot be used to discover which stacks exist or which are
+        shared. From the holder's side they are one fact with one next step: ask
+        for a current code. **Client copy must not try to narrow it.**
       tags: [User]
       security:
         - CookieAuthUser: []
@@ -4788,10 +4742,15 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ConnectionBundle"
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+                  example: "K7M2-9XQP-4B8W-3NRT"
       responses:
         "200":
-          description: The stack this bundle names, read from the server's own records
+          description: The stack this code opens, read from the server's own records
           content:
             application/json:
               schema:
@@ -4808,19 +4767,16 @@ paths:
                     type: integer
                     description: Present only when a connection limit is configured.
         "400":
-          description: Not a bundle, incomplete, or a mistyped share code (`bad_bundle`)
+          description: Empty, malformed, or a mistyped code (`bad_bundle`)
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "401":
           description: Missing or invalid token
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "403":
-          description: The bundle does not open anything here (`invalid_bundle`)
+          description: The code does not open anything here (`invalid_bundle`)
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "409":
           description: Stack not ready, or at its connection limit
-          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
-        "422":
-          description: Another farm's bundle, or one that is out of date
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "429":
           description: Too many attempts
