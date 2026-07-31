@@ -358,6 +358,19 @@ CREATE INDEX setup_sessions_provider_idx
     WHERE provider_session_id IS NOT NULL;
 ```
 
+**Shipped in phase 1**, plus one backfill the table above does not show. `
+did_hosting_did` has been a `full_stack` output column (the daemon's own DID)
+and is `''` on every `vta_only` row. Its meaning widens here to "the DID of the
+daemon at `did_hosting_control_url`", true for both modes, which is what
+`Factory.For`'s audience check (§9.4) compares against. Existing `vta_only` rows
+are joined to the daemon they actually point at — matching on
+`did_hosting_server_url` rather than assuming the platform stack — so a row
+whose daemon no longer has a row keeps `''` and therefore keeps "no expectation
+on record" rather than being handed a DID that was never its daemon's.
+
+The down migration does not reverse that backfill: it restores the schema, not a
+snapshot of the data, and the value is correct independently of this feature.
+
 ### 6.1 `ON DELETE SET NULL` is the whole orphan mechanism
 
 Not a fallback — **the** mechanism. §7 blocks nothing and writes nothing at
@@ -810,8 +823,8 @@ Nothing yet.
 | Item | Status |
 | --- | --- |
 | §9.7 mediator allow-list | ✅ resolved — open to every DID, no work |
-| Migration + model (§6) | ☐ |
-| Share code: mint / rotate / clear / normalise (§4.1, §4.1.1) | ☐ |
+| Migration + model (§6) | ✅ phase 1 |
+| Share code: mint / normalise / validate / compare (§4.1, §4.1.1) | ✅ phase 1 |
 | `resolveProvider`, both tiers (§5.1) | ☐ |
 | `POST /setup/connection/validate` (§5.2) | ☐ |
 | `connection` on `POST /setup` (§5) | ☐ |

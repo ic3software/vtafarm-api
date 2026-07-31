@@ -14,6 +14,23 @@ const (
 
 // Where a session's hostnames come from. Orthogonal to Mode: a session is
 // vta_only or full_stack, and independently managed, custom or platform.
+// Where a vta_only session's mediator and DID host came from. Orthogonal to
+// both Mode and DomainType, and meaningless for full_stack, which provisions
+// its own.
+//
+// There is deliberately no "external" value: the farm's client DID is enrolled
+// as an admin in every full_stack daemon it provisioned and in nothing else, so
+// a stack this farm did not build cannot be a target. See
+// docs/custom-stack-connection-design.md §1.
+const (
+	// ConnectionPlatform is the default and the only value any session created
+	// before the connection feature can have.
+	ConnectionPlatform = "platform"
+	// ConnectionInFarm means the session named another full_stack in this farm
+	// by pasting its owner's connection bundle.
+	ConnectionInFarm = "in_farm"
+)
+
 const (
 	// DomainManaged is the default — labels derived from the user's chosen
 	// name in our own zone (vta-<name>.firstperson.dev). DomainID is NULL.
@@ -71,6 +88,30 @@ type SetupSession struct {
 	// are follows from neither Mode nor DomainType alone.
 	DidHostingServerURL  string `gorm:"column:did_hosting_server_url;not null;default:''"  json:"-"`
 	DidHostingControlURL string `gorm:"column:did_hosting_control_url;not null;default:''" json:"-"`
+
+	// ShareCode is the grant that lets somebody else's vta_only session connect
+	// to this stack. full_stack only; NULL means "not shared", which is also
+	// every session's starting state and the platform stack's permanent one —
+	// that stack is reached by the default path, which sends no bundle.
+	//
+	// Minting enables sharing, clearing disables it, and replacing invalidates
+	// every bundle already handed out. None of the three touch a session already
+	// connected: the code gates joining, never membership.
+	ShareCode *string `gorm:"column:share_code" json:"-"`
+
+	// ConnectionSource says where this session's mediator and DID host came
+	// from — ConnectionPlatform or ConnectionInFarm. ProviderSessionID is the
+	// full_stack row it connected to, and is NULL both for platform sessions
+	// (which never had one) and for a session whose provider has since been
+	// deleted.
+	//
+	// Neither is needed to run the session; the three snapshotted values above
+	// do that, and stay authoritative because a did:webvh bakes its host in at
+	// mint time. These answer what a snapshot cannot: who the dependents of a
+	// stack are, what to call the provider in the UI, and — via
+	// ON DELETE SET NULL — whether that provider still exists at all.
+	ConnectionSource  string `gorm:"column:connection_source;not null;default:platform" json:"connection_source"`
+	ProviderSessionID *uint  `gorm:"column:provider_session_id"                         json:"-"`
 	Portable             bool   `gorm:"not null;default:true"           json:"portable"`
 	PreRotationCount     int    `gorm:"not null;default:1"              json:"pre_rotation_count"`
 	// Image used for the vta-setup K8s Job
@@ -183,6 +224,32 @@ func (s *SetupSession) VtcFQDN() string {
 // used wherever handlers and the orchestrator dispatch vta_only vs full_stack.
 func (s *SetupSession) IsFullStack() bool {
 	return s.Mode == ModeFullStack
+}
+
+// IsShared reports whether this stack currently accepts new connections.
+//
+// Only a full_stack can be shared, and only one that has finished provisioning:
+// a bundle for a stack whose mediator DID or daemon DID has not landed yet
+// would name values that are about to change. That readiness rule is the same
+// one the platform stack has always been held to before a vta_only could be
+// wired to it.
+func (s *SetupSession) IsShared() bool {
+	return s.IsFullStack() &&
+		s.ShareCode != nil && *s.ShareCode != "" &&
+		s.Status == "running" &&
+		s.MediatorDid != "" &&
+		s.DIDHostingDid != ""
+}
+
+// IsOrphaned reports whether this session connected to a stack that has since
+// been deleted. Its pods keep running — nothing in a provider teardown touches
+// the consumer's namespace — but its did:webvh no longer resolves and its
+// mediator is gone, so it can neither be reached nor deliver.
+//
+// Derived from ON DELETE SET NULL rather than written by a delete handler,
+// which is why it needs no event to have fired and cannot drift.
+func (s *SetupSession) IsOrphaned() bool {
+	return s.ConnectionSource == ConnectionInFarm && s.ProviderSessionID == nil
 }
 
 // IsFixedLabel reports whether the session's hostnames are the four fixed
