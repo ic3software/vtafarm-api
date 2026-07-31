@@ -33,14 +33,14 @@ type Config struct {
 	// stops new arrivals, and this is what bounds how many arrive before they
 	// think to. See docs/custom-stack-connection-design.md §6.3.
 	MaxStackConnections int
-	DB                 DBConfig
-	K8s                K8sConfig
-	Cloudflare         CloudflareConfig
-	GHCR               GHCRConfig
-	DidHosting         DidHostingConfig
-	WebAuthn           WebAuthnConfig
-	Vault              VaultConfig
-	Monitor            MonitorConfig
+	DB                  DBConfig
+	K8s                 K8sConfig
+	Cloudflare          CloudflareConfig
+	GHCR                GHCRConfig
+	DidHosting          DidHostingConfig
+	WebAuthn            WebAuthnConfig
+	Vault               VaultConfig
+	Monitor             MonitorConfig
 }
 
 // MonitorConfig configures the token-gated /api/v1/monitor/* endpoints polled

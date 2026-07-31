@@ -243,8 +243,30 @@ func (h *SetupHandler) resolveProvider(ref *stackRef) (v sharedInfra, provider *
 This *reduces* the number of code paths that can wire a session to a mediator,
 rather than adding one. The platform branch keeps its exact current reasons
 (`platform_stack_missing` / `platform_stack_not_ready` /
-`shared_infra_unconfigured`) and its exact fail-open behaviour on a DB error, so
-nothing about the existing path changes observably.
+`shared_infra_unconfigured`).
+
+**Shipped in phase 2**, as `resolveProvider()` — the ref parameter arrives with
+the bundle branch. The refactor split the judgement out of the I/O:
+`providerInfra(*SetupSession)` decides whether a candidate row is usable and is
+pure, so it can be tested directly and so a bundle-named provider is held to
+*the same* readiness bar rather than a second copy of it that drifts.
+
+Two pre-existing bugs surfaced while doing it, both fixed there:
+
+- **The fail-open on a DB error reached `POST /setup`.** `resolveSharedInfra`
+  returned `ready=true` with a zero `sharedInfra` when the lookup itself failed,
+  on the stated reasoning that "create re-reads the row anyway". It did not
+  re-read: it used those empty values, so a transient database error could
+  create a session with no mediator DID and a `vta_did_url` of `/<name>-vta`.
+  The lookup failure is now its own reason, `provider_lookup_failed`, and the
+  two callers part company on it — `GET /setup/availability` still fails open,
+  because a blip must not blank the create screen, while `POST /setup` refuses,
+  because there the choice is between waiting and provisioning a dead agent.
+- **The `ServerURL == ""` guard was unreachable.** It tested the output of
+  `DidsURL()`, which always prefixes `https://` and so is never empty; a
+  provider row with no dids hostname produced `https://.`, passed the check, and
+  got snapshotted onto the session permanently. It now tests the two components
+  the hostname is built from.
 
 The bundle branch, in two tiers. **Everything before the code is verified must
 answer identically**, or the endpoint becomes a directory of which stacks exist
@@ -825,7 +847,8 @@ Nothing yet.
 | §9.7 mediator allow-list | ✅ resolved — open to every DID, no work |
 | Migration + model (§6) | ✅ phase 1 |
 | Share code: mint / normalise / validate / compare (§4.1, §4.1.1) | ✅ phase 1 |
-| `resolveProvider`, both tiers (§5.1) | ☐ |
+| `resolveProvider`, platform path (§5.1) | ✅ phase 2 |
+| `resolveProvider`, bundle tiers (§5.1) | ☐ |
 | `POST /setup/connection/validate` (§5.2) | ☐ |
 | `connection` on `POST /setup` (§5) | ☐ |
 | `connection` + `connections[]` in responses (§8) | ☐ |

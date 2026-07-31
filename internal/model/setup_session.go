@@ -12,8 +12,6 @@ const (
 	ModeFullStack = "full_stack"
 )
 
-// Where a session's hostnames come from. Orthogonal to Mode: a session is
-// vta_only or full_stack, and independently managed, custom or platform.
 // Where a vta_only session's mediator and DID host came from. Orthogonal to
 // both Mode and DomainType, and meaningless for full_stack, which provisions
 // its own.
@@ -31,6 +29,8 @@ const (
 	ConnectionInFarm = "in_farm"
 )
 
+// Where a session's hostnames come from. Orthogonal to Mode: a session is
+// vta_only or full_stack, and independently managed, custom or platform.
 const (
 	// DomainManaged is the default — labels derived from the user's chosen
 	// name in our own zone (vta-<name>.firstperson.dev). DomainID is NULL.
@@ -112,8 +112,8 @@ type SetupSession struct {
 	// ON DELETE SET NULL — whether that provider still exists at all.
 	ConnectionSource  string `gorm:"column:connection_source;not null;default:platform" json:"connection_source"`
 	ProviderSessionID *uint  `gorm:"column:provider_session_id"                         json:"-"`
-	Portable             bool   `gorm:"not null;default:true"           json:"portable"`
-	PreRotationCount     int    `gorm:"not null;default:1"              json:"pre_rotation_count"`
+	Portable          bool   `gorm:"not null;default:true"           json:"portable"`
+	PreRotationCount  int    `gorm:"not null;default:1"              json:"pre_rotation_count"`
 	// Image used for the vta-setup K8s Job
 	VtaImage string `gorm:"not null;default:''"             json:"vta_image,omitempty"`
 	// Output populated after vta setup runs
