@@ -744,6 +744,14 @@ func (h *SetupHandler) List(c *gin.Context) {
 		ErrorMsg    string `json:"error_msg,omitempty"`
 		CreatedAt   any    `json:"created_at"`
 		UpdatedAt   any    `json:"updated_at"`
+		// vta_only: where its mediator and DID host came from, and whether that
+		// stack still exists. On the list so an orphaned agent can be marked
+		// without opening it — its badge still reads `running`, because it is,
+		// so nothing else on the row would give it away.
+		ConnectionSource string `json:"connection_source,omitempty"`
+		ProviderGone     bool   `json:"provider_gone,omitempty"`
+		// full_stack: how many other people's agents depend on this stack.
+		ConnectionCount int64 `json:"connection_count,omitempty"`
 	}
 
 	result := make([]item, len(sessions))
@@ -770,8 +778,11 @@ func (h *SetupHandler) List(c *gin.Context) {
 				"dids":     "https://" + s.DidsFQDN(),
 				"vtc":      "https://" + s.VtcFQDN(),
 			}
+			it.ConnectionCount = h.countConnections(s.ID)
 		} else {
 			it.URL = s.PublicURL()
+			it.ConnectionSource = s.ConnectionSource
+			it.ProviderGone = s.IsOrphaned()
 		}
 		result[i] = it
 	}
