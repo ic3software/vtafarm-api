@@ -88,11 +88,20 @@ func main() {
 		log.Printf("warn: VAULT_ADDR not set — vta setup disabled")
 	}
 
+	// Resuming assumes this process is the only one reading these rows — untrue
+	// against the shared dev database. Both resumes gate together; they are the
+	// same hazard.
+	if !cfg.OrchestratorResume {
+		log.Printf("ORCHESTRATOR_RESUME=false — interrupted sessions and upgrades will not be re-attached")
+	}
+
 	var orch *setup.Orchestrator
 	if k8sClient != nil {
 		orch = setup.NewOrchestrator(db, k8sClient, vaultClient, cfg.Vault.VTAAddr, dhFactory,
 			cfg.ClusterIngressIP, cfg.ACMEClusterIssuer)
-		orch.Resume(context.Background())
+		if cfg.OrchestratorResume {
+			orch.Resume(context.Background())
+		}
 	}
 
 	// Upgrade runner processes admin image-upgrade batches in the background;
@@ -100,7 +109,9 @@ func main() {
 	var upgradeRunner *upgrade.Runner
 	if k8sClient != nil {
 		upgradeRunner = upgrade.NewRunner(db, k8sClient)
-		upgradeRunner.Resume()
+		if cfg.OrchestratorResume {
+			upgradeRunner.Resume()
+		}
 	}
 
 	// GHCR clients for listing available image tags (optional, one per component).

@@ -12,14 +12,21 @@ Go REST API backend for managing VTA setup sessions with per-user namespace isol
 | Database | PostgreSQL 18 |
 | K8s client | `k8s.io/client-go` v0.36 |
 | Hot reload | Air (`github.com/air-verse/air`) |
-| Container | Docker Compose (dev) + multi-stage Dockerfile (prod) |
+| Container | Multi-stage Dockerfile + Helm (prod) |
 
 ## Quick Start
 
+The database is **shared**: one PostgreSQL in the dev cluster that every
+developer tunnels to. There is no local database. Read
+`docs/shared-dev-database.md` once — it changes how migrations, accounts and
+`ORCHESTRATOR_RESUME` behave.
+
 ```bash
 cp .env.example .env
-make dev                  # start DB (Docker) + API with Air hot-reload; migrations run automatically
-make enroll               # create first admin + print 24h enrollment token (run in a separate terminal)
+make forward-db           # tunnel the shared dev database (own terminal, keep open)
+make forward-vault        # tunnel Vault — required for setup work (own terminal)
+make dev                  # API with Air hot-reload; migrations run automatically
+make enroll               # first admin + 24h enrollment token — ONCE for the whole team
 ```
 
 API: `http://localhost:8080`
@@ -33,9 +40,10 @@ See `.env.example` for all options. Key ones:
 | --- | --- | --- |
 | `APP_PORT` | `8080` | HTTP listen port |
 | `APP_ENV` | `development` | Set to `production` to disable `/docs` |
-| `DB_HOST` | `localhost` | Overridden to `db` in docker-compose |
+| `DB_HOST` | `localhost` | The `make forward-db` tunnel to the shared dev database |
 | `DB_NAME` | `vtafarm` | |
-| `JWT_SECRET` | `change-me-in-production` | HS256 signing secret |
+| `JWT_SECRET` | `change-me-in-production` | HS256 signing secret — identical across the team, since they share one set of accounts |
+| `ORCHESTRATOR_RESUME` | `true` | Re-attach interrupted sessions/upgrades at startup. Crash recovery, so production keeps the default; local `.env` sets `false` so that N developers' APIs don't all resume the same rows |
 | `KUBECONFIG` | `~/.kube/config` | Leave empty; auto-detected |
 | `K8S_NAMESPACE_PREFIX` | `vtafarm-user` | Per-user namespace prefix |
 | `DID_HOSTING_DID` / `DID_HOSTING_PRIVATE_KEY` | — | vtafarm-api's **own** keypair (`make gen-keypair`) for the DID-hosting control API, enrolled in a daemon's ACL with `role=admin`. Not anything a daemon issued, so one keypair serves every daemon it is enrolled in. There are deliberately no DID-hosting **URLs** here — see "Shared infrastructure comes from the platform stack" below |
@@ -55,10 +63,12 @@ See `.env.example` for all options. Key ones:
 ├── migrations/
 │   ├── 000001_init.up.sql
 │   └── 000001_init.down.sql
+├── k8s/dev-postgres/           # The shared dev database (Secret / PVC / Deployment / Service)
 ├── docs/
 │   ├── vta-setup-design.md          # API design for VTA setup automation (Mode A + shared shape)
 │   ├── full-stack-setup-design.md   # Authoritative design for the full_stack mode (all 4 components)
 │   ├── custom-domain-design.md      # Custom + platform domains, the dev- prefix (§17 = what has shipped)
+│   ├── shared-dev-database.md       # One PostgreSQL for the team + what it changes
 │   └── vault-transit-upgrade.md     # Vault / transit upgrade + restore runbook
 └── internal/
     ├── apidocs/

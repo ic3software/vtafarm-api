@@ -1,0 +1,16 @@
+# Longhorn reclaims on delete and there is no backup: deleting this PVC destroys
+# the team's dev data. `make deploy-db` only applies, so redeploys are safe.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vtafarm-dev-postgres
+  namespace: default
+  labels:
+    app: vtafarm-dev-postgres
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn
+  resources:
+    requests:
+      storage: 5Gi

@@ -12,22 +12,25 @@ Go REST API backend for managing VTA setup sessions with per-user namespace isol
 | Database | PostgreSQL 18 |
 | K8s client | client-go v0.36 |
 | Hot reload | Air |
-| Container | Docker Compose (dev) / Helm (prod) |
+| Container | Helm (prod) |
 
 ---
 
 ## Local Development
 
-The API runs directly on your machine while only the database runs in Docker.
-This gives the API direct access to your local `~/.kube/config` without any
-networking workarounds.
+The API runs directly on your machine, against the **shared PostgreSQL in the dev
+cluster** — there is no local database. Running the API locally gives it direct
+access to your `~/.kube/config` without any networking workarounds.
+
+The database being shared has consequences worth reading once:
+[`docs/shared-dev-database.md`](docs/shared-dev-database.md). It already exists —
+`make deploy-db` (re)deploys it and is not something you need for daily work.
 
 ### Prerequisites
 
 - Go 1.26+
-- Docker & Docker Compose
 - [Air](https://github.com/air-verse/air) — `go install github.com/air-verse/air@latest`
-- `kubectl` configured with access to a cluster (for K8s features)
+- `kubectl` with access to the dev cluster (context `k8s-fpp-dev`)
 
 ### Setup
 
@@ -37,7 +40,22 @@ networking workarounds.
    cp .env.example .env
    ```
 
-2. Start the DB + API (migrations run automatically on startup):
+   `DB_*` and `JWT_SECRET` must match the rest of the team — one database means
+   one set of accounts, and a token signed with a different secret is rejected.
+
+2. Open the two tunnels into the dev cluster. Each needs its own terminal and
+   stays open while you develop — both reconnect on their own, since
+   `kubectl port-forward` drops on pod restarts.
+
+   ```bash
+   make forward-db          # localhost:5432 → svc/vtafarm-dev-postgres
+   make forward-vault       # localhost:8200 → vault/svc/vault
+   ```
+
+   Vault is required for VTA setup — the API provisions per-user Vault
+   policies/roles.
+
+3. Start the API (migrations run automatically on startup):
 
    ```bash
    make dev
@@ -45,14 +63,6 @@ networking workarounds.
 
    The API is now available at `http://localhost:8080`.
    API docs: `http://localhost:8080/docs`
-
-3. Port-forward Vault so the locally-running API can reach it — required for
-   VTA setup (the API provisions per-user Vault policies/roles). Run in a
-   separate terminal and keep it open:
-
-   ```bash
-   kubectl port-forward -n vault svc/vault 8200:8200
-   ```
 
 4. (Optional) Generate a DID hosting keypair (required only if DID hosting is enabled):
 
@@ -90,9 +100,10 @@ Copy `.env.example` and adjust as needed:
 | --- | --- | --- |
 | `APP_PORT` | `8080` | HTTP listen port |
 | `APP_ENV` | `development` | Set to `production` to disable `/docs` |
-| `DB_HOST` | `localhost` | Points to the Docker-managed PostgreSQL |
+| `DB_HOST` | `localhost` | The `make forward-db` tunnel to the shared dev database |
 | `DB_NAME` | `vtafarm` | |
-| `JWT_SECRET` | _(required)_ | HS256 signing secret — see below |
+| `JWT_SECRET` | _(required)_ | HS256 signing secret — must match the team, see below |
+| `ORCHESTRATOR_RESUME` | `true` | Re-attach interrupted sessions at startup. Set `false` locally — see [`docs/shared-dev-database.md`](docs/shared-dev-database.md) |
 | `CLUSTER_INGRESS_IP` | _(required)_ | External IP of the cluster's Ingress-NGINX LoadBalancer |
 | `CLOUDFLARE_API_TOKEN` | _(optional)_ | Required for VTA setup wizard |
 | `CLOUDFLARE_ZONE_ID` | _(optional)_ | Required for VTA setup wizard |

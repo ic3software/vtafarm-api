@@ -26,7 +26,10 @@ db:
 
 postgresql:
   enabled: true
-  image: postgres:18-alpine
+  # Exact patch, and identical to k8s/dev-postgres/deployment.yaml — `make test`
+  # fails if the two drift. A floating 18-alpine would let production and the
+  # shared dev database land on different patches without anyone choosing to.
+  image: postgres:18.4-alpine
   # Pre-create with: kubectl create secret generic vtafarm-api-postgresql --from-literal=postgres-password='...'
   # The secret must contain key: postgres-password
   existingSecret: "vtafarm-api-postgresql"
