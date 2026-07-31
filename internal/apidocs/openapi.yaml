@@ -635,6 +635,82 @@ components:
           type: string
           description: full_stack only. 3c — shown once for offline backup.
 
+    ConnectionBundle:
+      type: object
+      description: |
+        What a `full_stack` owner copies and hands to somebody else out of band,
+        and what that person pastes into the VTA-only create form.
+
+        Only `stack` and `code` are load-bearing. The connection is resolved by
+        looking `stack` up in this farm's own database and checking `code`
+        against it; the values a session is actually built from come from that
+        row, never from this document. The remaining fields are shown to the
+        recipient so they can see whose stack they are joining before they
+        commit, and compared on arrival so a bundle displaying values the stack
+        no longer has is refused rather than quietly connecting to different
+        ones.
+
+        Nothing here ever becomes a URL this server connects to.
+      properties:
+        v:
+          type: integer
+          example: 1
+        kind:
+          type: string
+          example: "vtafarm.stack-connection"
+        farm:
+          type: string
+          description: The farm this bundle is for. A bundle from another deployment is refused.
+          example: "firstperson.dev"
+        stack:
+          type: string
+          description: The provider session's `vta_name` — its public identifier everywhere else in this API.
+          example: "alice"
+        code:
+          type: string
+          description: |
+            The share code, grouped for display. Crockford base32 with a check
+            symbol, so a mistyped character is caught before it is sent.
+          example: "K7M2-9XQP-4B8W-3NRT"
+        mediator_did:
+          type: string
+          example: "did:webvh:...:mediator-alice.firstperson.dev"
+        did_hosting_server_url:
+          type: string
+          example: "https://dids-alice.firstperson.dev"
+        did_hosting_did:
+          type: string
+          description: The DID the daemon at that URL reports as its own.
+          example: "did:webvh:...:dids-alice.firstperson.dev"
+
+    StackConnection:
+      type: object
+      description: One agent connected to a stack. Name and status only — these sessions belong to other users.
+      properties:
+        vta_name: { type: string, example: "bob-vta" }
+        status: { type: string, example: "running" }
+
+    SharingResponse:
+      type: object
+      properties:
+        shared:
+          type: boolean
+          description: Whether this stack currently accepts new connections.
+        connection:
+          allOf:
+            - $ref: "#/components/schemas/ConnectionBundle"
+          description: |
+            Absent — not empty — when the stack is not shareable, so the UI
+            cannot offer a bundle that would be refused the moment it was
+            pasted.
+        connections:
+          type: array
+          items:
+            $ref: "#/components/schemas/StackConnection"
+          description: |
+            Agents already connected. Unaffected by any of the three actions,
+            and the list the delete confirmation names.
+
     CreateSetupResponse:
       type: object
       description: |
@@ -4514,3 +4590,116 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  /api/v1/setup/{id}/sharing:
+    put:
+      summary: Share this stack, or stop sharing it
+      description: |
+        full_stack only. Mints, replaces or clears the **share code** that lets
+        somebody else's VTA-only agent connect to this stack's mediator and DID
+        hosting.
+
+        The code is the only gate, and it gates *joining* rather than
+        membership:
+
+        | action | effect |
+        | --- | --- |
+        | `enable` | mint a code. Idempotent — an already-shared stack returns its current code rather than silently invalidating bundles already handed out |
+        | `rotate` | replace the code. Every bundle already shared stops working |
+        | `disable` | clear it. No new connections |
+
+        **None of the three disconnect anything.** Agents already connected keep
+        running, and there is deliberately no way to remove one — the stronger
+        lever is deleting the stack, which stops everyone. See
+        `docs/custom-stack-connection-design.md` §7.4.
+
+        `enable` and `rotate` require a stack that is `running` and has
+        published its mediator and DID-hosting identifiers, so that "sharing is
+        on" never means "on, but every bundle from it is refused".
+
+        The platform stack is refused: it is already the default for every
+        VTA-only agent, reached by a path that sends no bundle at all.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "alice"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [enable, rotate, disable]
+      responses:
+        "200":
+          description: Sharing updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SharingResponse"
+        "400":
+          description: Not a full_stack session, is the platform stack, or a bad action
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Stack is not running, or has not published its identifiers yet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/admin/setup-sessions/{id}/sharing:
+    put:
+      summary: Share a stack, or stop sharing it (admin)
+      description: |
+        Admin-cookie twin of `PUT /setup/{id}/sharing`, reaching any user's
+        session. Exists for support: a stack whose owner has lost access can
+        still be taken out of circulation.
+      tags: [Admin]
+      security: [{ CookieAuthAdmin: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action: { type: string, enum: [enable, rotate, disable] }
+      responses:
+        "200":
+          description: Sharing updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SharingResponse"
+        "400": { description: Not shareable, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "401": { description: Missing or invalid token, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: Session not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: Stack not ready, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }

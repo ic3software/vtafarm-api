@@ -732,7 +732,36 @@ func (h *SetupHandler) Get(c *gin.Context) {
 	if session.ErrorMsg != "" {
 		resp["error_msg"] = session.ErrorMsg
 	}
+	h.describeConnection(resp, &session)
 	c.JSON(http.StatusOK, resp)
+}
+
+// describeConnection adds which stack a vta_only session is wired to.
+//
+// The first question when an agent misbehaves is whose infrastructure it is
+// on, and until now the answer was a bare mediator DID. `provider` names the
+// stack; its absence on an in_farm session is not missing data but the fact
+// that the stack was deleted — see model.IsOrphaned.
+func (h *SetupHandler) describeConnection(resp gin.H, s *model.SetupSession) {
+	if s.IsFullStack() {
+		return
+	}
+	resp["connection_source"] = s.ConnectionSource
+	if s.ConnectionSource != model.ConnectionInFarm {
+		return
+	}
+	if s.ProviderSessionID == nil {
+		// The agent keeps running — nothing in a provider teardown touches the
+		// consumer's namespace — but its DID no longer resolves and its
+		// mediator is gone. Reported as a distinct fact rather than as a status,
+		// because nothing about this session's own pipeline failed.
+		resp["provider_gone"] = true
+		return
+	}
+	var provider model.SetupSession
+	if err := h.db.Select("vta_name").First(&provider, *s.ProviderSessionID).Error; err == nil {
+		resp["provider"] = provider.VtaName
+	}
 }
 
 // DELETE /api/v1/setup/:id

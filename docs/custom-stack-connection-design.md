@@ -851,7 +851,8 @@ Nothing yet.
 | `resolveProvider`, bundle tiers (§5.1) | ☐ |
 | `POST /setup/connection/validate` (§5.2) | ☐ |
 | `connection` on `POST /setup` (§5) | ☐ |
-| `connection` + `connections[]` in responses (§8) | ☐ |
+| Sharing toggle: `PUT /setup/:id/sharing` (+ admin twin) | ✅ phase 3 |
+| `connection` + `connections[]` in responses (§8) | ✅ phase 3 |
 | Availability split (§10.1) | ☐ |
 | `RegisterDid` failure visible (§9.1) | ✅ phase 0 |
 | Expected-audience check (§9.4) | ✅ phase 0 |
