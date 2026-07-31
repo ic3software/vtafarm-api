@@ -720,7 +720,7 @@ func (h *SetupHandler) teardownSession(c *gin.Context, session *model.SetupSessi
 	// and deleting from it would leave this session's DID log behind on the old
 	// one while removing somebody else's.
 	if h.didHosting != nil && (session.VtaDidUrl != "" || session.VtaDid != "") {
-		dh, err := h.didHosting.For(session.DidHostingControlURL)
+		dh, err := h.didHosting.For(session.DidHostingControlURL, session.DIDHostingDid)
 		if err != nil {
 			log.Printf("[setup] warn: no DID hosting client for session %d (%q): %v",
 				session.ID, session.DidHostingControlURL, err)

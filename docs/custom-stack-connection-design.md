@@ -523,6 +523,24 @@ upload has to fail the session, or at minimum leave a visible marker on the row.
 §5.1's checks reduce how often it happens; they cannot make a silent failure
 acceptable.
 
+**Shipped in phase 0.** Every failure in the upload block — no DID log parsed,
+no `vta_did_url`, no client for the control URL, `RegisterDid` itself — now
+calls `markFailed`. The one exception is `didHosting == nil`, which stays a
+warning: that is a deployment-wide "no keypair configured" state rather than a
+property of the session, `runProvision` already treats it the same way, and
+failing on it would break every local environment that runs without one.
+
+**One gap remains, and it is pre-existing.** The upload runs *after* the row is
+written to `vta_setup_complete`, so a crash in between leaves a session whose
+DID was never published and which nothing retries. The ordering cannot simply be
+reversed: `Resume` re-runs sessions in `vta_setup_running`, and
+`registerAtomic` sends `force=false` and errors on any non-2xx, so a replayed
+upload against an already-published path would fail — turning a crash-recovery
+into a dead session. Closing this properly means making the upload idempotent
+first (the way `CreateAcl` already treats 409 as success), which is a change to
+what we assume of the daemon's contract and wants its own verification against
+the daemon source. Not attempted here.
+
 ### 9.2 Cross-tenant coupling is real and barely mitigated
 
 **Severity: high. §7.4 deliberately declines to gate it.**
@@ -581,6 +599,14 @@ doing anyway, as defence in depth and because it protects the platform path
 too — pass the expected `did_hosting_did` into `Factory.For()` and refuse a
 mismatched `/api/server-info`. Cheap, and it means §11.1 starts from a
 `didhosting` that is already safe.
+
+**Shipped in phase 0.** `Factory.For(controlURL, expectedServerDid)` refuses a
+daemon whose self-reported DID is not the expected one; `""` means "no
+expectation on record" and accepts anything, which is the state of every
+`vta_only` row until phase 1 backfills `did_hosting_did`. The check runs on
+cache hits too — otherwise one unverified call would disarm it permanently for
+that URL — and a mismatch does not evict the cached client, because a mismatch
+says the *caller's* expectation is wrong, not that the client is unusable.
 
 ### 9.5 Untrusted TLS
 
@@ -791,7 +817,7 @@ Nothing yet.
 | `connection` on `POST /setup` (§5) | ☐ |
 | `connection` + `connections[]` in responses (§8) | ☐ |
 | Availability split (§10.1) | ☐ |
-| `RegisterDid` failure visible (§9.1) | ☐ |
-| Expected-audience check (§9.4) | ☐ |
+| `RegisterDid` failure visible (§9.1) | ✅ phase 0 |
+| Expected-audience check (§9.4) | ✅ phase 0 |
 | Frontend Share + Customize | ☐ |
 | openapi.yaml | ☐ |
