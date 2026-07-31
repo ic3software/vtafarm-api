@@ -326,6 +326,24 @@ components:
     CreateSetupRequest:
       type: object
       properties:
+        connection:
+          allOf:
+            - $ref: "#/components/schemas/ConnectionBundle"
+          description: |
+            `vta_only` only. Points the agent at a `full_stack` in this farm
+            other than the platform one. **Omit for today's behaviour** — the
+            platform stack, unchanged.
+
+            Sent as an object, not as the pasted text: the client owns "the user
+            pasted something", this owns "is that stack usable". Validate it
+            first with `POST /setup/connection/validate` so the user sees which
+            stack they are joining before filling in the rest of the form; this
+            route re-runs every check regardless, and returns the same `reason`
+            values.
+
+            Refused with 400 on a `full_stack` request — that mode provisions
+            its own mediator and DID host, so there is nothing to point at, and
+            ignoring the field would let someone believe otherwise.
         mode:
           type: string
           enum: [vta_only, full_stack]
@@ -751,8 +769,13 @@ components:
         available:
           type: boolean
           description: |
-            Whether this mode can be created. Covers both capacity and the
-            platform-stack prerequisite — read `reason` to tell them apart.
+            Whether this mode can be created **by its default path**. Covers both
+            capacity and the platform-stack prerequisite — read `reason` to tell
+            them apart.
+
+            For `vta_only` this is no longer the whole story: a caller carrying
+            a connection bundle needs no platform stack, so read
+            `custom_target_allowed` alongside it.
           example: true
         reason:
           type: string
@@ -773,6 +796,17 @@ components:
         detail:
           type: string
           description: A sentence to show the user. Prefer it over composing copy client-side.
+        custom_target_allowed:
+          type: boolean
+          description: |
+            `vta_only` only. Whether an agent can be created against a stack the
+            caller names with a connection bundle.
+
+            Survives every `reason` except `at_capacity`, because the platform
+            stack is a *default*, not a prerequisite for the mode. A UI should
+            therefore disable the "platform stack" option rather than the whole
+            mode, and preselect the custom option when this is the only path
+            left open.
 
 paths:
   /health:
@@ -3785,6 +3819,7 @@ paths:
                       VTA-only agents need the platform stack — the shared mediator and DID
                       hosting they connect to. An admin has to create it before any VTA-only
                       agent can be provisioned.
+                    custom_target_allowed: true
                   full_stack: { count: 2, available: true }
                   metrics_available: true
                   storage_available: true
@@ -4703,3 +4738,90 @@ paths:
         "401": { description: Missing or invalid token, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "404": { description: Session not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "409": { description: Stack not ready, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api/v1/setup/connection/validate:
+    post:
+      summary: Check a connection bundle without creating anything
+      description: |
+        Runs the same checks `POST /setup` runs and creates nothing, so the
+        create form can confirm a pasted bundle before the user has filled the
+        rest of it in.
+
+        **Why this exists.** The bundle is JSON, so a frontend can parse it and
+        render "connecting to *alice*, mediator `did:webvh:…`" the moment it is
+        pasted — but every one of those values came out of the pasted text. A
+        confirmation built that way shows a confident green tick for a bundle
+        whose code is pure garbage, and the user finds out only after naming
+        their agent, choosing an image and pressing Create. The response here
+        comes from this server's own database, which is the only version of that
+        confirmation worth showing.
+
+        **Not authoritative.** `POST /setup` re-runs everything: a stack can stop
+        running, rotate its code or reach its connection limit in between. Treat
+        this as a courtesy and create as the gate, and keep the failure mapping
+        wired to both.
+
+        Rate-limited, since it answers a yes/no about a credential.
+
+        Refusals arrive as `reason` plus a `detail` sentence:
+
+        | reason | status | |
+        | --- | --- | --- |
+        | `bad_bundle` | 400 | not a bundle, incomplete, or a mistyped share code |
+        | `wrong_farm` | 422 | a bundle for a different VTA Farm |
+        | `invalid_bundle` | 403 | does not open anything here — see below |
+        | `stack_not_running` | 409 | the stack isn't ready |
+        | `stack_changed` | 422 | the stack has changed since the bundle was copied |
+        | `stack_at_connection_limit` | 409 | it has as many agents as it may have |
+
+        `invalid_bundle` deliberately covers five situations — no such stack, a
+        stack that never shared, one that turned sharing off, a rotated code,
+        and a code that is simply wrong. Distinguishing them would turn this
+        route into a way to discover which stacks exist and which are shared.
+        From the holder's side they are one fact with one next step: ask for a
+        current bundle. **Client copy must not try to narrow it.**
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConnectionBundle"
+      responses:
+        "200":
+          description: The stack this bundle names, read from the server's own records
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stack: { type: string, example: "alice" }
+                  farm: { type: string, example: "firstperson.dev" }
+                  mediator_did: { type: string }
+                  did_hosting_server_url: { type: string }
+                  connections_used:
+                    type: integer
+                    description: Present only when a connection limit is configured.
+                  connections_max:
+                    type: integer
+                    description: Present only when a connection limit is configured.
+        "400":
+          description: Not a bundle, incomplete, or a mistyped share code (`bad_bundle`)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Missing or invalid token
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: The bundle does not open anything here (`invalid_bundle`)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: Stack not ready, or at its connection limit
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "422":
+          description: Another farm's bundle, or one that is out of date
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "429":
+          description: Too many attempts
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }

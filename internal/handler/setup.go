@@ -36,6 +36,12 @@ type SetupHandler struct {
 	orch       *setup.Orchestrator
 	ghcr       *ghcr.Client // nil when not configured
 	capacity   *CapacityService
+	// maxStackConnections caps how many vta_only sessions may connect to one
+	// shared full_stack; 0 disables the cap. Not a capacity model — the
+	// consumer's own pod is what this cluster accounts for. It bounds what a
+	// single share code can commit of somebody else's storage and message
+	// volume, which matters because a provider cannot remove one connection.
+	maxStackConnections int
 
 	// full_stack mode
 	mediatorGhcr *ghcr.Client // nil when not configured
@@ -54,18 +60,20 @@ func NewSetupHandler(
 	mediatorGhcrClient *ghcr.Client,
 	didsGhcrClient *ghcr.Client,
 	vtcGhcrClient *ghcr.Client,
+	maxStackConnections int,
 ) *SetupHandler {
 	return &SetupHandler{
-		db:            db,
-		cf:            cf,
-		appEnv:        appEnv,
-		ingressIP:     ingressIP,
-		clusterDomain: clusterDomain,
-		didHosting:    dhFactory,
-		k8s:           k8sClient,
-		orch:          orch,
-		ghcr:          ghcrClient,
-		capacity:      NewCapacityService(k8sClient),
+		db:                  db,
+		cf:                  cf,
+		appEnv:              appEnv,
+		ingressIP:           ingressIP,
+		clusterDomain:       clusterDomain,
+		didHosting:          dhFactory,
+		k8s:                 k8sClient,
+		orch:                orch,
+		ghcr:                ghcrClient,
+		capacity:            NewCapacityService(k8sClient),
+		maxStackConnections: maxStackConnections,
 
 		mediatorGhcr: mediatorGhcrClient,
 		didsGhcr:     didsGhcrClient,
@@ -172,6 +180,13 @@ type createSetupRequest struct {
 	DidsImage     string `json:"dids_image"`
 	VtcImage      string `json:"vtc_image"`
 	VtcName       string `json:"vtc_name"`
+	// Connection points a vta_only session at a full_stack in this farm other
+	// than the platform one. Omitted → the platform stack, unchanged.
+	//
+	// An object rather than the pasted text: the frontend owns "the user pasted
+	// something" and this owns "is that stack usable", which is the split that
+	// lets the create form confirm a bundle before submitting it.
+	Connection *connectionBundle `json:"connection"`
 }
 
 // POST /api/v1/setup
@@ -255,6 +270,15 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	}
 
 	if req.Mode == model.ModeFullStack {
+		// A full_stack provisions its own mediator and DID host, so there is
+		// nothing for a connection bundle to point at. Refused rather than
+		// ignored: silently dropping it would let someone believe their new
+		// stack was wired to somebody else's.
+		if req.Connection != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "a full-stack session runs its own mediator and DID host — connection applies only to a VTA-only agent"})
+			return
+		}
 		if !user.BetaAccess {
 			c.JSON(http.StatusForbidden, gin.H{"error": req.Mode + " mode is in beta — ask an admin to enable beta access for your account"})
 			return
@@ -272,11 +296,19 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	// It also yields the values the session is built from, so the gate and the
 	// source are the same read — there is no window where the check passes and
 	// the write then uses something else.
-	// The provider row itself is not needed until a caller can name one other
-	// than the platform stack; until then the three values are the whole answer.
-	infra, _, _, detail := h.resolveProvider()
-	if detail != "" {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": detail})
+	//
+	// Re-run in full even when the frontend already called
+	// POST /setup/connection/validate: a stack can stop running, rotate its code
+	// or fill up in between. Validate is a courtesy; this is the gate.
+	infra, provider, reason, detail := h.resolveProvider(req.Connection)
+	if reason != "" {
+		// A refused bundle is the caller's problem and says which; a missing or
+		// unready platform stack is the farm's, and has always been a 503.
+		status := http.StatusServiceUnavailable
+		if req.Connection != nil {
+			status = connectionRefusalStatus(reason)
+		}
+		c.JSON(status, gin.H{"error": detail, "reason": reason})
 		return
 	}
 
@@ -335,11 +367,21 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		// vta_only; this is what populates it going forward. "" when the
 		// provider never recorded one, which keeps the previous behaviour of
 		// accepting whatever the daemon claims.
-		DIDHostingDid:    infra.DaemonDid,
+		DIDHostingDid: infra.DaemonDid,
+		// Default; overridden just below when the caller named a stack. Keyed on
+		// the bundle rather than on whether resolveProvider returned a row,
+		// because it returns one on the platform path too — and a platform
+		// session must keep provider_session_id NULL, or model.IsOrphaned would
+		// eventually read it as a provider that had been deleted.
+		ConnectionSource: model.ConnectionPlatform,
 		VtaImage:         req.VtaImage,
 		AdminDid:         req.AdminDid,
 		Portable:         portable,
 		PreRotationCount: preRotationCount,
+	}
+	if req.Connection != nil {
+		session.ConnectionSource = model.ConnectionInFarm
+		session.ProviderSessionID = &provider.ID
 	}
 	// A single insert: there is no random id left to collide, so the retry loop
 	// that used to wrap this went with unique_id.
@@ -419,6 +461,23 @@ const (
 	reasonProviderUnknown = "provider_lookup_failed"
 )
 
+// Reasons a pasted connection bundle is refused. Split across two tiers by how
+// much the caller has proved — see resolveProvider.
+const (
+	reasonBadBundle = "bad_bundle"
+	reasonWrongFarm = "wrong_farm"
+	// reasonInvalidBundle is deliberately one reason for five situations: no
+	// such stack, a stack that never shared, one that turned sharing off, a
+	// rotated code, and a mangled code. Distinguishing them would turn this into
+	// a way to discover which stacks exist and which are shared, and from the
+	// holder's side they are the same fact — this bundle does not currently open
+	// anything — with the same next step: ask for a current one.
+	reasonInvalidBundle    = "invalid_bundle"
+	reasonStackNotRunning  = "stack_not_running"
+	reasonStackChanged     = "stack_changed"
+	reasonStackAtConnLimit = "stack_at_connection_limit"
+)
+
 // sharedInfra is what a vta_only session is wired to — read from the platform
 // stack that actually provides it, never from configuration.
 //
@@ -463,7 +522,11 @@ type sharedInfra struct {
 // the connection has to be recorded against a row, not a URL.
 //
 // full_stack is unaffected: it provisions its own mediator and DID host.
-func (h *SetupHandler) resolveProvider() (v sharedInfra, provider *model.SetupSession, reason, detail string) {
+func (h *SetupHandler) resolveProvider(ref *connectionBundle) (v sharedInfra, provider *model.SetupSession, reason, detail string) {
+	if ref != nil {
+		return h.resolveBundleProvider(ref)
+	}
+
 	const missing = "VTA-only agents need the platform stack — the shared mediator and DID hosting they connect to. " +
 		"An admin has to create it before any VTA-only agent can be provisioned."
 	const unknown = "Couldn't check the platform stack just now. Please try again."
@@ -563,12 +626,21 @@ func (h *SetupHandler) capacityAllows(c *gin.Context, mode capacity.Mode) bool {
 // metrics/Longhorn outage never wrongly blocks the UI.
 func (h *SetupHandler) Availability(c *gin.Context) {
 	type modeAvail struct {
-		Count     int  `json:"count"`
+		Count int `json:"count"`
+		// Available describes the DEFAULT path — for vta_only, the platform
+		// stack. It is not the whole story for that mode any more, because a
+		// caller carrying a connection bundle needs no platform stack at all.
 		Available bool `json:"available"`
 		// Why it's unavailable, and a sentence to show the user. Absent when
 		// the mode is creatable.
 		Reason string `json:"reason,omitempty"`
 		Detail string `json:"detail,omitempty"`
+		// CustomTargetAllowed says whether vta_only can be created against a
+		// stack the caller names, which stays true when the platform stack is
+		// missing and false only when the cluster itself is full. It is what
+		// lets the UI disable one option rather than the whole mode: the
+		// platform stack is a default, not a prerequisite.
+		CustomTargetAllowed bool `json:"custom_target_allowed,omitempty"`
 	}
 
 	// Fail open on capacity, as before: a transient metrics/Longhorn outage
@@ -603,7 +675,12 @@ func (h *SetupHandler) Availability(c *gin.Context) {
 	// create screen on a blip. It fails open, like capacity above. POST /setup
 	// refuses on the same reason, because there it is the difference between
 	// waiting and provisioning an agent with no mediator DID at all.
-	if _, _, reason, detail := h.resolveProvider(); reason != "" && reason != reasonProviderUnknown {
+	//
+	// It gates the DEFAULT path only. Connecting to a stack the caller names
+	// needs no platform stack, so that option survives every reason below —
+	// cluster capacity, decided above, is the only thing that can close it.
+	vtaOnly.CustomTargetAllowed = vtaOnly.Available || vtaOnly.Reason != reasonAtCapacity
+	if _, _, reason, detail := h.resolveProvider(nil); reason != "" && reason != reasonProviderUnknown {
 		vtaOnly.Available = false
 		vtaOnly.Reason, vtaOnly.Detail = reason, detail
 	}

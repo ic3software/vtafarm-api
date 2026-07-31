@@ -58,6 +58,7 @@ func Setup(
 		db, cfClient, cfg.AppEnv, cfg.ClusterIngressIP, cfg.ClusterDomain,
 		dhFactory, k8sClient, orch, ghcrClient,
 		mediatorGhcrClient, didsGhcrClient, vtcGhcrClient,
+		cfg.MaxStackConnections,
 	)
 
 	v1 := r.Group("/api/v1")
@@ -240,6 +241,13 @@ func Setup(
 		// VTA-only agent connect to this full stack. The code is the only gate:
 		// clearing it stops new connections and leaves existing ones running.
 		userAuth.PUT("/setup/:id/sharing", sh.SetSharing)
+		// Check a pasted bundle without creating anything, so the create form
+		// can confirm which stack it names from values this server read rather
+		// than from the pasted text itself. Rate-limited: it answers a yes/no
+		// about a credential, even though 75 bits behind an authenticated route
+		// is not brute-forceable.
+		userAuth.POST("/setup/connection/validate",
+			middleware.RateLimit(30, time.Minute), sh.ValidateConnection)
 	}
 
 	// Domains — a zone the user owns, verified on its own before any session

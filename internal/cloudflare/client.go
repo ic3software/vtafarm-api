@@ -35,9 +35,9 @@ type createRecordRequest struct {
 }
 
 type apiResponse[T any] struct {
-	Success bool      `json:"success"`
+	Success bool       `json:"success"`
 	Errors  []apiError `json:"errors"`
-	Result  T         `json:"result"`
+	Result  T          `json:"result"`
 }
 
 type apiError struct {

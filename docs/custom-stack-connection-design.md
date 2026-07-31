@@ -10,7 +10,7 @@ Two halves, useless apart:
 - **Connect** — the `vta_only` create form grows a **Customize** path that takes
   that bundle instead of silently using the platform stack — §5.
 
-> **Status: specification. Nothing is built.** §12 tracks it.
+> **Status: backend complete (phases 0–4); frontend outstanding.** §12 tracks it.
 > §9 is the section to read first — it is where this design can go wrong.
 
 Companion: [`vtafarm/docs/custom-stack-connection-frontend.md`](../../vtafarm/docs/custom-stack-connection-frontend.md).
@@ -848,13 +848,13 @@ Nothing yet.
 | Migration + model (§6) | ✅ phase 1 |
 | Share code: mint / normalise / validate / compare (§4.1, §4.1.1) | ✅ phase 1 |
 | `resolveProvider`, platform path (§5.1) | ✅ phase 2 |
-| `resolveProvider`, bundle tiers (§5.1) | ☐ |
-| `POST /setup/connection/validate` (§5.2) | ☐ |
-| `connection` on `POST /setup` (§5) | ☐ |
+| `resolveProvider`, bundle tiers (§5.1) | ✅ phase 4 |
+| `POST /setup/connection/validate` (§5.2) | ✅ phase 4 |
+| `connection` on `POST /setup` (§5) | ✅ phase 4 |
 | Sharing toggle: `PUT /setup/:id/sharing` (+ admin twin) | ✅ phase 3 |
 | `connection` + `connections[]` in responses (§8) | ✅ phase 3 |
-| Availability split (§10.1) | ☐ |
+| Availability split (§10.1) | ✅ phase 4 |
 | `RegisterDid` failure visible (§9.1) | ✅ phase 0 |
 | Expected-audience check (§9.4) | ✅ phase 0 |
 | Frontend Share + Customize | ☐ |
-| openapi.yaml | ☐ |
+| openapi.yaml | ✅ phases 3–4 |

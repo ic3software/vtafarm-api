@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -95,6 +96,155 @@ func (h *SetupHandler) listConnections(providerID uint) []connectionSummary {
 		out[i] = connectionSummary{VtaName: r.VtaName, Status: r.Status}
 	}
 	return out
+}
+
+// resolveBundleProvider turns a pasted bundle into the stack it names, in two
+// tiers.
+//
+// Everything decided before the share code is verified must answer identically,
+// or this becomes a directory of which stacks exist and which are shared —
+// exactly what the share code exists to prevent. Once the caller has proved they
+// hold a current code, specificity costs nothing and every remaining refusal
+// says precisely what is wrong.
+//
+// No check here reaches the network. The stack is found in this farm's own
+// database and the values come off that row, so a pasted URL never becomes a
+// socket — see design §3.
+func (h *SetupHandler) resolveBundleProvider(ref *connectionBundle) (v sharedInfra, provider *model.SetupSession, reason, detail string) {
+	// ── Tier 1: does this bundle open anything ──────────────────────────────
+	if ref.Kind != connectionBundleKind || ref.Version != connectionBundleVersion {
+		return v, nil, reasonBadBundle,
+			"That doesn't look like a connection bundle. Ask for the text from the stack's Share panel."
+	}
+	if ref.Stack == "" || ref.Code == "" {
+		return v, nil, reasonBadBundle,
+			"That connection bundle is incomplete. Ask for the text from the stack's Share panel."
+	}
+	// Checked before the farm comparison so a mistyped code is diagnosed as
+	// itself rather than as whatever the next check happens to be.
+	if err := setup.ValidateShareCode(ref.Code); err != nil {
+		return v, nil, reasonBadBundle,
+			"The share code looks mistyped — check it against what you were sent."
+	}
+	if !strings.EqualFold(ref.Farm, h.clusterDomain) {
+		return v, nil, reasonWrongFarm,
+			"This bundle is for a different VTA Farm. You can only connect to stacks running here."
+	}
+
+	const invalid = "This bundle doesn't open anything here. It may have been deleted, or its owner may have " +
+		"turned sharing off or issued a new code — ask them for a current one."
+
+	var session model.SetupSession
+	err := h.db.
+		Where("vta_name = ? AND mode = ?", ref.Stack, model.ModeFullStack).
+		First(&session).Error
+	if err != nil {
+		// Includes ErrRecordNotFound. A database failure lands here too and is
+		// reported as "invalid" rather than as its own reason: this route is
+		// reachable by anyone with an account, so the alternative leaks that the
+		// name exists whenever the read happens to fail.
+		return v, nil, reasonInvalidBundle, invalid
+	}
+	if session.ShareCode == nil || !setup.ShareCodeMatches(ref.Code, *session.ShareCode) {
+		return v, nil, reasonInvalidBundle, invalid
+	}
+
+	// ── Tier 2: the caller holds a current code ─────────────────────────────
+	if v, reason, detail = providerInfra(&session); reason != "" {
+		// providerInfra's sentences name "the platform stack", which is wrong
+		// for a stack somebody shared. The condition is the same; the wording
+		// is not.
+		return sharedInfra{}, nil, reasonStackNotRunning,
+			"That stack isn't ready right now. Ask its owner to check it, then try again."
+	}
+
+	// The bundle showed the recipient three values. If the stack no longer has
+	// them, what they agreed to join is not what they would be joining — most
+	// often because the stack was rebuilt, which also means a different daemon
+	// with an empty ACL.
+	if ref.MediatorDid != session.MediatorDid ||
+		ref.DidHostingServerURL != session.DidsURL() ||
+		ref.DidHostingDid != session.DIDHostingDid {
+		return sharedInfra{}, nil, reasonStackChanged,
+			"This bundle is out of date — the stack has changed since it was copied. Ask for a fresh one."
+	}
+
+	if h.maxStackConnections > 0 {
+		var connected int64
+		h.db.Model(&model.SetupSession{}).Where("provider_session_id = ?", session.ID).Count(&connected)
+		if connected >= int64(h.maxStackConnections) {
+			return sharedInfra{}, nil, reasonStackAtConnLimit,
+				"That stack has reached its limit of connected agents. Ask an admin to raise the limit, or use a different stack."
+		}
+	}
+
+	return v, &session, "", ""
+}
+
+// POST /api/v1/setup/connection/validate
+//
+// Runs the same checks as create and creates nothing, so the create form can
+// confirm a bundle at paste time.
+//
+// It exists because of a flaw in the obvious alternative. The bundle is JSON, so
+// a frontend can parse it and render "connecting to alice, mediator did:webvh:…"
+// the moment it is pasted — but every one of those values came out of the pasted
+// text. A card built that way shows a confident green tick for a bundle whose
+// code is pure garbage, and the user finds out only after naming their agent,
+// picking an image and pressing Create. This makes the card render values this
+// server read from its own database, which is the only version of it worth
+// showing.
+//
+// Not authoritative: POST /setup re-runs everything. A stack can stop running,
+// rotate its code or fill up in between, so this is a courtesy and create is the
+// gate.
+func (h *SetupHandler) ValidateConnection(c *gin.Context) {
+	var ref connectionBundle
+	if err := c.ShouldBindJSON(&ref); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "reason": reasonBadBundle})
+		return
+	}
+
+	infra, provider, reason, detail := h.resolveBundleProvider(&ref)
+	if reason != "" {
+		c.JSON(connectionRefusalStatus(reason), gin.H{"error": detail, "reason": reason})
+		return
+	}
+
+	resp := gin.H{
+		"stack":                  provider.VtaName,
+		"farm":                   h.clusterDomain,
+		"mediator_did":           infra.MediatorDid,
+		"did_hosting_server_url": infra.ServerURL,
+	}
+	if h.maxStackConnections > 0 {
+		resp["connections_used"] = h.countConnections(provider.ID)
+		resp["connections_max"] = h.maxStackConnections
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+// countConnections is listConnections' cheap form.
+func (h *SetupHandler) countConnections(providerID uint) int64 {
+	var n int64
+	h.db.Model(&model.SetupSession{}).Where("provider_session_id = ?", providerID).Count(&n)
+	return n
+}
+
+// connectionRefusalStatus maps a refusal to its HTTP status. The reason is what
+// the frontend switches on; the status is for everything else in the chain.
+func connectionRefusalStatus(reason string) int {
+	switch reason {
+	case reasonBadBundle:
+		return http.StatusBadRequest
+	case reasonInvalidBundle:
+		return http.StatusForbidden
+	case reasonStackNotRunning, reasonStackAtConnLimit:
+		return http.StatusConflict
+	default:
+		// wrong_farm, stack_changed — well-formed, but not usable here.
+		return http.StatusUnprocessableEntity
+	}
 }
 
 type sharingRequest struct {
