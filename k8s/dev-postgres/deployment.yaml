@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vtafarm-dev-postgres
+  namespace: default
+  labels:
+    app: vtafarm-dev-postgres
+spec:
+  replicas: 1
+  # Recreate: single replica on a ReadWriteOnce PVC — a rolling update could
+  # deadlock with the new pod unable to attach the volume the old pod holds.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: vtafarm-dev-postgres
+  template:
+    metadata:
+      labels:
+        app: vtafarm-dev-postgres
+    spec:
+      containers:
+        - name: postgresql
+          # Exact patch, not a floating tag: a pod restart must not move the
+          # whole team's server a version.
+          image: postgres:18.4-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_DB
+              value: vtafarm
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vtafarm-dev-postgres
+                  key: postgres-password
+            # Subdirectory, not the mount root: initdb refuses Longhorn's lost+found.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "vtafarm"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          # No CPU limit — requests give fair-share; memory is incompressible so
+          # it keeps a hard limit. Same shape as the production chart.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: vtafarm-dev-postgres

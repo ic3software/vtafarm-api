@@ -17,14 +17,19 @@ type Config struct {
 	// domains' certificates. The same one in every environment — see
 	// DefaultACMEIssuer for why there is no staging variant to pick between.
 	ACMEClusterIssuer string
-	DB                DBConfig
-	K8s               K8sConfig
-	Cloudflare        CloudflareConfig
-	GHCR              GHCRConfig
-	DidHosting        DidHostingConfig
-	WebAuthn          WebAuthnConfig
-	Vault             VaultConfig
-	Monitor           MonitorConfig
+	// OrchestratorResume re-attaches interrupted sessions and upgrades at startup.
+	// Crash recovery, so it defaults to true; false only against the shared dev
+	// database, where every API would resume the same rows.
+	// See docs/shared-dev-database.md.
+	OrchestratorResume bool
+	DB                 DBConfig
+	K8s                K8sConfig
+	Cloudflare         CloudflareConfig
+	GHCR               GHCRConfig
+	DidHosting         DidHostingConfig
+	WebAuthn           WebAuthnConfig
+	Vault              VaultConfig
+	Monitor            MonitorConfig
 }
 
 // MonitorConfig configures the token-gated /api/v1/monitor/* endpoints polled
@@ -157,7 +162,8 @@ func Load() *Config {
 		ClusterIngressIP: getEnv("CLUSTER_INGRESS_IP", ""),
 		ClusterDomain:    getEnv("CLUSTER_DOMAIN", ""),
 
-		ACMEClusterIssuer: getEnv("ACME_CLUSTER_ISSUER", DefaultACMEIssuer),
+		ACMEClusterIssuer:  getEnv("ACME_CLUSTER_ISSUER", DefaultACMEIssuer),
+		OrchestratorResume: getEnvBool("ORCHESTRATOR_RESUME", true),
 		DB: DBConfig{
 			Host:     getEnv("DB_HOST", "localhost"),
 			Port:     getEnv("DB_PORT", "5432"),

@@ -1,0 +1,14 @@
+# ClusterIP only — reached with `make forward-db`, so access is gated by kubeconfig.
+apiVersion: v1
+kind: Service
+metadata:
+  name: vtafarm-dev-postgres
+  namespace: default
+  labels:
+    app: vtafarm-dev-postgres
+spec:
+  selector:
+    app: vtafarm-dev-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

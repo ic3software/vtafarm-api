@@ -7,9 +7,16 @@ NAMESPACE    ?= default
 DEPLOY_ENV   ?= production
 INGRESS_HOST ?=
 
-.PHONY: build test gen-keypair tidy dev \
+# ─── Dev cluster ──────────────────────────────────────────────────────────────
+# The database is shared and lives here — see docs/shared-dev-database.md.
+DEV_CONTEXT  ?= k8s-fpp-dev
+DEV_DB       ?= vtafarm-dev-postgres
+DB_PORT      ?= 5432
+VAULT_PORT   ?= 8200
+
+.PHONY: build test check-pg-image gen-keypair tidy dev \
         migrate migrate-down migrate-new enroll enroll-prod \
-        up down reset \
+        deploy-db forward-db forward-vault \
         image-build image-push \
         deploy
 
@@ -18,9 +25,23 @@ build:
 	go build -o bin/api ./main.go
 
 # Same checks CI runs (.github/workflows)
-test:
+test: check-pg-image
 	go vet ./...
 	go test ./...
+
+# Dev and production must run the identical PostgreSQL image — a version that
+# only differs locally turns "works on dev" into a guess. Enforced here rather
+# than by convention, because the two files are edited months apart.
+check-pg-image:
+	@dev=$$(grep -o 'postgres:[0-9a-z.-]*' k8s/dev-postgres/deployment.yaml); \
+	prod=$$(grep -o 'postgres:[0-9a-z.-]*' helm/vtafarm-api/values.yaml); \
+	if [ "$$dev" != "$$prod" ]; then \
+	  echo "PostgreSQL image mismatch:"; \
+	  echo "  k8s/dev-postgres/deployment.yaml : $$dev"; \
+	  echo "  helm/vtafarm-api/values.yaml     : $$prod"; \
+	  exit 1; \
+	fi; \
+	echo "PostgreSQL image matches in dev and production: $$dev"
 
 gen-keypair:
 	go run ./cmd/gen-keypair
@@ -28,9 +49,18 @@ gen-keypair:
 tidy:
 	go mod tidy
 
-# Start DB + API with Air hot-reload
+# Start the API with Air hot-reload. The database is the shared one in the dev
+# cluster, so `make forward-db` must already be running in another terminal —
+# checked here because otherwise the failure is a bare "connection refused".
 dev:
-	$(MAKE) up
+	@nc -z localhost $(DB_PORT) 2>/dev/null || { \
+	  echo "Nothing listening on localhost:$(DB_PORT)."; \
+	  echo "Start the tunnel to the shared dev database first, in another terminal:"; \
+	  echo ""; \
+	  echo "    make forward-db"; \
+	  echo ""; \
+	  exit 1; \
+	}
 	air
 
 # ─── Migrations (run locally against DB_HOST=localhost) ───────────────────────
@@ -54,16 +84,31 @@ enroll:
 enroll-prod:
 	kubectl exec -n $(NAMESPACE) deploy/$(NAME) -- ./enroll
 
-# ─── Docker Compose (DB only) ─────────────────────────────────────────────────
-up:
-	docker compose up -d
+# ─── Dev cluster ──────────────────────────────────────────────────────────────
+# Deploy / update the shared database. Applies only — the PVC is never deleted
+# here, so team data survives every redeploy. The context is explicit so this
+# can't land in docker-desktop by accident.
+deploy-db:
+	kubectl --context $(DEV_CONTEXT) apply -f k8s/dev-postgres/
 
-down:
-	docker compose down
+# Tunnels. Keep each running in its own terminal while developing. The loops are
+# not cosmetic: kubectl port-forward dies on a dropped connection or a pod
+# restart and never comes back on its own.
+forward-db:
+	@echo "Forwarding $(DEV_CONTEXT) svc/$(DEV_DB) → localhost:$(DB_PORT)  (Ctrl-C to stop)"
+	@trap 'exit 0' INT; while true; do \
+	  kubectl --context $(DEV_CONTEXT) port-forward svc/$(DEV_DB) $(DB_PORT):5432 || true; \
+	  echo "port-forward dropped — reconnecting in 2s"; \
+	  sleep 2; \
+	done
 
-reset:
-	docker compose down -v
-	docker compose up -d
+forward-vault:
+	@echo "Forwarding $(DEV_CONTEXT) vault/svc/vault → localhost:$(VAULT_PORT)  (Ctrl-C to stop)"
+	@trap 'exit 0' INT; while true; do \
+	  kubectl --context $(DEV_CONTEXT) port-forward -n vault svc/vault $(VAULT_PORT):8200 || true; \
+	  echo "port-forward dropped — reconnecting in 2s"; \
+	  sleep 2; \
+	done
 
 # ─── Docker Hub ───────────────────────────────────────────────────────────────
 image-build:

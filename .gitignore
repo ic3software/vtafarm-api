@@ -17,7 +17,9 @@ tmp/
 # Go
 vendor/
 
-# Local PostgreSQL data (bind mount from docker-compose)
+# Leftover data from the removed docker-compose PostgreSQL. Kept ignored only so
+# nobody commits it by accident — delete both `data/` and this rule once the
+# shared dev database (docs/shared-dev-database.md) has proved itself.
 data/
 
 # Air logs
