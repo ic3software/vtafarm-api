@@ -52,8 +52,11 @@ tidy:
 # Start the API with Air hot-reload. The database is the shared one in the dev
 # cluster, so `make forward-db` must already be running in another terminal —
 # checked here because otherwise the failure is a bare "connection refused".
+# The probe is bash's /dev/tcp rather than nc: netcat is not installed by
+# default on every distro, and a missing nc made this check report the tunnel
+# as down when it was up.
 dev:
-	@nc -z localhost $(DB_PORT) 2>/dev/null || { \
+	@bash -c 'exec 3<>/dev/tcp/localhost/$(DB_PORT)' 2>/dev/null || { \
 	  echo "Nothing listening on localhost:$(DB_PORT)."; \
 	  echo "Start the tunnel to the shared dev database first, in another terminal:"; \
 	  echo ""; \
