@@ -277,9 +277,45 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 	})
 	log.Printf("[orchestrator] session %d: setup complete, VTA DID=%s", sessionID, vtaDID)
 
+	// Publishing the DID log is not a best-effort side errand: an unpublished
+	// did:webvh cannot be resolved, so the agent this session is building can
+	// never be reached. Every failure below therefore fails the session.
+	//
+	// It used to log and carry on, which produced the worst available outcome —
+	// a session marked `running`, a green badge in the portal, and an agent that
+	// silently delivers nothing. That was survivable while the only way to hit
+	// it was a platform stack whose ACL entry had gone missing, i.e. an
+	// operator's problem on a path operators watch. Once a session can be aimed
+	// at any stack in the farm it becomes an ordinary user's failure mode, and a
+	// silent one is not acceptable there.
+	//
+	// This must stay AFTER the vta_setup_complete write above. Resume only
+	// re-runs sessions still in vta_setup_running, so a session that reaches
+	// here is never replayed through it — which is what keeps the upload from
+	// happening twice. registerAtomic sends force=false and errors on any
+	// non-2xx, so a second attempt at an already-published path would fail, and
+	// with the change above that failure would now kill an otherwise healthy
+	// session. Moving the status write later requires making the upload
+	// idempotent first.
+	//
+	// The gap that ordering leaves: a crash between the two lands the row in
+	// vta_setup_complete with nothing published and nothing retrying. That is
+	// pre-existing and unchanged here — see docs/custom-stack-connection-design.md
+	// §9.1.
 	log.Printf("[orchestrator] session %d: did-hosting=%v didLog_len=%d vtaDidUrl=%q",
 		sessionID, o.didHosting != nil, len(didLog), session.VtaDidUrl)
-	if o.didHosting != nil && didLog != "" && session.VtaDidUrl != "" {
+	if o.didHosting != nil {
+		switch {
+		case didLog == "":
+			// `vta setup` reported a DID but no did.jsonl followed it in the
+			// logs. Nothing to publish, and nothing that publishes it later.
+			o.markFailed(sessionID, "VTA setup produced no DID log to publish — the agent's DID would never resolve")
+			return
+		case session.VtaDidUrl == "":
+			o.markFailed(sessionID, "session has no VTA DID URL — cannot publish the agent's DID")
+			return
+		}
+
 		// Extract path from the full URL e.g. https://dids.fpp2.ic3.dev/pvta-vta → pvta-vta
 		path := session.VtaDidUrl
 		if u, err := url.Parse(path); err == nil {
@@ -287,21 +323,29 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 		}
 		// The daemon this session was provisioned against, not whichever one is
 		// current — the two differ the moment the platform stack is rebuilt.
-		dh, err := o.didHosting.For(session.DidHostingControlURL)
+		dh, err := o.didHosting.For(session.DidHostingControlURL, session.DIDHostingDid)
 		if err != nil {
-			log.Printf("[orchestrator] session %d: DID upload FAILED (no client for %q): %v",
-				sessionID, session.DidHostingControlURL, err)
-		} else {
-			log.Printf("[orchestrator] session %d: uploading DID log to hosting service (path=%s)", sessionID, path)
-			if err := dh.RegisterDid(ctx, path, didLog); err != nil {
-				log.Printf("[orchestrator] session %d: DID upload FAILED: %v", sessionID, err)
-			} else {
-				log.Printf("[orchestrator] session %d: DID log uploaded to hosting service", sessionID)
-			}
+			o.markFailed(sessionID, "cannot reach the DID hosting control API at "+
+				session.DidHostingControlURL+": "+err.Error())
+			return
 		}
-	} else if o.didHosting != nil {
-		log.Printf("[orchestrator] session %d: skipping DID upload — didLog_empty=%v vtaDidUrl_empty=%v",
-			sessionID, didLog == "", session.VtaDidUrl == "")
+		log.Printf("[orchestrator] session %d: uploading DID log to hosting service (path=%s)", sessionID, path)
+		if err := dh.RegisterDid(ctx, path, didLog); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			o.markFailed(sessionID, "failed to publish the agent's DID to "+
+				session.DidHostingControlURL+": "+err.Error())
+			return
+		}
+		log.Printf("[orchestrator] session %d: DID log uploaded to hosting service", sessionID)
+	} else {
+		// No keypair configured at all. Left as a warning rather than a failure
+		// because it is a deployment-wide state, not a property of this session
+		// — runProvision's ACL step already treats it the same way, and failing
+		// here would break every local environment that runs without one.
+		log.Printf("[orchestrator] session %d: DID_HOSTING_DID unset — the agent's DID will not be published "+
+			"and will not resolve", sessionID)
 	}
 
 	// Auto-trigger Phase 2 if admin_did was provided at session creation time.
@@ -335,7 +379,7 @@ func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDi
 	var controlDid string
 	log.Printf("[orchestrator] session %d: did-hosting configured=%v vta_did=%q", sessionID, o.didHosting != nil, session.VtaDid)
 	if o.didHosting != nil {
-		dh, err := o.didHosting.For(session.DidHostingControlURL)
+		dh, err := o.didHosting.For(session.DidHostingControlURL, session.DIDHostingDid)
 		if err != nil {
 			o.markFailed(sessionID, "failed to reach DID hosting control API: "+err.Error())
 			return

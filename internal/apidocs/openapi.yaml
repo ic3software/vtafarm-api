@@ -326,6 +326,27 @@ components:
     CreateSetupRequest:
       type: object
       properties:
+        share_code:
+          type: string
+          description: |
+            `vta_only` only. Points the agent at a `full_stack` in this farm
+            other than the platform one. **Omit for today's behaviour** — the
+            platform stack, unchanged.
+
+            One code and nothing else. It is globally unique, so it identifies
+            its stack without a name alongside it, and every value the session is
+            built from comes off that row — there is deliberately nothing here
+            naming a host.
+
+            Check it first with `POST /setup/connection/validate` so the user
+            sees which stack they are joining before filling in the rest of the
+            form; this route re-runs every check regardless, and returns the same
+            `reason` values.
+
+            Refused with 400 on a `full_stack` request — that mode provisions
+            its own mediator and DID host, so there is nothing to point at, and
+            ignoring the field would let someone believe otherwise.
+          example: "K7M2-9XQP-4B8W-3NRT"
         mode:
           type: string
           enum: [vta_only, full_stack]
@@ -635,6 +656,50 @@ components:
           type: string
           description: full_stack only. 3c — shown once for offline backup.
 
+    StackConnection:
+      type: object
+      description: One agent connected to a stack. Name and status only — these sessions belong to other users.
+      properties:
+        vta_name: { type: string, example: "bob-vta" }
+        status: { type: string, example: "running" }
+
+    SharingResponse:
+      type: object
+      properties:
+        shared:
+          type: boolean
+          description: Whether this stack currently accepts new connections.
+        share_code:
+          type: string
+          description: |
+            The code to hand out, grouped for display. Crockford base32 with a
+            check character, so a mistyped one is caught before it is sent.
+            Always 16 alphanumerics — the check character is rerolled out of
+            Crockford's `*~$=U` range so the code stays readable aloud.
+
+            Absent — not empty — when the stack is not shareable, so the UI
+            cannot offer a code that would be refused the moment it was used.
+          example: "K7M2-9XQP-4B8W-3NRT"
+        connections:
+          type: array
+          items:
+            $ref: "#/components/schemas/StackConnection"
+          description: |
+            Agents already connected. Unaffected by any of the three actions,
+            and the list the delete confirmation names.
+        connections_max:
+          type: integer
+          description: |
+            How many agents this stack may host (MAX_STACK_CONNECTIONS).
+            Absent when the cap is off, so a client renders "3 connected"
+            rather than "3 of 0".
+
+            The provider's half of the number the consumer's
+            POST /setup/connection/validate has always returned: it is the
+            owner's storage and message volume being committed, so the count
+            belongs on their page.
+          example: 10
+
     CreateSetupResponse:
       type: object
       description: |
@@ -675,8 +740,13 @@ components:
         available:
           type: boolean
           description: |
-            Whether this mode can be created. Covers both capacity and the
-            platform-stack prerequisite — read `reason` to tell them apart.
+            Whether this mode can be created **by its default path**. Covers both
+            capacity and the platform-stack prerequisite — read `reason` to tell
+            them apart.
+
+            For `vta_only` this is no longer the whole story: a caller carrying
+            a connection bundle needs no platform stack, so read
+            `custom_target_allowed` alongside it.
           example: true
         reason:
           type: string
@@ -697,6 +767,17 @@ components:
         detail:
           type: string
           description: A sentence to show the user. Prefer it over composing copy client-side.
+        custom_target_allowed:
+          type: boolean
+          description: |
+            `vta_only` only. Whether an agent can be created against a stack the
+            caller names with a connection bundle.
+
+            Survives every `reason` except `at_capacity`, because the platform
+            stack is a *default*, not a prerequisite for the mode. A UI should
+            therefore disable the "platform stack" option rather than the whole
+            mode, and preselect the custom option when this is the only path
+            left open.
 
 paths:
   /health:
@@ -3709,6 +3790,7 @@ paths:
                       VTA-only agents need the platform stack — the shared mediator and DID
                       hosting they connect to. An admin has to create it before any VTA-only
                       agent can be provisioned.
+                    custom_target_allowed: true
                   full_stack: { count: 2, available: true }
                   metrics_available: true
                   storage_available: true
@@ -4514,3 +4596,202 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  /api/v1/setup/{id}/sharing:
+    put:
+      summary: Share this stack, or stop sharing it
+      description: |
+        full_stack only. Mints, replaces or clears the **share code** that lets
+        somebody else's VTA-only agent connect to this stack's mediator and DID
+        hosting.
+
+        The code is the only gate, and it gates *joining* rather than
+        membership:
+
+        | action | effect |
+        | --- | --- |
+        | `enable` | mint a code. Idempotent — an already-shared stack returns its current code rather than silently invalidating bundles already handed out |
+        | `rotate` | replace the code. Every bundle already shared stops working |
+        | `disable` | clear it. No new connections |
+
+        **None of the three disconnect anything.** Agents already connected keep
+        running, and there is deliberately no way to remove one — the stronger
+        lever is deleting the stack, which stops everyone. See
+        `docs/custom-stack-connection-design.md` §7.4.
+
+        `enable` and `rotate` require a stack that is `running` and has
+        published its mediator and DID-hosting identifiers, so that "sharing is
+        on" never means "on, but every bundle from it is refused".
+
+        The platform stack is refused: it is already the default for every
+        VTA-only agent, reached by a path that sends no bundle at all.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "alice"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [enable, rotate, disable]
+      responses:
+        "200":
+          description: Sharing updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SharingResponse"
+        "400":
+          description: Not a full_stack session, is the platform stack, or a bad action
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Stack is not running, or has not published its identifiers yet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/admin/setup-sessions/{id}/sharing:
+    put:
+      summary: Share a stack, or stop sharing it (admin)
+      description: |
+        Admin-cookie twin of `PUT /setup/{id}/sharing`, reaching any user's
+        session. Exists for support: a stack whose owner has lost access can
+        still be taken out of circulation.
+      tags: [Admin]
+      security: [{ CookieAuthAdmin: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action: { type: string, enum: [enable, rotate, disable] }
+      responses:
+        "200":
+          description: Sharing updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SharingResponse"
+        "400": { description: Not shareable, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "401": { description: Missing or invalid token, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: Session not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: Stack not ready, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api/v1/setup/connection/validate:
+    post:
+      summary: Check a connection bundle without creating anything
+      description: |
+        Runs the same checks `POST /setup` runs and creates nothing, so the
+        create form can tell the user which stack a code opens before they fill
+        the rest of it in.
+
+        **This is the only way that confirmation can exist.** A share code
+        carries no information — the stack's name, its mediator and its DID host
+        are all facts this server holds and the sender does not transmit — so a
+        client has nothing to render from except this response. That is a
+        property worth keeping: it makes presenting the sender's claims as facts
+        about a stack structurally impossible rather than merely something a
+        client is asked not to do.
+
+        **Not authoritative.** `POST /setup` re-runs everything: a stack can stop
+        running, rotate its code or reach its connection limit in between. Treat
+        this as a courtesy and create as the gate, and keep the failure mapping
+        wired to both.
+
+        Rate-limited, since it answers a yes/no about a credential.
+
+        Refusals arrive as `reason` plus a `detail` sentence:
+
+        | reason | status | |
+        | --- | --- | --- |
+        | `bad_bundle` | 400 | empty, malformed, or a mistyped code (caught by its check character) |
+        | `invalid_bundle` | 403 | does not open anything here — see below |
+        | `stack_not_running` | 409 | the stack isn't ready |
+        | `stack_at_connection_limit` | 409 | it has as many agents as it may have |
+
+        `invalid_bundle` deliberately covers five situations — no such stack, a
+        stack that never shared, one that turned sharing off, a rotated code,
+        and a code that is simply wrong. There is one lookup and one answer, so
+        this route cannot be used to discover which stacks exist or which are
+        shared. From the holder's side they are one fact with one next step: ask
+        for a current code. **Client copy must not try to narrow it.**
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+                  example: "K7M2-9XQP-4B8W-3NRT"
+      responses:
+        "200":
+          description: The stack this code opens, read from the server's own records
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stack: { type: string, example: "alice" }
+                  farm: { type: string, example: "firstperson.dev" }
+                  mediator_did: { type: string }
+                  did_hosting_server_url: { type: string }
+                  connections_used:
+                    type: integer
+                    description: Present only when a connection limit is configured.
+                  connections_max:
+                    type: integer
+                    description: Present only when a connection limit is configured.
+        "400":
+          description: Empty, malformed, or a mistyped code (`bad_bundle`)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Missing or invalid token
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: The code does not open anything here (`invalid_bundle`)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: Stack not ready, or at its connection limit
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "429":
+          description: Too many attempts
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }

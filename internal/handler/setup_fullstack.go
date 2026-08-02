@@ -257,6 +257,12 @@ func (h *SetupHandler) getFullStack(c *gin.Context, session *model.SetupSession)
 		"created_at":     session.CreatedAt,
 		"updated_at":     session.UpdatedAt,
 	}
+	// Whether this stack is shared, its code, its dependents and the cap on
+	// them — the same shape PUT /sharing answers with, so the page renders
+	// identically whether it just acted or just loaded.
+	for k, v := range h.sharingResponse(session) {
+		resp[k] = v
+	}
 
 	resp["dids_enroll_used"] = session.DidsEnrollUsed
 	resp["vtc_install_used"] = session.VtcInstallUsed

@@ -58,6 +58,7 @@ func Setup(
 		db, cfClient, cfg.AppEnv, cfg.ClusterIngressIP, cfg.ClusterDomain,
 		dhFactory, k8sClient, orch, ghcrClient,
 		mediatorGhcrClient, didsGhcrClient, vtcGhcrClient,
+		cfg.MaxStackConnections,
 	)
 
 	v1 := r.Group("/api/v1")
@@ -160,6 +161,9 @@ func Setup(
 		adminAuth.POST("/admin/setup-sessions/:id/dids/enroll-ack", sh.AdminAckDidsEnroll)
 		adminAuth.POST("/admin/setup-sessions/:id/vtc/reissue-install", sh.AdminReissueVtcInstall)
 		adminAuth.POST("/admin/setup-sessions/:id/vtc/install-ack", sh.AdminAckVtcInstall)
+		// Admin twin of PUT /setup/:id/sharing, for support: a stack whose owner
+		// has lost access to it can still be taken out of circulation.
+		adminAuth.PUT("/admin/setup-sessions/:id/sharing", sh.AdminSetSharing)
 		// The farm's own flagship stack at vta.{CLUSTER_DOMAIN} and friends —
 		// the mediator and DID host vta_only sessions point at. Created whole
 		// (domain + DNS + session) by one action; the only route that can mint
@@ -233,6 +237,17 @@ func Setup(
 		userAuth.POST("/setup/:id/dids/enroll-ack", sh.AckDidsEnroll)
 		userAuth.POST("/setup/:id/vtc/reissue-install", sh.ReissueVtcInstall)
 		userAuth.POST("/setup/:id/vtc/install-ack", sh.AckVtcInstall)
+		// Mint, replace or clear the share code that lets someone else's
+		// VTA-only agent connect to this full stack. The code is the only gate:
+		// clearing it stops new connections and leaves existing ones running.
+		userAuth.PUT("/setup/:id/sharing", sh.SetSharing)
+		// Check a pasted bundle without creating anything, so the create form
+		// can confirm which stack it names from values this server read rather
+		// than from the pasted text itself. Rate-limited: it answers a yes/no
+		// about a credential, even though 75 bits behind an authenticated route
+		// is not brute-forceable.
+		userAuth.POST("/setup/connection/validate",
+			middleware.RateLimit(30, time.Minute), sh.ValidateConnection)
 	}
 
 	// Domains — a zone the user owns, verified on its own before any session

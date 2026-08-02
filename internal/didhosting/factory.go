@@ -56,7 +56,12 @@ func (f *Factory) ClientDid() string {
 // /api/server-info, so an uncached call reaches the network on every upload,
 // ACL write and teardown. Clients are keyed by URL and hold no per-session
 // state, so sharing one is safe.
-func (f *Factory) For(controlURL string) (*Client, error) {
+//
+// expectedServerDid, when non-empty, is the DID the caller already knows this
+// daemon to have — see checkAudience for why that matters. Empty means "no
+// expectation on record", which is the state of every vta_only session until
+// its did_hosting_did column is populated.
+func (f *Factory) For(controlURL, expectedServerDid string) (*Client, error) {
 	if f == nil {
 		return nil, fmt.Errorf("DID hosting not configured (no client keypair)")
 	}
@@ -68,7 +73,7 @@ func (f *Factory) For(controlURL string) (*Client, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if c, ok := f.byBase[base]; ok {
-		return c, nil
+		return c, checkAudience(base, c.serverDid, expectedServerDid)
 	}
 	c, err := New(base, f.clientDid, f.privKeyB64)
 	if err != nil {
@@ -77,6 +82,31 @@ func (f *Factory) For(controlURL string) (*Client, error) {
 		// inherit the failure.
 		return nil, err
 	}
+	// Cached before the audience check, and the error returned alongside the
+	// cached entry above: a mismatch says the CALLER's expectation is wrong for
+	// this URL, not that the client is unusable. A later call carrying the right
+	// expectation must hit the cache and succeed rather than re-fetching.
 	f.byBase[base] = c
-	return c, nil
+	return c, checkAudience(base, c.serverDid, expectedServerDid)
+}
+
+// checkAudience refuses a daemon whose self-reported DID is not the one we
+// expected to be talking to.
+//
+// serverDid comes from the daemon's own /api/server-info and becomes the `aud`
+// of every id_token this client signs — with vtafarm-api's private key, which
+// holds an admin ACL entry on every daemon the farm operates. A host that
+// answers with somebody else's DID therefore receives a token minted for that
+// somebody else, and can replay it there as us.
+//
+// Nothing has needed this while control URLs came only out of our own database
+// and named daemons we provisioned. It is written down now because the moment a
+// session can be pointed at a daemon on the strength of a value a user handed
+// us, "the daemon says who it is" stops being a safe answer to "who am I
+// signing for".
+func checkAudience(base, serverDid, expected string) error {
+	if expected == "" || serverDid == expected {
+		return nil
+	}
+	return fmt.Errorf("DID hosting daemon at %s reports server DID %q, expected %q", base, serverDid, expected)
 }
