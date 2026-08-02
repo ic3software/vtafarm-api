@@ -674,6 +674,8 @@ components:
           description: |
             The code to hand out, grouped for display. Crockford base32 with a
             check character, so a mistyped one is caught before it is sent.
+            Always 16 alphanumerics — the check character is rerolled out of
+            Crockford's `*~$=U` range so the code stays readable aloud.
 
             Absent — not empty — when the stack is not shareable, so the UI
             cannot offer a code that would be refused the moment it was used.

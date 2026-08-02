@@ -144,7 +144,20 @@ click without touching anyone already connected.
 
 16 characters of Crockford base32, grouped in fours —
 `K7M2-9XQP-4B8W-3NRT`. 75 bits of entropy plus a **check symbol** as the last
-character (Crockford's own `~*$=U` scheme).
+character (Crockford's own scheme).
+
+**Always alphanumeric.** Crockford's check alphabet extends the 32 data symbols
+with `*~$=U` for remainders 32–36, so 5/37 of draws would end in punctuation —
+`FDGE-K0G4-AWNF-CQS~`. Valid, and nothing downstream breaks, but a code that
+cannot be read down a phone or typed on an arbitrary keyboard has given up the
+one property this format was chosen for. `NewShareCode` rerolls until the check
+symbol lands inside the data alphabet: 37/32 ≈ 1.16 attempts on average, 0.2
+bits off the 75.
+
+`ValidateShareCode` is deliberately **not** narrowed to match. The reroll
+governs what we mint; codes handed out before it existed are live credentials
+in the database, and rejecting their check symbol would lock out their holders
+for a cosmetic reason.
 
 Crockford rather than raw base32 because §2.2 offers this code to be read aloud,
 and a format meant for oral transmission without a checksum is half-designed.

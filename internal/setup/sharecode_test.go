@@ -44,6 +44,46 @@ func TestNewShareCodeExcludesConfusableGlyphs(t *testing.T) {
 	}
 }
 
+// A minted code must be alphanumeric end to end. Crockford's check alphabet
+// carries five punctuation symbols for remainders 32–36, so without the reroll
+// in NewShareCode roughly one code in seven would end in `*`, `~`, `$` or `=`
+// — valid, but not something anyone can read down a phone, which is the whole
+// reason this format was picked over raw base32.
+func TestNewShareCodeIsAlphanumeric(t *testing.T) {
+	for i := 0; i < 500; i++ {
+		code, err := NewShareCode()
+		if err != nil {
+			t.Fatalf("NewShareCode: %v", err)
+		}
+		for _, r := range NormalizeShareCode(code) {
+			if (r < '0' || r > '9') && (r < 'A' || r > 'Z') {
+				t.Fatalf("minted code %q contains non-alphanumeric %q", code, r)
+			}
+		}
+	}
+}
+
+// The reroll narrows what we mint; it must not narrow what we accept. Codes
+// handed out before it existed are live credentials in the database, and a
+// validator that rejected their check symbol would lock their holders out.
+func TestValidateShareCodeAcceptsLegacyCheckSymbols(t *testing.T) {
+	for _, a := range crockfordAlphabet {
+		for _, b := range crockfordAlphabet {
+			data := "K7M29XQP4B8W3" + string(a) + string(b)
+			check := crockfordCheckSymbol([]byte(data))
+			if strings.IndexByte(crockfordAlphabet, check) >= 0 {
+				continue // an alphanumeric check symbol — not the case under test
+			}
+			code := GroupShareCode(data + string(check))
+			if err := ValidateShareCode(code); err != nil {
+				t.Fatalf("legacy code %q rejected: %v", code, err)
+			}
+			return
+		}
+	}
+	t.Fatal("found no code with a punctuation check symbol to test against")
+}
+
 func TestNormalizeShareCode(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"K7M2-9XQP-4B8W-3NRT", "K7M29XQP4B8W3NRT"},

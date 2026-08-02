@@ -37,25 +37,38 @@ const (
 	shareCodeGroup = 4
 )
 
-// NewShareCode mints a share code, formatted for display.
+// NewShareCode mints a share code, formatted for display. Every code it returns
+// is 16 alphanumerics grouped in fours.
 //
-// Rejection sampling rather than modulo: 256 is not a multiple of 32 in a way
-// that matters here (it is, exactly), but reading one byte per symbol and
-// masking to 5 bits is simpler to see as unbiased than any arithmetic on a
-// larger word, and this runs once per share.
+// One byte per symbol masked to 5 bits, rather than arithmetic on a larger
+// word: simpler to see as unbiased, and this runs once per share.
+//
+// The loop is what keeps a minted code alphanumeric. Crockford's check alphabet
+// carries five extra symbols — `*~$=U` — for remainders 32–36, so 5/37 of
+// otherwise fine codes end in punctuation. Such a code is valid and always will
+// be (ValidateShareCode still accepts them, and codes minted before this loop
+// existed keep working), but it is unreadable down a phone and awkward on
+// keyboards that bury those glyphs, which is the entire reason this format was
+// chosen over raw base32. Rerolling costs 37/32 ≈ 1.16 attempts on average and
+// 0.2 bits of the 75.
 func NewShareCode() (string, error) {
-	buf := make([]byte, shareCodeDataLen)
-	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("generate share code: %w", err)
-	}
+	for {
+		buf := make([]byte, shareCodeDataLen)
+		if _, err := rand.Read(buf); err != nil {
+			return "", fmt.Errorf("generate share code: %w", err)
+		}
 
-	data := make([]byte, shareCodeDataLen)
-	for i, b := range buf {
-		data[i] = crockfordAlphabet[b&0x1f]
-	}
+		data := make([]byte, shareCodeDataLen)
+		for i, b := range buf {
+			data[i] = crockfordAlphabet[b&0x1f]
+		}
 
-	full := string(data) + string(crockfordCheckSymbol(data))
-	return GroupShareCode(full), nil
+		check := crockfordCheckSymbol(data)
+		if strings.IndexByte(crockfordAlphabet, check) < 0 {
+			continue
+		}
+		return GroupShareCode(string(data) + string(check)), nil
+	}
 }
 
 // GroupShareCode inserts the display dashes. Purely cosmetic — every comparison
