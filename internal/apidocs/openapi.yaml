@@ -687,6 +687,18 @@ components:
           description: |
             Agents already connected. Unaffected by any of the three actions,
             and the list the delete confirmation names.
+        connections_max:
+          type: integer
+          description: |
+            How many agents this stack may host (MAX_STACK_CONNECTIONS).
+            Absent when the cap is off, so a client renders "3 connected"
+            rather than "3 of 0".
+
+            The provider's half of the number the consumer's
+            POST /setup/connection/validate has always returned: it is the
+            owner's storage and message volume being committed, so the count
+            belongs on their page.
+          example: 10
 
     CreateSetupResponse:
       type: object

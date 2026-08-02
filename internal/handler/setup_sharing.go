@@ -36,6 +36,29 @@ func displayShareCode(s *model.SetupSession) string {
 	return setup.GroupShareCode(*s.ShareCode)
 }
 
+// sharingResponse is the one shape every sharing action answers with, and the
+// same fields GET /setup/:id carries for a full_stack.
+//
+// `connections_max` is the provider's half of a number the consumer's
+// ValidateConnection has always returned: §6.3's cap is what bounds how many
+// agents can arrive before the owner notices, and it is their storage and
+// message volume being committed, so the count belongs on their page.
+// Omitted when the cap is off, so a UI renders "3 connected" rather than
+// "3 of 0".
+func (h *SetupHandler) sharingResponse(s *model.SetupSession) gin.H {
+	resp := gin.H{
+		"shared":      s.IsShared(),
+		"connections": h.listConnections(s.ID),
+	}
+	if code := displayShareCode(s); code != "" {
+		resp["share_code"] = code
+	}
+	if h.maxStackConnections > 0 {
+		resp["connections_max"] = h.maxStackConnections
+	}
+	return resp
+}
+
 // connectionSummary is one entry in a provider's dependent list: another user's
 // agent connected to this stack.
 //
@@ -260,7 +283,7 @@ func (h *SetupHandler) setSharing(c *gin.Context, session *model.SetupSession) {
 		// Deliberately no teardown of existing connections. The code gates
 		// joining, not membership: sessions already connected keep running, and
 		// there is no way to remove one (design §7.4).
-		c.JSON(http.StatusOK, gin.H{"shared": false, "connections": h.listConnections(session.ID)})
+		c.JSON(http.StatusOK, h.sharingResponse(session))
 		return
 	}
 
@@ -282,11 +305,7 @@ func (h *SetupHandler) setSharing(c *gin.Context, session *model.SetupSession) {
 	// code rather than silently invalidating every bundle already handed out.
 	// Replacing one is what rotate is for, and it asks explicitly.
 	if req.Action == "enable" && session.ShareCode != nil && *session.ShareCode != "" {
-		c.JSON(http.StatusOK, gin.H{
-			"shared":      true,
-			"share_code":  displayShareCode(session),
-			"connections": h.listConnections(session.ID),
-		})
+		c.JSON(http.StatusOK, h.sharingResponse(session))
 		return
 	}
 
@@ -302,9 +321,5 @@ func (h *SetupHandler) setSharing(c *gin.Context, session *model.SetupSession) {
 	}
 	session.ShareCode = &stored
 
-	c.JSON(http.StatusOK, gin.H{
-		"shared":      true,
-		"share_code":  displayShareCode(session),
-		"connections": h.listConnections(session.ID),
-	})
+	c.JSON(http.StatusOK, h.sharingResponse(session))
 }
