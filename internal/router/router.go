@@ -170,6 +170,21 @@ func Setup(
 		// a domains row for our own zone.
 		adminAuth.POST("/admin/platform-stack", sh.CreatePlatformStack)
 		adminAuth.GET("/admin/platform-stack", sh.GetPlatformStack)
+		// Co-admins on that stack's VTA — self-service, so a second admin can
+		// add the did:key their own `pnm setup` minted instead of asking
+		// whoever holds the credential to run `pnm acl create` for them.
+		//
+		// Adding only. Removal is `pnm acl delete` against the live VTA: no
+		// downtime, and it avoids having to work out which ACL entry belongs to
+		// whom, which this side cannot answer well once PNM has rotated keys.
+		//
+		// POST stops the VTA for about a minute and serialises against itself.
+		// Narrowed to the platform stack even though the mechanism is
+		// session-generic: granting unrestricted admin on a *customer's* stack
+		// needs an approval step this doesn't have. See
+		// docs/platform-stack-admin-grant-design.md §1 and §7.4.
+		adminAuth.GET("/admin/platform-stack/admins", sh.ListPlatformStackAdmins)
+		adminAuth.POST("/admin/platform-stack/admins", sh.GrantPlatformStackAdmin)
 		// Cluster capacity overview: CPU/memory/storage totals per node plus
 		// how many more sessions of each mode still fit.
 		dashH := handler.NewDashboardHandler(k8sClient)
