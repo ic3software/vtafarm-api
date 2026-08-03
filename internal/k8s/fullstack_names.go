@@ -61,6 +61,15 @@ func FSJobImportAdminDid(sessionID uint) string {
 	return fmt.Sprintf("fs-%d-import-admin-did", sessionID)
 }
 
+// FSJobVtaACL is the post-provisioning ACL Job — granting a co-admin, revoking
+// one, or just reading the ACL back
+// (docs/platform-stack-admin-grant-design.md §6). Not a pipeline step, and one
+// name for all three operations because they are mutually exclusive in time:
+// each runs with the VTA scaled to 0, so two can never be in flight together,
+// and reusing the name means the previous run's TTL'd Job is what
+// DeleteComponentJob clears before the next.
+func FSJobVtaACL(sessionID uint) string { return fmt.Sprintf("fs-%d-vta-acl", sessionID) }
+
 // full_stack-only Jobs (design §8). FSJobVtcInvite is the reissue
 // endpoint's `vtc admin invite` Job (POST /setup/:id/vtc/reissue-install),
 // not a pipeline step — mirrors how FSJobDidsInvite doubles for reissue.

@@ -1956,6 +1956,191 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/admin/platform-stack/admins:
+    get:
+      summary: Co-admins on the platform stack's VTA
+      description: |
+        **What was added from here** — a history of events, not the VTA's
+        current admin list. Nothing here keeps a copy of that list.
+
+        The two differ in both directions and it matters:
+
+        - A `granted` DID usually is **not** in the VTA's ACL any more. The DID
+          a co-admin submits is the temporary `did:key` `pnm setup` minted, and
+          PNM swaps it for a fresh long-lived one on first connect
+          (`POST /acl/swap` moves the entry, carrying role, contexts and label,
+          then deletes the temporary). So minutes after a successful grant this
+          DID names something the ACL no longer holds, while its holder has full
+          super admin under a DID this API has never seen. That is the protocol
+          working, not a failure.
+        - Admins added out of band — the `pnm-bootstrap` entry from
+          provisioning, or anything an operator added with `pnm acl create` —
+          never appear here at all.
+
+        For who can act on the VTA right now, run `pnm acl list` against it.
+
+        Free — serves stored state, never touches the cluster.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      responses:
+        "200":
+          description: What was added from here
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  label: { type: string }
+                  grants:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        did: { type: string }
+                        label: { type: string }
+                        status:
+                          type: string
+                          enum: [pending, granted, failed]
+                        error_msg: { type: string }
+                        granted_at: { type: string, format: date-time, nullable: true }
+                        created_at: { type: string, format: date-time }
+        "404":
+          description: No platform stack exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      summary: Grant a co-admin on the platform stack's VTA
+      description: |
+        Adds `did` to the VTA's ACL as an **unrestricted super admin** — the
+        same authority the stack's first admin got at provisioning
+        (`vta import-did --role admin` with no `--context`). There is no role or
+        scope parameter: unrestricted is the whole feature. A holder can sign,
+        read the vault, mint keys, and **remove any other admin including the
+        one who granted them** — the VTA has no last-admin protection.
+
+        **This stops the VTA for roughly a minute** (see the refresh route).
+        Synchronous, so the request blocks for the whole window. The grant row
+        is written `pending` *before* the Kubernetes work starts, so a client
+        that times out at a proxy has not lost the operation — it still lands
+        `granted` or `failed`, and `GET .../admins` shows the outcome.
+
+        `did` must be a `did:key` — the form `pnm setup` mints, and the only one
+        the VTA's REST login can verify. The expected flow: the co-admin runs
+        `pnm setup --name <slug>`, sends the DID it prints, and after this
+        succeeds finishes with `pnm setup continue <slug> --vta-did <vta_did>`.
+
+        Expect that DID to **stop being their DID** on their first connect —
+        PNM rotates onto a fresh long-lived one and the ACL entry moves with it.
+        That is normal; see `GET .../admins`.
+
+        `already_present: true` means the DID was already in the ACL and nothing
+        changed. Not an error — reported so a UI can say so rather than imply it
+        just granted something.
+
+        **Serialised against itself.** Two grants at once would scale the same
+        VTA down twice and run two Jobs under one name, each able to delete the
+        other's. A second caller gets 409 while a window is open — nothing is
+        wrong, come back in a minute.
+
+        **Removing an admin is not here.** Use `pnm acl delete <did>` against the
+        running VTA: no downtime, and no need for this side to work out which ACL
+        entry belongs to whom once PNM has rotated keys.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [did, label, confirm]
+              properties:
+                did:
+                  type: string
+                  description: The co-admin's `did:key`, from `pnm setup`.
+                  example: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK
+                label:
+                  type: string
+                  maxLength: 64
+                  description: |
+                    Who this key belongs to. **Required** — PNM rotates the DID
+                    away on first connect and the label is the only
+                    human-readable field that survives the move, so an entry
+                    granted without one cannot be attributed to anyone later.
+                confirm:
+                  type: string
+                  description: Must equal the platform stack's label.
+      responses:
+        "200":
+          description: Granted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  did: { type: string }
+                  status: { type: string, enum: [granted] }
+                  already_present: { type: boolean }
+                  warning:
+                    type: string
+                    description: Present only when the VTA failed to restart. The stack is down.
+        "400":
+          description: Bad `did`, oversized label, or missing/non-matching `confirm`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: |
+            Either this DID already has a pending or granted entry, or another
+            admin's grant is mid-window. Both are retryable; neither means
+            damage.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No platform stack exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: The Kubernetes work failed; the grant row is marked `failed`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Insufficient role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/v1/admin/setup/images:
     get:
       summary: List available component images (admin)

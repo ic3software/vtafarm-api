@@ -172,6 +172,8 @@ To create additional admins, an authenticated admin calls `POST /api/v1/admin/ad
 | `POST` | `/api/v1/admin/setup-sessions/:id/vtc/install-ack` | admin | Admin twin of the user route |
 | `POST` | `/api/v1/admin/platform-stack` | admin | Create the platform stack: domain row + 4 proxied DNS records + `full_stack` session, in one action. The only route that mints a `domains` row for our own zone |
 | `GET` | `/api/v1/admin/platform-stack` | admin | Its state, plus the `config_values` to copy into the environment once it's running |
+| `GET` | `/api/v1/admin/platform-stack/admins` | admin | What was added from here — a history of grants, not the VTA's admin list (nothing stores a copy of that). Free, stored state only. See "Co-admins on the platform stack" below |
+| `POST` | `/api/v1/admin/platform-stack/admins` | admin | Self-service: add a `did:key` as **unrestricted super admin** on that VTA — the same authority the stack's first admin got. **Stops the VTA for ~1 minute**, serialises against itself (409 while another is running). Requires `did`, `label` and `{"confirm": "<label>"}` |
 | `GET` | `/api/v1/admin/setup/domain-info` | admin | Admin-cookie twin of `GET /setup/domain-info` — the platform stack page names its hostnames before they exist |
 
 Every route an authenticated admin calls lives under `/api/v1/admin/...` — that
@@ -428,6 +430,56 @@ below).
 - **No verification, no ACME, no Let's Encrypt quota** — the zone is ours and
   the `*.firstperson.dev` wildcard already covers the names.
 - `beta_access` doesn't apply (it's a user gate); cluster capacity does.
+
+### Co-admins on the platform stack
+
+`step_import_admin_did` writes the VTA's admin ACL once, mid-pipeline, with
+`vta import-did --role admin` and **no `--context`** — an empty context list,
+which is the definition of a super admin (`is_super_admin()` is the admin role
+plus an unrestricted act scope). Adding a second co-admin means emitting the
+same command again with a different DID, so there is no separate authority
+model to keep in sync.
+
+The point is self-service: a second admin pastes the DID their own `pnm setup`
+minted, instead of asking whoever holds the credential to run `pnm acl create`
+by hand. **Adding only** — removal is `pnm acl delete` against the live VTA,
+which costs no downtime and, more usefully, avoids having to answer "which entry
+is whose", a question this side cannot answer well (see rotation below).
+
+Three things about that are easy to get wrong:
+
+- **Reaching the ACL means stopping the VTA.** It is a fjall store on a RWO PVC
+  and the running VTA holds a lock on it, so a grant scales the Deployment to 0,
+  waits for the pod to release the lock, runs a Job against the volume, and
+  scales back. `reissueDidsEnroll` does the same dance against the dids daemon
+  and is the template. The mediator and dids daemons are separate Deployments
+  and stay up, so `vta_only` sessions are unaffected; what goes down is this
+  stack's own VTA and its VTC. Reading costs the same window, which is why
+  **nothing here stores a copy of the ACL** — `pnm acl list` answers that against
+  the running VTA for free, and any copy would be stale within minutes anyway.
+- **A grant row is an event, not a permission.** The DID a co-admin submits is
+  the temporary `did:key` from `pnm setup`, and PNM swaps it for a long-lived
+  one on first connect (`POST /acl/swap`, which preserves role, contexts **and
+  label**). `vta_admin_grants.did` therefore goes stale by design, and `label`
+  is the only human-readable field that survives the move — which is why the API
+  requires one: it is what somebody reads at a `pnm acl list` prompt. Nothing
+  here tracks where the entry moved to.
+- **One window at a time.** `runVtaAclJob` holds a process-wide `TryLock` for the
+  whole window, and the grant route additionally refuses when a live `pending`
+  row exists (the cross-replica half — the lock is in-process). Two concurrent
+  grants would scale the same VTA down twice and run two Jobs under one name,
+  each able to delete the other's.
+
+**Platform stack only, and `runVtaAclJob` enforces it** — it refuses any session
+whose `domain_type` is not `platform`, on top of the routes already resolving
+only that session. Everything under it is session-generic by construction (the
+table is keyed by `session_id`, the K8s names derive from `session.ID`), so
+without that check a per-session route wired to it later would silently hand out
+unrestricted super admin on a stack the farm merely operates. Widening the scope
+is gated on the approval flow of design §7.4 — the `pending` status and
+`requested_by` column exist for it — not on deleting that check.
+
+Design: `docs/platform-stack-admin-grant-design.md` (§7 is the section to read).
 
 ## Beta Access
 
