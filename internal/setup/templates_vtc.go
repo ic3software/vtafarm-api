@@ -39,6 +39,7 @@ path      = "{{ .VtcDidPath }}"
 [messaging]
 mediator_did = "{{ .MediatorDid }}"
 mediator_url = "{{ .MediatorURL }}"
+transports   = ["tsp", "didcomm"]
 
 [secrets]
 backend           = "vault"

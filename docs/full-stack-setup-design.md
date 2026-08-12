@@ -861,6 +861,7 @@ public_url  = "{{ .VtaPublicURL }}"        # https://vta-{vta_name}.{domain}
 [services]
 rest    = true
 didcomm = true
+tsp     = true
 
 [server]
 host = "0.0.0.0"
@@ -900,7 +901,7 @@ pre_rotation_count = {{ .PreRotationCount }}
 ```toml
 [deployment]
 type      = "server"
-protocols = ["didcomm"]
+protocols = ["didcomm", "tsp"]
 use_vta   = true
 vta_mode  = "sealed-export"
 
@@ -956,6 +957,7 @@ data_dir   = "data/daemon"
 [identity]
 public_url   = "{{ .PublicURL }}"      # https://dids-{vta_name}.{domain}
 mediator_did = "{{ .MediatorDid }}"    # 1b
+transport    = "both"
 
 [vta]
 request_path  = "bootstrap-request.json"   # phase 1 only
@@ -1014,6 +1016,7 @@ path      = "{{ .VtcName }}-vtc"              # DID path — did:webvh:<scid>:<d
 [messaging]
 mediator_did = "{{ .MediatorDid }}"           # 1b — the same shared mediator
 mediator_url = "{{ .MediatorURL }}"           # informational only; endpoint is resolved from the DID doc
+transports   = ["tsp", "didcomm"]
 
 [secrets]
 backend           = "vault"
@@ -1641,6 +1644,7 @@ daemon), rather than taken from docs:
 | `[secrets]` field names + defaults + `deny_unknown_fields` | `vtc-service/src/config.rs::SecretsConfig` (mirrors `vti_secrets`; kv_mount `secret`, secret_key `seed`, auth `kubernetes`) |
 | `vault-secrets` is a non-default vtc feature | `vtc-service/Cargo.toml` + `docs/03-vtc/feature-flags.md` |
 | `[messaging]` fields (`mediator_did` required, `mediator_url` optional) | `vti-common/src/config.rs::MessagingConfig` |
+| `[messaging].transports` required, `["tsp","didcomm"]`, not persisted | `vtc-service/src/setup/from_toml.rs::MessagingSetup` + `wizard.rs::Transport` |
 | `[webvh].server_id` → `WEBVH_SERVER` template var | `vtc-service/src/setup/wizard.rs` (`WebvhTarget`, `build_template_vars`) |
 | `vta contexts create` offline, `--admin-did`/`--admin-expires N[s\|m\|h\|d\|w]`, atomic ACL; Conflict on existing id | `vta-service/src/main.rs::ContextCommands::Create`; `operations/contexts.rs` (`Conflict: context already exists`) |
 | `vta import-did --role admin --context <ctx>` as the exists-tolerant regrant | `vta-service/src/main.rs::ImportDid` (`--context Vec<String>`) |

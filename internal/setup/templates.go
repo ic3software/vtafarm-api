@@ -15,6 +15,7 @@ public_url  = "{{ .PublicURL }}"
 [services]
 rest    = true
 didcomm = true
+tsp     = true
 
 [server]
 host = "0.0.0.0"

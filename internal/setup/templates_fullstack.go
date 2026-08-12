@@ -18,6 +18,7 @@ public_url  = "{{ .VtaPublicURL }}"
 [services]
 rest    = true
 didcomm = true
+tsp     = true
 
 [server]
 host = "0.0.0.0"
@@ -88,7 +89,7 @@ func RenderFullStackVtaSetupTOML(s *model.SetupSession, vault VaultSecrets) (str
 
 var mediatorRecipeTmpl = template.Must(template.New("fs-mediator-recipe").Parse(`[deployment]
 type      = "server"
-protocols = ["didcomm"]
+protocols = ["didcomm", "tsp"]
 use_vta   = true
 vta_mode  = "sealed-export"
 
@@ -165,6 +166,7 @@ data_dir   = "data/daemon"
 [identity]
 public_url   = "{{ .PublicURL }}"
 mediator_did = "{{ .MediatorDid }}"
+transport    = "both"
 
 [vta]
 {{- if eq .Phase "offline-prepare" }}
