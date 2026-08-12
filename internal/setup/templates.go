@@ -7,6 +7,11 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/model"
 )
 
+// `services.tsp = true` needs a VTA image built `--features tsp` — setup
+// refuses the flag otherwise. The mediator here is the platform stack's
+// (`kind = "existing"`) and nothing upstream checks it routes TSP, so that
+// stack must be TSP-enabled first: `#tsp` is first in the preference order, so
+// peers pick it and fail rather than fall back to DIDComm.
 var vtaSetupTmpl = template.Must(template.New("vta-setup").Parse(`config_path = "config.toml"
 data_dir    = "data/vta"
 vta_name    = "{{ .VtaName }}"
@@ -15,6 +20,7 @@ public_url  = "{{ .PublicURL }}"
 [services]
 rest    = true
 didcomm = true
+tsp     = true
 
 [server]
 host = "0.0.0.0"

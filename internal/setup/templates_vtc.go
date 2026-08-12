@@ -26,6 +26,10 @@ import (
 // relative, resolved against the Job's /app/vtc workingDir where
 // step_vtc_setup_key wrote it. vault_secret_key = "bundle" stores the
 // serialized VtcKeyBundle — vti_secrets' seed store is byte-agnostic.
+//
+// `messaging.transports` is required — a `[messaging]` table without it does
+// not deserialize. Consumed once at mint, never persisted; array order is
+// preference, and both entries bind the same `mediator_did`.
 var vtcSetupTmpl = template.Must(template.New("fs-vtc-setup").Parse(`config_path    = "config.toml"
 base_url       = "{{ .VtcPublicURL }}"
 vta_did        = "{{ .VtaDid }}"
@@ -39,6 +43,7 @@ path      = "{{ .VtcDidPath }}"
 [messaging]
 mediator_did = "{{ .MediatorDid }}"
 mediator_url = "{{ .MediatorURL }}"
+transports   = ["tsp", "didcomm"]
 
 [secrets]
 backend           = "vault"

@@ -351,6 +351,7 @@ public_url  = "{{ .PublicURL }}"           # https://{subdomain}.{CLUSTER_DOMAIN
 [services]
 rest    = true
 didcomm = true
+tsp     = true                             # see "TSP is on, and the platform stack has to hold it up" below
 
 [server]
 host = "0.0.0.0"
@@ -385,6 +386,32 @@ pre_rotation_count = {{ .PreRotationCount }}
 > fixed, and the seed lives in **Vault** (not plaintext). Full Stack swaps `[messaging]` for
 > `kind = "create_mediator"` and points `[vta_did].url` at the in-cluster dids host — see
 > [`full-stack-setup-design.md`](full-stack-setup-design.md).
+
+### TSP is on, and the platform stack has to hold it up
+
+Every session this API creates advertises both transports. `services.tsp = true`
+publishes a `#tsp` `TSPTransport` entry in the VTA's DID document from log v1,
+pointing at the **same** mediator as its `DIDCommMessaging` entry — TSP is a
+second protocol over one mediator, never a second mediator.
+
+Two consequences, both of which bite in `vta_only` specifically:
+
+- **The VTA image must be built `--features tsp`.** `vta setup --from` refuses
+  the flag otherwise, rather than advertise a transport the binary cannot
+  answer, so an image predating TSP no longer builds a session.
+- **Nobody upstream checks the mediator.** `vta_only` uses
+  `[messaging] kind = "existing"` against the platform stack's mediator, and
+  `ServiceCapabilities::from_did_document` is only consulted where setup mints
+  the mediator itself. Sequencing is ours to keep: rebuild the platform stack on
+  a TSP-enabled mediator image *before* any `vta_only` session points at it.
+
+Getting that order wrong does not degrade gracefully — `#tsp` is *first* in the
+preference order, so the peers that read a DID document most carefully are the
+ones that pick it and fail there instead of falling back to DIDComm.
+
+Turning TSP off on a minted session is not a config change here; the DID
+document is authoritative once written. It is `pnm services tsp disable` against
+the running VTA, plus re-publishing the document.
 
 ### Full Stack recipes — see the Full Stack design
 

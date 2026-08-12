@@ -18,6 +18,7 @@ public_url  = "{{ .VtaPublicURL }}"
 [services]
 rest    = true
 didcomm = true
+tsp     = true
 
 [server]
 host = "0.0.0.0"
@@ -69,6 +70,10 @@ type fullStackVtaSetupData struct {
 // The webvh URL paths become the DIDs' path components
 // (did:webvh:<scid>:<host>:<vta_name>-vta / <vta_name>-mediator) — derived
 // from the session's name, same convention as the VTC's <vtc_name>-vtc.
+//
+// `[messaging]` carries no `protocols` key on purpose: omitted, setup derives
+// the minted mediator's transports from `[services]`, which is the only value
+// that keeps the VTA's `#tsp` and the mediator it names in step.
 func RenderFullStackVtaSetupTOML(s *model.SetupSession, vault VaultSecrets) (string, error) {
 	var buf bytes.Buffer
 	err := fullStackVtaSetupTmpl.Execute(&buf, fullStackVtaSetupData{
@@ -86,9 +91,14 @@ func RenderFullStackVtaSetupTOML(s *model.SetupSession, vault VaultSecrets) (str
 
 // ── mediator-recipe.toml ─────────────────────────────────────────────────────
 
+// `protocols` has no runtime effect on a prebuilt image — the mediator's TSP
+// is compile-time and mediator-setup writes no TSP key into
+// conf/mediator.toml. Stated because it records which image this session
+// expects: one built without `--features tsp` accepts this recipe and then
+// never answers the `#tsp` entry the VTA published for it.
 var mediatorRecipeTmpl = template.Must(template.New("fs-mediator-recipe").Parse(`[deployment]
 type      = "server"
-protocols = ["didcomm"]
+protocols = ["didcomm", "tsp"]
 use_vta   = true
 vta_mode  = "sealed-export"
 
@@ -148,6 +158,10 @@ const (
 	WebvhPhaseComplete = "offline-complete" // phase 3 — step_dids_p2
 )
 
+// `identity.transport` is written out because omitting it does not mean
+// "DIDComm" — the daemon reads absent as `both`, so a TSP-carrying build has
+// been advertising `TSPTransport` here all along. `both` matches the rest of
+// the stack; the point is that it is now stated rather than inherited.
 var webvhRecipeTmpl = template.Must(template.New("fs-webvh-recipe").Parse(`[deployment]
 service  = "daemon"
 vta_mode = "{{ .Phase }}"
@@ -165,6 +179,7 @@ data_dir   = "data/daemon"
 [identity]
 public_url   = "{{ .PublicURL }}"
 mediator_did = "{{ .MediatorDid }}"
+transport    = "both"
 
 [vta]
 {{- if eq .Phase "offline-prepare" }}
