@@ -351,6 +351,7 @@ public_url  = "{{ .PublicURL }}"           # https://{subdomain}.{CLUSTER_DOMAIN
 [services]
 rest    = true
 didcomm = true
+tsp     = true
 
 [server]
 host = "0.0.0.0"
