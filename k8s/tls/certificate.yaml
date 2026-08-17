@@ -1,8 +1,23 @@
+# The wildcard every managed and platform hostname is served with.
+#
+#   kubectl apply -f k8s/tls/certificate.yaml
+#
+# ── Why kube-system ──────────────────────────────────────────────────────────
+#
+# Traefik serves this as its default certificate through the TLSStore named
+# `default` (k8s/tls/tlsstore-default.yaml), and a TLSStore can only reference a
+# Secret in its own namespace — which must be Traefik's. Under ingress-nginx the
+# certificate lived in `cert-manager` and the controller was pointed at it by
+# flag across namespaces; that indirection is gone.
+#
+# Moving it is one issuance against the "5 certificates per identical name set
+# per week" limit. If you ever move it again, remember the old Secret keeps
+# renewing until its Certificate object is deleted.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: firstperson-dev-wildcard
-  namespace: cert-manager
+  namespace: kube-system
 spec:
   secretName: firstperson-dev-wildcard-tls
   issuerRef:

@@ -368,12 +368,18 @@ func (o *Orchestrator) fsK8sProvision(ctx context.Context, ns string, s *model.S
 		name, fqdn string
 		port       int32
 		labels     map[string]string
+		// stripXFH removes X-Forwarded-Host on the way to this component. Only
+		// the dids daemon reads that header — and warn-logs every request
+		// carrying one it is not configured to trust, which is every request
+		// once it is behind an ingress at all. See
+		// k8s.StripForwardedHostMiddleware.
+		stripXFH bool
 	}
 	svcs := []svc{
-		{k8s.FSVtaName(s.ID), s.FQDN(), 8100, fsLabels("vta", s.ID)},
-		{k8s.FSMediatorName(s.ID), s.MediatorFQDN(), 7037, fsLabels("mediator", s.ID)},
-		{k8s.FSDidsName(s.ID), s.DidsFQDN(), 8534, fsLabels("dids", s.ID)},
-		{k8s.FSVtcName(s.ID), s.VtcFQDN(), 8200, fsLabels("vtc", s.ID)},
+		{k8s.FSVtaName(s.ID), s.FQDN(), 8100, fsLabels("vta", s.ID), false},
+		{k8s.FSMediatorName(s.ID), s.MediatorFQDN(), 7037, fsLabels("mediator", s.ID), false},
+		{k8s.FSDidsName(s.ID), s.DidsFQDN(), 8534, fsLabels("dids", s.ID), true},
+		{k8s.FSVtcName(s.ID), s.VtcFQDN(), 8200, fsLabels("vtc", s.ID), false},
 	}
 
 	// Only a custom domain needs a certificate of its own. Managed and platform
@@ -391,17 +397,25 @@ func (o *Orchestrator) fsK8sProvision(ctx context.Context, ns string, s *model.S
 		}
 	}
 
+	// Before the Ingresses, not with them: the dids Ingress names this object,
+	// and Traefik fails a router that references a Middleware which isn't there
+	// yet. One per namespace, shared by every session the user owns.
+	if err := o.k8s.EnsureStripForwardedHostMiddleware(ctx, ns); err != nil {
+		return err
+	}
+
 	for _, sv := range svcs {
 		if err := o.k8s.CreateComponentService(ctx, ns, sv.name, sv.labels, sv.port); err != nil {
 			return err
 		}
 		if err := o.k8s.CreateComponentIngress(ctx, k8s.ComponentIngressSpec{
-			Namespace:   ns,
-			Name:        sv.name,
-			ServiceName: sv.name,
-			Host:        sv.fqdn,
-			Port:        sv.port,
-			TLSSecret:   tlsSecret,
+			Namespace:          ns,
+			Name:               sv.name,
+			ServiceName:        sv.name,
+			Host:               sv.fqdn,
+			Port:               sv.port,
+			TLSSecret:          tlsSecret,
+			StripForwardedHost: sv.stripXFH,
 		}); err != nil {
 			return err
 		}

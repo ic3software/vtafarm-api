@@ -60,3 +60,9 @@ rules:
   - apiGroups: ["cert-manager.io"]
     resources: ["certificates"]
     verbs: ["get", "list", "watch", "create", "delete"]
+  # One Middleware per user namespace, stripping X-Forwarded-Host on the way to
+  # the dids daemon. Namespaced and not cross-namespace referenceable, so it
+  # cannot be a single shared object.
+  - apiGroups: ["traefik.io"]
+    resources: ["middlewares"]
+    verbs: ["get", "list", "create", "delete"]

@@ -107,9 +107,9 @@ what makes the platform stack nearly free:
 
 `vta-<vta_name>.firstperson.dev` and friends. vtafarm-api creates four
 **proxied** Cloudflare A records at session-create time. TLS comes from the
-cluster-wide `*.firstperson.dev` wildcard that ingress-nginx serves as its
-`default-ssl-certificate`. No Domains record involved, nothing for the user to
-do.
+cluster-wide `*.firstperson.dev` wildcard that Traefik serves as its default
+certificate (the `default` TLSStore). No Domains record involved, nothing for
+the user to do.
 
 ### 3.2 `custom` — new
 
@@ -771,7 +771,7 @@ spec:
     solvers:
     - http01:
         ingress:
-          class: nginx
+          ingressClassName: traefik
 ```
 
 **One issuer, every environment — there is deliberately no staging twin.**
@@ -845,11 +845,11 @@ aaa.com allows letsencrypt.org.
 
 | Option | Verdict |
 | --- | --- |
-| **Cloudflare for SaaS** — users CNAME to a proxied `lb`, Cloudflare issues and renews the edge certificate | **Deferred.** Free at this scale (100 custom hostnames included on every plan, then $0.10/mo each) and it would hide the origin IP. But origin-side TLS is unresolved: with a fallback origin, Cloudflare sends SNI = the custom hostname, our nginx answers with the wildcard, and Full (strict) rejects it. Fixing that means either downgrading the whole zone to Full, or running cert-manager **as well** — i.e. this option plus all of §8. Parked in §16.3; §4.1 keeps the migration path free. |
+| **Cloudflare for SaaS** — users CNAME to a proxied `lb`, Cloudflare issues and renews the edge certificate | **Deferred.** Free at this scale (100 custom hostnames included on every plan, then $0.10/mo each) and it would hide the origin IP. But origin-side TLS is unresolved: with a fallback origin, Cloudflare sends SNI = the custom hostname, our ingress answers with the wildcard, and Full (strict) rejects it. Fixing that means either downgrading the whole zone to Full, or running cert-manager **as well** — i.e. this option plus all of §8. Parked in §16.3; §4.1 keeps the migration path free. |
 | **LE DNS-01 with `_acme-challenge` delegation** | Rejected — 4 more records for the user, and its benefits (no port-80 dependency, wildcard support) are ones we don't need. |
 | **LE DNS-01 with the user's DNS API credentials** | Rejected — a large trust ask, and provider-specific. |
 | **User-supplied certificates** | Rejected — manual renewal every 90 days. |
-| **Caddy on-demand TLS** | Rejected — the slickest answer for arbitrary hostnames, but it means replacing RKE2's bundled ingress-nginx. |
+| **Caddy on-demand TLS** | Rejected — the slickest answer for arbitrary hostnames, but it means replacing the bundled ingress controller. (Written when that was ingress-nginx; the cluster moved to Traefik afterwards, for unrelated reasons, and the verdict is unchanged — Caddy would still replace it.) |
 
 ### 8.6 On the origin IP
 
@@ -862,7 +862,7 @@ openssl s_client 157.180.68.139:443    → CN=*.firstperson.dev
 curl --resolve dids-…:443:157.180.68.139  → HTTP 200   (identical to via-Cloudflare)
 ```
 
-ingress-nginx serves the wildcard certificate to *any* direct connection on
+The ingress serves the wildcard certificate to *any* direct connection on
 :443, so internet-wide scanners (Censys, Shodan) already index the
 IP ↔ domain link. Choosing direct-to-origin therefore gives up nothing that is
 currently held. The real control would be firewalling the origin to

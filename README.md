@@ -104,7 +104,7 @@ Copy `.env.example` and adjust as needed:
 | `DB_NAME` | `vtafarm` | |
 | `JWT_SECRET` | _(required)_ | HS256 signing secret — must match the team, see below |
 | `ORCHESTRATOR_RESUME` | `true` | Re-attach interrupted sessions at startup. Set `false` locally — see [`docs/shared-dev-database.md`](docs/shared-dev-database.md) |
-| `CLUSTER_INGRESS_IP` | _(required)_ | External IP of the cluster's Ingress-NGINX LoadBalancer |
+| `CLUSTER_INGRESS_IP` | _(required)_ | External IP of the cluster's Traefik LoadBalancer |
 | `CLOUDFLARE_API_TOKEN` | _(optional)_ | Required for VTA setup wizard |
 | `CLOUDFLARE_ZONE_ID` | _(optional)_ | Required for VTA setup wizard |
 | `KUBECONFIG` | _(empty)_ | Auto-detects `~/.kube/config` when empty |
@@ -133,8 +133,8 @@ The production stack is deployed to a Kubernetes cluster (RKE2) via Helm.
 ### 1. TLS — Wildcard Certificate via cert-manager (one-time cluster setup)
 
 All VTA sessions share a single `*.firstperson.dev` wildcard certificate managed by
-cert-manager. nginx-ingress serves it as the default SSL certificate, so no
-per-Ingress TLS configuration is needed.
+cert-manager. Traefik serves it as its default certificate, so no per-Ingress TLS
+configuration is needed.
 
 #### Step 1 — Create the Cloudflare API token Secret
 
@@ -169,20 +169,66 @@ TXT record to Cloudflare, then removes it) and store the issued certificate.
 Check status with:
 
 ```bash
-kubectl get certificate -n cert-manager firstperson-dev-wildcard
+kubectl get certificate -n kube-system firstperson-dev-wildcard
 ```
 
-#### Step 4 — Configure nginx-ingress to use the wildcard cert by default
+The Certificate issues into `kube-system` — Traefik's own namespace — because a
+TLSStore can only reference a Secret alongside it. Adjust both files if Traefik
+runs elsewhere in your cluster.
 
-RKE2 manages its built-in nginx ingress controller via the `HelmChartConfig` CRD.
+#### Step 4 — Configure Traefik
+
+RKE2 manages its bundled ingress controller through the `HelmChartConfig` CRD.
+Two objects: the controller's entrypoints, and the default certificate.
 
 ```bash
-kubectl apply -f k8s/tls/rke2-ingress-nginx-config.yaml
+kubectl apply -f k8s/tls/rke2-traefik-config.yaml
+kubectl apply -f k8s/tls/tlsstore-default.yaml
 ```
 
-RKE2 will reconcile the change and restart the ingress controller automatically.
-After this, every VTA Ingress gets HTTPS automatically — no `tls:` block or
-cert-manager annotation required on individual Ingress resources.
+RKE2 reconciles the change and restarts Traefik automatically. After this every
+Ingress gets HTTPS and an HTTP→HTTPS redirect with no annotation, `tls:` block
+or cert-manager annotation of its own.
+
+Verify before going further — this is the step whose failure shows up several
+minutes later as a mediator crash loop rather than as a TLS error.
+
+**Test against the origin, not the hostname.** Managed and platform records are
+*proxied* through Cloudflare, so plain `curl https://<hostname>` reports
+Cloudflare's edge certificate (issuer: Google Trust Services) and Cloudflare's
+status code — it tells you nothing about the cluster. Pin the node IP:
+
+```bash
+IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+
+# 1. The certificate the cluster itself serves — Let's Encrypt, not TRAEFIK DEFAULT CERT
+openssl s_client -connect "$IP":443 -servername <a dids hostname> </dev/null 2>/dev/null \
+  | openssl x509 -noout -issuer
+
+# 2. Routing. Pick a path the component actually serves: / on dids, /health on a
+#    VTA. A 404 on / from a VTA is correct and means nothing is wrong.
+curl -skI --resolve <a dids hostname>:443:"$IP" https://<a dids hostname> | head -1
+
+# 3. The redirect really applied (see the note in rke2-traefik-config.yaml —
+#    a mistyped values path fails silently)
+kubectl -n kube-system get ds rke2-traefik \
+  -o jsonpath='{.spec.template.spec.containers[0].args}' | tr ',' '\n' | grep redirections
+```
+
+Note the ADDRESS column of `kubectl get ingress` stays **empty** under Traefik in
+this layout, and that is not a fault — see the `publishedService` note in
+`k8s/tls/rke2-traefik-config.yaml`. Read the CLASS column instead.
+
+#### Step 5 — Migrating an existing cluster off ingress-nginx
+
+Only when the cluster already ran sessions. vtafarm-api never updates an Ingress
+after creating it, so pre-existing ones keep `ingressClassName: nginx` and
+Traefik ignores them:
+
+```bash
+KUBE_CONTEXT=k8s-fpp-dev ./scripts/migrate-ingress-to-traefik.sh           # dry run
+KUBE_CONTEXT=k8s-fpp-dev ./scripts/migrate-ingress-to-traefik.sh --apply
+```
 
 ### 2. HashiCorp Vault (one-time, before the API)
 
