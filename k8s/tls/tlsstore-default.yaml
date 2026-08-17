@@ -1,0 +1,29 @@
+# Traefik's default certificate — what every hostname under our own zone is
+# served with.
+#
+#   kubectl apply -f k8s/tls/tlsstore-default.yaml
+#
+# This is the direct replacement for ingress-nginx's --default-ssl-certificate
+# flag, and it is what lets every Ingress this API creates carry no tls: block:
+# the router has no certificate of its own, so Traefik falls back to this one.
+# Custom domains are the exception — their Ingress names a Secret, and a
+# router-level certificate wins over the store.
+#
+# Two constraints, both easy to get wrong:
+#
+#   - The name MUST be `default`. Traefik uses no other store for this.
+#   - The namespace MUST be Traefik's own (kube-system for the RKE2 bundle), and
+#     the Secret has to live in that same namespace — hence
+#     k8s/tls/certificate.yaml issuing there. A store in the wrong namespace
+#     silently does nothing and every host falls back to Traefik's self-signed
+#     certificate, which fails the pipeline several steps later: from
+#     step_vta_register_dids on, the components resolve each other's did:webvh
+#     over HTTPS and reject an untrusted chain.
+apiVersion: traefik.io/v1alpha1
+kind: TLSStore
+metadata:
+  name: default
+  namespace: kube-system
+spec:
+  defaultCertificate:
+    secretName: firstperson-dev-wildcard-tls

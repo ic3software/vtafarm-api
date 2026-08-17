@@ -178,8 +178,8 @@ A   vtc-{vtc_name}.{domain}        →  {CLUSTER_INGRESS_IP}
 
 DNS must exist first because the rendered recipes embed the final `https://…` URLs
 (`public_url`, `webvh_url`, `[identity].public_url`, the VTC's `base_url`) into the DID
-documents that get published. TLS is the cluster-wide wildcard default-ssl-certificate on
-nginx-ingress (same as today's VTA Ingress — no per-host `tls:` block needed).
+documents that get published. TLS is the cluster-wide wildcard, served by Traefik as its
+default certificate (same as today's VTA Ingress — no per-host `tls:` block needed).
 
 `CreateARecord` already returns a record ID; store all four for teardown.
 

@@ -126,23 +126,22 @@ func (c *Client) CreateVtaService(ctx context.Context, ns string, sessionID uint
 	return nil
 }
 
-// CreateVtaIngress creates an nginx Ingress routing the session FQDN to the VTA service.
-// TLS is handled by the cluster-wide wildcard default-ssl-certificate on nginx-ingress;
-// no tls: block is needed. Idempotent — AlreadyExists is ignored.
+// CreateVtaIngress creates an Ingress routing the session FQDN to the VTA service.
+// TLS is the cluster-wide wildcard, which Traefik serves as its default
+// certificate, so no tls: block is needed — and the HTTP→HTTPS redirect is an
+// entrypoint setting on the controller, so no annotation is either.
+// Idempotent — AlreadyExists is ignored.
 func (c *Client) CreateVtaIngress(ctx context.Context, ns string, sessionID uint, fqdn string) error {
 	name := vtaDeploymentName(sessionID)
 	svcName := vtaServiceName(sessionID)
 	port := intstr.FromInt32(8100)
 	pathType := networkingv1.PathTypePrefix
-	ingressClass := "nginx"
+	ingressClass := IngressClass
 
 	_, err := c.kube.NetworkingV1().Ingresses(ns).Create(ctx, &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: ns,
-			Annotations: map[string]string{
-				"nginx.ingress.kubernetes.io/ssl-redirect": "true",
-			},
 		},
 		Spec: networkingv1.IngressSpec{
 			IngressClassName: &ingressClass,

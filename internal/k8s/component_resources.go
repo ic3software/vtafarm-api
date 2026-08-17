@@ -223,28 +223,27 @@ type ComponentIngressSpec struct {
 	Namespace, Name, ServiceName, Host string
 	Port                               int32
 	// TLSSecret names the Secret serving this host's certificate. Empty selects
-	// the cluster-wide wildcard that ingress-nginx serves as its
-	// default-ssl-certificate — which covers every managed and platform
-	// hostname, so only custom domains ever set this.
+	// the cluster-wide wildcard Traefik serves as its default certificate —
+	// which covers every managed and platform hostname, so only custom domains
+	// ever set this.
 	TLSSecret string
+	// StripForwardedHost attaches the namespace's strip-forwarded-host
+	// Middleware. Only the dids daemon needs it (see
+	// StripForwardedHostMiddleware); the caller must have created the
+	// Middleware first.
+	StripForwardedHost bool
 }
 
-// CreateComponentIngress creates an nginx Ingress routing Host to ServiceName
-// on Port. Idempotent.
+// CreateComponentIngress creates an Ingress routing Host to ServiceName on
+// Port. Idempotent.
 func (c *Client) CreateComponentIngress(ctx context.Context, spec ComponentIngressSpec) error {
 	pathType := networkingv1.PathTypePrefix
-	ingressClass := "nginx"
+	ingressClass := IngressClass
 
 	ingress := &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      spec.Name,
 			Namespace: spec.Namespace,
-			Annotations: map[string]string{
-				// cert-manager's HTTP-01 solver claims the more specific
-				// /.well-known/acme-challenge/ path, so this doesn't interfere
-				// with issuance.
-				"nginx.ingress.kubernetes.io/ssl-redirect": "true",
-			},
 			// Deliberately NO cert-manager.io/cluster-issuer annotation. We
 			// create the Certificate ourselves (one covering all four hosts);
 			// leaving the annotation here as well would have ingress-shim make
@@ -279,6 +278,16 @@ func (c *Client) CreateComponentIngress(ctx context.Context, spec ComponentIngre
 			Hosts:      []string{spec.Host},
 			SecretName: spec.TLSSecret,
 		}}
+	}
+	if spec.StripForwardedHost {
+		// Traefik fails the router outright when this names a Middleware that
+		// does not exist, so the object has to be in place before the Ingress —
+		// which is why the caller creates it, rather than this function doing it
+		// on the way past.
+		ingress.Annotations = map[string]string{
+			"traefik.ingress.kubernetes.io/router.middlewares": MiddlewareRef(
+				spec.Namespace, StripForwardedHostMiddleware),
+		}
 	}
 
 	_, err := c.kube.NetworkingV1().Ingresses(spec.Namespace).Create(ctx, ingress, metav1.CreateOptions{})

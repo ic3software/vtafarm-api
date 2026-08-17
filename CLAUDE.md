@@ -49,7 +49,7 @@ See `.env.example` for all options. Key ones:
 | `DID_HOSTING_DID` / `DID_HOSTING_PRIVATE_KEY` | — | vtafarm-api's **own** keypair (`make gen-keypair`) for the DID-hosting control API, enrolled in a daemon's ACL with `role=admin`. Not anything a daemon issued, so one keypair serves every daemon it is enrolled in. There are deliberately no DID-hosting **URLs** here — see "Shared infrastructure comes from the platform stack" below |
 | `CLOUDFLARE_API_TOKEN` | — | Cloudflare API token (`Zone:DNS:Edit` permission) |
 | `CLOUDFLARE_ZONE_ID` | — | Cloudflare Zone ID for the user's root domain |
-| `CLUSTER_INGRESS_IP` | — | External IP of the cluster's Ingress-NGINX LoadBalancer |
+| `CLUSTER_INGRESS_IP` | — | External IP of the Traefik LoadBalancer |
 | `ACME_CLUSTER_ISSUER` | `letsencrypt-http01` | The same issuer in every environment — there is no staging variant. A staging certificate passes `tls_provision` and then crash-loops the mediator, because the components resolve each other's `did:webvh` over HTTPS and reject an untrusted chain. Every environment therefore shares Let's Encrypt's unraisable allowances (5 certs per identical name set per week), so keep iteration on domains we own |
 
 ## Project Structure
@@ -504,6 +504,46 @@ Assign the correct tag so it appears in the right group in Scalar:
 
 ## Kubernetes Design
 
+### The ingress controller is Traefik
+
+`internal/k8s/traefik.go` holds everything this API knows about it. Two things
+that were per-Ingress annotations under ingress-nginx are now settings on the
+controller itself (`k8s/tls/rke2-traefik-config.yaml`), which is why the
+Ingresses we create carry **no annotations at all** beyond the one below:
+
+- **HTTP→HTTPS** is an entrypoint redirect (`ports.web.redirections`), not
+  `ssl-redirect` per Ingress.
+- **The wildcard certificate** comes from the `default` TLSStore
+  (`k8s/tls/tlsstore-default.yaml`), not `--default-ssl-certificate`. The
+  TLSStore and the Secret it names must both live in Traefik's own namespace —
+  which is why `k8s/tls/certificate.yaml` issues into `kube-system` rather than
+  `cert-manager`. Get this wrong and every managed/platform hostname silently
+  serves Traefik's self-signed certificate, which doesn't fail until
+  `step_vta_register_dids` — the components resolve each other's `did:webvh`
+  over HTTPS and reject an untrusted chain.
+- Custom domains still name their own Secret in the Ingress `tls:` block; a
+  router-level certificate wins over the store.
+
+**The dids Ingress carries a `strip-forwarded-host` Middleware**, one per user
+namespace. The daemon warn-logs every request that claims a forwarded host from
+a peer outside its trusted-CIDR set, and an ingress puts `X-Forwarded-Host` on
+every request — so without this it logs a warning per request, forever.
+Stripping rather than trusting the ingress CIDR is deliberate: pod networking is
+flat, so a CIDR wide enough to cover the ingress also lets any other pod dictate
+the request host. Traefik can actually remove the header because it writes the
+X-Forwarded-* set at the entrypoint, before middlewares run; ingress-nginx
+emits its own `proxy_set_header` ahead of any snippet and sends **both** values,
+so the same fix was impossible there.
+
+`ingressClassName` is hardcoded (`k8s.IngressClass`), not configurable — an
+environment on a different controller would also need different entrypoint
+settings, a different default certificate and a different ACME solver class, so
+one env var could never carry the switch.
+
+Sessions created before the switch keep `ingressClassName: nginx` forever (we
+only ever create Ingresses, never update them):
+`scripts/migrate-ingress-to-traefik.sh` repoints them, dry-run by default.
+
 ### Per-User Namespace Isolation
 
 Every user gets their own namespace: `vtafarm-user-{userID}`.
@@ -587,4 +627,7 @@ rules:
 - apiGroups: ["cert-manager.io"]
   resources: ["certificates"]
   verbs: ["get", "list", "watch", "create", "delete"]
+- apiGroups: ["traefik.io"]
+  resources: ["middlewares"]
+  verbs: ["get", "list", "create", "delete"]
 ```

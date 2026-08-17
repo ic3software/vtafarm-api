@@ -165,7 +165,7 @@ The backend calls the Cloudflare API to create DNS records **before** running an
 | --- | --- |
 | `CLOUDFLARE_API_TOKEN` | Cloudflare API token with `Zone:DNS:Edit` permission |
 | `CLOUDFLARE_ZONE_ID` | Zone ID for the user's root domain (from Cloudflare dashboard) |
-| `CLUSTER_INGRESS_IP` | External IP of the cluster's Nginx/Ingress-NGINX LoadBalancer |
+| `CLUSTER_INGRESS_IP` | External IP of the cluster's Traefik LoadBalancer |
 | `CLUSTER_DOMAIN` | Root domain the generated subdomain is appended to (e.g. `example.com`) |
 
 ### DNS Records Created
@@ -209,8 +209,8 @@ The returned record ID is stored on the session (`CFRecordID`) and used for tear
 ## Kubernetes Resource Provisioning
 
 All resources are created in the user's isolated namespace (`vtafarm-user-{userID}`). TLS is
-served by the cluster-wide **wildcard default-ssl-certificate** on nginx-ingress — there is no
-cert-manager and no per-host `tls:` block.
+served by the cluster-wide wildcard, which Traefik serves as **its default certificate** (the
+`default` TLSStore) — there is no per-host `tls:` block and nothing per-Ingress to configure.
 
 ### Resources (VTA Only)
 
@@ -221,7 +221,7 @@ cert-manager and no per-host `tls:` block.
 | `Job` (setup) | `vta-setup-{sessionID}` | runs `vta setup --from …` |
 | `Job` (provision) | `vta-provision-{sessionID}` | runs `vta import-did` (+ `did-mgmt servers add`) |
 | `Service` | `vta-{sessionID}` | ClusterIP on 8100 |
-| `Ingress` | `vta-{sessionID}` | nginx ingress (ssl-redirect annotation; wildcard TLS) |
+| `Ingress` | `vta-{sessionID}` | Traefik ingress (no annotations; wildcard TLS + redirect both come from the controller) |
 | `Deployment` (server) | `vta-{sessionID}` | long-running VTA, starts after the provision Job |
 
 ### Ingress template
@@ -232,10 +232,8 @@ kind: Ingress
 metadata:
   name: vta-{sessionID}
   namespace: vtafarm-user-{userID}
-  annotations:
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
 spec:
-  ingressClassName: nginx
+  ingressClassName: traefik
   rules:
     - host: {subdomain}.{CLUSTER_DOMAIN}
       http:

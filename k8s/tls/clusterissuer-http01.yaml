@@ -59,4 +59,11 @@ spec:
     solvers:
     - http01:
         ingress:
-          class: nginx
+          # cert-manager creates a solver Ingress per challenge; this is the
+          # class it stamps on it. Wrong value = the challenge is served by
+          # nobody and tls_provision times out with no useful error.
+          #
+          # The entrypoint-level HTTP→HTTPS redirect does not break this: Let's
+          # Encrypt follows the redirect and does not validate the certificate
+          # it lands on.
+          ingressClassName: traefik
