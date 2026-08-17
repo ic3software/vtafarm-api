@@ -178,17 +178,56 @@ runs elsewhere in your cluster.
 
 #### Step 4 — Configure Traefik
 
-RKE2 manages its bundled ingress controller through the `HelmChartConfig` CRD.
-Two objects: the controller's entrypoints, and the default certificate.
+Two things: the controller's entrypoints, and the default certificate.
+
+**Entrypoints — through Rancher, not kubectl.** All fpp clusters are
+Rancher-managed, and Rancher owns the `HelmChartConfig` object
+(`objectset.rio.cattle.io/owner-name: managed-chart-config`). A `kubectl apply`
+holds until the next sync or upgrade and is then reverted — this is exactly
+what kept wiping ingress-nginx's `default-ssl-certificate`. Put the values in
+the cluster spec so they survive:
+
+Rancher UI → Cluster Management → the cluster → Edit YAML → `rkeConfig.chartValues`:
+
+```yaml
+rkeConfig:
+  chartValues:
+    rke2-calico: {}                 # other charts' entries — leave them alone
+    rke2-traefik:
+      ingressClass:
+        isDefaultClass: true
+      ports:
+        web:
+          http:
+            redirections:
+              entryPoint:
+                to: websecure
+                scheme: https
+                permanent: true
+        websecure:
+          http:
+            tls:
+              enabled: true
+```
+
+Add these keys, do not replace the map — the siblings are other charts' values.
+
+The chart ships no values schema, so a key that is misspelled or one level off
+is accepted, produces no argument, and looks exactly like a working config.
+Verify against the rendered args, never against what you typed.
+
+On a cluster Rancher does not manage, the same values are in
+`k8s/tls/rke2-traefik-config.yaml` — `kubectl apply` that instead.
+
+**The default certificate** is a plain CRD object, not chart config, so Rancher
+never touches it:
 
 ```bash
-kubectl apply -f k8s/tls/rke2-traefik-config.yaml
 kubectl apply -f k8s/tls/tlsstore-default.yaml
 ```
 
-RKE2 reconciles the change and restarts Traefik automatically. After this every
-Ingress gets HTTPS and an HTTP→HTTPS redirect with no annotation, `tls:` block
-or cert-manager annotation of its own.
+After this every Ingress gets HTTPS and an HTTP→HTTPS redirect with no
+annotation, `tls:` block or cert-manager annotation of its own.
 
 Verify before going further — this is the step whose failure shows up several
 minutes later as a mediator crash loop rather than as a TLS error.
@@ -371,4 +410,10 @@ rules:
 - apiGroups: ["networking.k8s.io"]
   resources: ["ingresses"]
   verbs: ["get", "list", "create", "update", "delete", "watch"]
+- apiGroups: ["cert-manager.io"]
+  resources: ["certificates"]
+  verbs: ["get", "list", "watch", "create", "delete"]
+- apiGroups: ["traefik.io"]
+  resources: ["middlewares"]
+  verbs: ["get", "list", "create", "delete"]
 ```
