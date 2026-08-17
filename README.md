@@ -192,6 +192,7 @@ Rancher UI → Cluster Management → the cluster → Edit YAML → `rkeConfig.c
 ```yaml
 rkeConfig:
   chartValues:
+    rke2-calico: {}                 # other charts' entries — leave them alone
     rke2-traefik:
       ingressClass:
         isDefaultClass: true
@@ -209,9 +210,14 @@ rkeConfig:
               enabled: true
 ```
 
-Drop any `rke2-ingress-nginx` entry while you are in there; it is dead once the
-controller is gone. On a cluster Rancher does not manage, the same values are
-in `k8s/tls/rke2-traefik-config.yaml` — `kubectl apply` that instead.
+Add these keys, do not replace the map — the siblings are other charts' values.
+
+The chart ships no values schema, so a key that is misspelled or one level off
+is accepted, produces no argument, and looks exactly like a working config.
+Verify against the rendered args, never against what you typed.
+
+On a cluster Rancher does not manage, the same values are in
+`k8s/tls/rke2-traefik-config.yaml` — `kubectl apply` that instead.
 
 **The default certificate** is a plain CRD object, not chart config, so Rancher
 never touches it:
@@ -404,4 +410,10 @@ rules:
 - apiGroups: ["networking.k8s.io"]
   resources: ["ingresses"]
   verbs: ["get", "list", "create", "update", "delete", "watch"]
+- apiGroups: ["cert-manager.io"]
+  resources: ["certificates"]
+  verbs: ["get", "list", "watch", "create", "delete"]
+- apiGroups: ["traefik.io"]
+  resources: ["middlewares"]
+  verbs: ["get", "list", "create", "delete"]
 ```
