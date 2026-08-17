@@ -1,57 +1,23 @@
-# Ingress controller configuration — the settings that used to be per-Ingress
-# annotations under ingress-nginx.
+# Traefik entrypoint settings — the HTTP→HTTPS redirect that replaces
+# ingress-nginx's per-Ingress ssl-redirect annotation.
 #
-#   kubectl apply -f k8s/tls/rke2-traefik-config.yaml
+# ⚠️ On a Rancher-managed cluster this object belongs to Rancher
+# (objectset.rio.cattle.io/owner-name: managed-chart-config). Applying it with
+# kubectl works until the next sync or upgrade, which reverts it — the same way
+# rke2-ingress-nginx kept losing its default-ssl-certificate. There, put these
+# same values in the cluster's rkeConfig.chartValues instead; see README §1
+# Step 4. This file is for clusters Rancher does not manage.
 #
-# RKE2 reconciles the change and restarts Traefik on its own. If Rancher manages
-# this cluster it also writes to this object (it injects global.cattle.clusterId)
-# — the values merge, but check the object after applying rather than assuming.
+# Everything here except the redirect is either a chart default (websecure TLS)
+# or a safety net (isDefaultClass, for manifests that forget the class).
 #
-# Installing Traefik from the upstream chart instead? The same keys go straight
-# into values.yaml; only the HelmChartConfig wrapper is RKE2-specific.
-#
-# **Mind the `http:` level.** Helm merges keys it does not recognise without
-# complaining, so a values path that is one level off is accepted, produces no
-# argument, and looks exactly like a working config. Both entrypoint settings
-# below live under `http:` — verify against the rendered args after applying,
-# never against this file:
+# Helm accepts a values path that is one level off without complaining: it
+# produces no argument and looks exactly like a working config. Both settings
+# below live under `http:`. Verify against the rendered args, never this file:
 #
 #   kubectl -n kube-system get ds rke2-traefik \
-#     -o jsonpath='{.spec.template.spec.containers[0].args}' | tr ',' '\n'
-#
-# You want to see --entryPoints.web.http.redirections.entryPoint.to=websecure
-# and --entryPoints.websecure.http.tls=true. (The TLS one is also the chart's
-# default, so its presence proves nothing about whether this file applied — the
-# redirect is the one to look for.)
-#
-# ── What each block is load-bearing for ──────────────────────────────────────
-#
-# websecure.tls.enabled  Routers built from an Ingress with no tls: block get
-#                        TLS from the entrypoint, and their certificate from the
-#                        `default` TLSStore. This is what replaces
-#                        --default-ssl-certificate. **Without it every managed
-#                        and platform hostname serves plain HTTP on :443 only —
-#                        i.e. no HTTPS at all — and the full_stack pipeline dies
-#                        at step_vta_register_dids.**
-#
-# web.redirections       Replaces nginx.ingress.kubernetes.io/ssl-redirect on
-#                        every Ingress, which is why the ones this API creates
-#                        now carry no annotations. cert-manager's HTTP-01
-#                        challenge is redirected too; Let's Encrypt follows the
-#                        redirect and does not validate the certificate it lands
-#                        on, so custom-domain issuance still works.
-#
-# kubernetesCRD          Middleware is a CRD. allowCrossNamespace stays false —
-#                        vtafarm-api creates one Middleware per user namespace
-#                        precisely so it never needs the cluster-wide grant.
-#
-# publishedService       Writes the published Service's external address into
-#                        each Ingress's status. Note this leaves ADDRESS **empty**
-#                        in the RKE2 layout, where Traefik takes traffic on
-#                        hostPort 80/443 and its Service is ClusterIP — there is
-#                        no external address to publish. Cosmetic either way, but
-#                        it means an empty ADDRESS is NOT evidence that something
-#                        is broken; check the CLASS column and curl instead.
+#     -o jsonpath='{.spec.template.spec.containers[0].args}' | tr ',' '\n' \
+#     | grep redirections
 apiVersion: helm.cattle.io/v1
 kind: HelmChartConfig
 metadata:
@@ -60,7 +26,6 @@ metadata:
 spec:
   valuesContent: |-
     ingressClass:
-      enabled: true
       isDefaultClass: true
     ports:
       web:
@@ -74,11 +39,3 @@ spec:
         http:
           tls:
             enabled: true
-    providers:
-      kubernetesCRD:
-        enabled: true
-        allowCrossNamespace: false
-      kubernetesIngress:
-        enabled: true
-        publishedService:
-          enabled: true
