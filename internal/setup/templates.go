@@ -20,6 +20,9 @@ tsp     = true
 [server]
 host = "0.0.0.0"
 port = 8100
+cors_origins = [
+  "chrome-extension://dbjgfkjlgfamanmbiihldgncpjeknphl" # VTA Wallet, pinned key
+]
 
 [log]
 level  = "info"
