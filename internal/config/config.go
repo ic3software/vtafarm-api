@@ -214,7 +214,7 @@ func Load() *Config {
 			CPUPercent:       getEnvInt("MONITOR_CPU_PCT", 90),
 			MemPercent:       getEnvInt("MONITOR_MEM_PCT", 90),
 			StoragePercent:   getEnvInt("MONITOR_STORAGE_PCT", 85),
-			RestartWindowMin: getEnvInt("MONITOR_RESTART_WINDOW_MIN", 15),
+			RestartWindowMin: getEnvInt("MONITOR_RESTART_WINDOW_MIN", 1),
 			PendingGraceMin:  getEnvInt("MONITOR_PENDING_GRACE_MIN", 10),
 			ExtraNamespaces:  splitComma(getEnv("MONITOR_EXTRA_NAMESPACES", "vault,vault-transit,longhorn-system")),
 		},
