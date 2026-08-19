@@ -126,6 +126,10 @@ make migrate-down                        # roll back one step
 
 ---
 
+## Releasing
+
+Publishing a version to GHCR: [`docs/release.md`](docs/release.md).
+
 ## Production Deployment
 
 The production stack is deployed to a Kubernetes cluster (RKE2) via Helm.
