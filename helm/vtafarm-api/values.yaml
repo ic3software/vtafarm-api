@@ -3,6 +3,7 @@ replicaCount: 1
 
 image:
   repository: ""
+  # Empty falls back to the chart's appVersion.
   tag: ""
 
 service:
