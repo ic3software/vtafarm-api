@@ -3,5 +3,5 @@ name: vtafarm-api
 description: VTA Farm API — Go REST backend for Kubernetes pod management
 type: application
 # Kept equal; one release bumps both.
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"
