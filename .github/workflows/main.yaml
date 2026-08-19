@@ -47,6 +47,8 @@ jobs:
       KUBECONFIG_PATH:  ${{ secrets.KUBECONFIG_PATH }}
       DOCKER_USERNAME:  ${{ secrets.DOCKER_USERNAME }}
       INGRESS_HOST:     vtafarm-api.firstperson.dev
+      FRONTEND_HOST:    vtafarm.firstperson.dev
+      CLUSTER_DOMAIN:   firstperson.dev
     steps:
       - uses: actions/checkout@v6
 

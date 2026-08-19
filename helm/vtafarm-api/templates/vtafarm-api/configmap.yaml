@@ -21,7 +21,7 @@ data:
   VAULT_K8S_AUTH_MOUNT: {{ .Values.vault.k8sAuthMount | quote }}
   VAULT_APPROLE_MOUNT:  {{ .Values.vault.appRoleMount | quote }}
   VAULT_SKIP_VERIFY:    {{ .Values.vault.skipVerify | quote }}
-  CLUSTER_DOMAIN:       {{ .Values.cluster.domain | quote }}
+  CLUSTER_DOMAIN:       {{ required "cluster.domain is required - it is the zone tenant hostnames are created under" .Values.cluster.domain | quote }}
   MONITOR_CPU_PCT:            {{ .Values.monitor.cpuPct | quote }}
   MONITOR_MEM_PCT:            {{ .Values.monitor.memPct | quote }}
   MONITOR_STORAGE_PCT:        {{ .Values.monitor.storagePct | quote }}
@@ -32,6 +32,7 @@ data:
   GITHUB_PACKAGE_NAME:       {{ .Values.github.packageName | quote }}
   GITHUB_MEDIATOR_PACKAGE_NAME: {{ .Values.github.mediatorPackageName | quote }}
   GITHUB_DID_HOSTING_DAEMON_PACKAGE_NAME: {{ .Values.github.didHostingDaemonPackageName | quote }}
-  WEBAUTHN_RP_ID:            {{ .Values.webauthn.rpID | quote }}
-  WEBAUTHN_RP_ORIGINS:       {{ .Values.webauthn.rpOrigins | quote }}
+  WEBAUTHN_RP_ID:            {{ .Values.webauthn.rpID | default (include "app.frontendHost" .) | quote }}
+  WEBAUTHN_RP_ORIGINS:       {{ .Values.webauthn.rpOrigins | default (include "app.frontendOrigin" .) | quote }}
   WEBAUTHN_RP_DISPLAY_NAME:  {{ .Values.webauthn.rpDisplayName | quote }}
+  CORS_ALLOWED_ORIGINS:      {{ .Values.cors.allowedOrigins | default (include "app.frontendOrigin" .) | quote }}

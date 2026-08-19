@@ -22,6 +22,10 @@ type Config struct {
 	// database, where every API would resume the same rows.
 	// See docs/shared-dev-database.md.
 	OrchestratorResume bool
+	// CORSAllowedOrigins are the deployment's own browser origins - normally
+	// just the frontend's. The localhost dev servers are allowed unconditionally
+	// alongside these, see internal/router.
+	CORSAllowedOrigins []string
 	// MaxStackConnections caps how many vta_only sessions may connect to one
 	// shared full_stack. 0 disables the cap.
 	//
@@ -175,6 +179,7 @@ func Load() *Config {
 
 		ACMEClusterIssuer:   getEnv("ACME_CLUSTER_ISSUER", DefaultACMEIssuer),
 		OrchestratorResume:  getEnvBool("ORCHESTRATOR_RESUME", true),
+		CORSAllowedOrigins:  splitComma(getEnv("CORS_ALLOWED_ORIGINS", "")),
 		MaxStackConnections: getEnvInt("MAX_STACK_CONNECTIONS", 10),
 		DB: DBConfig{
 			Host:     getEnv("DB_HOST", "localhost"),
