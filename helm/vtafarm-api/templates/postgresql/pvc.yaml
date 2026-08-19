@@ -7,6 +7,9 @@ metadata:
     # Survive `helm uninstall` — the database data must never be deleted with the release.
     helm.sh/resource-policy: keep
 spec:
+  {{- with .Values.postgresql.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
   accessModes:
     - ReadWriteOnce
   resources:

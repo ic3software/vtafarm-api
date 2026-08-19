@@ -34,6 +34,9 @@ postgresql:
   # Pre-create with: kubectl create secret generic vtafarm-api-postgresql --from-literal=postgres-password='...'
   # The secret must contain key: postgres-password
   existingSecret: "vtafarm-api-postgresql"
+  # Empty uses the cluster default. Name one whose reclaimPolicy is Retain, so
+  # the volume outlives a deleted claim.
+  storageClass: ""
   storage: 5Gi
   # No CPU limit: requests give fair-share under contention; a CFS quota would
   # throttle bursts on an idle node. Memory is incompressible, so it gets a hard limit.
