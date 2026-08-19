@@ -102,10 +102,6 @@ helm push .charts/vtafarm-api-0.2.0.tgz oci://ghcr.io/ic3software/charts
 built on an arm64 machine without it produces an image that fails to start with
 `exec format error`.
 
-Only `helm/vtafarm-api` is published. `helm/vtafarm-vault` and
-`helm/vtafarm-transit` are not part of this release — stack 04 in `vtafarm-k8s`
-owns Vault now.
-
 **4. Push the commit and the tag.**
 
 ```bash

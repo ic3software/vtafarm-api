@@ -1,8 +1,0 @@
-# Vendored subchart archives (Chart.lock is committed; charts/ is not).
-charts/
-*.tgz
-
-# Never commit unseal keys / root tokens.
-*-init.json
-transit-init*.json
-*-creds.txt

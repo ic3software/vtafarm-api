@@ -1,6 +1,6 @@
 // Package vault talks to the farm's HashiCorp Vault to provision the per-user
 // secret isolation the VTA pods rely on. It is the runtime counterpart to
-// helm/vtafarm-vault/bootstrap.sh: the bootstrap grants this service (via an
+// vtafarm-k8s' scripts/vault-bootstrap.sh: the bootstrap grants this service (via an
 // AppRole) the *ability* to manage `vta-user-*` policies and Kubernetes-auth
 // roles; this client exercises that ability when a VTA is created or torn down.
 //

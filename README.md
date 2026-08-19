@@ -275,22 +275,10 @@ KUBE_CONTEXT=k8s-fpp-dev ./scripts/migrate-ingress-to-traefik.sh --apply
 
 ### 2. HashiCorp Vault (one-time, before the API)
 
-Each VTA's master seed is stored in HashiCorp Vault. Deploy it **before** the
-API — the API needs the `vtafarm-api-vault` Secret that Vault's bootstrap
-produces. Order matters: **transit Vault first, then the farm Vault.**
-
-1. **[`helm/vtafarm-transit`](helm/vtafarm-transit/README.md)** — the in-cluster
-   transit Vault that auto-unseals the farm Vault. Deploy, init + manually
-   unseal, and bootstrap it. This creates the `vault-transit-token` Secret the
-   farm Vault needs.
-
-2. **[`helm/vtafarm-vault`](helm/vtafarm-vault/README.md)** — the farm Vault that
-   holds the seeds. Deploy, init, and run its bootstrap to enable KV v2 +
-   Kubernetes auth + the AppRole, then create the `vtafarm-api-vault` Secret from
-   the printed role-id/secret-id.
-
-> Each chart's README has the full step-by-step. Don't deploy the farm Vault
-> before transit is up and bootstrapped, or it will stay sealed.
+Each VTA's master seed is stored in HashiCorp Vault, which `vtafarm-k8s` stack
+04 deploys — not this repo. Its runbook is `docs/vault.md` there, and it has to
+be installed and bootstrapped **before** the API: the API needs the
+`vtafarm-api-vault` Secret that `scripts/vault-bootstrap.sh farm` produces.
 
 ### 3. Create the API Secrets (one-time)
 
@@ -356,27 +344,12 @@ kubectl exec -it deployment/vtafarm \
   -n <namespace> -- go run ./cmd/migrate up
 ```
 
-### 7. CI/CD (GitHub Actions)
-
-`scripts/deploy.sh` automates the deploy step in CI. It expects the
-following repository secrets:
-
-| Secret | Description |
-| --- | --- |
-| `SSH_PRIVATE_KEY` | Private key with SSH access to the server |
-| `SERVER_IP` | IP address of the Kubernetes server node |
-| `KUBECONFIG_PATH` | Remote path to the kubeconfig on the server |
-| `DOCKER_USERNAME` | Docker Hub username |
-| `DOCKERHUB_TOKEN` | Docker Hub access token |
-
----
-
 ### Production Kubernetes RBAC
 
 When deploying via Helm (`make deploy`), the ClusterRole below is created
 automatically. For **test clusters or manual setups**, apply it by hand.
 
-The master seed is stored in HashiCorp Vault (see `helm/vtafarm-vault`), not a
+The master seed is stored in HashiCorp Vault (deployed by `vtafarm-k8s`), not a
 Kubernetes Secret, so vtafarm-api needs no secrets permissions and there is no
 `vtafarm-vta-secret-manager` ClusterRole.
 

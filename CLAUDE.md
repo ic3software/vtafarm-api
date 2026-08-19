@@ -68,8 +68,7 @@ See `.env.example` for all options. Key ones:
 │   ├── vta-setup-design.md          # API design for VTA setup automation (Mode A + shared shape)
 │   ├── full-stack-setup-design.md   # Authoritative design for the full_stack mode (all 4 components)
 │   ├── custom-domain-design.md      # Custom + platform domains, the dev- prefix (§17 = what has shipped)
-│   ├── shared-dev-database.md       # One PostgreSQL for the team + what it changes
-│   └── vault-transit-upgrade.md     # Vault / transit upgrade + restore runbook
+│   └── shared-dev-database.md       # One PostgreSQL for the team + what it changes
 └── internal/
     ├── apidocs/
     │   ├── openapi.yaml        # OpenAPI 3.1 spec — update whenever routes change
@@ -560,8 +559,7 @@ Every user gets their own namespace: `vtafarm-user-{userID}`.
 ### Secret Storage (HashiCorp Vault)
 
 Each VTA's master seed is stored in **HashiCorp Vault** (KV v2), not a
-Kubernetes Secret. See `helm/vtafarm-vault` (farm Vault) and
-`helm/vtafarm-transit` (in-cluster auto-unseal).
+Kubernetes Secret. Vault itself lives in `vtafarm-k8s` stack 04.
 
 - `internal/vault` provisions, per user, a Vault **policy** + **kubernetes-auth
   role** (`vta-user-<userID>`) scoped to `secret/{data,metadata}/vta/user-<id>/*`.

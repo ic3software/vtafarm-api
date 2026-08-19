@@ -38,10 +38,7 @@ func Setup(
 ) *gin.Engine {
 	r := gin.Default()
 
-	// The Vite dev server's ports stay hardcoded - they are a local debugging
-	// convenience that costs nothing to carry, and no deployment would think to
-	// configure them. Everything else is the deployment's own frontend origin,
-	// which differs per install.
+	// The Vite dev ports are a local convenience no deployment would configure.
 	allowOrigins := append(
 		[]string{"http://localhost:5173", "http://localhost:5174", "http://localhost:5175"},
 		cfg.CORSAllowedOrigins...,

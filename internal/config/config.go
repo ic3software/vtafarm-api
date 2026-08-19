@@ -22,9 +22,8 @@ type Config struct {
 	// database, where every API would resume the same rows.
 	// See docs/shared-dev-database.md.
 	OrchestratorResume bool
-	// CORSAllowedOrigins are the deployment's own browser origins - normally
-	// just the frontend's. The localhost dev servers are allowed unconditionally
-	// alongside these, see internal/router.
+	// CORSAllowedOrigins are the deployment's own browser origins. The localhost
+	// dev servers are allowed on top of these, see internal/router.
 	CORSAllowedOrigins []string
 	// MaxStackConnections caps how many vta_only sessions may connect to one
 	// shared full_stack. 0 disables the cap.
@@ -66,7 +65,7 @@ type MonitorConfig struct {
 }
 
 // VaultConfig configures the farm's HashiCorp Vault. RoleID/SecretID come from
-// the vtafarm-api-vault Secret created by helm/vtafarm-vault/bootstrap.sh.
+// the vtafarm-api-vault Secret created by vtafarm-k8s' scripts/vault-bootstrap.sh.
 type VaultConfig struct {
 	Addr         string // how THIS API reaches Vault (port-forward locally, svc in-cluster)
 	VTAAddr      string // address rendered into VTA pod configs — always in-cluster svc DNS
