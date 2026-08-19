@@ -2,7 +2,8 @@
 set -e
 
 # Required env vars (set by GitHub Actions):
-#   SSH_PRIVATE_KEY, SERVER_IP, KUBECONFIG_PATH, DOCKER_USERNAME
+#   SSH_PRIVATE_KEY, SERVER_IP, KUBECONFIG_PATH, DOCKER_USERNAME,
+#   INGRESS_HOST, FRONTEND_HOST, CLUSTER_DOMAIN
 # TAG defaults to the short git SHA via the Makefile (git rev-parse --short HEAD).
 # Pre-requisite: Secret "vtafarm-api-postgresql" must exist in the cluster namespace.
 #   See k8s/postgresql-secret.yaml — apply once manually before first deploy.
@@ -38,7 +39,9 @@ curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 echo "Deploying vtafarm..."
 make deploy \
   DOCKER_USERNAME="$DOCKER_USERNAME" \
-  INGRESS_HOST="$INGRESS_HOST"
+  INGRESS_HOST="$INGRESS_HOST" \
+  FRONTEND_HOST="$FRONTEND_HOST" \
+  CLUSTER_DOMAIN="$CLUSTER_DOMAIN"
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 eval $(ssh-agent -k)

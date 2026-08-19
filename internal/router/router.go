@@ -38,8 +38,17 @@ func Setup(
 ) *gin.Engine {
 	r := gin.Default()
 
+	// The Vite dev server's ports stay hardcoded - they are a local debugging
+	// convenience that costs nothing to carry, and no deployment would think to
+	// configure them. Everything else is the deployment's own frontend origin,
+	// which differs per install.
+	allowOrigins := append(
+		[]string{"http://localhost:5173", "http://localhost:5174", "http://localhost:5175"},
+		cfg.CORSAllowedOrigins...,
+	)
+
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"https://vtafarm.firstperson.dev", "http://localhost:5173", "http://localhost:5174", "http://localhost:5175"},
+		AllowOrigins:     allowOrigins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Authorization", "Content-Type"},
 		ExposeHeaders:    []string{"Content-Length"},

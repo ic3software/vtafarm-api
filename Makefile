@@ -6,6 +6,8 @@ TAG          ?= $(shell git rev-parse --short HEAD)
 NAMESPACE    ?= default
 DEPLOY_ENV   ?= production
 INGRESS_HOST ?=
+FRONTEND_HOST ?=
+CLUSTER_DOMAIN ?=
 
 # ─── Dev cluster ──────────────────────────────────────────────────────────────
 # The database is shared and lives here — see docs/shared-dev-database.md.
@@ -132,5 +134,7 @@ deploy:
 	  --set image.tag=$(TAG) \
 	  --set app.env=$(DEPLOY_ENV) \
 	  --set ingress.host=$(INGRESS_HOST) \
+	  --set frontendHost=$(FRONTEND_HOST) \
+	  --set cluster.domain=$(CLUSTER_DOMAIN) \
 	  --install --atomic --timeout=10m \
 	  --namespace=$(NAMESPACE)

@@ -57,8 +57,13 @@ vault:
   skipVerify: "true"
   existingSecret: "vtafarm-api-vault"
 
+# The frontend's public hostname. WebAuthn and CORS both derive from it, since
+# the browser only ever sees the app on one origin.
+frontendHost: ""
+
 cluster:
-  domain: "firstperson.dev"
+  # Zone the tenant hostnames are created under - vta-alice.<domain>.
+  domain: ""
 
 # Monitor endpoints (/api/v1/monitor/*) polled by UptimeRobot.
 # MONITOR_TOKEN lives in the vtafarm-api-secrets Secret — see k8s/secret.yaml.example.
@@ -77,9 +82,17 @@ github:
   didHostingDaemonPackageName: did-hosting-daemon
 
 webauthn:
-  rpID: "vtafarm.firstperson.dev"
-  rpOrigins: "https://vtafarm.firstperson.dev"
   rpDisplayName: "VTA Farm"
+  # Both default to frontendHost. Override rpID only to scope credentials to a
+  # parent domain: a valid RP ID is the origin's domain or a registrable suffix
+  # of it, never anything else.
+  rpID: ""
+  rpOrigins: ""
+
+# Browser origins allowed to call the API with credentials. Defaults to the
+# frontend's; the localhost dev servers are always allowed on top of it.
+cors:
+  allowedOrigins: ""
 
 # No CPU limit: the request gives fair-share under contention; a CFS quota
 # would throttle bursts on an idle node. Memory keeps a hard limit.
