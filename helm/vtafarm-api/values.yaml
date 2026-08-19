@@ -6,6 +6,9 @@ image:
   # Empty falls back to the chart's appVersion.
   tag: ""
 
+# Needed when the GHCR packages are private.
+imagePullSecrets: []
+
 service:
   port: 8080
 
