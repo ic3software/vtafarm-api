@@ -30,8 +30,10 @@ func vtaServiceName(sessionID uint) string {
 const VtaServiceAccount = "vta"
 
 // CreateVtaDeployment creates a Deployment that runs the VTA service using the PVC created
-// during setup. The PVC is mounted at /app/vta, so VTA reads config.toml from
-// there. Port 8100. Idempotent — AlreadyExists is ignored.
+// during setup. Command and workingDir are set explicitly — the farm decides
+// what runs and where state lives, never the image — and the PVC is mounted at
+// /work/vta to match, so VTA resolves its relative config.toml and data_dir
+// onto it. Port 8100. Idempotent — AlreadyExists is ignored.
 func (c *Client) CreateVtaDeployment(ctx context.Context, ns string, sessionID uint, image string) error {
 	name := vtaDeploymentName(sessionID)
 	pvcName := VtaPVCName(sessionID)
@@ -56,8 +58,10 @@ func (c *Client) CreateVtaDeployment(ctx context.Context, ns string, sessionID u
 				Spec: corev1.PodSpec{
 					ServiceAccountName: VtaServiceAccount,
 					Containers: []corev1.Container{{
-						Name:  "vta",
-						Image: image,
+						Name:       "vta",
+						Image:      image,
+						Command:    []string{"vta"},
+						WorkingDir: "/work/vta",
 						// Disable ANSI colour codes in the VTA's tracing logs so
 						// streamed/captured output (provision --follow, kubectl
 						// logs, log stores) stays plain text instead of leaking
@@ -73,7 +77,7 @@ func (c *Client) CreateVtaDeployment(ctx context.Context, ns string, sessionID u
 						}},
 						VolumeMounts: []corev1.VolumeMount{{
 							Name:      "data",
-							MountPath: "/app/vta",
+							MountPath: "/work/vta",
 						}},
 						Resources: ComponentResources("10m", "32Mi", "64Mi"),
 					}},

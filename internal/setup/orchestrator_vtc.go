@@ -117,14 +117,14 @@ func (o *Orchestrator) runFullStackFinish(ctx context.Context, sessionID uint, a
 // it runs as the plain pod-operator SA.
 func (o *Orchestrator) fsStepVtcSetupKey(ctx context.Context, ns string, s *model.SetupSession) (string, error) {
 	jobName := k8s.FSJobVtcSetupKey(s.ID)
-	cmd := fmt.Sprintf("vtc setup --setup-key-out /app/vtc/setup-key.json --context %s", shellQuote(s.VtcName))
+	cmd := fmt.Sprintf("vtc setup --setup-key-out setup-key.json --context %s", shellQuote(s.VtcName))
 	if err := o.k8s.CreateComponentJob(ctx, ns, k8s.ComponentJobSpec{
 		Name:           jobName,
 		Image:          s.VtcImage,
 		Command:        []string{"sh", "-c", cmd},
-		WorkingDir:     "/app/vtc",
+		WorkingDir:     "/work/vtc",
 		ServiceAccount: k8s.PodOperatorServiceAccount,
-		PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/app/vtc"}},
+		PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/work/vtc"}},
 		Env:            fsNoColorEnv(),
 	}); err != nil {
 		return "", fmt.Errorf("create job: %w", err)
@@ -209,9 +209,9 @@ func (o *Orchestrator) fsStepVtcSetup(ctx context.Context, ns string, s *model.S
 		Name:           jobName,
 		Image:          s.VtcImage,
 		Command:        []string{"sh", "-c", "vtc setup --from /config/vtc-setup.toml"},
-		WorkingDir:     "/app/vtc",
+		WorkingDir:     "/work/vtc",
 		ServiceAccount: k8s.VtaServiceAccount,
-		PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/app/vtc"}},
+		PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/work/vtc"}},
 		ConfigMapName:  jobName,
 		ConfigMapKey:   "vtc-setup.toml",
 		ConfigMapData:  toml,
@@ -234,30 +234,26 @@ func (o *Orchestrator) fsStepVtcSetup(ctx context.Context, ns string, s *model.S
 	return ParseVtcSetupOutput(logs)
 }
 
-// fsDeployVtc starts the VTC Deployment (image entrypoint — REST + admin SPA
-// + public website on 8200). Command is left nil so the vtc image's own
-// entrypoint.sh runs (unlike fsDeployVta/Mediator/Dids, which set Command
-// explicitly and never invoke their images' wrappers at all) — it gates
-// startup on a data/config presence check before exec'ing the binary, which
-// is worth keeping. That wrapper checks /app/vtc/{data,config.toml},
-// matching every one of this farm's images' Dockerfile WORKDIR
-// (/app/<name> — vta, mediator, did-hosting-daemon, vtc all agree), so the
-// PVC is mounted at /app/vtc here too — same path across all three VTC
-// Job/Deployment specs, so the entrypoint finds what
-// step_vtc_setup/step_vtc_setup_key wrote. Note this Deployment has no
-// readiness probe (a running container is Ready by default absent one), so
-// WaitForComponentDeploymentReady below only confirms the process started,
-// not that port 8200 is actually accepting connections. Runs as SA vta — it
-// reads its Vault key bundle at every boot.
+// fsDeployVtc starts the VTC Deployment (REST + admin SPA + public website
+// on 8200). Command is set explicitly, exactly as fsDeployVta/Mediator/Dids
+// do: the farm decides what runs and where state lives, so neither the
+// image's ENTRYPOINT nor its WORKDIR enters into it. The PVC is mounted at
+// /work/vtc with workingDir to match — the same layout every other
+// component uses — so vtc resolves its relative config.toml and data_dir
+// onto what step_vtc_setup/step_vtc_setup_key wrote. Note this Deployment
+// has no readiness probe (a running container is Ready by default absent
+// one), so WaitForComponentDeploymentReady below only confirms the process
+// started, not that port 8200 is actually accepting connections. Runs as SA
+// vta — it reads its Vault key bundle at every boot.
 func (o *Orchestrator) fsDeployVtc(ctx context.Context, ns string, s *model.SetupSession) error {
 	name := k8s.FSVtcName(s.ID)
 	if err := o.k8s.CreateComponentDeployment(ctx, ns, k8s.ComponentDeploymentSpec{
 		Name:           name,
 		Image:          s.VtcImage,
-		Command:        nil, // image entrypoint — see comment above
-		WorkingDir:     "/app/vtc",
+		Command:        []string{"vtc"},
+		WorkingDir:     "/work/vtc",
 		ServiceAccount: k8s.VtaServiceAccount,
-		PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: name, MountPath: "/app/vtc"}},
+		PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: name, MountPath: "/work/vtc"}},
 		Env:            fsNoColorEnv(),
 		Port:           8200,
 		Labels:         fsLabels("vtc", s.ID),

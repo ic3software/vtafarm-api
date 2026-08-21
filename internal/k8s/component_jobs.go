@@ -24,7 +24,7 @@ type PVCMount struct {
 // component (vta/mediator/dids) and over how many PVCs it touches — distinct
 // from vta_only's CreateSetupResources/CreateProvisionJob (left untouched;
 // see plan decision #4), which are specific to the single VTA PVC mounted at
-// /app/vta.
+// /work/vta.
 type ComponentJobSpec struct {
 	Name           string
 	Image          string
