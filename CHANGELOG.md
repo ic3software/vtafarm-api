@@ -1,5 +1,25 @@
 # Changelog
 
+## [v0.3.0] - 2026-08-20
+
+### Added
+
+- `GET /setup/{id}/export/configs` and `/setup/{id}/export/logs`, plus the admin
+  twins under `/admin/setup-sessions/{id}/`. Each answers a zip holding one
+  member per component: its rendered `config.toml`, or its running pod's log
+  (last 10000 lines). Read from the pods themselves rather than from anything
+  this API stored, so they only answer for what is actually running — a
+  component that could not be read is named in an `errors.txt` member, and only
+  an empty archive is an error.
+- Note that the configs archive carries whatever credentials setup generated
+  into those files, the mediator's admin and JWT material in particular. It is
+  the same disclosure the portal's admin keys card already makes, in file form.
+
+### Changed
+
+- CORS exposes `Content-Disposition`, so a frontend on another origin can read
+  the filename the export routes choose.
+
 ## [v0.2.0] - 2026-08-19
 
 ### Breaking
