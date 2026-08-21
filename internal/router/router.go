@@ -48,7 +48,7 @@ func Setup(
 		AllowOrigins:     allowOrigins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Authorization", "Content-Type"},
-		ExposeHeaders:    []string{"Content-Length"},
+		ExposeHeaders:    []string{"Content-Length", "Content-Disposition"},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
 	}))
@@ -153,6 +153,9 @@ func Setup(
 		// to a passkey-less system account, so its provisioning is otherwise
 		// unwatchable — nobody can hold that user's cookie.
 		adminAuth.GET("/admin/setup-sessions/:id/logs", sh.AdminSessionLogs)
+		// Admin twins of the export routes below.
+		adminAuth.GET("/admin/setup-sessions/:id/export/configs", sh.AdminExportConfigs)
+		adminAuth.GET("/admin/setup-sessions/:id/export/logs", sh.AdminExportLogs)
 		// Resumes a session parked at awaiting_admin_did. Same reason as the
 		// logs route: the platform stack's owner has no passkey, so the
 		// user-facing POST /setup/:id/admin can never be called for it — and
@@ -249,6 +252,10 @@ func Setup(
 		userAuth.GET("/setup/:id", sh.Get)
 		userAuth.DELETE("/setup/:id", sh.Delete)
 		userAuth.GET("/setup/:id/logs", sh.Logs)
+		// Zips read from the running pods: the rendered config.toml each
+		// binary wrote to its PVC, and the pods' own logs — no Job logs.
+		userAuth.GET("/setup/:id/export/configs", sh.ExportConfigs)
+		userAuth.GET("/setup/:id/export/logs", sh.ExportLogs)
 		// Self-service image upgrade/downgrade — a user can only ever change
 		// their own session (looked up by unique_id AND user_id).
 		userAuth.POST("/setup/:id/upgrade", uph.CreateForSession)

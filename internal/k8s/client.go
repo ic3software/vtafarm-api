@@ -24,6 +24,7 @@ type Client struct {
 	// Longhorn CRDs (nodes/settings.longhorn.io) behind the admin dashboard's
 	// storage stats.
 	dyn             dynamic.Interface
+	restCfg         *rest.Config
 	namespacePrefix string
 }
 
@@ -62,6 +63,7 @@ func NewClient(cfg *config.Config) (*Client, error) {
 	return &Client{
 		kube:            kube,
 		dyn:             dyn,
+		restCfg:         restCfg,
 		namespacePrefix: cfg.K8s.NamespacePrefix,
 	}, nil
 }

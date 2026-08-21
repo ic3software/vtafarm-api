@@ -2475,6 +2475,137 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/admin/setup-sessions/{id}/export/configs:
+    get:
+      summary: Download any session's rendered configs (zip, admin)
+      description: |
+        Admin-cookie twin of `GET /setup/{id}/export/configs`, differing only
+        in the lookup: `vta_name` alone, with no `user_id` filter. Support
+        reaches a user's stack without holding their cookie, and the platform
+        stack has no cookie to hold — its owner is a passkey-less system
+        account.
+
+        The archive holds one member per component:
+
+        - **vta_only** — `vta-config.toml` / `vta.log`
+        - **full_stack** — `vta`, `mediator`, `dids` and `vtc` variants of the same
+
+        Read from the running pods, not from anything this API stored: a
+        component's config is what its own binary wrote onto the PVC during
+        setup, and its log is the running container's. Deliberately **not** the
+        setup Jobs' logs — those are what the `logs` route streams.
+
+        Best-effort per component. One whose pod is not running is skipped and
+        named in an `errors.txt` member; only when nothing at all could be read
+        does this answer 409. Logs are capped at each component's last 10000
+        lines.
+
+        `Content-Disposition` names the file
+        (`<vta_name>-configs-<UTC timestamp>.zip`).
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The session's `vta_name`.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Zip archive
+          content:
+            application/zip:
+              schema: { type: string, format: binary }
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: No component could be read (none of its pods are running)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: k8s not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/admin/setup-sessions/{id}/export/logs:
+    get:
+      summary: Download any session's running logs (zip, admin)
+      description: |
+        Admin-cookie twin of `GET /setup/{id}/export/logs`. Same lookup and
+        same reason to exist as the configs twin above.
+
+        The archive holds one member per component:
+
+        - **vta_only** — `vta-config.toml` / `vta.log`
+        - **full_stack** — `vta`, `mediator`, `dids` and `vtc` variants of the same
+
+        Read from the running pods, not from anything this API stored: a
+        component's config is what its own binary wrote onto the PVC during
+        setup, and its log is the running container's. Deliberately **not** the
+        setup Jobs' logs — those are what the `logs` route streams.
+
+        Best-effort per component. One whose pod is not running is skipped and
+        named in an `errors.txt` member; only when nothing at all could be read
+        does this answer 409. Logs are capped at each component's last 10000
+        lines.
+
+        `Content-Disposition` names the file
+        (`<vta_name>-configs-<UTC timestamp>.zip`).
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The session's `vta_name`.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Zip archive
+          content:
+            application/zip:
+              schema: { type: string, format: binary }
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: No component could be read (none of its pods are running)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: k8s not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/v1/admin/upgrades:
     post:
       summary: Create an image upgrade batch
@@ -4455,6 +4586,135 @@ paths:
                 $ref: "#/components/schemas/Error"
         "503":
           description: K8s not configured on server
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/setup/{id}/export/configs:
+    get:
+      summary: Download a session's rendered configs (zip)
+      description: |
+        A zip of every component's rendered `config.toml`, exactly as the
+        component runs on it — **including any credentials the setup generated
+        into it** (the mediator's admin and JWT material, notably). Same
+        disclosure as the portal's Admin DIDs & Private Keys card, in file form.
+
+        The archive holds one member per component:
+
+        - **vta_only** — `vta-config.toml` / `vta.log`
+        - **full_stack** — `vta`, `mediator`, `dids` and `vtc` variants of the same
+
+        Read from the running pods, not from anything this API stored: a
+        component's config is what its own binary wrote onto the PVC during
+        setup, and its log is the running container's. Deliberately **not** the
+        setup Jobs' logs — those are what the `logs` route streams.
+
+        Best-effort per component. One whose pod is not running is skipped and
+        named in an `errors.txt` member; only when nothing at all could be read
+        does this answer 409. Logs are capped at each component's last 10000
+        lines.
+
+        `Content-Disposition` names the file
+        (`<vta_name>-configs-<UTC timestamp>.zip`).
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The session's `vta_name`.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Zip archive
+          content:
+            application/zip:
+              schema: { type: string, format: binary }
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: No component could be read (none of its pods are running)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: k8s not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/setup/{id}/export/logs:
+    get:
+      summary: Download a session's running logs (zip)
+      description: |
+        A zip of every component's running pod log.
+
+        The archive holds one member per component:
+
+        - **vta_only** — `vta-config.toml` / `vta.log`
+        - **full_stack** — `vta`, `mediator`, `dids` and `vtc` variants of the same
+
+        Read from the running pods, not from anything this API stored: a
+        component's config is what its own binary wrote onto the PVC during
+        setup, and its log is the running container's. Deliberately **not** the
+        setup Jobs' logs — those are what the `logs` route streams.
+
+        Best-effort per component. One whose pod is not running is skipped and
+        named in an `errors.txt` member; only when nothing at all could be read
+        does this answer 409. Logs are capped at each component's last 10000
+        lines.
+
+        `Content-Disposition` names the file
+        (`<vta_name>-configs-<UTC timestamp>.zip`).
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The session's `vta_name`.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Zip archive
+          content:
+            application/zip:
+              schema: { type: string, format: binary }
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: No component could be read (none of its pods are running)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: k8s not configured
           content:
             application/json:
               schema:

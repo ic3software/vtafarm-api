@@ -2,8 +2,10 @@ package k8s
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -295,6 +297,27 @@ func (c *Client) CreateComponentIngress(ctx context.Context, spec ComponentIngre
 		return fmt.Errorf("create ingress %s: %w", spec.Name, err)
 	}
 	return nil
+}
+
+// PodLogsSnapshot returns the last tailLines of the running pod matching
+// selector — the non-following counterpart of StreamComponentPodLogs.
+func (c *Client) PodLogsSnapshot(ctx context.Context, ns, selector string, tailLines int64) (string, error) {
+	pod, _, err := c.RunningPod(ctx, ns, selector)
+	if err != nil {
+		return "", err
+	}
+	req := c.kube.CoreV1().Pods(ns).GetLogs(pod, &corev1.PodLogOptions{TailLines: &tailLines})
+	stream, err := req.Stream(ctx)
+	if err != nil {
+		return "", fmt.Errorf("logs for pod %s: %w", pod, err)
+	}
+	defer stream.Close()
+
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, stream); err != nil {
+		return "", fmt.Errorf("read logs for pod %s: %w", pod, err)
+	}
+	return buf.String(), nil
 }
 
 // StreamComponentPodLogs finds the running pod matching selector and streams
