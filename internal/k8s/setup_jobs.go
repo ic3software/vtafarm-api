@@ -35,7 +35,7 @@ func ProvisionJobName(sessionID uint) string {
 }
 
 // CreateSetupResources creates a 200Mi PVC, a ConfigMap with the TOML config, and a Job
-// that runs `vta setup --from /config/vta-setup.toml` with the PVC mounted at /app/vta.
+// that runs `vta setup --from /config/vta-setup.toml` with the PVC mounted at /work/vta.
 // All three calls are idempotent (AlreadyExists is ignored).
 func (c *Client) CreateSetupResources(ctx context.Context, ns string, sessionID uint, toml, vtaImage string) error {
 	pvcName := VtaPVCName(sessionID)
@@ -92,11 +92,11 @@ func (c *Client) CreateSetupResources(ctx context.Context, ns string, sessionID 
 						Image: vtaImage,
 						// After setup, print the marker then cat did.jsonl so the
 						// orchestrator can extract it from job logs without a reader pod.
-						Command:    []string{"sh", "-c", "vta setup --from /config/vta-setup.toml && echo '---DID_LOG_START---' && cat /app/vta/data/vta/did-logs/VTA-did.jsonl"},
-						WorkingDir: "/app/vta",
+						Command:    []string{"sh", "-c", "vta setup --from /config/vta-setup.toml && echo '---DID_LOG_START---' && cat /work/vta/data/vta/did-logs/VTA-did.jsonl"},
+						WorkingDir: "/work/vta",
 						VolumeMounts: []corev1.VolumeMount{
 							{Name: "config", MountPath: "/config"},
-							{Name: "data", MountPath: "/app/vta"},
+							{Name: "data", MountPath: "/work/vta"},
 						},
 					}},
 					Volumes: []corev1.Volume{
@@ -259,10 +259,10 @@ func (c *Client) CreateProvisionJob(ctx context.Context, ns string, sessionID ui
 						Name:       "vta-provision",
 						Image:      image,
 						Command:    []string{"sh", "-c", cmd},
-						WorkingDir: "/app/vta",
+						WorkingDir: "/work/vta",
 						VolumeMounts: []corev1.VolumeMount{{
 							Name:      "data",
-							MountPath: "/app/vta",
+							MountPath: "/work/vta",
 						}},
 					}},
 					Volumes: []corev1.Volume{{

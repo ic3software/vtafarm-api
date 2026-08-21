@@ -300,14 +300,14 @@ volumes:
 containers:
   - name: vta-setup
     image: {vta_image}
-    workingDir: /app/vta
+    workingDir: /work/vta
     # cat the DID log after the marker so the orchestrator grabs it from the Job logs
-    command: ["sh", "-c", "vta setup --from /config/vta-setup.toml && echo '---DID_LOG_START---' && cat /app/vta/data/vta/did-logs/VTA-did.jsonl"]
+    command: ["sh", "-c", "vta setup --from /config/vta-setup.toml && echo '---DID_LOG_START---' && cat /work/vta/data/vta/did-logs/VTA-did.jsonl"]
     volumeMounts:
       - name: config
         mountPath: /config
       - name: data
-        mountPath: /app/vta
+        mountPath: /work/vta
 # Job: backoffLimit 0, ttlSecondsAfterFinished 3600, activeDeadlineSeconds 600,
 #      restartPolicy Never, serviceAccountName "vta"
 ```
@@ -319,19 +319,21 @@ After all setup Jobs succeed, the backend creates Deployments for the running se
 ```yaml
 containers:
   - name: vta
-    image: {vta_image}                 # image default entrypoint — no --config override
+    image: {vta_image}
+    command: ["vta"]                   # the farm decides what runs, never the image
+    workingDir: /work/vta
     env:
       - { name: NO_COLOR, value: "1" }  # keep streamed logs plain-text
       - { name: CLICOLOR, value: "0" }
     volumeMounts:
       - name: data
-        mountPath: /app/vta            # config.toml + data/vta/ written by the setup Job
+        mountPath: /work/vta           # config.toml + data/vta/ written by the setup Job
     ports:
       - containerPort: 8100
 # runs as serviceAccountName "vta" (authenticates to Vault via kubernetes auth)
 ```
 
-The Deployment mounts the same PVC as the setup Job at `/app/vta`, so `config.toml` and
+The Deployment mounts the same PVC as the setup Job at `/work/vta`, so `config.toml` and
 `data/vta/` are already present when the VTA boots.
 
 ---
@@ -383,7 +385,7 @@ portable           = {{ .Portable }}
 pre_rotation_count = {{ .PreRotationCount }}
 ```
 
-> Paths are **relative** (resolved via the Job's `workingDir = /app/vta`), ports/log-level are
+> Paths are **relative** (resolved via the Job's `workingDir = /work/vta`), ports/log-level are
 > fixed, and the seed lives in **Vault** (not plaintext). Full Stack swaps `[messaging]` for
 > `kind = "create_mediator"` and points `[vta_did].url` at the in-cluster dids host — see
 > [`full-stack-setup-design.md`](full-stack-setup-design.md).

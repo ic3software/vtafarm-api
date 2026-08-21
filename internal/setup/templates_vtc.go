@@ -23,7 +23,7 @@ import (
 // VTA's <vta_name>-vta and mediator's <vta_name>-mediator paths, and the
 // -vtc suffix keeps it distinct from those even if vtc_name == vta_name.
 // domain is left unset (the daemon resolves its default). setup_key_file is
-// relative, resolved against the Job's /app/vtc workingDir where
+// relative, resolved against the Job's /work/vtc workingDir where
 // step_vtc_setup_key wrote it. vault_secret_key = "bundle" stores the
 // serialized VtcKeyBundle — vti_secrets' seed store is byte-agnostic.
 var vtcSetupTmpl = template.Must(template.New("fs-vtc-setup").Parse(`config_path    = "config.toml"

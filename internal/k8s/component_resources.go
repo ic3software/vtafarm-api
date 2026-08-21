@@ -24,7 +24,7 @@ const PodOperatorServiceAccount = "pod-operator"
 // ComponentDeploymentSpec configures a full_stack long-running server
 // Deployment. Generic over component (vta/mediator/dids) — distinct from
 // vta_only's CreateVtaDeployment (left untouched; see plan decision #4),
-// which is specific to the VTA's /app/vta mount and port 8100.
+// which is specific to vta_only's PVC naming and port 8100.
 type ComponentDeploymentSpec struct {
 	Name           string
 	Image          string

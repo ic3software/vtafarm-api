@@ -97,7 +97,7 @@ namespace: vtafarm-user-{userID}
 │           │ Ingress            │ Ingress            │ Ingress           │ Ingress       │
 │   ┌───────▼───────┐  ┌─────────▼─────────┐  ┌───────▼────────┐  ┌───────▼───────┐       │
 │   │ Deployment    │  │ Deployment        │  │ Deployment     │  │ Deployment    │       │
-│   │ /work/vta     │  │ /work/mediator    │  │ /work/dids     │  │ /app/vtc      │       │
+│   │ /work/vta     │  │ /work/mediator    │  │ /work/dids     │  │ /work/vtc     │       │
 │   └───────────────┘  └───────────────────┘  └────────────────┘  └───────────────┘       │
 │                                                                                         │
 │   Setup Jobs mount whichever PVC(s) they touch; cross-component steps mount two         │
@@ -127,7 +127,7 @@ Each component's PVC, Service, Ingress, and Deployment all share **one name**:
 | VTA | 8100 | `vta-{vta_name}.{domain}` | `/work/vta` | PVC 200Mi + **Vault** seed | reuses `vta_only`'s VTA resources + Vault path |
 | Mediator | 7037 | `mediator-{vta_name}.{domain}` | `/work/mediator` | PVC 1Gi + **Vault** (`vault://`, kubernetes auth) | config + `fjall` message store on the PVC; no Redis/Valkey |
 | DID Hosting daemon | 8534 | `dids-{vta_name}.{domain}` | `/work/dids` | PVC 200Mi + **Vault** (kubernetes auth) | standard (integrated) topology |
-| VTC | 8200 | `vtc-{vtc_name}.{domain}` | `/app/vtc` | PVC 200Mi + **Vault** (kubernetes auth) | mounted at `/app/vtc` to match the image's own `WORKDIR`/entrypoint |
+| VTC | 8200 | `vtc-{vtc_name}.{domain}` | `/work/vtc` | PVC 200Mi + **Vault** (kubernetes auth) | `Command`/`workingDir` set by the farm, same as the other three |
 
 Every component is one PVC + one Deployment + one Service + one Ingress, built on the
 generic `ComponentJobSpec` / `ComponentDeploymentSpec` helpers — no per-component K8s
@@ -223,6 +223,38 @@ The recipes use **relative paths** for on-PVC files (`config.toml`, `data/vta`,
 `workingDir` set to the mount path they resolve identically to the home-dir layout, so
 the recipe bodies are essentially verbatim. (The mediator's `[secrets].storage` is the
 exception — a `vault://` URL, not a PVC path.)
+
+### Path ownership — `/app` is the image's, `/work` is the farm's
+
+Because every binary resolves `config.toml` relative to its working directory and every
+recipe keeps its on-PVC paths relative, the mount point is a free variable — and the farm
+owns it. **All five Deployments and every Job mount their PVC at `/work/<component>` and
+set `workingDir` to match.** Each also sets `Command` explicitly, so an image's
+`ENTRYPOINT` is never what runs. The farm decides both what runs and where state lives.
+
+The images do declare a `WORKDIR /app/<program>`, but that is only a *default* working
+directory for running one standalone (`docker run`). Here `workingDir` always overrides
+it, so `/app/<program>` is an empty directory inside every container in this farm.
+
+Two prefixes rather than one, because a cross-component Job needs both meanings at once:
+`step_dids_load_did` runs the did-hosting-daemon image while mounting both the VTA's and
+the dids daemon's PVCs. "Which program is installed here" has exactly one answer in that
+container (`/app/did-hosting-daemon`); "whose state is this" has two (`/work/vta`,
+`/work/dids`). `/app` names the former, `/work` the latter. The two are deliberately never
+expected to match — an image is named after its program, a mount after its farm role,
+which is why the did-hosting-daemon image mounts at `/work/dids`.
+
+Past the prefix, each component keeps whatever layout its upstream uses: the mediator's
+config is `conf/mediator.toml`, the others' is `config.toml`. The farm unifies the prefix,
+not the interior.
+
+> This was not always so. The VTC's Deployment used to leave `Command` nil and mount at
+> `/app/vtc`, because the vtc image's `entrypoint.sh` hard-coded that absolute path — a
+> holdover from the pre-farm workflow where an operator deployed the image, watched it
+> sleep on missing data, and ran `kubectl exec … vtc setup` by hand. Nothing execs into
+> these pods any more; setup runs as the Jobs below, before the Deployment exists. The
+> wrapper has since been removed from all four images, so a missing config exits non-zero
+> with the binary's own error instead of sleeping forever.
 
 > The VTA's two DID logs (`VTA-did.jsonl`, `mediator-did.jsonl`) are loaded into the dids
 > daemon's local store **offline**, before it ever starts — `step_dids_load_did`
@@ -694,7 +726,7 @@ parsed here — `admin_did` is a user input, not a value extracted from logs.
 The user finishes the binding locally with `pnm setup continue <name> --vta-did {{1a}}`,
 which is why the **VTA DID (`1a`)** must be returned to them ([§12](#12-api-surface)).
 
-### Step `step_vtc_setup_key` — VTC Job (workingDir `/app/vtc`, SA `pod-operator`)
+### Step `step_vtc_setup_key` — VTC Job (workingDir `/work/vtc`, SA `pod-operator`)
 
 Phase 1 of `vtc-service`'s headless two-phase setup ([§4b](#4b-the-vtcs-own-ephemeral-setup-key-handshake)).
 
@@ -703,17 +735,18 @@ k8s.ComponentJobSpec{
     Name:           k8s.FSJobVtcSetupKey(s.ID),
     Image:          s.VtcImage,
     Command:        []string{"sh", "-c", fmt.Sprintf(
-        "vtc setup --setup-key-out /app/vtc/setup-key.json --context %s",
+        "vtc setup --setup-key-out setup-key.json --context %s",
         shellQuote(s.VtcName),
     )},
-    WorkingDir:     "/app/vtc",
+    WorkingDir:     "/work/vtc",
     ServiceAccount: k8s.PodOperatorServiceAccount, // no Vault access needed for this step
-    PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/app/vtc"}},
+    PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/work/vtc"}},
     Env:            fsNoColorEnv(),
 }
 ```
 
-`/app/vtc` matches the vtc image's own Dockerfile `WORKDIR` — see `deploy_vtc` below.
+`setup-key.json` is relative, resolved against `workingDir` onto the VTC PVC — the same
+convention every other recipe path uses.
 Parse **5a** from the line following `Setup DID (ephemeral):` —
 `Setup DID \(ephemeral\):\s+(did:\S+)` — rather than a machine `key=value` line; persist to
 `SetupSession.VtcSetupKeyDid` (for debuggability/audit — nothing downstream reads it back
@@ -762,7 +795,7 @@ Service + Ingress for `vta-{vta_name}.{domain}`. **Waits for Ready** before the 
 moves on — `step_vtc_setup` immediately afterwards makes live authenticated calls against
 this VTA, so "the Deployment object exists" is not good enough.
 
-### Step `step_vtc_setup` — VTC Job (workingDir `/app/vtc`, SA `vta`)
+### Step `step_vtc_setup` — VTC Job (workingDir `/work/vtc`, SA `vta`)
 
 The one genuinely live step of the whole pipeline.
 
@@ -771,9 +804,9 @@ k8s.ComponentJobSpec{
     Name:           k8s.FSJobVtcSetup(s.ID),
     Image:          s.VtcImage,
     Command:        []string{"sh", "-c", "vtc setup --from /config/vtc-setup.toml"},
-    WorkingDir:     "/app/vtc",
+    WorkingDir:     "/work/vtc",
     ServiceAccount: k8s.VtaServiceAccount, // needs Vault (kubernetes auth) — §9
-    PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/app/vtc"}},
+    PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/work/vtc"}},
     ConfigMapName:  k8s.FSJobVtcSetup(s.ID),
     ConfigMapKey:   "vtc-setup.toml",
     ConfigMapData:  toml, // §7
@@ -817,23 +850,21 @@ PNM `admin_did` (`4a`)** that `step_import_admin_did` uses — it gets its own c
 k8s.ComponentDeploymentSpec{
     Name:           k8s.FSVtcName(s.ID),
     Image:          s.VtcImage,
-    Command:        nil, // image entrypoint — see below
-    WorkingDir:     "/app/vtc",
+    Command:        []string{"vtc"},
+    WorkingDir:     "/work/vtc",
     ServiceAccount: k8s.VtaServiceAccount, // reads its Vault key bundle at every boot
-    PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/app/vtc"}},
+    PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/work/vtc"}},
     Port:           8200,
     Labels:         fsLabels("vtc", s.ID),
 }
 ```
 
-Unlike `fsDeployVta`/`Mediator`/`Dids` (which set `Command` explicitly and never invoke
-their images' `entrypoint.sh` at all), `Command` is deliberately left `nil` here — the vtc
-image's entrypoint gates startup on a data/config presence check before `exec`ing the
-binary, which is worth keeping. That wrapper checks `/app/vtc/{data,config.toml}`,
-matching every one of this farm's images' Dockerfile `WORKDIR` (`/app/<name>` — vta,
-mediator, did-hosting-daemon, vtc all agree), so the PVC is mounted at `/app/vtc` here too
-— same path across all three VTC Job/Deployment specs, so the image's own entrypoint finds
-what `step_vtc_setup`/`step_vtc_setup_key` wrote. Note this Deployment has no readiness
+`Command` is set explicitly here, exactly as `fsDeployVta`/`Mediator`/`Dids` do — the farm
+decides what runs and where state lives, so neither the image's `ENTRYPOINT` nor its
+`WORKDIR` enters into it ([§4](#4-cross-component-file-handoffs)). The PVC is
+mounted at `/work/vtc` with `workingDir` to match — the same layout every other component
+uses — so `vtc` resolves its relative `config.toml` and `data_dir` onto what
+`step_vtc_setup`/`step_vtc_setup_key` wrote. Note this Deployment has no readiness
 probe (a running container is Ready by default absent one), so
 `WaitForComponentDeploymentReady` only confirms the process started, not that port 8200 is
 actually accepting connections.
