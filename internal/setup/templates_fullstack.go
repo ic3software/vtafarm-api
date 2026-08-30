@@ -104,6 +104,7 @@ ssl          = "none"
 admin        = "generate"
 jwt_mode     = "generate"
 network_mode = "open"
+cors         = "any"    # mediator-setup emits cors_allow_origin = "*" — browser clients (VTA Wallet) need it
 
 [database]
 url = "redis://127.0.0.1/"
