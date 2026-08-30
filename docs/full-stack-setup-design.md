@@ -922,7 +922,7 @@ ssl          = "none"
 admin        = "generate"
 jwt_mode     = "generate"
 network_mode = "open"
-cors         = "any"    # mediator-setup emits cors_allow_origin = "*" — browser clients (VTA Wallet) need it
+cors         = "any"
 
 [database]
 url = "redis://127.0.0.1/"      # required field; unused with fjall storage (no Redis deployed)
