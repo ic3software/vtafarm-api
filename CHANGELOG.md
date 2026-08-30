@@ -1,5 +1,12 @@
 # Changelog
 
+## [v0.3.1] - 2026-08-30
+
+### Changed
+
+- Full-stack setups configure mediators with `cors = "any"`, allowing browser
+  clients from any origin to connect to them.
+
 ## [v0.3.0] - 2026-08-20
 
 ### Added
