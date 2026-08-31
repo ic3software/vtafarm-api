@@ -3,6 +3,7 @@ package handler
 import (
 	"crypto/rand"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -43,9 +44,9 @@ func (h *UserHandler) List(c *gin.Context) {
 		UniqueId   string  `json:"unique_id"`
 		Email      *string `json:"email"` // null for pre-email and admin-invited accounts
 		BetaAccess bool    `json:"beta_access"`
-		// System is true for the account that owns the platform stack. It is
-		// not a login — no passkey, no email — so the UI should not offer it
-		// beta access, a recovery link, or anything else meant for a person.
+		// System is true for non-login owners such as the platform stack and
+		// provisioning load tests. The UI must not offer controls meant for a
+		// person.
 		System    bool   `json:"system"`
 		CreatedAt string `json:"created_at"`
 		UpdatedAt string `json:"updated_at"`
@@ -57,7 +58,7 @@ func (h *UserHandler) List(c *gin.Context) {
 			UniqueId:   u.UniqueId,
 			Email:      u.Email,
 			BetaAccess: u.BetaAccess,
-			System:     u.UniqueId == systemAccountUniqueID,
+			System:     u.UniqueId == systemAccountUniqueID || strings.HasPrefix(u.UniqueId, "load-test-"),
 			CreatedAt:  u.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 			UpdatedAt:  u.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		}

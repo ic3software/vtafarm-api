@@ -93,6 +93,39 @@ components:
           type: string
       required: [error]
 
+    LoadTestSession:
+      type: object
+      properties:
+        id: { type: integer }
+        vta_name: { type: string, example: "load-12-001" }
+        status: { type: string, example: "running" }
+        error_msg: { type: string }
+        fqdn: { type: string, example: "vta-load-12-001.example.com" }
+      required: [id, vta_name, status, fqdn]
+
+    LoadTestRun:
+      type: object
+      properties:
+        id: { type: integer }
+        status:
+          type: string
+          enum: [creating, active, partial, failed, deleting, deleted, delete_failed]
+        error_msg: { type: string }
+        requested_count: { type: integer }
+        created_count: { type: integer }
+        running_count: { type: integer }
+        failed_count: { type: integer }
+        vta_image: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/LoadTestSession"
+      required:
+        [id, status, requested_count, created_count, running_count,
+         failed_count, vta_image, created_at, updated_at, sessions]
+
     RateLimited:
       type: object
       properties:
@@ -1520,6 +1553,114 @@ paths:
           description: Cluster stats could not be read
         "503":
           description: Kubernetes is not configured
+
+  /api/v1/admin/load-tests:
+    post:
+      summary: Start a VTA provisioning load test
+      description: |
+        Records a run and asynchronously creates 1–50 ordinary VTA-only
+        sessions against the platform stack. Names are generated as
+        `load-<run-id>-NNN`; one admin DID is supplied to every session so each
+        pipeline automatically continues through deployment.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                count: { type: integer, minimum: 1, maximum: 50 }
+                admin_did: { type: string, example: "did:key:z6Mk..." }
+                vta_image: { type: string }
+              required: [count, admin_did, vta_image]
+      responses:
+        "202":
+          description: Run recorded and member creation started
+        "400":
+          description: Invalid count, DID, or image
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Another run still owns active resources
+        "503":
+          description: Platform stack, cluster configuration, or capacity is unavailable
+    get:
+      summary: List VTA provisioning load tests
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      responses:
+        "200":
+          description: Ten newest runs with their current sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/LoadTestRun" }
+
+  /api/v1/admin/load-tests/{id}/check:
+    post:
+      summary: Check whether every VTA in a load test is online
+      description: |
+        A member is online only when its setup row is `running` and its
+        Kubernetes Deployment currently reports at least one Ready replica.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Per-session readiness result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer }
+                  checked_at: { type: string, format: date-time }
+                  online_count: { type: integer }
+                  total: { type: integer }
+                  all_online: { type: boolean }
+                  sessions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        vta_name: { type: string }
+                        status: { type: string }
+                        online: { type: boolean }
+                        reason: { type: string }
+        "404": { description: Load test not found }
+        "503": { description: Kubernetes is not configured }
+
+  /api/v1/admin/load-tests/{id}:
+    delete:
+      summary: Delete every session in a load test
+      description: |
+        Starts asynchronous cleanup through the same complete teardown used by
+        ordinary session deletion: DNS, hosted DID and ACL, Kubernetes
+        resources, Vault seed, database row, then the synthetic test account.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "202": { description: Cleanup started or already in progress }
+        "204": { description: Run was already deleted }
+        "409": { description: Run members are still being created }
+        "404": { description: Load test not found }
 
   /api/v1/admin/setup-sessions:
     get:

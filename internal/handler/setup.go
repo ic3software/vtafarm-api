@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -316,6 +317,34 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		return
 	}
 
+	session, status, err := h.createManagedVtaOnlySession(
+		c.Request.Context(), userID, req, infra, provider, nil,
+	)
+	if err != nil {
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"id":        session.VtaName,
+		"url":       session.PublicURL(),
+		"status":    session.Status,
+		"vta_image": req.VtaImage,
+	})
+}
+
+// createManagedVtaOnlySession is the shared write path for an ordinary
+// VTA-only create and an admin load-test member. Validation, provider lookup
+// and capacity decisions stay with the caller; this function owns the atomic
+// DNS + row creation and starts the ordinary orchestrator.
+func (h *SetupHandler) createManagedVtaOnlySession(
+	ctx context.Context,
+	userID uint,
+	req createSetupRequest,
+	infra sharedInfra,
+	provider *model.SetupSession,
+	loadTestRunID *uint,
+) (*model.SetupSession, int, error) {
 	portable := true
 	if req.Portable != nil {
 		portable = *req.Portable
@@ -325,89 +354,60 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		preRotationCount = *req.PreRotationCount
 	}
 
-	// One path component, not two: the owner's unique_id used to prefix it so
-	// that per-user namespacing made the path unique for free, which put an
-	// opaque id in the middle of every DID this mode mints
-	// (did:webvh:<scid>:<host>:ex9re34d:myvta). The -vta suffix replaces it —
-	// the same shape full_stack's own daemon serves, and the thing that lets
-	// setup_sessions_did_path_unique compare these paths against the platform
-	// stack's exactly.
-	vtaDidUrl := infra.ServerURL + "/" + setup.VtaDidPath(req.VtaName)
-
+	// One path component, not two: the globally unique VTA name is also the
+	// stable path served by the shared DID-hosting daemon.
+	vtaDidURL := infra.ServerURL + "/" + setup.VtaDidPath(req.VtaName)
 	subdomain := setup.VtaHost(h.appEnv, req.VtaName)
 	fqdn := subdomain + "." + h.clusterDomain
 
-	recordID, err := h.cf.CreateARecord(c.Request.Context(), fqdn, h.ingressIP)
+	recordID, err := h.cf.CreateARecord(ctx, fqdn, h.ingressIP)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create DNS record: " + err.Error()})
-		return
+		return nil, http.StatusBadGateway, fmt.Errorf("failed to create DNS record: %w", err)
 	}
 
-	session := model.SetupSession{
-		UserID: userID,
-		Mode:   req.Mode,
-		Status: "dns_provisioned",
-		// Set explicitly rather than left to the column default: the field
-		// would otherwise read "" in memory for the rest of this request.
-		DomainType:  model.DomainManaged,
-		Domain:      h.clusterDomain,
-		Subdomain:   subdomain,
-		CFRecordID:  recordID,
-		VtaName:     req.VtaName,
-		MediatorDid: infra.MediatorDid,
-		VtaDidUrl:   vtaDidUrl,
-		// The shared daemon — this mode deploys none of its own. Snapshotted
-		// rather than looked up later: a rebuilt platform stack is a different
-		// daemon, and this session's DID stays on the one that minted it.
+	session := &model.SetupSession{
+		UserID:               userID,
+		Mode:                 model.ModeVtaOnly,
+		Status:               "dns_provisioned",
+		DomainType:           model.DomainManaged,
+		Domain:               h.clusterDomain,
+		Subdomain:            subdomain,
+		CFRecordID:           recordID,
+		VtaName:              req.VtaName,
+		MediatorDid:          infra.MediatorDid,
+		VtaDidUrl:            vtaDidURL,
 		DidHostingServerURL:  infra.ServerURL,
 		DidHostingControlURL: infra.ControlURL,
-		// Which daemon that URL is expected to be, so didhosting.Factory.For can
-		// refuse a host answering with a different DID. Phase 1's migration
-		// backfilled this for rows created before the column meant anything to
-		// vta_only; this is what populates it going forward. "" when the
-		// provider never recorded one, which keeps the previous behaviour of
-		// accepting whatever the daemon claims.
-		DIDHostingDid: infra.DaemonDid,
-		// Default; overridden just below when the caller supplied a code. Keyed
-		// on that rather than on whether resolveProvider returned a row, because
-		// it returns one on the platform path too — and a platform session must
-		// keep provider_session_id NULL, or model.IsOrphaned would eventually
-		// read it as a provider that had been deleted.
-		ConnectionSource: model.ConnectionPlatform,
-		VtaImage:         req.VtaImage,
-		AdminDid:         req.AdminDid,
-		Portable:         portable,
-		PreRotationCount: preRotationCount,
+		DIDHostingDid:        infra.DaemonDid,
+		ConnectionSource:     model.ConnectionPlatform,
+		LoadTestRunID:        loadTestRunID,
+		VtaImage:             req.VtaImage,
+		AdminDid:             req.AdminDid,
+		Portable:             portable,
+		PreRotationCount:     preRotationCount,
 	}
 	if req.ShareCode != "" {
+		if provider == nil {
+			_ = h.cf.DeleteRecord(ctx, recordID)
+			return nil, http.StatusInternalServerError, errors.New("provider session missing")
+		}
 		session.ConnectionSource = model.ConnectionInFarm
 		session.ProviderSessionID = &provider.ID
 	}
-	// A single insert: there is no random id left to collide, so the retry loop
-	// that used to wrap this went with unique_id.
-	if createErr := h.db.Create(&session).Error; createErr != nil {
-		_ = h.cf.DeleteRecord(c.Request.Context(), recordID)
-		// The pre-insert count check races with concurrent creates; the DB
-		// unique index is the real gate.
+
+	if createErr := h.db.Create(session).Error; createErr != nil {
+		_ = h.cf.DeleteRecord(ctx, recordID)
 		if isUniqueViolation(createErr, "setup_sessions_vta_name_unique") ||
 			isUniqueViolation(createErr, "setup_sessions_did_path_unique") {
-			c.JSON(http.StatusConflict, gin.H{"error": "vta_name already in use"})
-			return
+			return nil, http.StatusConflict, errors.New("vta_name already in use")
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist session"})
-		return
+		return nil, http.StatusInternalServerError, errors.New("failed to persist session")
 	}
 
 	if h.orch != nil {
 		h.orch.Start(session.ID)
 	}
-
-	c.JSON(http.StatusCreated, gin.H{
-		"id":        session.VtaName,
-		"url":       "https://" + fqdn,
-		"status":    session.Status,
-		"vta_image": req.VtaImage,
-	})
+	return session, http.StatusCreated, nil
 }
 
 // resolveCreateDomain turns POST /setup's optional domain_id into the domain
@@ -883,11 +883,20 @@ func (h *SetupHandler) teardownSession(c *gin.Context, session *model.SetupSessi
 		h.deleteFullStack(c, session)
 		return
 	}
+	if status, err := h.teardownVtaOnlySession(c.Request.Context(), session); err != nil {
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
 
+// teardownVtaOnlySession removes one VTA-only session without writing an HTTP
+// response. The user/admin delete handlers and load-test batch cleanup share it
+// so all three remove the same DNS, DID-hosting, Kubernetes and Vault state.
+func (h *SetupHandler) teardownVtaOnlySession(ctx context.Context, session *model.SetupSession) (int, error) {
 	if h.cf != nil && session.CFRecordID != "" {
-		if err := h.cf.DeleteRecord(c.Request.Context(), session.CFRecordID); err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to delete DNS record: " + err.Error()})
-			return
+		if err := h.cf.DeleteRecord(ctx, session.CFRecordID); err != nil {
+			return http.StatusBadGateway, fmt.Errorf("failed to delete DNS record: %w", err)
 		}
 	}
 
@@ -906,12 +915,12 @@ func (h *SetupHandler) teardownSession(c *gin.Context, session *model.SetupSessi
 				if u, err := url.Parse(path); err == nil {
 					path = strings.TrimPrefix(u.Path, "/")
 				}
-				if err := dh.DeleteDid(c.Request.Context(), path); err != nil {
+				if err := dh.DeleteDid(ctx, path); err != nil {
 					log.Printf("[setup] warn: failed to delete DID from hosting for session %d: %v", session.ID, err)
 				}
 			}
 			if session.VtaDid != "" {
-				if err := dh.DeleteAcl(c.Request.Context(), session.VtaDid); err != nil {
+				if err := dh.DeleteAcl(ctx, session.VtaDid); err != nil {
 					log.Printf("[setup] warn: failed to delete ACL entry for session %d: %v", session.ID, err)
 				}
 			}
@@ -920,33 +929,31 @@ func (h *SetupHandler) teardownSession(c *gin.Context, session *model.SetupSessi
 
 	if h.k8s != nil {
 		ns := h.k8s.UserNamespace(fmt.Sprintf("%d", session.UserID))
-		h.k8s.DeleteSetupResources(c.Request.Context(), ns, session.ID)
-		h.k8s.DeleteVtaResources(c.Request.Context(), ns, session.ID)
+		h.k8s.DeleteSetupResources(ctx, ns, session.ID)
+		h.k8s.DeleteVtaResources(ctx, ns, session.ID)
 	}
 
 	// Delete this session's master seed from Vault (best-effort).
 	if h.orch != nil {
-		h.orch.TeardownVaultSeed(c.Request.Context(), session.UserID, session.ID)
+		h.orch.TeardownVaultSeed(ctx, session.UserID, session.ID)
 	}
 
 	if err := h.db.Delete(session).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete session"})
-		return
+		return http.StatusInternalServerError, errors.New("failed to delete session")
 	}
 
 	if h.k8s != nil {
 		var remaining int64
 		h.db.Model(&model.SetupSession{}).Where("user_id = ?", session.UserID).Count(&remaining)
 		if remaining == 0 {
-			_ = h.k8s.DeleteNamespace(c.Request.Context(), fmt.Sprintf("%d", session.UserID))
+			_ = h.k8s.DeleteNamespace(ctx, fmt.Sprintf("%d", session.UserID))
 			// Last session for this user → remove their Vault policy + k8s role.
 			if h.orch != nil {
-				h.orch.TeardownVaultUserAccess(c.Request.Context(), session.UserID)
+				h.orch.TeardownVaultUserAccess(ctx, session.UserID)
 			}
 		}
 	}
-
-	c.Status(http.StatusNoContent)
+	return http.StatusNoContent, nil
 }
 
 // GET /api/v1/setup/:id/logs

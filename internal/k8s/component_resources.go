@@ -198,6 +198,17 @@ func (c *Client) WaitForComponentDeploymentReady(ctx context.Context, ns, name s
 	}
 }
 
+// ComponentDeploymentReady reports the current readiness state without
+// waiting. A ready replica means the workload's configured readiness probe has
+// succeeded; callers use this for explicit admin health checks.
+func (c *Client) ComponentDeploymentReady(ctx context.Context, ns, name string) (bool, error) {
+	deploy, err := c.kube.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return false, fmt.Errorf("get deployment %s: %w", name, err)
+	}
+	return deploy.Status.ReadyReplicas > 0, nil
+}
+
 // CreateComponentService creates a ClusterIP Service selecting labels on
 // port. Idempotent — AlreadyExists is ignored.
 func (c *Client) CreateComponentService(ctx context.Context, ns, name string, labels map[string]string, port int32) error {
