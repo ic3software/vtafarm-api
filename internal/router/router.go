@@ -145,6 +145,11 @@ func Setup(
 		adminAuth.POST("/admin/invitations", ih.Create)
 		adminAuth.GET("/admin/invitations", ih.List)
 		adminAuth.GET("/admin/setup-sessions", sh.AdminListSessions)
+		adminAuth.POST("/admin/load-tests", sh.AdminCreateLoadTest)
+		adminAuth.GET("/admin/load-tests", sh.AdminListLoadTests)
+		adminAuth.GET("/admin/load-tests/:id", sh.AdminGetLoadTest)
+		adminAuth.POST("/admin/load-tests/:id/check", sh.AdminCheckLoadTest)
+		adminAuth.DELETE("/admin/load-tests/:id", sh.AdminDeleteLoadTest)
 		// Same teardown as the user-facing DELETE /setup/:id, but reaches any
 		// user's session rather than only the caller's. Deleting the platform
 		// stack additionally requires {"confirm": "<label>"} in the body.

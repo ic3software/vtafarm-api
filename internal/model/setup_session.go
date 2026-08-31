@@ -112,8 +112,11 @@ type SetupSession struct {
 	// ON DELETE SET NULL — whether that provider still exists at all.
 	ConnectionSource  string `gorm:"column:connection_source;not null;default:platform" json:"connection_source"`
 	ProviderSessionID *uint  `gorm:"column:provider_session_id"                         json:"-"`
-	Portable          bool   `gorm:"not null;default:true"           json:"portable"`
-	PreRotationCount  int    `gorm:"not null;default:1"              json:"pre_rotation_count"`
+	// LoadTestRunID groups sessions created by the admin provisioning load-test
+	// workflow. Ordinary user and platform sessions leave it NULL.
+	LoadTestRunID    *uint `gorm:"column:load_test_run_id" json:"-"`
+	Portable         bool  `gorm:"not null;default:true"           json:"portable"`
+	PreRotationCount int   `gorm:"not null;default:1"              json:"pre_rotation_count"`
 	// Image used for the vta-setup K8s Job
 	VtaImage string `gorm:"not null;default:''"             json:"vta_image,omitempty"`
 	// Output populated after vta setup runs

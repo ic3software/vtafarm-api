@@ -54,8 +54,9 @@ func (f *Factory) ClientDid() string {
 //
 // Caching is not just to save a round trip: New fetches the server's DID from
 // /api/server-info, so an uncached call reaches the network on every upload,
-// ACL write and teardown. Clients are keyed by URL and hold no per-session
-// state, so sharing one is safe.
+// ACL write and teardown. Clients are keyed by URL and own the shared access-
+// token cache for that server; reuse is what lets concurrent calls coordinate
+// authentication without revoking each other's token.
 //
 // expectedServerDid, when non-empty, is the DID the caller already knows this
 // daemon to have — see checkAudience for why that matters. Empty means "no
