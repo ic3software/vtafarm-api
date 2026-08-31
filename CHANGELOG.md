@@ -1,5 +1,26 @@
 # Changelog
 
+## [v0.4.0] - 2026-08-31
+
+### Added
+
+- Admin load-test APIs create batches of 1–50 VTA-only sessions, list and
+  inspect runs, check every member's live Kubernetes readiness, and tear the
+  complete run down. Runs use the existing platform account, and only one run
+  may own active resources at a time.
+- Load-test runs survive API restarts in an inspectable and retryable state, and
+  the database migration links every member session to its run.
+
+### Changed
+
+- VTA-only sessions are marked `running` only after the VTA `/health` readiness
+  probe reports a Ready replica.
+- Full-stack DID hosting, mediator and VTC deployments now use their HTTP
+  readiness endpoints before the provisioning pipeline advances.
+- DID-hosting access tokens are cached and authentication is coordinated per
+  server, preventing concurrent DID publications from revoking one another. A
+  stale-token 401 is re-authenticated and retried once.
+
 ## [v0.3.1] - 2026-08-30
 
 ### Changed
