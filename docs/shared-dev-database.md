@@ -8,7 +8,7 @@ developer through `kubectl port-forward`. It replaces the per-developer
 
 The dev **cluster** was already shared; the database was not. So `setup_sessions`
 rows lived on one laptop while the namespaces, PVCs and Jobs they describe lived
-in `k8s-fpp-dev` where everyone could see them. Keeping the two in agreement
+in `rke2-vtafarm-dev` where everyone could see them. Keeping the two in agreement
 meant passing dumps around by hand, and every restore silently reintroduced
 whatever the sender's laptop happened to hold.
 
@@ -20,7 +20,7 @@ behaviours quietly assumed it was not.
 ## What is deployed
 
 `k8s/dev-postgres/` — four manifests in the `default` namespace of the dev
-cluster (`k8s-fpp-dev`):
+cluster (`rke2-vtafarm-dev`):
 
 | Object | Notes |
 | --- | --- |
@@ -29,7 +29,7 @@ cluster (`k8s-fpp-dev`):
 | Deployment `vtafarm-dev-postgres` | `postgres:18.4-alpine`, single replica, `Recreate` |
 | Service `vtafarm-dev-postgres` | ClusterIP, 5432 |
 
-Deployed with `make deploy-db`, which pins `--context k8s-fpp-dev` so it cannot
+Deployed with `make deploy-db`, which pins `--context rke2-vtafarm-dev` so it cannot
 land in `docker-desktop` by accident.
 
 Some deliberate choices:
@@ -149,7 +149,7 @@ mismatch.
 
 ### The database and the cluster are a pair
 
-Rows in `setup_sessions` describe objects in `k8s-fpp-dev`. Anyone connected to
+Rows in `setup_sessions` describe objects in `rke2-vtafarm-dev`. Anyone connected to
 the shared database must also be pointed at that cluster and configured the same
 way — `KUBECONFIG` context, `K8S_NAMESPACE_PREFIX=fpp-user`, `CLUSTER_DOMAIN`,
 the Cloudflare token, Vault.
@@ -166,8 +166,8 @@ your own data, and a same-named target here would destroy everyone's.
 To wipe and start over, deliberately:
 
 ```bash
-kubectl --context k8s-fpp-dev delete deployment vtafarm-dev-postgres
-kubectl --context k8s-fpp-dev delete pvc vtafarm-dev-postgres
+kubectl --context rke2-vtafarm-dev delete deployment vtafarm-dev-postgres
+kubectl --context rke2-vtafarm-dev delete pvc vtafarm-dev-postgres
 make deploy-db
 ```
 

@@ -30,7 +30,7 @@ The database being shared has consequences worth reading once:
 
 - Go 1.26+
 - [Air](https://github.com/air-verse/air) — `go install github.com/air-verse/air@latest`
-- `kubectl` with access to the dev cluster (context `k8s-fpp-dev`)
+- `kubectl` with access to the dev cluster (context `rke2-vtafarm-dev`)
 
 ### Setup
 
@@ -269,8 +269,8 @@ after creating it, so pre-existing ones keep `ingressClassName: nginx` and
 Traefik ignores them:
 
 ```bash
-KUBE_CONTEXT=k8s-fpp-dev ./scripts/migrate-ingress-to-traefik.sh           # dry run
-KUBE_CONTEXT=k8s-fpp-dev ./scripts/migrate-ingress-to-traefik.sh --apply
+KUBE_CONTEXT=rke2-vtafarm-dev ./scripts/migrate-ingress-to-traefik.sh           # dry run
+KUBE_CONTEXT=rke2-vtafarm-dev ./scripts/migrate-ingress-to-traefik.sh --apply
 ```
 
 ### 2. HashiCorp Vault (one-time, before the API)
