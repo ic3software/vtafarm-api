@@ -75,6 +75,18 @@ func (c *Client) CreateVtaDeployment(ctx context.Context, ns string, sessionID u
 							ContainerPort: port,
 							Protocol:      corev1.ProtocolTCP,
 						}},
+						ReadinessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								HTTPGet: &corev1.HTTPGetAction{
+									Path: "/health",
+									Port: intstr.FromInt32(port),
+								},
+							},
+							InitialDelaySeconds: 1,
+							PeriodSeconds:       2,
+							TimeoutSeconds:      2,
+							FailureThreshold:    3,
+						},
 						VolumeMounts: []corev1.VolumeMount{{
 							Name:      "data",
 							MountPath: "/work/vta",

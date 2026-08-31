@@ -68,7 +68,7 @@ pending
   → awaiting_admin_did     gate: wait for the user's PNM admin DID
                            (auto-skipped when admin_did was supplied at POST /setup)         (status: stays at vta_setup_complete)
   → step_import_admin_did  create the hosting ACL + the `vta import-did` Job                 (status: provisioning)
-  → deploy_vta             create the VTA Deployment + Service + Ingress                      (status: provisioning → running)
+  → deploy_vta             create Deployment + Service + Ingress; wait for GET /health Ready  (status: provisioning → running)
   → completed                                                                                 (status: running)
         ↓ (any step)
      failed
@@ -84,7 +84,8 @@ From the code (`internal/setup/orchestrator.go`, `internal/handler/setup.go`):
   setup goroutine before the Job, while `status` is still `dns_provisioned`). Full Stack
   breaks them out as their own steps because it provisions three components.
 - There is **no separate `deploy_vta` status**: `runProvision` creates the Deployment / Service
-  / Ingress while still `provisioning`, then flips straight to the terminal `running`.
+  / Ingress while still `provisioning`, waits up to two minutes for the Deployment's
+  `GET /health` readiness probe to pass, then flips to the terminal `running`.
 
 ### Mode B — Full Stack
 
@@ -330,11 +331,21 @@ containers:
         mountPath: /work/vta           # config.toml + data/vta/ written by the setup Job
     ports:
       - containerPort: 8100
+    readinessProbe:
+      httpGet:
+        path: /health
+        port: 8100
+      initialDelaySeconds: 1
+      periodSeconds: 2
+      timeoutSeconds: 2
+      failureThreshold: 3
 # runs as serviceAccountName "vta" (authenticates to Vault via kubernetes auth)
 ```
 
 The Deployment mounts the same PVC as the setup Job at `/work/vta`, so `config.toml` and
-`data/vta/` are already present when the VTA boots.
+`data/vta/` are already present when the VTA boots. The orchestrator does not set
+`status=running` until Kubernetes reports a Ready replica, so creating the Deployment object
+alone is not treated as proof that the VTA is serving.
 
 ---
 

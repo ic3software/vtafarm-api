@@ -16,7 +16,7 @@ CLUSTER_DOMAIN ?=
 
 # ─── Dev cluster ──────────────────────────────────────────────────────────────
 # The database is shared and lives here — see docs/shared-dev-database.md.
-DEV_CONTEXT  ?= k8s-fpp-dev
+DEV_CONTEXT  ?= rke2-vtafarm-dev
 DEV_DB       ?= vtafarm-dev-postgres
 DB_PORT      ?= 5432
 VAULT_PORT   ?= 8200

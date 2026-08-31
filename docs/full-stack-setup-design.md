@@ -669,7 +669,8 @@ Deployment with `workingDir = /work/dids`, command `["did-hosting-daemon"]`, SA 
 (reads its Vault-backed secrets at every boot), mounting the dids PVC, plus the
 Service + Ingress for `dids-{vta_name}.{domain}` (created in `k8s_provision`, now backed
 by a running pod). **Waits for Ready** (`WaitForComponentDeploymentReady`, 2 min timeout)
-before the step returns — `step_vta_register_dids` right after `deploy_mediator`
+against the daemon's unauthenticated `GET /health` endpoint before the step returns —
+`step_vta_register_dids` right after `deploy_mediator`
 live-resolves this daemon over HTTPS, and a `Deployment` object existing is not the same
 as the pod (and its Service/Ingress endpoint) actually serving traffic. *(This wait was
 documented from the start but not actually wired up until a live session hit the resulting
@@ -683,9 +684,10 @@ No Vault env vars — the mediator reads its secrets from Vault at startup and *
 (write→read→delete a sentinel) using kubernetes auth, re-authenticating with its pod's own
 ServiceAccount JWT on every restart. Service + Ingress for
 `mediator-{vta_name}.{domain}`. No Redis/Valkey dependency. **Waits for Ready**, same as
-`deploy_dids` — `step_vtc_setup` resolves the mediator later in the run, and the invariant
-"a `deploy_*` step doesn't return until its component is actually up" should hold
-uniformly.
+`deploy_dids`, using `GET /mediator/v1/readyz`; this checks the storage backend and
+load-bearing background tasks. `step_vtc_setup` resolves the mediator later in the run,
+and the invariant "a `deploy_*` step doesn't return until its component is actually up"
+should hold uniformly.
 
 ### Step `step_vta_register_dids` — VTA Job (workingDir `/work/vta`)
 
@@ -848,14 +850,15 @@ PNM `admin_did` (`4a`)** that `step_import_admin_did` uses — it gets its own c
 
 ```go
 k8s.ComponentDeploymentSpec{
-    Name:           k8s.FSVtcName(s.ID),
-    Image:          s.VtcImage,
-    Command:        []string{"vtc"},
-    WorkingDir:     "/work/vtc",
-    ServiceAccount: k8s.VtaServiceAccount, // reads its Vault key bundle at every boot
-    PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/work/vtc"}},
-    Port:           8200,
-    Labels:         fsLabels("vtc", s.ID),
+    Name:            k8s.FSVtcName(s.ID),
+    Image:           s.VtcImage,
+    Command:         []string{"vtc"},
+    WorkingDir:      "/work/vtc",
+    ServiceAccount:  k8s.VtaServiceAccount, // reads its Vault key bundle at every boot
+    PVCMounts:       []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/work/vtc"}},
+    Port:            8200,
+    Labels:          fsLabels("vtc", s.ID),
+    HealthCheckPath: "/health",
 }
 ```
 
@@ -864,10 +867,9 @@ decides what runs and where state lives, so neither the image's `ENTRYPOINT` nor
 `WORKDIR` enters into it ([§4](#4-cross-component-file-handoffs)). The PVC is
 mounted at `/work/vtc` with `workingDir` to match — the same layout every other component
 uses — so `vtc` resolves its relative `config.toml` and `data_dir` onto what
-`step_vtc_setup`/`step_vtc_setup_key` wrote. Note this Deployment has no readiness
-probe (a running container is Ready by default absent one), so
-`WaitForComponentDeploymentReady` only confirms the process started, not that port 8200 is
-actually accepting connections.
+`step_vtc_setup`/`step_vtc_setup_key` wrote. Its unauthenticated `GET /health` readiness
+probe must pass before `WaitForComponentDeploymentReady` returns and the full-stack session
+can be marked `running`.
 
 Service + Ingress for `fs-{sid}-vtc` are created up front in `k8s_provision`
 ([§2](#2-component-topology-one-user-namespace)), same pattern as the other three.

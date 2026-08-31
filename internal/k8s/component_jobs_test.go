@@ -52,6 +52,36 @@ func TestCreateComponentPVCRejectsInvalidStorageSize(t *testing.T) {
 	}
 }
 
+func TestCreateComponentDeploymentUsesConfiguredHealthReadinessProbe(t *testing.T) {
+	client := &Client{kube: fake.NewSimpleClientset()}
+
+	if err := client.CreateComponentDeployment(context.Background(), "test", ComponentDeploymentSpec{
+		Name:            "mediator",
+		Image:           "example/mediator:test",
+		Port:            7037,
+		HealthCheckPath: "/mediator/v1/readyz",
+	}); err != nil {
+		t.Fatalf("CreateComponentDeployment() error = %v", err)
+	}
+
+	deployment, err := client.kube.AppsV1().Deployments("test").Get(
+		context.Background(), "mediator", metav1.GetOptions{},
+	)
+	if err != nil {
+		t.Fatalf("get Deployment: %v", err)
+	}
+	probe := deployment.Spec.Template.Spec.Containers[0].ReadinessProbe
+	if probe == nil || probe.HTTPGet == nil {
+		t.Fatal("readiness probe is not an HTTP probe")
+	}
+	if probe.HTTPGet.Path != "/mediator/v1/readyz" {
+		t.Fatalf("readiness path = %q, want /mediator/v1/readyz", probe.HTTPGet.Path)
+	}
+	if probe.HTTPGet.Port.IntVal != 7037 {
+		t.Fatalf("readiness port = %d, want 7037", probe.HTTPGet.Port.IntVal)
+	}
+}
+
 func TestCreateSetupResourcesUsesVtaStorageSize(t *testing.T) {
 	client := &Client{kube: fake.NewSimpleClientset()}
 
