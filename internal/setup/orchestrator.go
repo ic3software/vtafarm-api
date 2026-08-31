@@ -452,6 +452,19 @@ func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDi
 		return
 	}
 
+	// A Deployment exists before the VTA has finished initializing. Its
+	// /health readiness probe is the serving boundary: do not advertise this
+	// session as running until Kubernetes confirms at least one ready replica.
+	if err := o.k8s.WaitForComponentDeploymentReady(
+		ctx, ns, k8s.VtaDeploymentName(sessionID), 2*time.Minute,
+	); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		o.markFailed(sessionID, "VTA deployment did not become ready: "+err.Error())
+		return
+	}
+
 	o.db.Model(&model.SetupSession{}).Where("id = ?", sessionID).Updates(map[string]any{
 		"status":     "running",
 		"updated_at": time.Now(),

@@ -1032,21 +1032,22 @@ func (o *Orchestrator) fsStepVtaRegisterDids(ctx context.Context, ns string, s *
 // its Vault-backed secrets at every boot. Waits for the pod to actually
 // become Ready before returning: step_vta_register_dids (right after
 // deploy_mediator) live-resolves this daemon's DID over HTTPS, so a
-// Deployment object existing isn't enough — without this wait it's a race
-// that 503s until the pod's up and the Service/Ingress endpoint propagates.
+// Deployment object existing isn't enough. The daemon's /health endpoint
+// proves its HTTP listener and combined service router are serving.
 func (o *Orchestrator) fsDeployDids(ctx context.Context, ns string, s *model.SetupSession) error {
 	name := k8s.FSDidsName(s.ID)
 	if err := o.k8s.CreateComponentDeployment(ctx, ns, k8s.ComponentDeploymentSpec{
-		Name:           name,
-		Image:          s.DidsImage,
-		Command:        []string{"did-hosting-daemon"},
-		WorkingDir:     "/work/dids",
-		ServiceAccount: k8s.VtaServiceAccount,
-		PVCMounts:      []k8s.PVCMount{{Name: "dids-data", ClaimName: name, MountPath: "/work/dids"}},
-		Env:            fsNoColorEnv(),
-		Port:           8534,
-		Labels:         fsLabels("dids", s.ID),
-		Resources:      k8s.ComponentResources("10m", "64Mi", "128Mi"),
+		Name:            name,
+		Image:           s.DidsImage,
+		Command:         []string{"did-hosting-daemon"},
+		WorkingDir:      "/work/dids",
+		ServiceAccount:  k8s.VtaServiceAccount,
+		PVCMounts:       []k8s.PVCMount{{Name: "dids-data", ClaimName: name, MountPath: "/work/dids"}},
+		Env:             fsNoColorEnv(),
+		Port:            8534,
+		Labels:          fsLabels("dids", s.ID),
+		HealthCheckPath: "/health",
+		Resources:       k8s.ComponentResources("10m", "64Mi", "128Mi"),
 	}); err != nil {
 		return err
 	}
@@ -1059,20 +1060,22 @@ func (o *Orchestrator) fsDeployDids(ctx context.Context, ns string, s *model.Set
 // full_stack resolves the mediator over HTTP right after this, but
 // full_stack's step_vtc_setup does (§9 [messaging]), so the
 // invariant "deploy_* returns only once the component is actually up" holds
-// for every component, not just the one known to need it today.
+// for every component, not just the one known to need it today. Its readyz
+// endpoint checks the storage backend and load-bearing background tasks.
 func (o *Orchestrator) fsDeployMediator(ctx context.Context, ns string, s *model.SetupSession) error {
 	name := k8s.FSMediatorName(s.ID)
 	if err := o.k8s.CreateComponentDeployment(ctx, ns, k8s.ComponentDeploymentSpec{
-		Name:           name,
-		Image:          s.MediatorImage,
-		Command:        []string{"mediator"},
-		WorkingDir:     "/work/mediator",
-		ServiceAccount: k8s.VtaServiceAccount,
-		PVCMounts:      []k8s.PVCMount{{Name: "mediator-data", ClaimName: name, MountPath: "/work/mediator"}},
-		Env:            append(fsNoColorEnv(), fsMediatorTuningEnv()...),
-		Port:           7037,
-		Labels:         fsLabels("mediator", s.ID),
-		Resources:      k8s.ComponentResources("50m", "128Mi", "256Mi"),
+		Name:            name,
+		Image:           s.MediatorImage,
+		Command:         []string{"mediator"},
+		WorkingDir:      "/work/mediator",
+		ServiceAccount:  k8s.VtaServiceAccount,
+		PVCMounts:       []k8s.PVCMount{{Name: "mediator-data", ClaimName: name, MountPath: "/work/mediator"}},
+		Env:             append(fsNoColorEnv(), fsMediatorTuningEnv()...),
+		Port:            7037,
+		Labels:          fsLabels("mediator", s.ID),
+		HealthCheckPath: "/mediator/v1/readyz",
+		Resources:       k8s.ComponentResources("50m", "128Mi", "256Mi"),
 	}); err != nil {
 		return err
 	}

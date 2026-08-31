@@ -240,24 +240,24 @@ func (o *Orchestrator) fsStepVtcSetup(ctx context.Context, ns string, s *model.S
 // image's ENTRYPOINT nor its WORKDIR enters into it. The PVC is mounted at
 // /work/vtc with workingDir to match — the same layout every other
 // component uses — so vtc resolves its relative config.toml and data_dir
-// onto what step_vtc_setup/step_vtc_setup_key wrote. Note this Deployment
-// has no readiness probe (a running container is Ready by default absent
-// one), so WaitForComponentDeploymentReady below only confirms the process
-// started, not that port 8200 is actually accepting connections. Runs as SA
-// vta — it reads its Vault key bundle at every boot.
+// onto what step_vtc_setup/step_vtc_setup_key wrote. The unauthenticated
+// /health probe confirms the HTTP listener is serving before the full stack
+// can be marked running. Runs as SA vta — it reads its Vault key bundle at
+// every boot.
 func (o *Orchestrator) fsDeployVtc(ctx context.Context, ns string, s *model.SetupSession) error {
 	name := k8s.FSVtcName(s.ID)
 	if err := o.k8s.CreateComponentDeployment(ctx, ns, k8s.ComponentDeploymentSpec{
-		Name:           name,
-		Image:          s.VtcImage,
-		Command:        []string{"vtc"},
-		WorkingDir:     "/work/vtc",
-		ServiceAccount: k8s.VtaServiceAccount,
-		PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: name, MountPath: "/work/vtc"}},
-		Env:            fsNoColorEnv(),
-		Port:           8200,
-		Labels:         fsLabels("vtc", s.ID),
-		Resources:      k8s.ComponentResources("10m", "32Mi", "64Mi"),
+		Name:            name,
+		Image:           s.VtcImage,
+		Command:         []string{"vtc"},
+		WorkingDir:      "/work/vtc",
+		ServiceAccount:  k8s.VtaServiceAccount,
+		PVCMounts:       []k8s.PVCMount{{Name: "vtc-data", ClaimName: name, MountPath: "/work/vtc"}},
+		Env:             fsNoColorEnv(),
+		Port:            8200,
+		Labels:          fsLabels("vtc", s.ID),
+		HealthCheckPath: "/health",
+		Resources:       k8s.ComponentResources("10m", "32Mi", "64Mi"),
 	}); err != nil {
 		return err
 	}
