@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,6 +31,10 @@ type Client struct {
 	kid       string // clientDid + "#" + multibase (the z6Mk... part)
 	privKey   ed25519.PrivateKey
 	hc        *http.Client
+
+	authMu               sync.Mutex
+	cachedAccessToken    string
+	accessTokenExpiresAt time.Time
 }
 
 // ServerDid returns the DID of the did-hosting-control server, fetched from
@@ -97,15 +102,39 @@ func fetchServerDid(baseURL string, hc *http.Client) (string, error) {
 // claims + publishes the DID log at the given path.
 // path is e.g. "nd5y4gpn/pvta" (everything after baseURL/).
 func (c *Client) RegisterDid(ctx context.Context, path, didLog string) error {
-	token, err := c.authenticate(ctx)
+	resp, err := c.doAuthenticated(ctx, func(token string) (*http.Request, error) {
+		body, _ := json.Marshal(map[string]any{
+			"path":    path,
+			"did_log": didLog,
+			"force":   false,
+		})
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/dids/register", bytes.NewReader(body))
+		if err == nil {
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		return req, err
+	})
 	if err != nil {
-		return fmt.Errorf("did-hosting authenticate: %w", err)
+		return fmt.Errorf("register request: %w", err)
 	}
-	return c.registerAtomic(ctx, token, path, didLog)
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("register response %d: %s", resp.StatusCode, respBody)
+	}
+	return nil
 }
 
-// authenticate runs the SIOPv2 challenge-response flow and returns an access token.
-func (c *Client) authenticate(ctx context.Context) (string, error) {
+type accessToken struct {
+	value     string
+	expiresAt time.Time
+}
+
+// authenticate runs the SIOPv2 challenge-response flow and returns a cacheable
+// access token. A fresh login revokes every older token for the same caller DID,
+// so callers must go through getAccessToken rather than invoking this directly.
+func (c *Client) authenticate(ctx context.Context) (accessToken, error) {
 	// ── Step 1: request a challenge nonce. ────────────────────────────────────
 	// Server accepts "subject" (canonical) or "did" (legacy alias).
 	challengeBody, _ := json.Marshal(map[string]string{"subject": c.clientDid})
@@ -114,12 +143,12 @@ func (c *Client) authenticate(ctx context.Context) (string, error) {
 
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("challenge request: %w", err)
+		return accessToken{}, fmt.Errorf("challenge request: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("challenge response %d: %s", resp.StatusCode, body)
+		return accessToken{}, fmt.Errorf("challenge response %d: %s", resp.StatusCode, body)
 	}
 
 	// Wire shape: {"challenge":"…","sessionId":"…","expiresAt":"…"} (flat camelCase).
@@ -128,40 +157,121 @@ func (c *Client) authenticate(ctx context.Context) (string, error) {
 		SessionId string `json:"sessionId"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&challengeResp); err != nil {
-		return "", fmt.Errorf("decode challenge response: %w", err)
+		return accessToken{}, fmt.Errorf("decode challenge response: %w", err)
 	}
 
 	// ── Step 2: self-issue a SIOPv2 id_token and wrap in Trust-Task envelope. ─
 	envelope, err := c.buildAuthEnvelope(challengeResp.SessionId, challengeResp.Challenge)
 	if err != nil {
-		return "", fmt.Errorf("build auth envelope: %w", err)
+		return accessToken{}, fmt.Errorf("build auth envelope: %w", err)
 	}
 
 	req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/auth/", bytes.NewBufferString(envelope))
 	req2.Header.Set("Content-Type", "application/json")
 	resp2, err := c.hc.Do(req2)
 	if err != nil {
-		return "", fmt.Errorf("authenticate request: %w", err)
+		return accessToken{}, fmt.Errorf("authenticate request: %w", err)
 	}
 	defer resp2.Body.Close()
 	if resp2.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp2.Body)
-		return "", fmt.Errorf("authenticate response %d: %s", resp2.StatusCode, body)
+		return accessToken{}, fmt.Errorf("authenticate response %d: %s", resp2.StatusCode, body)
 	}
 
 	// Wire shape: {"session":{…},"tokens":{"accessToken":"…","tokenType":"…",…}}
 	var authResp struct {
 		Tokens struct {
 			AccessToken string `json:"accessToken"`
+			ExpiresIn   uint64 `json:"expiresIn"`
 		} `json:"tokens"`
 	}
 	if err := json.NewDecoder(resp2.Body).Decode(&authResp); err != nil {
-		return "", fmt.Errorf("decode auth response: %w", err)
+		return accessToken{}, fmt.Errorf("decode auth response: %w", err)
 	}
 	if authResp.Tokens.AccessToken == "" {
-		return "", fmt.Errorf("auth response missing access token")
+		return accessToken{}, fmt.Errorf("auth response missing access token")
 	}
-	return authResp.Tokens.AccessToken, nil
+	return accessToken{
+		value:     authResp.Tokens.AccessToken,
+		expiresAt: tokenExpiry(authResp.Tokens.AccessToken, authResp.Tokens.ExpiresIn),
+	}, nil
+}
+
+// getAccessToken serialises only cache refresh/authentication. Ordinary API
+// requests run after the lock is released and remain fully concurrent.
+func (c *Client) getAccessToken(ctx context.Context) (string, error) {
+	c.authMu.Lock()
+	defer c.authMu.Unlock()
+	if c.cachedAccessToken != "" && time.Now().Add(30*time.Second).Before(c.accessTokenExpiresAt) {
+		return c.cachedAccessToken, nil
+	}
+	token, err := c.authenticate(ctx)
+	if err != nil {
+		return "", fmt.Errorf("did-hosting authenticate: %w", err)
+	}
+	c.cachedAccessToken = token.value
+	c.accessTokenExpiresAt = token.expiresAt
+	return token.value, nil
+}
+
+func (c *Client) invalidateAccessToken(token string) {
+	c.authMu.Lock()
+	defer c.authMu.Unlock()
+	// A concurrent request may already have replaced the rejected token. Do not
+	// discard that newer credential when handling a late 401 for the old one.
+	if c.cachedAccessToken == token {
+		c.cachedAccessToken = ""
+		c.accessTokenExpiresAt = time.Time{}
+	}
+}
+
+// doAuthenticated retries one 401 with a newly authenticated token. This also
+// recovers when another API replica or operator rotates this DID's token.
+func (c *Client) doAuthenticated(
+	ctx context.Context,
+	buildRequest func(token string) (*http.Request, error),
+) (*http.Response, error) {
+	for attempt := 0; attempt < 2; attempt++ {
+		token, err := c.getAccessToken(ctx)
+		if err != nil {
+			return nil, err
+		}
+		req, err := buildRequest(token)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := c.hc.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusUnauthorized || attempt == 1 {
+			return resp, nil
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		c.invalidateAccessToken(token)
+	}
+	panic("unreachable")
+}
+
+func tokenExpiry(token string, expiresIn uint64) time.Time {
+	if expiresIn > 0 {
+		return time.Now().Add(time.Duration(expiresIn) * time.Second)
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) == 3 {
+		if payload, err := base64.RawURLEncoding.DecodeString(parts[1]); err == nil {
+			var claims struct {
+				ExpiresAt int64 `json:"exp"`
+			}
+			if json.Unmarshal(payload, &claims) == nil && claims.ExpiresAt > 0 {
+				return time.Unix(claims.ExpiresAt, 0)
+			}
+		}
+	}
+	// Current servers always provide expiresIn and JWT exp. Avoid treating an
+	// unfamiliar response as indefinitely cacheable.
+	return time.Now()
 }
 
 // buildAuthEnvelope builds the Trust-Task authenticate envelope.
@@ -222,19 +332,19 @@ func (c *Client) buildAuthEnvelope(sessionId, challenge string) (string, error) 
 // CreateAcl adds did to the hosting service's ACL with the given role and label.
 // Returns nil if the entry already exists (409 Conflict is treated as success).
 func (c *Client) CreateAcl(ctx context.Context, did, role, label string) error {
-	token, err := c.authenticate(ctx)
-	if err != nil {
-		return fmt.Errorf("did-hosting authenticate: %w", err)
-	}
 	body, _ := json.Marshal(map[string]any{
 		"did":   did,
 		"role":  role,
 		"label": label,
 	})
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/acl", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := c.hc.Do(req)
+	resp, err := c.doAuthenticated(ctx, func(token string) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/acl", bytes.NewReader(body))
+		if err == nil {
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		return req, err
+	})
 	if err != nil {
 		return fmt.Errorf("acl create request: %w", err)
 	}
@@ -252,13 +362,13 @@ func (c *Client) CreateAcl(ctx context.Context, did, role, label string) error {
 // DeleteAcl removes did from the hosting service's ACL.
 // Returns nil if the entry does not exist (404 is treated as success).
 func (c *Client) DeleteAcl(ctx context.Context, did string) error {
-	token, err := c.authenticate(ctx)
-	if err != nil {
-		return fmt.Errorf("did-hosting authenticate: %w", err)
-	}
-	req, _ := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/api/acl/"+did, nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := c.hc.Do(req)
+	resp, err := c.doAuthenticated(ctx, func(token string) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/api/acl/"+did, nil)
+		if err == nil {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		return req, err
+	})
 	if err != nil {
 		return fmt.Errorf("acl delete request: %w", err)
 	}
@@ -273,13 +383,13 @@ func (c *Client) DeleteAcl(ctx context.Context, did string) error {
 // DeleteDid deletes the DID at path from the hosting service.
 // path is e.g. "nd5y4gpn/pvta".
 func (c *Client) DeleteDid(ctx context.Context, path string) error {
-	token, err := c.authenticate(ctx)
-	if err != nil {
-		return fmt.Errorf("did-hosting authenticate: %w", err)
-	}
-	req, _ := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/api/dids/"+path, nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := c.hc.Do(req)
+	resp, err := c.doAuthenticated(ctx, func(token string) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/api/dids/"+path, nil)
+		if err == nil {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		return req, err
+	})
 	if err != nil {
 		return fmt.Errorf("delete request: %w", err)
 	}
@@ -287,30 +397,6 @@ func (c *Client) DeleteDid(ctx context.Context, path string) error {
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotFound {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("delete response %d: %s", resp.StatusCode, body)
-	}
-	return nil
-}
-
-// registerAtomic calls POST /api/dids/register — a single round-trip that
-// atomically claims the path and publishes the DID log.
-func (c *Client) registerAtomic(ctx context.Context, token, path, didLog string) error {
-	body, _ := json.Marshal(map[string]any{
-		"path":    path,
-		"did_log": didLog,
-		"force":   false,
-	})
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/dids/register", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	resp, err := c.hc.Do(req)
-	if err != nil {
-		return fmt.Errorf("register request: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("register response %d: %s", resp.StatusCode, respBody)
 	}
 	return nil
 }
