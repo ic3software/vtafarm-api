@@ -54,8 +54,8 @@ type loadTestRunItem struct {
 
 // AdminCreateLoadTest — POST /api/v1/admin/load-tests.
 //
-// Creates one isolated system user for the run, then starts up to ten ordinary
-// VTA-only creates in parallel. The request returns as soon as the run has been
+// Uses the platform system account, then starts up to ten ordinary VTA-only
+// creates in parallel. The request returns as soon as the run has been
 // recorded; GET /admin/load-tests is the progress view.
 func (h *SetupHandler) AdminCreateLoadTest(c *gin.Context) {
 	if !h.cfRequired(c) {
@@ -136,25 +136,16 @@ func (h *SetupHandler) AdminCreateLoadTest(c *gin.Context) {
 		return
 	}
 
-	user := model.User{UniqueId: fmt.Sprintf("load-test-%d", run.ID)}
-	if err := h.db.Create(&user).Error; err != nil {
+	run.UserID = &provider.UserID
+	if err := h.db.Model(&run).Update("user_id", provider.UserID).Error; err != nil {
 		h.db.Model(&run).Updates(map[string]any{
-			"status": model.LoadTestFailed, "error_msg": "failed to create load-test account",
+			"status": model.LoadTestFailed, "error_msg": "failed to attach platform account",
 		})
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create load-test account"})
-		return
-	}
-	run.UserID = &user.ID
-	if err := h.db.Model(&run).Update("user_id", user.ID).Error; err != nil {
-		_ = h.db.Delete(&user).Error
-		h.db.Model(&run).Updates(map[string]any{
-			"status": model.LoadTestFailed, "error_msg": "failed to attach load-test account",
-		})
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to attach load-test account"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to attach platform account"})
 		return
 	}
 
-	go h.startLoadTest(run.ID, user.ID, req, infra, provider)
+	go h.startLoadTest(run.ID, provider.UserID, req, infra, provider)
 	c.JSON(http.StatusAccepted, gin.H{"id": run.ID, "status": run.Status})
 }
 
@@ -210,9 +201,6 @@ func (h *SetupHandler) startLoadTest(
 	status := model.LoadTestActive
 	if created == 0 {
 		status = model.LoadTestFailed
-		if err := h.db.Delete(&model.User{}, userID).Error; err != nil {
-			log.Printf("[load-test] run %d: failed to remove unused test account: %v", runID, err)
-		}
 	} else if created < request.Count {
 		status = model.LoadTestPartial
 	}
@@ -231,7 +219,7 @@ func (h *SetupHandler) startLoadTest(
 func (h *SetupHandler) AdminListLoadTests(c *gin.Context) {
 	h.reconcileStaleLoadTests()
 	var runs []model.LoadTestRun
-	if err := h.db.Order("id DESC").Limit(10).Find(&runs).Error; err != nil {
+	if err := h.db.Where("status <> ?", model.LoadTestDeleted).Order("id DESC").Limit(10).Find(&runs).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list load tests"})
 		return
 	}
@@ -259,6 +247,26 @@ func (h *SetupHandler) AdminListLoadTests(c *gin.Context) {
 		items[i] = loadTestRunView(&runs[i], byRun[runs[i].ID])
 	}
 	c.JSON(http.StatusOK, items)
+}
+
+// AdminGetLoadTest — GET /api/v1/admin/load-tests/:id.
+func (h *SetupHandler) AdminGetLoadTest(c *gin.Context) {
+	h.reconcileStaleLoadTests()
+	runID, ok := loadTestID(c)
+	if !ok {
+		return
+	}
+	var run model.LoadTestRun
+	if err := h.db.First(&run, runID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "load test not found"})
+		return
+	}
+	var sessions []model.SetupSession
+	if err := h.db.Where("load_test_run_id = ?", runID).Order("id ASC").Find(&sessions).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list load-test sessions"})
+		return
+	}
+	c.JSON(http.StatusOK, loadTestRunView(&run, sessions))
 }
 
 func loadTestRunView(run *model.LoadTestRun, sessions []model.SetupSession) loadTestRunItem {
@@ -403,9 +411,10 @@ func (h *SetupHandler) deleteLoadTest(runID uint, userID *uint) {
 		return
 	}
 	if userID != nil {
-		// The sessions are gone first, so this removes only the synthetic account.
-		if err := h.db.Delete(&model.User{}, *userID).Error; err != nil {
-			h.failLoadTestDelete(runID, "sessions were removed but the load-test account could not be deleted")
+		// Runs created before load tests began sharing the platform account still
+		// own a synthetic account. Remove only those legacy rows.
+		if err := h.db.Where("id = ? AND unique_id LIKE ?", *userID, "load-test-%").Delete(&model.User{}).Error; err != nil {
+			h.failLoadTestDelete(runID, "sessions were removed but the legacy load-test account could not be deleted")
 			return
 		}
 	}

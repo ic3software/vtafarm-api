@@ -1595,7 +1595,7 @@ paths:
         - CookieAuthAdmin: []
       responses:
         "200":
-          description: Ten newest runs with their current sessions
+          description: Ten newest non-deleted runs with their current sessions
           content:
             application/json:
               schema:
@@ -1642,12 +1642,31 @@ paths:
         "503": { description: Kubernetes is not configured }
 
   /api/v1/admin/load-tests/{id}:
+    get:
+      summary: Get one VTA provisioning load test
+      description: Returns the run and all of its current VTA sessions.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Load-test run detail
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoadTestRun" }
+        "404": { description: Load test not found }
     delete:
       summary: Delete every session in a load test
       description: |
         Starts asynchronous cleanup through the same complete teardown used by
         ordinary session deletion: DNS, hosted DID and ACL, Kubernetes
-        resources, Vault seed, database row, then the synthetic test account.
+        resources, Vault seed, and database row. The shared platform account is
+        retained; legacy synthetic test accounts are removed when applicable.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []

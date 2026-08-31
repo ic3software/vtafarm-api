@@ -7,10 +7,9 @@ orchestrator path used by the user portal.
 ## Run lifecycle
 
 `POST /api/v1/admin/load-tests` accepts a count (1–50), one VTA image, and one
-`did:key` admin DID. It creates a synthetic user for namespace isolation and
-names members `load-<run-id>-NNN`. Up to ten member records are created in
-parallel; each recorded session then runs independently in the ordinary
-orchestrator.
+`did:key` admin DID. Members use the existing `platform` system account and are
+named `load-<run-id>-NNN`. Up to ten member records are created in parallel;
+each recorded session then runs independently in the ordinary orchestrator.
 
 Only one run may own active resources at a time. A partial run remains active
 until it is deleted so its successfully created members cannot be forgotten.
@@ -36,7 +35,10 @@ reports offline even if its database status is still `running`.
 
 `DELETE /api/v1/admin/load-tests/{id}` asynchronously sends every member
 through the normal VTA-only teardown. It removes DNS, the hosted DID and ACL,
-Kubernetes resources, Vault seed, and the setup row. The last member also
-removes the shared test namespace and Vault access; the synthetic user is
-deleted after all members succeed. A failed cleanup is retryable from the same
-button.
+Kubernetes resources, Vault seed, and the setup row. The platform account,
+namespace, and Vault access remain because they are also owned by the platform
+stack. A failed cleanup is retryable from the same button. Cleanup of runs made
+by older releases also removes their legacy `load-test-*` account.
+
+Deleted runs remain as lightweight database history but are omitted from the
+admin run list.
