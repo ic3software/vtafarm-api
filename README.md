@@ -394,3 +394,8 @@ rules:
   resources: ["middlewares"]
   verbs: ["get", "list", "create", "delete"]
 ```
+
+## License
+
+VTA Farm is licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for attribution.
+Contributions are welcome under the terms in [CONTRIBUTING.md](CONTRIBUTING.md).

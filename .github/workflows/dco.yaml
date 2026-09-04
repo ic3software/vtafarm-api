@@ -1,0 +1,39 @@
+name: DCO
+on:
+  pull_request:
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  check:
+    name: ✍️ Sign-off
+    runs-on: ubuntu-latest
+    steps:
+      - name: ✍️ Check every commit is signed off
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          bad=$(gh api "repos/$REPO/pulls/$PR/commits" --paginate --jq '
+            .[]
+            | select((.parents | length) < 2)
+            | . as $c
+            | [ $c.commit.message | split("\n")[]
+                | select(test("^signed-off-by:"; "i"))
+                | capture("<(?<email>[^>]+)>\\s*$") | .email | ascii_downcase ] as $signoffs
+            | ($c.commit.author.email | ascii_downcase) as $author
+            | ($c.commit.committer.email | ascii_downcase) as $committer
+            | if (($signoffs | index($author)) != null) or (($signoffs | index($committer)) != null)
+              then empty
+              elif ($signoffs | length) == 0
+              then "\($c.sha[0:7]) \($c.commit.author.email): no Signed-off-by trailer"
+              else "\($c.sha[0:7]) \($c.commit.author.email): sign-off \($signoffs | join(", ")) does not match the author or committer email"
+              end')
+          if [ -n "$bad" ]; then
+            printf '%s\n' "$bad"
+            echo "::error::One or more commits fail the Developer Certificate of Origin check. See CONTRIBUTING.md."
+            exit 1
+          fi
+          echo "All commits are signed off."
