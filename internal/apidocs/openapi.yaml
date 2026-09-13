@@ -1560,8 +1560,8 @@ paths:
       description: |
         Records a run and asynchronously creates 1–50 ordinary VTA-only
         sessions against the platform stack. Names are generated as
-        `load-<run-id>-NNN`; one admin DID is supplied to every session so each
-        pipeline automatically continues through deployment.
+        `load-<run-id>-NNN`; the API generates one ephemeral admin DID for the
+        run so every member pipeline automatically continues through deployment.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
@@ -1573,14 +1573,13 @@ paths:
               type: object
               properties:
                 count: { type: integer, minimum: 1, maximum: 50 }
-                admin_did: { type: string, example: "did:key:z6Mk..." }
                 vta_image: { type: string }
-              required: [count, admin_did, vta_image]
+              required: [count, vta_image]
       responses:
         "202":
           description: Run recorded and member creation started
         "400":
-          description: Invalid count, DID, or image
+          description: Invalid count or image
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }

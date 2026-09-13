@@ -6,10 +6,13 @@ orchestrator path used by the user portal.
 
 ## Run lifecycle
 
-`POST /api/v1/admin/load-tests` accepts a count (1–50), one VTA image, and one
-`did:key` admin DID. Members use the existing `platform` system account and are
-named `load-<run-id>-NNN`. Up to ten member records are created in parallel;
-each recorded session then runs independently in the ordinary orchestrator.
+`POST /api/v1/admin/load-tests` accepts a count (1–50) and one VTA image. The API
+generates one ephemeral `did:key` for the run, discards its private key, and
+supplies the DID to every member so the ordinary pipeline continues through
+deployment without operator input. Members use the existing `platform` system
+account and are named `load-<run-id>-NNN`. Up to ten member records are created
+in parallel; each recorded session then runs independently in the ordinary
+orchestrator.
 
 Only one run may own active resources at a time. A partial run remains active
 until it is deleted so its successfully created members cannot be forgotten.

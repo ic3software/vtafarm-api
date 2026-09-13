@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/ic3software/vtafarm-api/internal/capacity"
+	"github.com/ic3software/vtafarm-api/internal/didkey"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/middleware"
 	"github.com/ic3software/vtafarm-api/internal/model"
@@ -26,7 +27,6 @@ const (
 
 type createLoadTestRequest struct {
 	Count    int    `json:"count"`
-	AdminDid string `json:"admin_did"`
 	VtaImage string `json:"vta_image"`
 }
 
@@ -75,14 +75,9 @@ func (h *SetupHandler) AdminCreateLoadTest(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	req.AdminDid = strings.TrimSpace(req.AdminDid)
 	req.VtaImage = strings.TrimSpace(req.VtaImage)
 	if req.Count < 1 || req.Count > maxLoadTestSessions {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("count must be between 1 and %d", maxLoadTestSessions)})
-		return
-	}
-	if !didKeyRe.MatchString(req.AdminDid) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "admin_did must be a did:key value produced by pnm setup"})
 		return
 	}
 	if req.VtaImage == "" {
@@ -119,6 +114,11 @@ func (h *SetupHandler) AdminCreateLoadTest(c *gin.Context) {
 			return
 		}
 	}
+	adminDid, err := didkey.Generate()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate load-test admin DID"})
+		return
+	}
 
 	adminID := c.MustGet(middleware.ContextUserID).(uint)
 	run := model.LoadTestRun{
@@ -145,13 +145,14 @@ func (h *SetupHandler) AdminCreateLoadTest(c *gin.Context) {
 		return
 	}
 
-	go h.startLoadTest(run.ID, provider.UserID, req, infra, provider)
+	go h.startLoadTest(run.ID, provider.UserID, req, adminDid, infra, provider)
 	c.JSON(http.StatusAccepted, gin.H{"id": run.ID, "status": run.Status})
 }
 
 func (h *SetupHandler) startLoadTest(
 	runID, userID uint,
 	request createLoadTestRequest,
+	adminDid string,
 	infra sharedInfra,
 	provider *model.SetupSession,
 ) {
@@ -172,7 +173,7 @@ func (h *SetupHandler) startLoadTest(
 					Mode:     model.ModeVtaOnly,
 					VtaName:  name,
 					VtaImage: request.VtaImage,
-					AdminDid: request.AdminDid,
+					AdminDid: adminDid,
 				}, infra, provider, &runID)
 				cancel()
 				results <- createResult{err: err}

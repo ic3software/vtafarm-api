@@ -6,36 +6,9 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log"
-	"math/big"
+
+	"github.com/ic3software/vtafarm-api/internal/didkey"
 )
-
-// base58btc alphabet used by multibase
-const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-
-func base58Encode(b []byte) string {
-	n := new(big.Int).SetBytes(b)
-	base := big.NewInt(58)
-	zero := big.NewInt(0)
-	mod := new(big.Int)
-
-	var result []byte
-	for n.Cmp(zero) > 0 {
-		n.DivMod(n, base, mod)
-		result = append(result, alphabet[mod.Int64()])
-	}
-	// leading zero bytes → '1'
-	for _, byt := range b {
-		if byt != 0 {
-			break
-		}
-		result = append(result, alphabet[0])
-	}
-	// reverse
-	for i, j := 0, len(result)-1; i < j; i, j = i+1, j-1 {
-		result[i], result[j] = result[j], result[i]
-	}
-	return string(result)
-}
 
 func main() {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -43,10 +16,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// did:key encoding: multibase base58btc of (multicodec ed25519-pub prefix + pubkey)
-	// ed25519-pub multicodec varint: 0xed 0x01
-	prefixed := append([]byte{0xed, 0x01}, pub...)
-	didKey := "did:key:z" + base58Encode(prefixed)
+	didKey, err := didkey.FromPublicKey(pub)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Store only the 32-byte seed (private key), not the full 64-byte Go representation
 	privB64 := base64.StdEncoding.EncodeToString(priv.Seed())

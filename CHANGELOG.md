@@ -13,6 +13,8 @@
 
 ### Changed
 
+- Provisioning load tests generate an ephemeral admin DID per run instead of
+  requiring an operator-supplied DID.
 - VTA-only sessions are marked `running` only after the VTA `/health` readiness
   probe reports a Ready replica.
 - Full-stack DID hosting, mediator and VTC deployments now use their HTTP
