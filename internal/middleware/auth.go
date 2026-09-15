@@ -52,6 +52,7 @@ func AuthRequired(secret, cookieName string) gin.HandlerFunc {
 		}
 
 		if tokenStr == "" {
+			c.Header("Cache-Control", "no-store")
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing or invalid token"})
 			return
 		}
@@ -64,6 +65,7 @@ func AuthRequired(secret, cookieName string) gin.HandlerFunc {
 			return []byte(secret), nil
 		})
 		if err != nil || !token.Valid {
+			c.Header("Cache-Control", "no-store")
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 			return
 		}

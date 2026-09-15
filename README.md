@@ -64,6 +64,9 @@ The database being shared has consequences worth reading once:
    The API is now available at `http://localhost:8080`.
    API docs: `http://localhost:8080/docs`
 
+   To exercise optional VTA Wallet login in Chrome, follow
+   [`docs/siop-browser-testing.md`](docs/siop-browser-testing.md).
+
 4. (Optional) Generate a DID hosting keypair (required only if DID hosting is enabled):
 
    ```bash
@@ -103,6 +106,10 @@ Copy `.env.example` and adjust as needed:
 | `DB_HOST` | `localhost` | The `make forward-db` tunnel to the shared dev database |
 | `DB_NAME` | `vtafarm` | |
 | `JWT_SECRET` | _(required)_ | HS256 signing secret — must match the team, see below |
+| `SIOP_RP_DID` | _(empty)_ | Dedicated public RP DID; enables linked VTA Wallet login when set |
+| `SIOP_CHALLENGE_TTL_SECONDS` | `120` | One-time wallet challenge lifetime |
+| `SIOP_CLOCK_SKEW_SECONDS` | `60` | Allowed SIOP token clock skew |
+| `SIOP_DID_RESOLUTION_TIMEOUT_SECONDS` | `5` | Public DID resolution timeout |
 | `ORCHESTRATOR_RESUME` | `true` | Re-attach interrupted sessions at startup. Set `false` locally — see [`docs/shared-dev-database.md`](docs/shared-dev-database.md) |
 | `CLUSTER_INGRESS_IP` | _(required)_ | External IP of the cluster's Traefik LoadBalancer |
 | `CLOUDFLARE_API_TOKEN` | _(optional)_ | Required for VTA setup wizard |
@@ -110,7 +117,137 @@ Copy `.env.example` and adjust as needed:
 | `KUBECONFIG` | _(empty)_ | Auto-detects `~/.kube/config` when empty |
 | `K8S_NAMESPACE_PREFIX` | `vtafarm-user` | Per-user namespace: `vtafarm-user-{userID}` |
 
-#### Generating JWT_SECRET
+### SIOP RP DID
+
+`SIOP_RP_DID` is the public identity of VTA Farm as a SIOPv2 relying party.
+The wallet puts this value in the login token's `aud` claim; the API does not
+sign with it and has no `SIOP_RP_PRIVATE_KEY` setting.
+
+For local browser testing, put this development-only `did:key` in `.env`:
+
+```dotenv
+SIOP_RP_DID=did:key:z6MkkVc5EPGcCa3ZWB5i2YGX7BnLBm8vgf1qUwqTb9i87wLj
+```
+
+Restart the API and verify that wallet login is enabled:
+
+```bash
+curl http://localhost:8080/api/v1/auth/siop/metadata
+```
+
+The response should contain `"enabled":true` and the same `rp_did`. This DID is
+a public test fixture, carries no VTA Farm private key, and is not suitable for
+production.
+
+#### Production RP DID
+
+Production should use a dedicated `vtafarm-auth` VTA identity with persistent
+key storage and a `did:webvh` history that resolves over public HTTPS. It may
+use the existing DID-hosting deployment; a separate hosting service is not
+required. Do not reuse `DID_HOSTING_DID`: that `did:key` and its
+`DID_HOSTING_PRIVATE_KEY` are the privileged machine credential that
+vtafarm-api uses to upload DID logs and manage hosting ACLs.
+
+The simplest UI flow is through the VTA Wallet management console because the
+VTA must create and retain the DID's keys:
+
+1. Connect the wallet to the dedicated `vtafarm-auth` VTA. From the extension
+   popup, select **Manage this agent**.
+2. Under **Identity & custody → Contexts**, create or select the
+   `vtafarm-auth` context.
+3. Under **Identity & custody → DIDs**, use **New DID**. Enter the registered
+   hosting server ID, or leave it blank when that VTA has a default server.
+   Enable **Portable** if the identity must be movable to another hosting
+   domain later; this choice cannot be added after creation.
+4. Select **Create DID** and complete any consent request. The resulting DID is
+   already signed by the VTA, published to the hosting server, and displayed in
+   the DIDs table. Copy the full `did:webvh:...` value into the production
+   `siop.rpDID` Helm value.
+
+The hosting server must already be registered with the dedicated VTA. This is
+a one-time prerequisite; the current wallet management console can create DIDs
+but does not have a hosting-server registration form. Read the server's actual
+DID from its public API and register it with PNM:
+
+```bash
+curl 'https://<hosting-control-domain>/api/server-info'
+
+pnm did-mgmt servers add \
+  --id primary \
+  --did '<server_did from /api/server-info>' \
+  --label 'VTA Farm DID host'
+```
+
+If the public hosting domain is not configured yet, log in to the DID-hosting
+admin UI first:
+
+1. Open **Domains → New domain**, enter the canonical public hostname, and set
+   it as the default if this deployment should use it by default.
+2. Open **Servers**, choose the hosting instance, and use **Assign domain**.
+3. In **Access Control**, ensure the dedicated VTA identity is allowed to
+   publish to that domain.
+
+Do not use **DIDs → New DID** in the DID-hosting admin UI as the only creation
+step. That screen calls `POST /api/dids` to reserve a path and displays
+**Pending upload**; it does not generate keys or create the first signed
+`did.jsonl`. The VTA Wallet management flow above performs the complete mint
+and publish operation.
+
+The wallet UI currently lets the hosting server assign the DID path and choose
+its configured/default domain. When an exact path such as `vtafarm-auth` or an
+explicit domain is required, use PNM instead:
+
+```bash
+pnm did-mgmt dids create \
+  --context vtafarm-auth \
+  --server primary \
+  --domain '<vtafarm-public-domain>' \
+  --path vtafarm-auth \
+  --label 'VTA Farm SIOP relying party' \
+  --pre-rotation 1
+```
+
+Put the returned DID in the environment-specific Helm values used on every
+production deployment:
+
+```yaml
+siop:
+  rpDID: "did:webvh:<scid>:<public-domain>:vtafarm-auth"
+```
+
+The chart renders this public identifier into the vtafarm-api ConfigMap as
+`SIOP_RP_DID`; it is not a secret. Apply that values file with the normal Helm
+upgrade, then restart the deployment because environment variables sourced
+from a ConfigMap are read when the pod starts:
+
+```bash
+VTAFARM_NAMESPACE=default
+VTAFARM_PROD_VALUES=/path/to/production-values.yaml
+
+helm upgrade vtafarm-api ./helm/vtafarm-api \
+  --install \
+  --namespace "$VTAFARM_NAMESPACE" \
+  --values "$VTAFARM_PROD_VALUES" \
+  --atomic \
+  --timeout 10m
+
+kubectl --namespace "$VTAFARM_NAMESPACE" rollout restart deployment/vtafarm-api
+kubectl --namespace "$VTAFARM_NAMESPACE" rollout status deployment/vtafarm-api
+```
+
+Finally, fetch the returned DID's `did.jsonl` over public HTTPS from outside
+the cluster, then verify the deployed API metadata:
+
+```bash
+curl 'https://<public-domain>/vtafarm-auth/did.jsonl'
+curl 'https://<api-host>/api/v1/auth/siop/metadata'
+```
+
+The metadata response must contain `"enabled":true` and the same `rp_did`.
+Only the DID string goes into `SIOP_RP_DID`; no RP private key is copied into
+vtafarm-api.
+
+### Generating JWT_SECRET
 
 ```bash
 openssl rand -base64 32

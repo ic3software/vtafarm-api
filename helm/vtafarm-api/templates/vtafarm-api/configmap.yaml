@@ -35,4 +35,9 @@ data:
   WEBAUTHN_RP_ID:            {{ .Values.webauthn.rpID | default (include "app.frontendHost" .) | quote }}
   WEBAUTHN_RP_ORIGINS:       {{ .Values.webauthn.rpOrigins | default (include "app.frontendOrigin" .) | quote }}
   WEBAUTHN_RP_DISPLAY_NAME:  {{ .Values.webauthn.rpDisplayName | quote }}
+  SIOP_RP_DID:               {{ .Values.siop.rpDID | quote }}
+  SIOP_CHALLENGE_TTL_SECONDS: {{ .Values.siop.challengeTTLSeconds | quote }}
+  SIOP_CLOCK_SKEW_SECONDS:   {{ .Values.siop.clockSkewSeconds | quote }}
+  SIOP_DID_RESOLUTION_TIMEOUT_SECONDS: {{ .Values.siop.didResolutionTimeoutSeconds | quote }}
+  SIOP_MAX_BODY_BYTES:       {{ .Values.siop.maxBodyBytes | quote }}
   CORS_ALLOWED_ORIGINS:      {{ .Values.cors.allowedOrigins | default (include "app.frontendOrigin" .) | quote }}

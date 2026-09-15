@@ -93,6 +93,15 @@ webauthn:
   rpID: ""
   rpOrigins: ""
 
+# Optional VTA Wallet SIOPv2 login. rpDID must be a dedicated public RP DID;
+# empty keeps metadata disabled and all SIOP routes fail closed.
+siop:
+  rpDID: ""
+  challengeTTLSeconds: "120"
+  clockSkewSeconds: "60"
+  didResolutionTimeoutSeconds: "5"
+  maxBodyBytes: "70000"
+
 # Browser origins allowed to call the API with credentials. Defaults to the
 # frontend's; the localhost dev servers are always allowed on top of it.
 cors:

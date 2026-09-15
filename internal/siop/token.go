@@ -65,6 +65,17 @@ func parseCompactToken(compact string) (parsedToken, error) {
 	}, nil
 }
 
+// UnverifiedNonce returns the nonce from a structurally valid compact token.
+// Callers may use it only to bind server-side challenge state; it is not
+// authenticated until VerifyIDToken succeeds.
+func UnverifiedNonce(compact string) (string, error) {
+	token, err := parseCompactToken(compact)
+	if err != nil {
+		return "", err
+	}
+	return token.claims.Nonce, nil
+}
+
 func parseProtectedHeader(data []byte) (protectedHeader, error) {
 	fields, err := decodeUniqueObject(data)
 	if err != nil {

@@ -8,6 +8,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func NoStore() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		c.Next()
+	}
+}
+
 // RateLimit allows at most max requests per window per client IP. In-memory
 // sliding window — per replica, which is fine for the single-replica API; it
 // exists to blunt bulk abuse of public endpoints, not to be exact accounting.
