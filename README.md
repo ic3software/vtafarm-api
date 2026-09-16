@@ -148,35 +148,60 @@ required. Do not reuse `DID_HOSTING_DID`: that `did:key` and its
 `DID_HOSTING_PRIVATE_KEY` are the privileged machine credential that
 vtafarm-api uses to upload DID logs and manage hosting ACLs.
 
-The simplest UI flow is through the VTA Wallet management console because the
-VTA must create and retain the DID's keys:
+Provision the RP DID with PNM so the selected VTA creates and retains its keys.
+First select the persistent VTA that is already connected to the DID-hosting
+daemon. The argument to `pnm vta use` is the local VTA slug, not the hosting
+server DID:
 
-1. Connect the wallet to the dedicated `vtafarm-auth` VTA. From the extension
-   popup, select **Manage this agent**.
-2. Under **Identity & custody → Contexts**, create or select the
-   `vtafarm-auth` context.
-3. Under **Identity & custody → DIDs**, use **New DID**. Enter the registered
-   hosting server ID, or leave it blank when that VTA has a default server.
-   Enable **Portable** if the identity must be movable to another hosting
-   domain later; this choice cannot be added after creation.
-4. Select **Create DID** and complete any consent request. The resulting DID is
-   already signed by the VTA, published to the hosting server, and displayed in
-   the DIDs table. Copy the full `did:webvh:...` value into the production
-   `siop.rpDID` Helm value.
+```bash
+pnm vta use <rp-vta-slug>
+pnm vta info
+```
 
-The hosting server must already be registered with the dedicated VTA. This is
-a one-time prerequisite; the current wallet management console can create DIDs
-but does not have a hosting-server registration form. Read the server's actual
-DID from its public API and register it with PNM:
+The hosting server must already be registered with that VTA. List the registry
+and note the server ID used by the remaining commands:
+
+```bash
+pnm did-mgmt servers list
+```
+
+If the server is already listed, do not add it again. Otherwise, read its
+actual DID from the public API and register it once:
 
 ```bash
 curl 'https://<hosting-control-domain>/api/server-info'
 
 pnm did-mgmt servers add \
-  --id primary \
+  --id <server-id> \
   --did '<server_did from /api/server-info>' \
   --label 'VTA Farm DID host'
 ```
+
+Create a dedicated context, then create the DID at the stable
+`vtafarm-auth` path:
+
+```bash
+pnm contexts create \
+  --id vtafarm-auth \
+  --name vtafarm-auth
+
+pnm did-mgmt dids create \
+  --context vtafarm-auth \
+  --server <server-id> \
+  --path vtafarm-auth
+```
+
+These are separate operations: `did-mgmt dids create` requires an existing
+context. `pnm contexts provision` can create both, but it is intended to
+onboard an external application and additionally produces a recipient-sealed
+bootstrap bundle, so it is not appropriate for this RP identity.
+
+The minimal DID command deliberately omits optional settings. The hosting
+daemon chooses its configured/default domain, `portable` defaults to `true`,
+and pre-rotation defaults to zero. Add `--domain` only when the server hosts
+multiple domains and its default is not the intended public hostname. Copy the
+full returned `did:webvh:...` value into the production `siop.rpDID` Helm
+value.
 
 If the public hosting domain is not configured yet, log in to the DID-hosting
 admin UI first:
@@ -190,22 +215,8 @@ admin UI first:
 Do not use **DIDs → New DID** in the DID-hosting admin UI as the only creation
 step. That screen calls `POST /api/dids` to reserve a path and displays
 **Pending upload**; it does not generate keys or create the first signed
-`did.jsonl`. The VTA Wallet management flow above performs the complete mint
-and publish operation.
-
-The wallet UI currently lets the hosting server assign the DID path and choose
-its configured/default domain. When an exact path such as `vtafarm-auth` or an
-explicit domain is required, use PNM instead:
-
-```bash
-pnm did-mgmt dids create \
-  --context vtafarm-auth \
-  --server primary \
-  --domain '<vtafarm-public-domain>' \
-  --path vtafarm-auth \
-  --label 'VTA Farm SIOP relying party' \
-  --pre-rotation 1
-```
+`did.jsonl`. The PNM flow above performs the complete mint and publish
+operation.
 
 Put the returned DID in the environment-specific Helm values used on every
 production deployment:
