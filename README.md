@@ -152,32 +152,32 @@ Provision the RP DID with PNM:
 
 1. Select the VTA that is connected to the DID-hosting daemon:
 
-```bash
-pnm vta use <rp-vta-slug>
-```
+   ```bash
+   pnm vta use <rp-vta-slug>
+   ```
 
 1. Find its registered hosting server ID:
 
-```bash
-pnm did-mgmt servers list
-```
+   ```bash
+   pnm did-mgmt servers list
+   ```
 
 1. Create the RP context:
 
-```bash
-pnm contexts create \
-  --id vtafarm-auth \
-  --name vtafarm-auth
-```
+   ```bash
+   pnm contexts create \
+     --id vtafarm-auth \
+     --name vtafarm-auth
+   ```
 
 1. Create the RP DID:
 
-```bash
-pnm did-mgmt dids create \
-  --context vtafarm-auth \
-  --server <server-id> \
-  --path vtafarm-auth
-```
+   ```bash
+   pnm did-mgmt dids create \
+     --context vtafarm-auth \
+     --server <server-id> \
+     --path vtafarm-auth
+   ```
 
 ### Generating JWT_SECRET
 
