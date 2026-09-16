@@ -175,8 +175,8 @@ Provision the RP DID with PNM:
    ```bash
    pnm did-mgmt dids create \
      --context vtafarm-auth \
-     --server <server-id> \
-     --path vtafarm-auth
+     --path vtafarm-auth \
+     --server <server-id>
    ```
 
 ### Generating JWT_SECRET
