@@ -148,115 +148,36 @@ required. Do not reuse `DID_HOSTING_DID`: that `did:key` and its
 `DID_HOSTING_PRIVATE_KEY` are the privileged machine credential that
 vtafarm-api uses to upload DID logs and manage hosting ACLs.
 
-Provision the RP DID with PNM so the selected VTA creates and retains its keys.
-First select the persistent VTA that is already connected to the DID-hosting
-daemon. The argument to `pnm vta use` is the local VTA slug, not the hosting
-server DID:
+Provision the RP DID with PNM:
+
+1. Select the VTA that is connected to the DID-hosting daemon:
 
 ```bash
 pnm vta use <rp-vta-slug>
-pnm vta info
 ```
 
-The hosting server must already be registered with that VTA. List the registry
-and note the server ID used by the remaining commands:
+1. Find its registered hosting server ID:
 
 ```bash
 pnm did-mgmt servers list
 ```
 
-If the server is already listed, do not add it again. Otherwise, read its
-actual DID from the public API and register it once:
-
-```bash
-curl 'https://<hosting-control-domain>/api/server-info'
-
-pnm did-mgmt servers add \
-  --id <server-id> \
-  --did '<server_did from /api/server-info>' \
-  --label 'VTA Farm DID host'
-```
-
-Create a dedicated context, then create the DID at the stable
-`vtafarm-auth` path:
+1. Create the RP context:
 
 ```bash
 pnm contexts create \
   --id vtafarm-auth \
   --name vtafarm-auth
+```
 
+1. Create the RP DID:
+
+```bash
 pnm did-mgmt dids create \
   --context vtafarm-auth \
   --server <server-id> \
   --path vtafarm-auth
 ```
-
-These are separate operations: `did-mgmt dids create` requires an existing
-context. `pnm contexts provision` can create both, but it is intended to
-onboard an external application and additionally produces a recipient-sealed
-bootstrap bundle, so it is not appropriate for this RP identity.
-
-The minimal DID command deliberately omits optional settings. The hosting
-daemon chooses its configured/default domain, `portable` defaults to `true`,
-and pre-rotation defaults to zero. Add `--domain` only when the server hosts
-multiple domains and its default is not the intended public hostname. Copy the
-full returned `did:webvh:...` value into the production `siop.rpDID` Helm
-value.
-
-If the public hosting domain is not configured yet, log in to the DID-hosting
-admin UI first:
-
-1. Open **Domains → New domain**, enter the canonical public hostname, and set
-   it as the default if this deployment should use it by default.
-2. Open **Servers**, choose the hosting instance, and use **Assign domain**.
-3. In **Access Control**, ensure the dedicated VTA identity is allowed to
-   publish to that domain.
-
-Do not use **DIDs → New DID** in the DID-hosting admin UI as the only creation
-step. That screen calls `POST /api/dids` to reserve a path and displays
-**Pending upload**; it does not generate keys or create the first signed
-`did.jsonl`. The PNM flow above performs the complete mint and publish
-operation.
-
-Put the returned DID in the environment-specific Helm values used on every
-production deployment:
-
-```yaml
-siop:
-  rpDID: "did:webvh:<scid>:<public-domain>:vtafarm-auth"
-```
-
-The chart renders this public identifier into the vtafarm-api ConfigMap as
-`SIOP_RP_DID`; it is not a secret. Apply that values file with the normal Helm
-upgrade, then restart the deployment because environment variables sourced
-from a ConfigMap are read when the pod starts:
-
-```bash
-VTAFARM_NAMESPACE=default
-VTAFARM_PROD_VALUES=/path/to/production-values.yaml
-
-helm upgrade vtafarm-api ./helm/vtafarm-api \
-  --install \
-  --namespace "$VTAFARM_NAMESPACE" \
-  --values "$VTAFARM_PROD_VALUES" \
-  --atomic \
-  --timeout 10m
-
-kubectl --namespace "$VTAFARM_NAMESPACE" rollout restart deployment/vtafarm-api
-kubectl --namespace "$VTAFARM_NAMESPACE" rollout status deployment/vtafarm-api
-```
-
-Finally, fetch the returned DID's `did.jsonl` over public HTTPS from outside
-the cluster, then verify the deployed API metadata:
-
-```bash
-curl 'https://<public-domain>/vtafarm-auth/did.jsonl'
-curl 'https://<api-host>/api/v1/auth/siop/metadata'
-```
-
-The metadata response must contain `"enabled":true` and the same `rp_did`.
-Only the DID string goes into `SIOP_RP_DID`; no RP private key is copied into
-vtafarm-api.
 
 ### Generating JWT_SECRET
 
@@ -385,7 +306,7 @@ Verify before going further — this is the step whose failure shows up several
 minutes later as a mediator crash loop rather than as a TLS error.
 
 **Test against the origin, not the hostname.** Managed and platform records are
-*proxied* through Cloudflare, so plain `curl https://<hostname>` reports
+_proxied_ through Cloudflare, so plain `curl https://<hostname>` reports
 Cloudflare's edge certificate (issuer: Google Trust Services) and Cloudflare's
 status code — it tells you nothing about the cluster. Pin the node IP:
 
