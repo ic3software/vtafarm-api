@@ -1,5 +1,21 @@
 # Changelog
 
+## [v0.5.0] - 2026-09-18
+
+### Added
+
+- Existing user and admin accounts can link VTA Wallet persona DIDs and use
+  SIOPv2 as a second login method. The flow uses durable one-time challenges
+  and issues the existing role-specific session cookie after verification.
+- SIOP token verification validates Ed25519 signatures and claims against
+  authenticated `did:key` or `did:webvh` keys, including `did:webvh` history
+  and key rotation.
+
+### Changed
+
+- Accounts with a linked VTA Wallet identity must retain at least one passkey,
+  preserving a passkey recovery path.
+
 ## [v0.4.0] - 2026-08-31
 
 ### Added
