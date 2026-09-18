@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/ic3software/vtafarm-api/internal/middleware"
 	"github.com/ic3software/vtafarm-api/internal/model"
@@ -256,22 +258,62 @@ func (h *PasskeyHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	var res *gorm.DB
-	if role == model.RoleAdmin {
-		res = h.db.Where("id = ? AND admin_id = ?", pkID, uid).Delete(&model.AdminPasskey{})
-	} else {
-		res = h.db.Where("id = ? AND user_id = ?", pkID, uid).Delete(&model.UserPasskey{})
-	}
-	if res.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not delete passkey"})
+	err = h.db.Transaction(func(tx *gorm.DB) error {
+		var passkeyCount, identityCount int64
+		if role == model.RoleAdmin {
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&model.Admin{}, uid).Error; err != nil {
+				return err
+			}
+			var passkey model.AdminPasskey
+			if err := tx.Where("id = ? AND admin_id = ?", pkID, uid).First(&passkey).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&model.AdminPasskey{}).Where("admin_id = ?", uid).Count(&passkeyCount).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&model.AdminSIOPIdentity{}).Where("admin_id = ?", uid).Count(&identityCount).Error; err != nil {
+				return err
+			}
+			if identityCount > 0 && passkeyCount <= 1 {
+				return errSIOPRequiresPasskey
+			}
+			return tx.Delete(&passkey).Error
+		}
+
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&model.User{}, uid).Error; err != nil {
+			return err
+		}
+		var passkey model.UserPasskey
+		if err := tx.Where("id = ? AND user_id = ?", pkID, uid).First(&passkey).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&model.UserPasskey{}).Where("user_id = ?", uid).Count(&passkeyCount).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&model.UserSIOPIdentity{}).Where("user_id = ?", uid).Count(&identityCount).Error; err != nil {
+			return err
+		}
+		if identityCount > 0 && passkeyCount <= 1 {
+			return errSIOPRequiresPasskey
+		}
+		return tx.Delete(&passkey).Error
+	})
+	if errors.Is(err, errSIOPRequiresPasskey) {
+		c.JSON(http.StatusConflict, gin.H{"error": "unlink VTA Wallet identities before removing the last passkey"})
 		return
 	}
-	if res.RowsAffected == 0 {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "passkey not found"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not delete passkey"})
 		return
 	}
 	c.Status(http.StatusNoContent)
 }
+
+var errSIOPRequiresPasskey = errors.New("SIOP-linked account must retain a passkey")
 
 // loginBegin is the shared implementation for admin and user passkey login begin.
 func (h *PasskeyHandler) loginBegin(c *gin.Context) {

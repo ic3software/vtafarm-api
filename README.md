@@ -64,6 +64,9 @@ The database being shared has consequences worth reading once:
    The API is now available at `http://localhost:8080`.
    API docs: `http://localhost:8080/docs`
 
+   To exercise optional VTA Wallet login in Chrome, follow
+   [`docs/siop-browser-testing.md`](docs/siop-browser-testing.md).
+
 4. (Optional) Generate a DID hosting keypair (required only if DID hosting is enabled):
 
    ```bash
@@ -103,6 +106,10 @@ Copy `.env.example` and adjust as needed:
 | `DB_HOST` | `localhost` | The `make forward-db` tunnel to the shared dev database |
 | `DB_NAME` | `vtafarm` | |
 | `JWT_SECRET` | _(required)_ | HS256 signing secret — must match the team, see below |
+| `SIOP_RP_DID` | _(empty)_ | Dedicated public RP DID; enables linked VTA Wallet login when set |
+| `SIOP_CHALLENGE_TTL_SECONDS` | `120` | One-time wallet challenge lifetime |
+| `SIOP_CLOCK_SKEW_SECONDS` | `60` | Allowed SIOP token clock skew |
+| `SIOP_DID_RESOLUTION_TIMEOUT_SECONDS` | `5` | Public DID resolution timeout |
 | `ORCHESTRATOR_RESUME` | `true` | Re-attach interrupted sessions at startup. Set `false` locally — see [`docs/shared-dev-database.md`](docs/shared-dev-database.md) |
 | `CLUSTER_INGRESS_IP` | _(required)_ | External IP of the cluster's Traefik LoadBalancer |
 | `CLOUDFLARE_API_TOKEN` | _(optional)_ | Required for VTA setup wizard |
@@ -110,7 +117,69 @@ Copy `.env.example` and adjust as needed:
 | `KUBECONFIG` | _(empty)_ | Auto-detects `~/.kube/config` when empty |
 | `K8S_NAMESPACE_PREFIX` | `vtafarm-user` | Per-user namespace: `vtafarm-user-{userID}` |
 
-#### Generating JWT_SECRET
+### SIOP RP DID
+
+`SIOP_RP_DID` is the public identity of VTA Farm as a SIOPv2 relying party.
+The wallet puts this value in the login token's `aud` claim; the API does not
+sign with it and has no `SIOP_RP_PRIVATE_KEY` setting.
+
+For local browser testing, put this development-only `did:key` in `.env`:
+
+```dotenv
+SIOP_RP_DID=did:key:z6MkkVc5EPGcCa3ZWB5i2YGX7BnLBm8vgf1qUwqTb9i87wLj
+```
+
+Restart the API and verify that wallet login is enabled:
+
+```bash
+curl http://localhost:8080/api/v1/auth/siop/metadata
+```
+
+The response should contain `"enabled":true` and the same `rp_did`. This DID is
+a public test fixture, carries no VTA Farm private key, and is not suitable for
+production.
+
+#### Production RP DID
+
+Production should use a dedicated `vtafarm-auth` VTA identity with persistent
+key storage and a `did:webvh` history that resolves over public HTTPS. It may
+use the existing DID-hosting deployment; a separate hosting service is not
+required. Do not reuse `DID_HOSTING_DID`: that `did:key` and its
+`DID_HOSTING_PRIVATE_KEY` are the privileged machine credential that
+vtafarm-api uses to upload DID logs and manage hosting ACLs.
+
+Provision the RP DID with PNM:
+
+1. Select the VTA that is connected to the DID-hosting daemon:
+
+   ```bash
+   pnm vta use <rp-vta-slug>
+   ```
+
+1. Find its registered hosting server ID:
+
+   ```bash
+   pnm did-mgmt servers list
+   ```
+
+1. Create the RP context:
+
+   ```bash
+   pnm contexts create \
+     --id vtafarm-auth \
+     --name vtafarm-auth
+   ```
+
+1. Create the RP DID:
+
+   ```bash
+   pnm did-mgmt dids create \
+     --context vtafarm-auth \
+     --path vtafarm-auth \
+     --server <server-id>
+   ```
+
+### Generating JWT_SECRET
 
 ```bash
 openssl rand -base64 32
@@ -237,7 +306,7 @@ Verify before going further — this is the step whose failure shows up several
 minutes later as a mediator crash loop rather than as a TLS error.
 
 **Test against the origin, not the hostname.** Managed and platform records are
-*proxied* through Cloudflare, so plain `curl https://<hostname>` reports
+_proxied_ through Cloudflare, so plain `curl https://<hostname>` reports
 Cloudflare's edge certificate (issuer: Google Trust Services) and Cloudflare's
 status code — it tells you nothing about the cluster. Pin the node IP:
 

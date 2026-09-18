@@ -3,6 +3,7 @@ module github.com/ic3software/vtafarm-api
 go 1.26.3
 
 require (
+	github.com/cyberphone/json-canonicalization v0.0.0-20241213102144-19d51d7fe467
 	github.com/gin-contrib/cors v1.7.7
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-webauthn/webauthn v0.17.4

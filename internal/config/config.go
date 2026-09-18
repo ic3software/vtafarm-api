@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -42,8 +43,17 @@ type Config struct {
 	GHCR                GHCRConfig
 	DidHosting          DidHostingConfig
 	WebAuthn            WebAuthnConfig
+	SIOP                SIOPConfig
 	Vault               VaultConfig
 	Monitor             MonitorConfig
+}
+
+type SIOPConfig struct {
+	RPDID             string
+	ChallengeTTL      time.Duration
+	ClockSkew         time.Duration
+	ResolutionTimeout time.Duration
+	MaxBodyBytes      int64
 }
 
 // MonitorConfig configures the token-gated /api/v1/monitor/* endpoints polled
@@ -212,6 +222,13 @@ func Load() *Config {
 			RPID:          getEnv("WEBAUTHN_RP_ID", "localhost"),
 			RPOrigins:     splitComma(getEnv("WEBAUTHN_RP_ORIGINS", "http://localhost:5173")),
 			RPDisplayName: getEnv("WEBAUTHN_RP_DISPLAY_NAME", "VTA Farm"),
+		},
+		SIOP: SIOPConfig{
+			RPDID:             getEnv("SIOP_RP_DID", ""),
+			ChallengeTTL:      time.Duration(getEnvInt("SIOP_CHALLENGE_TTL_SECONDS", 120)) * time.Second,
+			ClockSkew:         time.Duration(getEnvInt("SIOP_CLOCK_SKEW_SECONDS", 60)) * time.Second,
+			ResolutionTimeout: time.Duration(getEnvInt("SIOP_DID_RESOLUTION_TIMEOUT_SECONDS", 5)) * time.Second,
+			MaxBodyBytes:      int64(getEnvInt("SIOP_MAX_BODY_BYTES", 70000)),
 		},
 		Monitor: MonitorConfig{
 			Token:            getEnv("MONITOR_TOKEN", ""),

@@ -8,7 +8,7 @@ info:
 
     ## Authentication
 
-    All accounts use **passkey-only** authentication. There are no passwords.
+    All accounts use passkeys, with optional linked **VTA Wallet SIOPv2** login. There are no passwords.
     Protected endpoints use **httpOnly cookies** set at login.
     Cookie `vtafarm_user` is required for User endpoints; `vtafarm_admin` for Admin endpoints.
 
@@ -73,6 +73,10 @@ tags:
       1. `POST /user/passkeys/register/begin` — receive WebAuthn creation options
       2. Pass `options.publicKey` to `startRegistration()`
       3. `POST /user/passkeys/register/complete?name=<device-name>` — save passkey
+  - name: VTA Wallet
+    description: |
+      Optional SIOPv2 login and identity linking. Linking requires an existing
+      role-matched cookie and at least one registered passkey.
 
 components:
   securitySchemes:
@@ -230,6 +234,60 @@ components:
             role:
               type: string
               enum: [admin, user]
+
+    SIOPMetadata:
+      type: object
+      required: [enabled, rp_did]
+      properties:
+        enabled: { type: boolean }
+        rp_did: { type: string, description: Dedicated relying-party DID; empty when disabled }
+
+    SIOPChallengeRequest:
+      type: object
+      additionalProperties: false
+      required: [did]
+      properties:
+        did: { type: string, maxLength: 2048 }
+
+    SIOPChallengeResponse:
+      type: object
+      required: [challenge, session_id, expires_at]
+      properties:
+        challenge: { type: string, description: One-time nonce passed to wallet.proxyLogin }
+        session_id: { type: string }
+        expires_at: { type: string, format: date-time }
+
+    SIOPAuthenticateRequest:
+      type: object
+      additionalProperties: false
+      required: [id_token, session_id]
+      properties:
+        id_token: { type: string, description: Compact SIOPv2 JWS minted by the VTA Wallet }
+        session_id: { type: string }
+        label: { type: string, maxLength: 80, description: Link flow only }
+
+    SIOPLoginResponse:
+      type: object
+      required: [user]
+      properties:
+        user:
+          type: object
+          required: [id, unique_id, role]
+          properties:
+            id: { type: integer }
+            unique_id: { type: string }
+            role: { type: string, enum: [admin, user] }
+
+    SIOPIdentity:
+      type: object
+      required: [id, did, label, created_at, last_kid]
+      properties:
+        id: { type: integer }
+        did: { type: string }
+        label: { type: string }
+        created_at: { type: string, format: date-time }
+        last_authenticated_at: { type: [string, "null"], format: date-time }
+        last_kid: { type: string }
 
     ValidateResponse:
       type: object
@@ -813,6 +871,153 @@ components:
             left open.
 
 paths:
+  /api/v1/auth/siop/metadata:
+    get:
+      summary: Discover VTA Wallet login configuration
+      tags: [VTA Wallet]
+      responses:
+        "200":
+          description: Feature state and RP audience DID
+          content: { application/json: { schema: { $ref: "#/components/schemas/SIOPMetadata" } } }
+
+  /api/v1/auth/user/siop/challenge:
+    post:
+      summary: "(public) Begin user VTA Wallet login"
+      tags: [VTA Wallet, Auth — User]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/SIOPChallengeRequest" } } }
+      responses:
+        "200": { description: One-time challenge, content: { application/json: { schema: { $ref: "#/components/schemas/SIOPChallengeResponse" } } } }
+        "400": { description: Invalid DID, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "429": { description: Rate limited, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "503": { description: SIOP disabled, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api/v1/auth/user/siop/authenticate:
+    post:
+      summary: "(public) Complete user VTA Wallet login"
+      description: Consumes the challenge once and sets only the vtafarm_user httpOnly cookie.
+      tags: [VTA Wallet, Auth — User]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/SIOPAuthenticateRequest" } } }
+      responses:
+        "200": { description: User login successful, content: { application/json: { schema: { $ref: "#/components/schemas/SIOPLoginResponse" } } } }
+        "401": { description: Challenge, assertion, or user link rejected, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api/v1/auth/admin/siop/challenge:
+    post:
+      summary: "(public) Begin admin VTA Wallet login"
+      tags: [VTA Wallet, Auth — Admin]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/SIOPChallengeRequest" } } }
+      responses:
+        "200": { description: One-time challenge, content: { application/json: { schema: { $ref: "#/components/schemas/SIOPChallengeResponse" } } } }
+        "400": { description: Invalid DID, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "429": { description: Rate limited, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "503": { description: SIOP disabled, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api/v1/auth/admin/siop/authenticate:
+    post:
+      summary: "(public) Complete admin VTA Wallet login"
+      description: Consumes the challenge once and sets only the vtafarm_admin httpOnly cookie.
+      tags: [VTA Wallet, Auth — Admin]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/SIOPAuthenticateRequest" } } }
+      responses:
+        "200": { description: Admin login successful, content: { application/json: { schema: { $ref: "#/components/schemas/SIOPLoginResponse" } } } }
+        "401": { description: Challenge, assertion, or admin link rejected, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api/v1/user/siop/link/challenge:
+    post:
+      summary: Begin linking a user VTA Wallet identity
+      tags: [VTA Wallet]
+      security: [{ CookieAuthUser: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/SIOPChallengeRequest" } } }
+      responses:
+        "200": { description: One-time link challenge, content: { application/json: { schema: { $ref: "#/components/schemas/SIOPChallengeResponse" } } } }
+        "409": { description: Account has no passkey, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api/v1/user/siop/link/authenticate:
+    post:
+      summary: Complete linking a user VTA Wallet identity
+      tags: [VTA Wallet]
+      security: [{ CookieAuthUser: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/SIOPAuthenticateRequest" } } }
+      responses:
+        "201": { description: Identity linked, content: { application/json: { schema: { $ref: "#/components/schemas/SIOPIdentity" } } } }
+        "409": { description: Identity already linked or account has no passkey, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api/v1/user/siop/identities:
+    get:
+      summary: List linked user VTA Wallet identities
+      tags: [VTA Wallet]
+      security: [{ CookieAuthUser: [] }]
+      responses:
+        "200":
+          description: Caller-owned identities
+          content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/SIOPIdentity" } } } }
+
+  /api/v1/user/siop/identities/{id}:
+    delete:
+      summary: Unlink a user VTA Wallet identity
+      tags: [VTA Wallet]
+      security: [{ CookieAuthUser: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses:
+        "204": { description: Identity unlinked }
+        "404": { description: Identity not owned by caller, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api/v1/admin/siop/link/challenge:
+    post:
+      summary: Begin linking an admin VTA Wallet identity
+      tags: [VTA Wallet]
+      security: [{ CookieAuthAdmin: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/SIOPChallengeRequest" } } }
+      responses:
+        "200": { description: One-time link challenge, content: { application/json: { schema: { $ref: "#/components/schemas/SIOPChallengeResponse" } } } }
+        "409": { description: Account has no passkey, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api/v1/admin/siop/link/authenticate:
+    post:
+      summary: Complete linking an admin VTA Wallet identity
+      tags: [VTA Wallet]
+      security: [{ CookieAuthAdmin: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/SIOPAuthenticateRequest" } } }
+      responses:
+        "201": { description: Identity linked, content: { application/json: { schema: { $ref: "#/components/schemas/SIOPIdentity" } } } }
+        "409": { description: Identity already linked or account has no passkey, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api/v1/admin/siop/identities:
+    get:
+      summary: List linked admin VTA Wallet identities
+      tags: [VTA Wallet]
+      security: [{ CookieAuthAdmin: [] }]
+      responses:
+        "200":
+          description: Caller-owned identities
+          content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/SIOPIdentity" } } } }
+
+  /api/v1/admin/siop/identities/{id}:
+    delete:
+      summary: Unlink an admin VTA Wallet identity
+      tags: [VTA Wallet]
+      security: [{ CookieAuthAdmin: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses:
+        "204": { description: Identity unlinked }
+        "404": { description: Identity not owned by caller, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
   /health:
     get:
       summary: Health check
