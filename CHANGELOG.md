@@ -1,5 +1,15 @@
 # Changelog
 
+## [v0.6.0] - 2026-09-21
+
+### Added
+
+- Session owners can add another PNM administrator to a running VTA, read the
+  most recently synchronized ACL and explicitly refresh it from the live VTA.
+- Platform admins can inspect and refresh the platform stack's live VTA ACL.
+  ACL maintenance is serialized per session, updates a persisted snapshot and
+  restarts the VTA after the operation completes.
+
 ## [v0.5.0] - 2026-09-18
 
 ### Added
