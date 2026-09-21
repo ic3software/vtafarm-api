@@ -97,6 +97,35 @@ components:
           type: string
       required: [error]
 
+    VtaAclEntry:
+      type: object
+      properties:
+        did: { type: string }
+        role: { type: string, example: "admin (super admin)" }
+        label: { type: string }
+        contexts: { type: string, example: "(unrestricted)" }
+        created_at:
+          type: string
+          description: Timestamp rendered by `vta acl list`.
+          example: "2026-09-21 09:10:11 +00:00"
+      required: [did, role, contexts, created_at]
+
+    SessionAclSnapshot:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/VtaAclEntry"
+        synced_at:
+          type: string
+          format: date-time
+          nullable: true
+        warning:
+          type: string
+          description: Present when the snapshot landed but the VTA did not become ready again.
+      required: [entries, synced_at]
+
     LoadTestSession:
       type: object
       properties:
@@ -5156,6 +5185,40 @@ paths:
                 $ref: "#/components/schemas/Error"
 
   /api/v1/setup/{id}/admins:
+    get:
+      summary: Read the synchronized VTA ACL
+      description: |
+        Returns the last complete `vta acl list` snapshot stored for the
+        authenticated user's VTA. This does not stop the VTA. Before the first
+        refresh, `synced_at` is null and `entries` is empty.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Last synchronized ACL snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionAclSnapshot"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found for this user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     post:
       summary: Link another PNM to a VTA
       description: |
@@ -5231,6 +5294,54 @@ paths:
                 $ref: "#/components/schemas/Error"
         "502":
           description: ACL maintenance Job or VTA restart failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/setup/{id}/admins/refresh:
+    post:
+      summary: Refresh the VTA ACL snapshot
+      description: |
+        Stops the authenticated user's VTA, runs `vta acl list` against its
+        local store, atomically replaces the database snapshot, then restarts
+        the VTA. The operation is synchronous and takes about one minute.
+      tags: [User]
+      security:
+        - CookieAuthUser: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ACL synchronized and the VTA is ready again
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionAclSnapshot"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found for this user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Session is not running or another ACL operation is in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: ACL maintenance Job, output parsing, or VTA restart failed
           content:
             application/json:
               schema:

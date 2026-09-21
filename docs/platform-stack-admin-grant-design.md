@@ -208,31 +208,17 @@ mask a failed import and have the API report a grant that never happened.
 
 ## 7. Where this can go wrong
 
-### 7.1 No copy of the ACL is kept
+### 7.1 The ACL snapshot is explicit and dated
 
-An earlier draft stored one — captured as a by-product of the grant Job, which
-could run `vta acl list` inside a window already being spent. It is gone, and the
-reason is worth recording because the idea looks free.
+The owner portal can request a full refresh. The API stops the VTA, runs
+`vta acl list` against its local store, replaces `vta_acl_entries` in one
+transaction, and records `synced_at`. A normal page load reads that snapshot
+without downtime; it never implies that cached data is live.
 
-It was never free:
-
-- **It could not be trusted to be current.** It only advanced when someone
-  granted, so it could be weeks old, and a co-admin's rotation invalidates it
-  minutes after the grant that captured it (§7.2). Every surface showing it had
-  to date it and explain why it was old.
-- **It carried the only unvalidated component.** Parsing `vta acl list` output
-  is the one part of this feature that cannot be checked without the real
-  binary, and it existed solely to feed that copy.
-- **Its one logical consumer went with revoke.** The last-admin guard was the
-  only thing that ever *decided* anything on it; after §10.4 it fed a display.
-
-What replaces it is `pnm acl list` against the running VTA: live, exact, no
-downtime, and already in the hands of everyone who can act on this. The API
-records what it did — grants — and points at `pnm` for what is true now.
-
-The cost, stated plainly: nothing in the product shows the admins this API did
-not add, which is the `pnm-bootstrap` entry from provisioning plus anything added
-out of band. That is a real gap, and the answer to it is a terminal.
+Every successful offline grant also captures the list while the VTA is already
+stopped. Entries added out of band or moved by PNM rotation appear after the
+next explicit refresh. The VTA remains authoritative; the database is only its
+last complete synchronized view.
 
 ### 7.2 The submitted DID goes stale almost immediately
 
@@ -255,13 +241,11 @@ This is not a bug to fix, it is the protocol working. What follows from it:
   (`vta-service/src/operations/acl.rs`, `with_label(old.label.clone())`), and of
   those the label is the only human-readable one. Grant without it and the ACL
   holds a did:key nobody can attribute to a person.
-- Nothing on this side follows the DID to where it moved. `pnm acl list` against
-  the running VTA is what answers "who can act on this now", and it is exact
-  where any stored copy would be a guess.
+- The next explicit ACL refresh follows the DID to where it moved. Until then,
+  the displayed snapshot remains clearly dated.
 - **This is why removal is not built here.** Deleting a granted DID after a
   rotation would remove nothing; a removal that works must target a DID from the
-  the VTA's live ACL — which this side does not hold and deliberately does not
-  try to.
+  freshly synchronized VTA ACL, not the original grant row.
 
   It is the strongest argument for keeping removal out of scope (§10.4).
   Attributing a rotated entry to a person is not something this side can do:
@@ -384,9 +368,9 @@ stack detail. Client methods in `src/lib/api.ts` alongside `getPlatformStack`.
 3. ~~Frontend section.~~ **Done** — `src/pages/admin/PlatformStackAdmins.tsx`,
    rendered from `PlatformStackView` only once the stack is `running`.
 
-Complete. A fourth phase — capturing the ACL during `fsStepImportAdminDid` — was
-planned and dropped along with the stored copy it fed; §7.1 and §10.5 record why,
-because that reasoning is not recoverable from the code that is left.
+The owner portal additionally exposes a dated ACL snapshot and an explicit
+refresh action. Refresh uses the same offline Job and therefore carries the
+same one-minute maintenance window as a grant.
 
 The shared `runVtaAclJob` machinery now also backs the owner-only
 `POST /setup/{id}/admins` route. That route performs its own ownership and

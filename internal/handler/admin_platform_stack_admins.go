@@ -36,10 +36,8 @@ import (
 // `reissueDidsEnroll` does the same dance against the dids daemon and is the
 // template this follows, down to the unconditional deferred restart.
 //
-// This tracks **what was added from here**, and nothing else. It does not keep a
-// copy of the VTA's admin list: reading that costs the same maintenance window
-// as writing it, any copy is stale the moment a co-admin rotates their key, and
-// `pnm acl list` answers the live question against the running VTA for free.
+// The owner-facing refresh route uses the same maintenance window to run
+// `vta acl list` and replace the database snapshot shown in the portal.
 
 // aclJobTimeouts. The window is dominated by waiting for the old pod's lock to
 // be released and by the new pod's readiness probe, not by the CLI itself.
@@ -93,7 +91,7 @@ var aclJobLocks = aclJobLockSet{held: make(map[uint]struct{})}
 // errAclJobBusy is a sentinel so the handler answers 409 (come back in a
 // minute) rather than 502 (something broke). Nothing is wrong when this fires.
 var errAclJobBusy = errors.New(
-	"another admin is updating the VTA's ACL right now — that takes about a minute; try again after it finishes")
+	"another ACL operation is running for this VTA — that takes about a minute; try again after it finishes")
 
 // platformSession loads the platform stack's session, writing the response and
 // returning nil when there isn't one. Same two-step lookup GetPlatformStack
@@ -216,6 +214,17 @@ func (h *SetupHandler) runVtaAclJob(
 	}
 	defer aclJobLocks.Unlock(session.ID)
 
+	// The in-process lock above protects callers handled by this replica. This
+	// row closes the same race across replicas and doubles as snapshot metadata.
+	lockStartedAt, ok, lockErr := h.acquireVtaAclMaintenance(session.ID)
+	if lockErr != nil {
+		return "", nil, fmt.Errorf("failed to lock ACL maintenance: %w", lockErr)
+	}
+	if !ok {
+		return "", nil, errAclJobBusy
+	}
+	defer h.releaseVtaAclMaintenance(session.ID, lockStartedAt)
+
 	ns := h.k8s.UserNamespace(fmt.Sprintf("%d", session.UserID))
 	target := vtaAclTargetFor(session)
 
@@ -273,6 +282,27 @@ func (h *SetupHandler) runVtaAclJob(
 		return "", nil, fmt.Errorf("failed to read job logs: %w", logErr)
 	}
 	return out, nil, nil
+}
+
+func (h *SetupHandler) acquireVtaAclMaintenance(sessionID uint) (time.Time, bool, error) {
+	now := time.Now()
+	result := h.db.Exec(`
+		INSERT INTO vta_acl_snapshots (session_id, synced_at, entry_count, maintenance_started_at)
+		VALUES (?, NULL, 0, ?)
+		ON CONFLICT (session_id) DO UPDATE
+		SET maintenance_started_at = EXCLUDED.maintenance_started_at
+		WHERE vta_acl_snapshots.maintenance_started_at IS NULL
+		   OR vta_acl_snapshots.maintenance_started_at <= ?`,
+		sessionID, now, now.Add(-aclJobStale))
+	return now, result.RowsAffected == 1, result.Error
+}
+
+func (h *SetupHandler) releaseVtaAclMaintenance(sessionID uint, startedAt time.Time) {
+	if err := h.db.Model(&model.VtaAclSnapshot{}).
+		Where("session_id = ? AND maintenance_started_at = ?", sessionID, startedAt).
+		Update("maintenance_started_at", nil).Error; err != nil {
+		log.Printf("[vta-admins] error: failed to release ACL maintenance lock for session %d: %v", sessionID, err)
+	}
 }
 
 type vtaAclTarget struct {

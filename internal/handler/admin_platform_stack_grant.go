@@ -93,6 +93,10 @@ func (h *SetupHandler) GrantPlatformStackAdmin(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "label must be 64 characters or fewer"})
 		return
 	}
+	if strings.ContainsAny(label, "\r\n\t") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "label must be a single line"})
+		return
+	}
 
 	h.grantVtaAdmin(c, session, did, label, callingAdminID(c), "platform admin")
 }
@@ -192,6 +196,13 @@ func (h *SetupHandler) grantVtaAdmin(
 	}
 
 	h.markGrant(&grant, model.GrantGranted, "")
+	warnings := make([]string, 0, 2)
+	if entries, parseErr := parseVtaAclList(logs); parseErr != nil {
+		warnings = append(warnings, "The PNM was linked, but the ACL snapshot could not be parsed. Use Refresh live ACL to retry.")
+	} else if syncErr := h.syncSessionAclSnapshot(session.ID, entries); syncErr != nil {
+		log.Printf("[vta-admins] error: failed to sync ACL snapshot for session %d: %v", session.ID, syncErr)
+		warnings = append(warnings, "The PNM was linked, but the ACL snapshot could not be saved. Use Refresh live ACL to retry.")
+	}
 
 	resp := gin.H{
 		"did":    did,
@@ -202,7 +213,10 @@ func (h *SetupHandler) grantVtaAdmin(
 		"already_present": strings.Contains(logs, alreadyPresentMarker),
 	}
 	if restartErr != nil {
-		resp["warning"] = restartWarning(session, restartErr)
+		warnings = append(warnings, restartWarning(session, restartErr))
+	}
+	if len(warnings) > 0 {
+		resp["warning"] = strings.Join(warnings, " ")
 	}
 	c.JSON(http.StatusOK, resp)
 }
@@ -226,7 +240,10 @@ func grantCmd(did, label string) string {
 		"  echo " + alreadyPresentMarker + "\n" +
 		"else\n" +
 		"  " + importCmd + "\n" +
-		"fi\n"
+		"fi\n" +
+		"echo " + aclListBeginMarker + "\n" +
+		"vta acl list 2>&1\n" +
+		"echo " + aclListEndMarker + "\n"
 }
 
 // markGrant moves a grant row to its terminal state, keeping the in-memory copy
