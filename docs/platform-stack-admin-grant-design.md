@@ -304,10 +304,13 @@ Two things make it accountable rather than silent:
 - `confirm` (§5) means it cannot be a stray click or a CSRF-shaped accident.
 
 A second-approver flow (`pending` → approved by someone already holding a VTA
-credential) was considered and deferred: it is the right shape the moment this
-generalises to **customers'** stacks (§10.1), where the argument above does not
-hold. The `pending` status and `requested_by` column exist so that flow is an
-added transition, not a schema change.
+credential) was considered and deferred. It remains the right shape for any
+future **admin-cookie** route that can reach a customer's stack, where the
+argument above does not hold. The owner-facing `/setup/{id}/admins` route added
+later is different: it resolves the session through the authenticated user's
+own `user_id`, so it cannot grant on somebody else's VTA. The `pending` status
+and `requested_by` column still leave room for an approval transition if that
+broader admin route is ever added.
 
 ### 7.5 A failed scale-back leaves the stack down
 
@@ -385,17 +388,18 @@ Complete. A fourth phase — capturing the ACL during `fsStepImportAdminDid` —
 planned and dropped along with the stored copy it fed; §7.1 and §10.5 record why,
 because that reasoning is not recoverable from the code that is left.
 
-`runVtaAclJob` additionally refuses any session whose `domain_type` is not
-`platform`, so the scope in §1 holds even if a per-session route is wired to it
-by mistake. That check is not the reason the scope is narrow — §7.4 is — and
-removing it is not how the scope gets widened.
+The shared `runVtaAclJob` machinery now also backs the owner-only
+`POST /setup/{id}/admins` route. That route performs its own ownership and
+`running`-state checks before reaching the maintenance window; the admin-cookie
+route remains narrowed to the platform stack.
 
 ## 10. Deliberately out of scope
 
-**10.1 Other sessions.** The mechanism is session-generic and the table is keyed
-by `session_id`, but the routes are platform-stack only. Customers' stacks need
-the second-approver flow of §7.4 first — the §7.4 argument for accepting the
-escalation is specifically about the farm's own stack.
+**10.1 Farm-admin access to customer sessions.** Owners can now add another PNM
+to their own running VTA through `POST /setup/{id}/admins`; the lookup is scoped
+to the user cookie's `user_id`. What remains out of scope is letting a farm
+admin grant itself or somebody else access to a customer's VTA. That still
+needs the second-approver flow of §7.4.
 
 **10.2 Anything but unrestricted admin.** Context-scoped grants are useful and
 the VTA supports them, but they need a real authorization model in the UI
@@ -409,7 +413,8 @@ mediator involved (`vta-service/src/routes/auth.rs::try_authenticate_trust_task`
 The cost is a byte-exact `eddsa-jcs-2022` signer in Go (the VTI's own docs warn
 that a mistake here "yields a signature that verifies nowhere"), or an image
 carrying a `config-session`-built `pnm`, plus a farm-held super admin on every
-stack. Revisit when this generalises past one session.
+stack. Revisit if the brief maintenance window becomes unacceptable for
+owner-managed stacks.
 
 **10.4 Removing an admin.** `pnm acl delete <did>` against the running VTA does
 it with no downtime and no code here. Building it into the API would mean

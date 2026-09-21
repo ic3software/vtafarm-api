@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS vta_admin_grants_one_pending_per_session;

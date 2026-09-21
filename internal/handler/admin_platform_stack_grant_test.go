@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/ic3software/vtafarm-api/internal/model"
 )
 
 func TestDidKeyValidation(t *testing.T) {
@@ -81,16 +83,69 @@ func TestGrantCmdQuotesAHostileLabel(t *testing.T) {
 // and the single-operator flow never had. Both windows would scale the same VTA
 // down, then delete and recreate the same Job name under each other.
 func TestAclJobLockRefusesRatherThanQueues(t *testing.T) {
-	if !aclJobLock.TryLock() {
+	const sessionID = uint(42)
+	if !aclJobLocks.TryLock(sessionID) {
 		t.Fatal("lock was already held at the start of the test")
 	}
-	defer aclJobLock.Unlock()
+	defer aclJobLocks.Unlock(sessionID)
 
 	// A second caller must be turned away immediately. Waiting would mean
 	// sitting through one outage and then starting another.
-	if aclJobLock.TryLock() {
-		aclJobLock.Unlock()
+	if aclJobLocks.TryLock(sessionID) {
+		aclJobLocks.Unlock(sessionID)
 		t.Fatal("a second ACL job acquired the lock; concurrent windows would corrupt each other")
+	}
+
+	// A different VTA has different resources and must not be blocked by this
+	// session's maintenance window.
+	const otherSessionID = uint(43)
+	if !aclJobLocks.TryLock(otherSessionID) {
+		t.Fatal("an unrelated session was blocked by this session's ACL job")
+	}
+	aclJobLocks.Unlock(otherSessionID)
+}
+
+func TestVtaAclTargetForEachMode(t *testing.T) {
+	tests := []struct {
+		name    string
+		session model.SetupSession
+		want    vtaAclTarget
+	}{
+		{
+			name:    "vta only",
+			session: model.SetupSession{ID: 42, Mode: model.ModeVtaOnly},
+			want: vtaAclTarget{
+				deployment: "vta-42",
+				selector:   "app=vta,session-id=42",
+				job:        "vta-acl-42",
+				pvc:        "vta-data-42",
+			},
+		},
+		{
+			name:    "full stack",
+			session: model.SetupSession{ID: 42, Mode: model.ModeFullStack},
+			want: vtaAclTarget{
+				deployment: "fs-42-vta",
+				selector:   "app=fs-vta,session-id=42",
+				job:        "fs-42-vta-acl",
+				pvc:        "fs-42-vta",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := vtaAclTargetFor(&tt.session); got != tt.want {
+				t.Fatalf("vtaAclTargetFor() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAdditionalPnmLabelKeepsDidSuffix(t *testing.T) {
+	did := "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+	if got, want := additionalPnmLabel(did), "pnm-backup-nnEGta2doK"; got != want {
+		t.Fatalf("additionalPnmLabel() = %q, want %q", got, want)
 	}
 }
 

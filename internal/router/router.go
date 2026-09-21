@@ -291,6 +291,10 @@ func Setup(
 		userAuth.POST("/setup/:id/upgrade", uph.CreateForSession)
 		userAuth.GET("/setup/:id/upgrade", uph.GetForSession)
 		userAuth.POST("/setup/:id/admin", sh.ProvisionAdmin)
+		// Add another PNM as an administrator after provisioning. The handler
+		// resolves :id through the authenticated owner and accepts only running
+		// sessions; the ACL maintenance window is serialized per session.
+		userAuth.POST("/setup/:id/admins", sh.GrantSessionAdmin)
 		userAuth.POST("/setup/:id/dids/reissue-enroll", sh.ReissueDidsEnroll)
 		userAuth.POST("/setup/:id/dids/enroll-ack", sh.AckDidsEnroll)
 		userAuth.POST("/setup/:id/vtc/reissue-install", sh.ReissueVtcInstall)
