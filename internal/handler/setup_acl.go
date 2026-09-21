@@ -27,9 +27,11 @@ type sessionAclResponse struct {
 	Warning  string              `json:"warning,omitempty"`
 }
 
-// ListSessionAdmins returns the last complete VTA ACL snapshot without causing
-// downtime. An absent snapshot is represented by a nil timestamp and empty
-// entries, so the portal can offer the first refresh.
+const superAdminAclRole = "admin (super admin)"
+
+// ListSessionAdmins returns the super admins from the last complete VTA ACL
+// snapshot without causing downtime. An absent snapshot is represented by a
+// nil timestamp and empty entries, so the portal can offer the first refresh.
 func (h *SetupHandler) ListSessionAdmins(c *gin.Context) {
 	session := h.userSession(c)
 	if session == nil {
@@ -217,18 +219,27 @@ func (h *SetupHandler) sessionAclSnapshot(sessionID uint) (sessionAclResponse, e
 	if err != nil {
 		return response, err
 	}
+	var entries []model.VtaAclEntry
 	response.SyncedAt = snapshot.SyncedAt
-	if err := h.db.Where("session_id = ?", sessionID).Order("did ASC").Find(&response.Entries).Error; err != nil {
+	if err := h.db.Where("session_id = ?", sessionID).Order("did ASC").Find(&entries).Error; err != nil {
 		return response, err
 	}
-	if response.Entries == nil {
-		response.Entries = []model.VtaAclEntry{}
+	if len(entries) != snapshot.EntryCount {
+		return response, fmt.Errorf("ACL snapshot expected %d entries, found %d", snapshot.EntryCount, len(entries))
 	}
-	if len(response.Entries) != snapshot.EntryCount {
-		return response, fmt.Errorf("ACL snapshot expected %d entries, found %d", snapshot.EntryCount, len(response.Entries))
-	}
+	response.Entries = superAdminAclEntries(entries)
 	sortVtaAclEntriesNewestFirst(response.Entries)
 	return response, nil
+}
+
+func superAdminAclEntries(entries []model.VtaAclEntry) []model.VtaAclEntry {
+	filtered := make([]model.VtaAclEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Role == superAdminAclRole {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
 }
 
 func sortVtaAclEntriesNewestFirst(entries []model.VtaAclEntry) {

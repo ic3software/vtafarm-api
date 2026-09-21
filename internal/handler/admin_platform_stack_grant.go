@@ -93,10 +93,10 @@ func (h *SetupHandler) grantVtaAdmin(
 
 	warnings := make([]string, 0, 2)
 	if entries, parseErr := parseVtaAclList(logs); parseErr != nil {
-		warnings = append(warnings, "The PNM was linked, but the ACL snapshot could not be parsed. Use Refresh live ACL to retry.")
+		warnings = append(warnings, "The PNM was linked, but the ACL snapshot could not be parsed. Use Refresh ACL to retry.")
 	} else if syncErr := h.syncSessionAclSnapshot(session.ID, entries); syncErr != nil {
 		log.Printf("[vta-admins] error: failed to sync ACL snapshot for session %d: %v", session.ID, syncErr)
-		warnings = append(warnings, "The PNM was linked, but the ACL snapshot could not be saved. Use Refresh live ACL to retry.")
+		warnings = append(warnings, "The PNM was linked, but the ACL snapshot could not be saved. Use Refresh ACL to retry.")
 	}
 
 	resp := gin.H{
