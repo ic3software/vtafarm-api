@@ -15,9 +15,8 @@ import (
 // platform stack.
 //
 // The operation is synchronous and briefly stops the VTA because its ACL store
-// is held under an exclusive lock by the running process. A pending grant row
-// is written before that maintenance window, so a disconnected client does not
-// lose the operation and a second API replica can reject overlapping work.
+// is held under an exclusive lock by the running process. The shared snapshot
+// maintenance lock prevents overlapping work across API replicas.
 func (h *SetupHandler) GrantSessionAdmin(c *gin.Context) {
 	session := h.userSession(c)
 	if session == nil {
@@ -44,7 +43,7 @@ func (h *SetupHandler) GrantSessionAdmin(c *gin.Context) {
 		return
 	}
 
-	h.grantVtaAdmin(c, session, did, additionalPnmLabel(did), nil, "session owner")
+	h.grantVtaAdmin(c, session, did, additionalPnmLabel(did), "session owner")
 }
 
 // PNM rotates away from the submitted DID on first connect, so the ACL entry

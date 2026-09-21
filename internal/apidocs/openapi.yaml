@@ -2458,10 +2458,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: |
-            Either this DID already has a pending or granted entry, or another
-            admin's grant is mid-window. Both are retryable; neither means
-            damage.
+          description: Another ACL operation is in progress
           content:
             application/json:
               schema:
@@ -2473,7 +2470,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "502":
-          description: The Kubernetes work failed; the grant row is marked `failed`
+          description: ACL maintenance Job or VTA restart failed
           content:
             application/json:
               schema:
@@ -5291,7 +5288,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: Session is not running, the DID already has a live grant, or another grant is in progress
+          description: Session is not running or another ACL operation is in progress
           content:
             application/json:
               schema:

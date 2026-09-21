@@ -46,11 +46,10 @@ const (
 	aclRestartTimeout  = 3 * time.Minute
 	aclReadyTimeout    = 2 * time.Minute
 
-	// aclJobStale bounds how long a `pending` row can block the next attempt.
-	// Matches ComponentJobSpec's default ActiveDeadlineSeconds (600s) plus the
-	// restart budget: past that, no Job of ours can still be running, so a row
-	// still sitting at `pending` belongs to a request that died without
-	// finishing — most likely a replica that was killed mid-window.
+	// aclJobStale bounds how long a database maintenance lock can block the next
+	// attempt. It matches ComponentJobSpec's default ActiveDeadlineSeconds
+	// (600s) plus the restart budget: past that, no Job of ours can still be
+	// running, so a held lock belongs to a request that died without releasing it.
 	aclJobStale = 15 * time.Minute
 )
 

@@ -1,19 +1,13 @@
 package handler
 
 import (
-	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5/pgconn"
-	"gorm.io/gorm"
 
-	"github.com/ic3software/vtafarm-api/internal/middleware"
 	"github.com/ic3software/vtafarm-api/internal/model"
 )
 
@@ -46,9 +40,8 @@ const alreadyPresentMarker = "VTAFARM_ALREADY_PRESENT"
 // Adds `did` to the platform stack's VTA ACL as an **unrestricted admin** — the
 // same authority step_import_admin_did gave the stack's first admin (§2).
 //
-// Synchronous and slow (60–120s). The grant row is written `pending` before any
-// Kubernetes work starts, so a client that times out at a proxy has not lost
-// the operation: it still lands `granted` or `failed`, and GET shows it.
+// Synchronous and slow (60–120s). The VTA ACL is authoritative; a successful
+// operation also synchronizes the database snapshot returned by GET.
 func (h *SetupHandler) GrantPlatformStackAdmin(c *gin.Context) {
 	session := h.platformSession(c)
 	if session == nil {
@@ -78,104 +71,26 @@ func (h *SetupHandler) GrantPlatformStackAdmin(c *gin.Context) {
 		return
 	}
 
-	h.grantVtaAdmin(c, session, did, label, callingAdminID(c), "platform admin")
+	h.grantVtaAdmin(c, session, did, label, "platform admin")
 }
 
 // grantVtaAdmin performs the shared, session-scoped grant operation after the
 // caller-specific route has established authority and validated its request.
-// The platform route records an admins.id; the user route passes nil because
-// ownership is already fixed by setup_sessions.user_id.
 func (h *SetupHandler) grantVtaAdmin(
 	c *gin.Context,
 	session *model.SetupSession,
 	did, label string,
-	requestedBy *uint,
 	actor string,
 ) {
-	// A request can disappear with its API replica after writing `pending` but
-	// before recording a terminal state. Past the Job + restart budget nothing
-	// from that request can still be running, so retire it before the live-grant
-	// and cross-replica concurrency checks below. This also releases the partial
-	// unique index that makes one pending row per session an atomic lock.
-	staleBefore := time.Now().Add(-aclJobStale)
-	if err := h.db.Model(&model.VtaAdminGrant{}).
-		Where("session_id = ? AND status = ? AND created_at <= ?", session.ID, model.GrantPending, staleBefore).
-		Updates(map[string]any{
-			"status":     model.GrantFailed,
-			"error_msg":  "grant expired before completion",
-			"updated_at": time.Now(),
-		}).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to expire stale grants"})
-		return
-	}
-
-	// Not idempotent by design: a second grant of a live DID is a mistake worth
-	// surfacing, not a no-op worth hiding, because it costs a window either
-	// way. The partial unique index is the real gate; this is the readable
-	// error in front of it.
-	var existing model.VtaAdminGrant
-	err := h.db.Where("session_id = ? AND did = ? AND status IN ?",
-		session.ID, did, []string{model.GrantPending, model.GrantGranted}).First(&existing).Error
-	if err == nil {
-		c.JSON(http.StatusConflict, gin.H{
-			"error": fmt.Sprintf("this DID already has a %s grant on this VTA", existing.Status),
-		})
-		return
-	}
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check existing grants"})
-		return
-	}
-
-	// The cross-replica half of the mutual exclusion in runVtaAclJob. That lock
-	// is in-process, so it only serialises callers hitting the same API pod. The
-	// read gives a useful error in the common case; the database's one-pending-
-	// per-session partial unique index closes the two-replicas-read-zero race.
-	//
-	// Bounded by aclJobStale so a request that died mid-window cannot wedge the
-	// route permanently — past that deadline no Job of ours can still be alive.
-	var inFlight int64
-	if countErr := h.db.Model(&model.VtaAdminGrant{}).
-		Where("session_id = ? AND status = ? AND created_at > ?",
-			session.ID, model.GrantPending, staleBefore).
-		Count(&inFlight).Error; countErr != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check for an in-flight grant"})
-		return
-	}
-	if inFlight > 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": errAclJobBusy.Error()})
-		return
-	}
-
-	grant := model.VtaAdminGrant{
-		SessionID:   session.ID,
-		Did:         did,
-		Label:       label,
-		Status:      model.GrantPending,
-		RequestedBy: requestedBy,
-	}
-	if createErr := h.db.Create(&grant).Error; createErr != nil {
-		// Lost the cross-replica race to one of the two partial unique indexes
-		// (same DID, or any pending grant on the session).
-		var pgErr *pgconn.PgError
-		if errors.As(createErr, &pgErr) && pgErr.Code == "23505" {
-			c.JSON(http.StatusConflict, gin.H{"error": errAclJobBusy.Error()})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create admin grant"})
-		return
-	}
 	log.Printf("[vta-admins] granting super admin on session %d to %s (requested by %s)",
 		session.ID, did, actor)
 
 	logs, restartErr, runErr := h.runVtaAclJob(c.Request.Context(), session, grantCmd(did, label))
 	if runErr != nil {
-		h.markGrant(&grant, model.GrantFailed, runErr.Error())
 		respondAclJobError(c, session, runErr, restartErr)
 		return
 	}
 
-	h.markGrant(&grant, model.GrantGranted, "")
 	warnings := make([]string, 0, 2)
 	if entries, parseErr := parseVtaAclList(logs); parseErr != nil {
 		warnings = append(warnings, "The PNM was linked, but the ACL snapshot could not be parsed. Use Refresh live ACL to retry.")
@@ -186,7 +101,7 @@ func (h *SetupHandler) grantVtaAdmin(
 
 	resp := gin.H{
 		"did":    did,
-		"status": grant.Status,
+		"status": "granted",
 		// The caller asked for this DID to hold super admin; it already did.
 		// Reported rather than swallowed so a UI can say "already an admin"
 		// instead of implying it just changed something.
@@ -206,10 +121,8 @@ func (h *SetupHandler) grantVtaAdmin(
 // status does not trigger `set -e`, so the probe stays a test rather than a
 // failure.
 //
-// `set -e` is defensive rather than load-bearing now that the import is the last
-// thing to run: with a trailing command it would be the difference between
-// reporting a grant and reporting the truth, so it stays in front of the next
-// person who appends a line.
+// `set -e` ensures a failed import stops before the trailing ACL list and marker
+// can make the shell script appear successful.
 func grantCmd(did, label string) string {
 	importCmd := "vta import-did --role admin --did " + shellQuote(did)
 	if label != "" {
@@ -224,35 +137,4 @@ func grantCmd(did, label string) string {
 		"echo " + aclListBeginMarker + "\n" +
 		"vta acl list 2>&1\n" +
 		"echo " + aclListEndMarker + "\n"
-}
-
-// markGrant moves a grant row to its terminal state, keeping the in-memory copy
-// in step so the caller can report from it.
-func (h *SetupHandler) markGrant(grant *model.VtaAdminGrant, status, errMsg string) {
-	now := time.Now()
-	updates := map[string]any{"status": status, "error_msg": errMsg, "updated_at": now}
-	if status == model.GrantGranted {
-		updates["granted_at"] = now
-		grant.GrantedAt = &now
-	}
-	if err := h.db.Model(&model.VtaAdminGrant{}).Where("id = ?", grant.ID).Updates(updates).Error; err != nil {
-		log.Printf("[vta-admins] error: failed to mark grant %d as %s: %v", grant.ID, status, err)
-	}
-	grant.Status = status
-	grant.ErrorMsg = errMsg
-}
-
-// callingAdminID reads the admin's id from the request. On an admin-cookie
-// route the JWT's UserID claim is an admins.id — admins are their own table
-// (see handler/admin_enroll.go, which mints the token from admin.ID).
-func callingAdminID(c *gin.Context) *uint {
-	v, ok := c.Get(middleware.ContextUserID)
-	if !ok {
-		return nil
-	}
-	id, ok := v.(uint)
-	if !ok {
-		return nil
-	}
-	return &id
 }
