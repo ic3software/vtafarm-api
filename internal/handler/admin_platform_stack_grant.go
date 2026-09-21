@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 
 	"github.com/ic3software/vtafarm-api/internal/middleware"
@@ -92,6 +93,41 @@ func (h *SetupHandler) GrantPlatformStackAdmin(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "label must be 64 characters or fewer"})
 		return
 	}
+	if strings.ContainsAny(label, "\r\n\t") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "label must be a single line"})
+		return
+	}
+
+	h.grantVtaAdmin(c, session, did, label, callingAdminID(c), "platform admin")
+}
+
+// grantVtaAdmin performs the shared, session-scoped grant operation after the
+// caller-specific route has established authority and validated its request.
+// The platform route records an admins.id; the user route passes nil because
+// ownership is already fixed by setup_sessions.user_id.
+func (h *SetupHandler) grantVtaAdmin(
+	c *gin.Context,
+	session *model.SetupSession,
+	did, label string,
+	requestedBy *uint,
+	actor string,
+) {
+	// A request can disappear with its API replica after writing `pending` but
+	// before recording a terminal state. Past the Job + restart budget nothing
+	// from that request can still be running, so retire it before the live-grant
+	// and cross-replica concurrency checks below. This also releases the partial
+	// unique index that makes one pending row per session an atomic lock.
+	staleBefore := time.Now().Add(-aclJobStale)
+	if err := h.db.Model(&model.VtaAdminGrant{}).
+		Where("session_id = ? AND status = ? AND created_at <= ?", session.ID, model.GrantPending, staleBefore).
+		Updates(map[string]any{
+			"status":     model.GrantFailed,
+			"error_msg":  "grant expired before completion",
+			"updated_at": time.Now(),
+		}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to expire stale grants"})
+		return
+	}
 
 	// Not idempotent by design: a second grant of a live DID is a mistake worth
 	// surfacing, not a no-op worth hiding, because it costs a window either
@@ -102,7 +138,7 @@ func (h *SetupHandler) GrantPlatformStackAdmin(c *gin.Context) {
 		session.ID, did, []string{model.GrantPending, model.GrantGranted}).First(&existing).Error
 	if err == nil {
 		c.JSON(http.StatusConflict, gin.H{
-			"error": fmt.Sprintf("this DID already has a %s grant on the platform stack", existing.Status),
+			"error": fmt.Sprintf("this DID already has a %s grant on this VTA", existing.Status),
 		})
 		return
 	}
@@ -112,16 +148,16 @@ func (h *SetupHandler) GrantPlatformStackAdmin(c *gin.Context) {
 	}
 
 	// The cross-replica half of the mutual exclusion in runVtaAclJob. That lock
-	// is in-process, so it only serialises callers hitting the same API pod;
-	// this catches a second pod, because the `pending` row is written before any
-	// Kubernetes work starts and is therefore visible to everyone.
+	// is in-process, so it only serialises callers hitting the same API pod. The
+	// read gives a useful error in the common case; the database's one-pending-
+	// per-session partial unique index closes the two-replicas-read-zero race.
 	//
 	// Bounded by aclJobStale so a request that died mid-window cannot wedge the
 	// route permanently — past that deadline no Job of ours can still be alive.
 	var inFlight int64
 	if countErr := h.db.Model(&model.VtaAdminGrant{}).
 		Where("session_id = ? AND status = ? AND created_at > ?",
-			session.ID, model.GrantPending, time.Now().Add(-aclJobStale)).
+			session.ID, model.GrantPending, staleBefore).
 		Count(&inFlight).Error; countErr != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check for an in-flight grant"})
 		return
@@ -136,25 +172,37 @@ func (h *SetupHandler) GrantPlatformStackAdmin(c *gin.Context) {
 		Did:         did,
 		Label:       label,
 		Status:      model.GrantPending,
-		RequestedBy: callingAdminID(c),
+		RequestedBy: requestedBy,
 	}
 	if createErr := h.db.Create(&grant).Error; createErr != nil {
-		// Lost a race with a concurrent grant of the same DID — the partial
-		// unique index caught what the read above could not.
-		c.JSON(http.StatusConflict, gin.H{"error": "a grant for this DID was just created"})
+		// Lost the cross-replica race to one of the two partial unique indexes
+		// (same DID, or any pending grant on the session).
+		var pgErr *pgconn.PgError
+		if errors.As(createErr, &pgErr) && pgErr.Code == "23505" {
+			c.JSON(http.StatusConflict, gin.H{"error": errAclJobBusy.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create admin grant"})
 		return
 	}
-	log.Printf("[platform-admins] granting super admin on session %d to %s (requested by admin %v)",
-		session.ID, did, grant.RequestedBy)
+	log.Printf("[vta-admins] granting super admin on session %d to %s (requested by %s)",
+		session.ID, did, actor)
 
 	logs, restartErr, runErr := h.runVtaAclJob(c.Request.Context(), session, grantCmd(did, label))
 	if runErr != nil {
 		h.markGrant(&grant, model.GrantFailed, runErr.Error())
-		respondAclJobError(c, runErr, restartErr)
+		respondAclJobError(c, session, runErr, restartErr)
 		return
 	}
 
 	h.markGrant(&grant, model.GrantGranted, "")
+	warnings := make([]string, 0, 2)
+	if entries, parseErr := parseVtaAclList(logs); parseErr != nil {
+		warnings = append(warnings, "The PNM was linked, but the ACL snapshot could not be parsed. Use Refresh live ACL to retry.")
+	} else if syncErr := h.syncSessionAclSnapshot(session.ID, entries); syncErr != nil {
+		log.Printf("[vta-admins] error: failed to sync ACL snapshot for session %d: %v", session.ID, syncErr)
+		warnings = append(warnings, "The PNM was linked, but the ACL snapshot could not be saved. Use Refresh live ACL to retry.")
+	}
 
 	resp := gin.H{
 		"did":    did,
@@ -165,7 +213,10 @@ func (h *SetupHandler) GrantPlatformStackAdmin(c *gin.Context) {
 		"already_present": strings.Contains(logs, alreadyPresentMarker),
 	}
 	if restartErr != nil {
-		resp["warning"] = restartWarning(restartErr)
+		warnings = append(warnings, restartWarning(session, restartErr))
+	}
+	if len(warnings) > 0 {
+		resp["warning"] = strings.Join(warnings, " ")
 	}
 	c.JSON(http.StatusOK, resp)
 }
@@ -189,7 +240,10 @@ func grantCmd(did, label string) string {
 		"  echo " + alreadyPresentMarker + "\n" +
 		"else\n" +
 		"  " + importCmd + "\n" +
-		"fi\n"
+		"fi\n" +
+		"echo " + aclListBeginMarker + "\n" +
+		"vta acl list 2>&1\n" +
+		"echo " + aclListEndMarker + "\n"
 }
 
 // markGrant moves a grant row to its terminal state, keeping the in-memory copy
@@ -202,7 +256,7 @@ func (h *SetupHandler) markGrant(grant *model.VtaAdminGrant, status, errMsg stri
 		grant.GrantedAt = &now
 	}
 	if err := h.db.Model(&model.VtaAdminGrant{}).Where("id = ?", grant.ID).Updates(updates).Error; err != nil {
-		log.Printf("[platform-admins] error: failed to mark grant %d as %s: %v", grant.ID, status, err)
+		log.Printf("[vta-admins] error: failed to mark grant %d as %s: %v", grant.ID, status, err)
 	}
 	grant.Status = status
 	grant.ErrorMsg = errMsg

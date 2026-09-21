@@ -34,6 +34,13 @@ func ProvisionJobName(sessionID uint) string {
 	return fmt.Sprintf("vta-provision-%d", sessionID)
 }
 
+// VtaACLJobName is the post-provisioning ACL Job for a vta_only session.
+// full_stack sessions use FSJobVtaACL because their resource names carry the
+// fs- prefix; setup-session ids are global, so both names are deterministic.
+func VtaACLJobName(sessionID uint) string {
+	return fmt.Sprintf("vta-acl-%d", sessionID)
+}
+
 // CreateSetupResources creates a 200Mi PVC, a ConfigMap with the TOML config, and a Job
 // that runs `vta setup --from /config/vta-setup.toml` with the PVC mounted at /work/vta.
 // All three calls are idempotent (AlreadyExists is ignored).

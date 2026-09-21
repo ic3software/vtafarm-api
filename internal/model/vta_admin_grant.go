@@ -39,9 +39,10 @@ type VtaAdminGrant struct {
 	Status   string `json:"status"              gorm:"not null;default:pending"`
 	ErrorMsg string `json:"error_msg,omitempty" gorm:"not null;default:''"`
 
-	// RequestedBy is an admins.id (the admin cookie's JWT carries it as
-	// UserID — admins are their own table). Nullable so the record outlives
-	// the admin who asked for it.
+	// RequestedBy is populated for the platform-admin route with an admins.id
+	// (the admin cookie's JWT carries it as UserID). It is nil for an owner
+	// adding a PNM to their own session; setup_sessions.user_id already records
+	// that actor. Nullable also lets the row outlive an admin who asked for it.
 	RequestedBy *uint      `json:"-"                     gorm:"column:requested_by"`
 	GrantedAt   *time.Time `json:"granted_at,omitempty"`
 

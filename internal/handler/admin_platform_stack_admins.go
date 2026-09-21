@@ -36,10 +36,8 @@ import (
 // `reissueDidsEnroll` does the same dance against the dids daemon and is the
 // template this follows, down to the unconditional deferred restart.
 //
-// This tracks **what was added from here**, and nothing else. It does not keep a
-// copy of the VTA's admin list: reading that costs the same maintenance window
-// as writing it, any copy is stale the moment a co-admin rotates their key, and
-// `pnm acl list` answers the live question against the running VTA for free.
+// The owner-facing refresh route uses the same maintenance window to run
+// `vta acl list` and replace the database snapshot shown in the portal.
 
 // aclJobTimeouts. The window is dominated by waiting for the old pod's lock to
 // be released and by the new pod's readiness probe, not by the CLI itself.
@@ -56,7 +54,7 @@ const (
 	aclJobStale = 15 * time.Minute
 )
 
-// aclJobLock serialises the maintenance window against itself.
+// aclJobLockSet serialises maintenance windows per session.
 //
 // Two concurrent grants would be genuinely destructive, not merely racy: both
 // scale the VTA to 0, both then `DeleteComponentJob` and `CreateComponentJob`
@@ -64,20 +62,36 @@ const (
 // other's running Job — and the first `defer` to fire scales the VTA back up
 // while the other is still writing to the fjall store it holds a lock on.
 //
-// This never mattered while one operator held the stack's credential and did
-// this by hand. It matters the moment it is self-service, which is the whole
-// point of the feature.
-//
-// One lock rather than one per session because runVtaAclJob refuses any session
-// that is not the platform stack, so there is exactly one session it can ever
-// run for. If that scope ever widens, this has to become per-session — the
-// comment in runVtaAclJob's guard is the other half of that statement.
-var aclJobLock sync.Mutex
+// Different sessions have different Deployments, Jobs and PVCs, so they can be
+// updated in parallel. Keeping only the set of held ids also avoids retaining a
+// mutex forever for every session that has ever received a grant.
+type aclJobLockSet struct {
+	mu   sync.Mutex
+	held map[uint]struct{}
+}
+
+func (l *aclJobLockSet) TryLock(sessionID uint) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, exists := l.held[sessionID]; exists {
+		return false
+	}
+	l.held[sessionID] = struct{}{}
+	return true
+}
+
+func (l *aclJobLockSet) Unlock(sessionID uint) {
+	l.mu.Lock()
+	delete(l.held, sessionID)
+	l.mu.Unlock()
+}
+
+var aclJobLocks = aclJobLockSet{held: make(map[uint]struct{})}
 
 // errAclJobBusy is a sentinel so the handler answers 409 (come back in a
 // minute) rather than 502 (something broke). Nothing is wrong when this fires.
 var errAclJobBusy = errors.New(
-	"another admin is updating the VTA's ACL right now — that takes about a minute; try again after it finishes")
+	"another ACL operation is running for this VTA — that takes about a minute; try again after it finishes")
 
 // platformSession loads the platform stack's session, writing the response and
 // returning nil when there isn't one. Same two-step lookup GetPlatformStack
@@ -164,8 +178,7 @@ func requireStackConfirm(c *gin.Context, session *model.SetupSession, confirm st
 
 // aclRestartError marks a failure of the deferred scale-back-up, so callers can
 // tell "the grant failed" from "the grant may have worked but the VTA is still
-// down" — §7.5. reissueDidsEnroll only logs this; for the platform stack's own
-// VTA it has to reach the operator.
+// down" — §7.5. It has to reach either the platform operator or session owner.
 type aclRestartError struct{ err error }
 
 func (e *aclRestartError) Error() string { return e.err.Error() }
@@ -185,25 +198,6 @@ func (e *aclRestartError) Unwrap() error { return e.err }
 func (h *SetupHandler) runVtaAclJob(
 	ctx context.Context, session *model.SetupSession, cmd string,
 ) (logs string, restartErr error, err error) {
-	// The platform stack, and nothing else — design §1 and §10.1.
-	//
-	// The routes above already resolve only the platform session, so reaching
-	// this with anything else is a programming error rather than a request. It
-	// is checked here anyway because everything below is session-generic by
-	// construction (the table is keyed by session_id, the names are derived
-	// from session.ID), so the day someone wires a per-session route to it,
-	// nothing else would object — and what it would silently hand out is
-	// unrestricted super admin on a stack this farm merely operates.
-	//
-	// Widening this is gated on the approval flow of §7.4, not on deleting a
-	// line here.
-	if session.DomainType != model.DomainPlatform {
-		log.Printf("[platform-admins] refused ACL job for non-platform session %d (%s, domain_type=%s)",
-			session.ID, session.VtaName, session.DomainType)
-		return "", nil, fmt.Errorf(
-			"ACL grants are limited to the platform stack; session %q is domain_type=%s",
-			session.VtaName, session.DomainType)
-	}
 	if h.k8s == nil {
 		return "", nil, fmt.Errorf("k8s not configured")
 	}
@@ -215,17 +209,26 @@ func (h *SetupHandler) runVtaAclJob(
 	// rather than Lock: a caller who waits would sit through the other window
 	// and then start their own, so the honest answer is to refuse now and let
 	// them retry once — a queue of these is a queue of outages.
-	if !aclJobLock.TryLock() {
+	if !aclJobLocks.TryLock(session.ID) {
 		return "", nil, errAclJobBusy
 	}
-	defer aclJobLock.Unlock()
+	defer aclJobLocks.Unlock(session.ID)
+
+	// The in-process lock above protects callers handled by this replica. This
+	// row closes the same race across replicas and doubles as snapshot metadata.
+	lockStartedAt, ok, lockErr := h.acquireVtaAclMaintenance(session.ID)
+	if lockErr != nil {
+		return "", nil, fmt.Errorf("failed to lock ACL maintenance: %w", lockErr)
+	}
+	if !ok {
+		return "", nil, errAclJobBusy
+	}
+	defer h.releaseVtaAclMaintenance(session.ID, lockStartedAt)
 
 	ns := h.k8s.UserNamespace(fmt.Sprintf("%d", session.UserID))
-	vtaName := k8s.FSVtaName(session.ID)
-	selector := fmt.Sprintf("app=fs-vta,session-id=%d", session.ID)
-	jobName := k8s.FSJobVtaACL(session.ID)
+	target := vtaAclTargetFor(session)
 
-	if scaleErr := h.k8s.ScaleComponentDeployment(ctx, ns, vtaName, 0); scaleErr != nil {
+	if scaleErr := h.k8s.ScaleComponentDeployment(ctx, ns, target.deployment, 0); scaleErr != nil {
 		return "", nil, fmt.Errorf("failed to stop the VTA: %w", scaleErr)
 	}
 
@@ -235,38 +238,38 @@ func (h *SetupHandler) runVtaAclJob(
 	defer func() {
 		restartCtx, cancel := context.WithTimeout(context.Background(), aclRestartTimeout)
 		defer cancel()
-		if e := h.k8s.ScaleComponentDeployment(restartCtx, ns, vtaName, 1); e != nil {
-			log.Printf("[platform-admins] error: failed to restart VTA for session %d: %v", session.ID, e)
+		if e := h.k8s.ScaleComponentDeployment(restartCtx, ns, target.deployment, 1); e != nil {
+			log.Printf("[vta-admins] error: failed to restart VTA for session %d: %v", session.ID, e)
 			restartErr = &aclRestartError{e}
 			return
 		}
-		if e := h.k8s.WaitForComponentDeploymentReady(restartCtx, ns, vtaName, aclReadyTimeout); e != nil {
-			log.Printf("[platform-admins] warn: VTA not ready after ACL job for session %d: %v", session.ID, e)
+		if e := h.k8s.WaitForComponentDeploymentReady(restartCtx, ns, target.deployment, aclReadyTimeout); e != nil {
+			log.Printf("[vta-admins] warn: VTA not ready after ACL job for session %d: %v", session.ID, e)
 			restartErr = &aclRestartError{e}
 		}
 	}()
 
 	// Scaling to 0 only stops scheduling — the outgoing pod keeps the fjall
 	// lock until it actually terminates, so the Job cannot start before this.
-	if waitErr := h.k8s.WaitForComponentPodsGone(ctx, ns, selector, aclPodsGoneTimeout); waitErr != nil {
+	if waitErr := h.k8s.WaitForComponentPodsGone(ctx, ns, target.selector, aclPodsGoneTimeout); waitErr != nil {
 		return "", nil, fmt.Errorf("failed waiting for the VTA to stop: %w", waitErr)
 	}
 
-	h.k8s.DeleteComponentJob(ctx, ns, jobName) // clear a previous (TTL'd) run
+	h.k8s.DeleteComponentJob(ctx, ns, target.job) // clear a previous (TTL'd) run
 
 	if createErr := h.k8s.CreateComponentJob(ctx, ns, k8s.ComponentJobSpec{
-		Name:           jobName,
+		Name:           target.job,
 		Image:          session.VtaImage,
 		Command:        []string{"sh", "-c", cmd},
 		WorkingDir:     "/work/vta",
 		ServiceAccount: k8s.VtaServiceAccount,
-		PVCMounts:      []k8s.PVCMount{{Name: "vta-data", ClaimName: vtaName, MountPath: "/work/vta"}},
+		PVCMounts:      []k8s.PVCMount{{Name: "vta-data", ClaimName: target.pvc, MountPath: "/work/vta"}},
 		Env:            noColorEnv(),
 	}); createErr != nil {
 		return "", nil, fmt.Errorf("failed to create the ACL job: %w", createErr)
 	}
 
-	succeeded, failMsg, watchErr := h.k8s.WaitForJob(ctx, ns, jobName)
+	succeeded, failMsg, watchErr := h.k8s.WaitForJob(ctx, ns, target.job)
 	if watchErr != nil {
 		return "", nil, fmt.Errorf("job watch error: %w", watchErr)
 	}
@@ -274,20 +277,65 @@ func (h *SetupHandler) runVtaAclJob(
 		return "", nil, fmt.Errorf("ACL job failed: %s", failMsg)
 	}
 
-	out, logErr := h.k8s.JobLogs(ctx, ns, jobName)
+	out, logErr := h.k8s.JobLogs(ctx, ns, target.job)
 	if logErr != nil {
 		return "", nil, fmt.Errorf("failed to read job logs: %w", logErr)
 	}
 	return out, nil, nil
 }
 
+func (h *SetupHandler) acquireVtaAclMaintenance(sessionID uint) (time.Time, bool, error) {
+	now := time.Now()
+	result := h.db.Exec(`
+		INSERT INTO vta_acl_snapshots (session_id, synced_at, entry_count, maintenance_started_at)
+		VALUES (?, NULL, 0, ?)
+		ON CONFLICT (session_id) DO UPDATE
+		SET maintenance_started_at = EXCLUDED.maintenance_started_at
+		WHERE vta_acl_snapshots.maintenance_started_at IS NULL
+		   OR vta_acl_snapshots.maintenance_started_at <= ?`,
+		sessionID, now, now.Add(-aclJobStale))
+	return now, result.RowsAffected == 1, result.Error
+}
+
+func (h *SetupHandler) releaseVtaAclMaintenance(sessionID uint, startedAt time.Time) {
+	if err := h.db.Model(&model.VtaAclSnapshot{}).
+		Where("session_id = ? AND maintenance_started_at = ?", sessionID, startedAt).
+		Update("maintenance_started_at", nil).Error; err != nil {
+		log.Printf("[vta-admins] error: failed to release ACL maintenance lock for session %d: %v", sessionID, err)
+	}
+}
+
+type vtaAclTarget struct {
+	deployment string
+	selector   string
+	job        string
+	pvc        string
+}
+
+func vtaAclTargetFor(session *model.SetupSession) vtaAclTarget {
+	if session.IsFullStack() {
+		return vtaAclTarget{
+			deployment: k8s.FSVtaName(session.ID),
+			selector:   fmt.Sprintf("app=fs-vta,session-id=%d", session.ID),
+			job:        k8s.FSJobVtaACL(session.ID),
+			pvc:        k8s.FSVtaName(session.ID),
+		}
+	}
+	return vtaAclTarget{
+		deployment: k8s.VtaDeploymentName(session.ID),
+		selector:   fmt.Sprintf("app=vta,session-id=%d", session.ID),
+		job:        k8s.VtaACLJobName(session.ID),
+		pvc:        k8s.VtaPVCName(session.ID),
+	}
+}
+
 // respondAclJobError writes the failure, folding in a failed restart when there
-// was one. Both are reported: an operator told only that the grant failed would
+// was one. Both are reported: a caller told only that the grant failed would
 // have no reason to check whether the VTA came back.
-func respondAclJobError(c *gin.Context, err, restartErr error) {
+func respondAclJobError(c *gin.Context, session *model.SetupSession, err, restartErr error) {
 	body := gin.H{"error": err.Error()}
 	if restartErr != nil {
-		body["error"] = err.Error() + " — " + restartWarning(restartErr)
+		body["error"] = err.Error() + " — " + restartWarning(session, restartErr)
 	}
 	// Busy is not a failure: nothing broke, nothing was scaled, and the caller
 	// should simply come back. 502 would send an operator looking for damage.
@@ -298,9 +346,9 @@ func respondAclJobError(c *gin.Context, err, restartErr error) {
 	c.JSON(http.StatusBadGateway, body)
 }
 
-func restartWarning(restartErr error) string {
+func restartWarning(session *model.SetupSession, restartErr error) string {
 	return "WARNING: the VTA did not come back up (" + restartErr.Error() +
-		"). The platform stack is down — check the deployment before retrying."
+		"). Agent " + session.VtaName + " is down — check the deployment before retrying."
 }
 
 // noColorEnv mirrors internal/setup's fsNoColorEnv, which is unexported for the

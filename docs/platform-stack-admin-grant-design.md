@@ -208,31 +208,17 @@ mask a failed import and have the API report a grant that never happened.
 
 ## 7. Where this can go wrong
 
-### 7.1 No copy of the ACL is kept
+### 7.1 The ACL snapshot is explicit and dated
 
-An earlier draft stored one — captured as a by-product of the grant Job, which
-could run `vta acl list` inside a window already being spent. It is gone, and the
-reason is worth recording because the idea looks free.
+The owner portal can request a full refresh. The API stops the VTA, runs
+`vta acl list` against its local store, replaces `vta_acl_entries` in one
+transaction, and records `synced_at`. A normal page load reads that snapshot
+without downtime; it never implies that cached data is live.
 
-It was never free:
-
-- **It could not be trusted to be current.** It only advanced when someone
-  granted, so it could be weeks old, and a co-admin's rotation invalidates it
-  minutes after the grant that captured it (§7.2). Every surface showing it had
-  to date it and explain why it was old.
-- **It carried the only unvalidated component.** Parsing `vta acl list` output
-  is the one part of this feature that cannot be checked without the real
-  binary, and it existed solely to feed that copy.
-- **Its one logical consumer went with revoke.** The last-admin guard was the
-  only thing that ever *decided* anything on it; after §10.4 it fed a display.
-
-What replaces it is `pnm acl list` against the running VTA: live, exact, no
-downtime, and already in the hands of everyone who can act on this. The API
-records what it did — grants — and points at `pnm` for what is true now.
-
-The cost, stated plainly: nothing in the product shows the admins this API did
-not add, which is the `pnm-bootstrap` entry from provisioning plus anything added
-out of band. That is a real gap, and the answer to it is a terminal.
+Every successful offline grant also captures the list while the VTA is already
+stopped. Entries added out of band or moved by PNM rotation appear after the
+next explicit refresh. The VTA remains authoritative; the database is only its
+last complete synchronized view.
 
 ### 7.2 The submitted DID goes stale almost immediately
 
@@ -255,13 +241,11 @@ This is not a bug to fix, it is the protocol working. What follows from it:
   (`vta-service/src/operations/acl.rs`, `with_label(old.label.clone())`), and of
   those the label is the only human-readable one. Grant without it and the ACL
   holds a did:key nobody can attribute to a person.
-- Nothing on this side follows the DID to where it moved. `pnm acl list` against
-  the running VTA is what answers "who can act on this now", and it is exact
-  where any stored copy would be a guess.
+- The next explicit ACL refresh follows the DID to where it moved. Until then,
+  the displayed snapshot remains clearly dated.
 - **This is why removal is not built here.** Deleting a granted DID after a
   rotation would remove nothing; a removal that works must target a DID from the
-  the VTA's live ACL — which this side does not hold and deliberately does not
-  try to.
+  freshly synchronized VTA ACL, not the original grant row.
 
   It is the strongest argument for keeping removal out of scope (§10.4).
   Attributing a rotated entry to a person is not something this side can do:
@@ -304,10 +288,13 @@ Two things make it accountable rather than silent:
 - `confirm` (§5) means it cannot be a stray click or a CSRF-shaped accident.
 
 A second-approver flow (`pending` → approved by someone already holding a VTA
-credential) was considered and deferred: it is the right shape the moment this
-generalises to **customers'** stacks (§10.1), where the argument above does not
-hold. The `pending` status and `requested_by` column exist so that flow is an
-added transition, not a schema change.
+credential) was considered and deferred. It remains the right shape for any
+future **admin-cookie** route that can reach a customer's stack, where the
+argument above does not hold. The owner-facing `/setup/{id}/admins` route added
+later is different: it resolves the session through the authenticated user's
+own `user_id`, so it cannot grant on somebody else's VTA. The `pending` status
+and `requested_by` column still leave room for an approval transition if that
+broader admin route is ever added.
 
 ### 7.5 A failed scale-back leaves the stack down
 
@@ -381,21 +368,22 @@ stack detail. Client methods in `src/lib/api.ts` alongside `getPlatformStack`.
 3. ~~Frontend section.~~ **Done** — `src/pages/admin/PlatformStackAdmins.tsx`,
    rendered from `PlatformStackView` only once the stack is `running`.
 
-Complete. A fourth phase — capturing the ACL during `fsStepImportAdminDid` — was
-planned and dropped along with the stored copy it fed; §7.1 and §10.5 record why,
-because that reasoning is not recoverable from the code that is left.
+The owner portal additionally exposes a dated ACL snapshot and an explicit
+refresh action. Refresh uses the same offline Job and therefore carries the
+same one-minute maintenance window as a grant.
 
-`runVtaAclJob` additionally refuses any session whose `domain_type` is not
-`platform`, so the scope in §1 holds even if a per-session route is wired to it
-by mistake. That check is not the reason the scope is narrow — §7.4 is — and
-removing it is not how the scope gets widened.
+The shared `runVtaAclJob` machinery now also backs the owner-only
+`POST /setup/{id}/admins` route. That route performs its own ownership and
+`running`-state checks before reaching the maintenance window; the admin-cookie
+route remains narrowed to the platform stack.
 
 ## 10. Deliberately out of scope
 
-**10.1 Other sessions.** The mechanism is session-generic and the table is keyed
-by `session_id`, but the routes are platform-stack only. Customers' stacks need
-the second-approver flow of §7.4 first — the §7.4 argument for accepting the
-escalation is specifically about the farm's own stack.
+**10.1 Farm-admin access to customer sessions.** Owners can now add another PNM
+to their own running VTA through `POST /setup/{id}/admins`; the lookup is scoped
+to the user cookie's `user_id`. What remains out of scope is letting a farm
+admin grant itself or somebody else access to a customer's VTA. That still
+needs the second-approver flow of §7.4.
 
 **10.2 Anything but unrestricted admin.** Context-scoped grants are useful and
 the VTA supports them, but they need a real authorization model in the UI
@@ -409,7 +397,8 @@ mediator involved (`vta-service/src/routes/auth.rs::try_authenticate_trust_task`
 The cost is a byte-exact `eddsa-jcs-2022` signer in Go (the VTI's own docs warn
 that a mistake here "yields a signature that verifies nowhere"), or an image
 carrying a `config-session`-built `pnm`, plus a farm-held super admin on every
-stack. Revisit when this generalises past one session.
+stack. Revisit if the brief maintenance window becomes unacceptable for
+owner-managed stacks.
 
 **10.4 Removing an admin.** `pnm acl delete <did>` against the running VTA does
 it with no downtime and no code here. Building it into the API would mean

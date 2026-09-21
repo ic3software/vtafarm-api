@@ -94,6 +94,7 @@ func allFSJobNames(sessionID uint) []string {
 		FSJobDidsGrantFarm(sessionID),
 		FSJobVtaRegisterDids(sessionID),
 		FSJobImportAdminDid(sessionID),
+		FSJobVtaACL(sessionID),
 		FSJobVtcSetupKey(sessionID),
 		FSJobVtcAclGrant(sessionID),
 		FSJobVtcSetup(sessionID),
