@@ -146,6 +146,22 @@ func TestSortVtaAclEntriesNewestFirst(t *testing.T) {
 	}
 }
 
+func TestSuperAdminAclEntriesFiltersResponseWithoutMutatingSnapshot(t *testing.T) {
+	entries := []model.VtaAclEntry{
+		{Did: "did:key:zSuperAdmin", Role: superAdminAclRole},
+		{Did: "did:key:zScopedAdmin", Role: "admin"},
+		{Did: "did:key:zApplication", Role: "application"},
+	}
+
+	filtered := superAdminAclEntries(entries)
+	if len(filtered) != 1 || filtered[0].Did != "did:key:zSuperAdmin" {
+		t.Fatalf("superAdminAclEntries() = %#v, want only the super admin", filtered)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("superAdminAclEntries() mutated the complete snapshot: got %d entries, want 3", len(entries))
+	}
+}
+
 // A label identifies the entry after PNM rotates the DID away. It is optional,
 // so an empty value must omit the flag rather than pass an empty string.
 func TestGrantCmdCarriesTheLabel(t *testing.T) {

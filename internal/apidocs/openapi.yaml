@@ -115,6 +115,7 @@ components:
       properties:
         entries:
           type: array
+          description: Super Admin entries from the complete synchronized ACL snapshot.
           items:
             $ref: "#/components/schemas/VtaAclEntry"
         synced_at:
@@ -2353,15 +2354,17 @@ paths:
     get:
       summary: Read the platform VTA's synchronized ACL
       description: |
-        Returns the last complete `vta acl list` snapshot stored for the
-        platform stack. Reading the snapshot does not stop the VTA. Before the
-        first refresh, `synced_at` is null and `entries` is empty.
+        Returns the Super Admin entries from the last complete `vta acl list`
+        snapshot stored for the platform stack. The database retains every ACL
+        entry; non-Super-Admin entries are filtered from this response. Reading
+        the snapshot does not stop the VTA. Before the first refresh,
+        `synced_at` is null and `entries` is empty.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
       responses:
         "200":
-          description: Last synchronized ACL snapshot
+          description: Super Admin entries from the last synchronized ACL snapshot
           content:
             application/json:
               schema:
@@ -2493,7 +2496,8 @@ paths:
       summary: Refresh the platform VTA's ACL snapshot
       description: |
         Stops the platform VTA, runs `vta acl list` against its local store,
-        atomically replaces the database snapshot, then restarts the VTA.
+        atomically replaces the complete database snapshot, then restarts the
+        VTA. The response includes only Super Admin entries.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
@@ -5189,9 +5193,11 @@ paths:
     get:
       summary: Read the synchronized VTA ACL
       description: |
-        Returns the last complete `vta acl list` snapshot stored for the
-        authenticated user's VTA. This does not stop the VTA. Before the first
-        refresh, `synced_at` is null and `entries` is empty.
+        Returns the Super Admin entries from the last complete `vta acl list`
+        snapshot stored for the authenticated user's VTA. The database retains
+        every ACL entry; non-Super-Admin entries are filtered from this
+        response. This does not stop the VTA. Before the first refresh,
+        `synced_at` is null and `entries` is empty.
       tags: [User]
       security:
         - CookieAuthUser: []
@@ -5203,7 +5209,7 @@ paths:
             type: string
       responses:
         "200":
-          description: Last synchronized ACL snapshot
+          description: Super Admin entries from the last synchronized ACL snapshot
           content:
             application/json:
               schema:
@@ -5305,8 +5311,9 @@ paths:
       summary: Refresh the VTA ACL snapshot
       description: |
         Stops the authenticated user's VTA, runs `vta acl list` against its
-        local store, atomically replaces the database snapshot, then restarts
-        the VTA. The operation is synchronous and takes about one minute.
+        local store, atomically replaces the complete database snapshot, then
+        restarts the VTA. The response includes only Super Admin entries. The
+        operation is synchronous and takes about one minute.
       tags: [User]
       security:
         - CookieAuthUser: []

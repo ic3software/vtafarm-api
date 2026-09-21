@@ -121,7 +121,8 @@ func (h *SetupHandler) platformSession(c *gin.Context) *model.SetupSession {
 }
 
 // ListPlatformStackAdmins — GET /api/v1/admin/platform-stack/admins.
-// Serves the last complete `vta acl list` snapshot without causing downtime.
+// Serves the super admins from the last complete `vta acl list` snapshot
+// without causing downtime.
 func (h *SetupHandler) ListPlatformStackAdmins(c *gin.Context) {
 	session := h.platformSession(c)
 	if session == nil {
