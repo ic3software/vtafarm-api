@@ -1,5 +1,13 @@
 # Changelog
 
+## [v0.6.1] - 2026-09-21
+
+### Changed
+
+- User and admin ACL endpoints now return only unrestricted Super Admin
+  entries. Complete synchronized ACL snapshots continue to be retained in the
+  database.
+
 ## [v0.6.0] - 2026-09-21
 
 ### Added
