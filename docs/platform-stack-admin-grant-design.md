@@ -144,13 +144,9 @@ All admin-cookie only, all under the existing `/api/v1/admin` group.
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET` | `/api/v1/admin/platform-stack/admins` | The grant rows — what was added from here. Never blocks, never causes downtime. |
-| `POST` | `/api/v1/admin/platform-stack/admins` | `{did, label, confirm}` → grants. Synchronous; 60–120s. 409 while another grant holds the window (§7.6). |
-
-`confirm` must equal the platform stack's label, mirroring the guard on
-`DELETE /admin/setup-sessions/:id` and enforced at the API, not the UI. It is
-the speed bump on an irreversible privilege grant that also takes production
-down for a minute — see §7.4 for why a speed bump and not a second approver.
+| `GET` | `/api/v1/admin/platform-stack/admins` | Last complete ACL snapshot. Never blocks or causes downtime. |
+| `POST` | `/api/v1/admin/platform-stack/admins` | `{did, label?}` → grants and refreshes the snapshot. |
+| `POST` | `/api/v1/admin/platform-stack/admins/refresh` | Runs `vta acl list`, synchronizes the snapshot, and restarts the VTA. |
 
 Validation on `did`: must start with `did:`, must be `did:key:` (the VTA's DI
 proof verifier is `did:key`-only, so anything else produces an ACL entry that
@@ -236,11 +232,10 @@ This is not a bug to fix, it is the protocol working. What follows from it:
 - A grant row is **a record of an event**, not a statement of current access.
   The UI must label it that way (`granted <date>`) and must not present it as
   the admin list.
-- The **label is required** for exactly this reason. `POST /acl/swap` carries
+- An optional label remains useful because `POST /acl/swap` carries
   role, contexts and label onto the new entry
   (`vta-service/src/operations/acl.rs`, `with_label(old.label.clone())`), and of
-  those the label is the only human-readable one. Grant without it and the ACL
-  holds a did:key nobody can attribute to a person.
+  those the label is the only human-readable one.
 - The next explicit ACL refresh follows the DID to where it moved. Until then,
   the displayed snapshot remains clearly dated.
 - **This is why removal is not built here.** Deleting a granted DID after a
@@ -250,11 +245,9 @@ This is not a bug to fix, it is the protocol working. What follows from it:
   It is the strongest argument for keeping removal out of scope (§10.4).
   Attributing a rotated entry to a person is not something this side can do:
   `vta acl list` prints DID / role / label / contexts / created, so the only
-  handle is the **label** — which the swap does preserve
-  (`with_label(old.label.clone())`), and which is why the API requires one. An
-  operator at a `pnm` prompt reads that label with the whole ACL in front of them
-  and decides. A form cannot do better, and would take a maintenance window to do
-  worse.
+  handle is the optional label, which the swap preserves
+  (`with_label(old.label.clone())`). Without one, the full DID remains visible
+  but cannot be attributed to a person by this service.
 
 ### 7.3 Nothing stops the last admin being removed
 
@@ -282,10 +275,7 @@ effect. It is accepted here because the platform stack is the farm's own stack,
 run by the same operators, on a cluster where those operators already have PVC
 access — the authority exists whether or not there is a button for it.
 
-Two things make it accountable rather than silent:
-
-- `requested_by` records which admin, and the row is permanent.
-- `confirm` (§5) means it cannot be a stray click or a CSRF-shaped accident.
+`requested_by` records which admin made the grant, and the row is permanent.
 
 A second-approver flow (`pending` → approved by someone already holding a VTA
 credential) was considered and deferred. It remains the right shape for any
@@ -338,11 +328,9 @@ so nothing can reach the window by another path.
 `src/pages/admin/PlatformStackView.tsx`, one new section below the existing
 stack detail. Client methods in `src/lib/api.ts` alongside `getPlatformStack`.
 
-- **Add admin** — the primary action, and the reason the page exists. A
-  `did:key` field, a **required** label ("who is this?"), and a confirm input
-  taking the stack label. The copy has to state three things plainly: the grant
-  is **unrestricted super admin**, the VTA will be **down for about a minute**,
-  and the DID being pasted is expected to change once its holder connects.
+- **Add admin** — a `did:key` field and optional label. No typed confirmation;
+  the authenticated admin action submits directly and temporarily stops and
+  restarts the VTA.
 
   Worth spelling out the flow it sits in, because a co-admin doing this for the
   first time will otherwise stop halfway: run `pnm setup --name <slug>` locally,
@@ -352,13 +340,8 @@ stack detail. Client methods in `src/lib/api.ts` alongside `getPlatformStack`.
   A 409 while another grant is running is not an error state — say "another
   admin is updating the ACL, try again in a minute" and keep the form filled in.
 
-- **Added from here** — the `vta_admin_grants` rows, labelled as events (§7.2).
-  Empty on a new stack, and it says why: the first administrator was set during
-  provisioning and was never a row here.
-
-  This is the only list on the page, so it also carries the pointer to the real
-  one: `pnm acl list` for the VTA's actual administrators, `pnm acl delete <did>`
-  to remove one. Both belong next to the rows they qualify, not in a footnote.
+- **Live ACL** — the dated database snapshot from `vta acl list`, with the same
+  explicit refresh action and full-DID presentation as the owner portal.
 
 ## 9. Phasing
 

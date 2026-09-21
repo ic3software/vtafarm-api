@@ -122,58 +122,32 @@ func (h *SetupHandler) platformSession(c *gin.Context) *model.SetupSession {
 }
 
 // ListPlatformStackAdmins — GET /api/v1/admin/platform-stack/admins.
-//
-// Serves stored state only: never stops the VTA, never blocks.
-//
-// This is a history of what was added from here, **not** the VTA's current
-// admin list — and the two genuinely differ. A granted DID stops being the
-// holder's DID on their first connect (PNM rotates and `POST /acl/swap` moves
-// the entry), and admins added out of band never appear here at all. For who
-// can act on the VTA right now, `pnm acl list`.
+// Serves the last complete `vta acl list` snapshot without causing downtime.
 func (h *SetupHandler) ListPlatformStackAdmins(c *gin.Context) {
 	session := h.platformSession(c)
 	if session == nil {
 		return
 	}
 
-	var grants []model.VtaAdminGrant
-	if err := h.db.Where("session_id = ?", session.ID).
-		Order("created_at DESC").Find(&grants).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read grants"})
+	response, err := h.sessionAclSnapshot(session.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read the VTA ACL snapshot"})
 		return
 	}
-	if grants == nil {
-		grants = []model.VtaAdminGrant{}
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"id":     session.VtaName,
-		"label":  session.VtaName,
-		"grants": grants,
-	})
+	c.JSON(http.StatusOK, response)
 }
 
-// requireStackConfirm gates the one route that takes the VTA down, mirroring
-// the guard on DELETE /admin/setup-sessions/:id: the caller must name the stack.
-//
-// Enforced here rather than in the UI. Adding an admin is both an irreversible
-// privilege grant and a minute of downtime on the flagship stack — neither is
-// something a stray click should be able to cause.
-//
-// Takes the already-bound value rather than reading the body itself, because
-// gin's ShouldBindJSON consumes it: the grant route carries `did` and `label`
-// alongside `confirm` and has to bind all three in one pass. A missing or
-// malformed body leaves Confirm at "", which fails here exactly as a wrong
-// value does — both mean "not confirmed".
-func requireStackConfirm(c *gin.Context, session *model.SetupSession, confirm string) bool {
-	if confirm != session.VtaName {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "this stops the platform stack's VTA for about a minute — " +
-				`send {"confirm": "` + session.VtaName + `"} to proceed`,
-		})
-		return false
+// RefreshPlatformStackAdmins — POST /api/v1/admin/platform-stack/admins/refresh.
+func (h *SetupHandler) RefreshPlatformStackAdmins(c *gin.Context) {
+	session := h.platformSession(c)
+	if session == nil {
+		return
 	}
-	return true
+	if session.Status != "running" {
+		c.JSON(http.StatusConflict, gin.H{"error": "platform stack must be in running status"})
+		return
+	}
+	h.refreshVtaAclSnapshot(c, session)
 }
 
 // aclRestartError marks a failure of the deferred scale-back-up, so callers can

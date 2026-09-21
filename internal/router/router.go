@@ -220,6 +220,7 @@ func Setup(
 		// docs/platform-stack-admin-grant-design.md §1 and §7.4.
 		adminAuth.GET("/admin/platform-stack/admins", sh.ListPlatformStackAdmins)
 		adminAuth.POST("/admin/platform-stack/admins", sh.GrantPlatformStackAdmin)
+		adminAuth.POST("/admin/platform-stack/admins/refresh", sh.RefreshPlatformStackAdmins)
 		// Cluster capacity overview: CPU/memory/storage totals per node plus
 		// how many more sessions of each mode still fit.
 		dashH := handler.NewDashboardHandler(k8sClient)

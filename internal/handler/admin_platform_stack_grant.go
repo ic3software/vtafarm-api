@@ -56,14 +56,10 @@ func (h *SetupHandler) GrantPlatformStackAdmin(c *gin.Context) {
 	}
 
 	var body struct {
-		Did     string `json:"did"`
-		Label   string `json:"label"`
-		Confirm string `json:"confirm"`
+		Did   string `json:"did"`
+		Label string `json:"label"`
 	}
 	_ = c.ShouldBindJSON(&body)
-	if !requireStackConfirm(c, session, body.Confirm) {
-		return
-	}
 
 	did := strings.TrimSpace(body.Did)
 	if !didKeyRe.MatchString(did) {
@@ -72,23 +68,7 @@ func (h *SetupHandler) GrantPlatformStackAdmin(c *gin.Context) {
 		})
 		return
 	}
-	// Required, not decorative. The DID in this request stops being the
-	// holder's DID on their first connect — `POST /acl/swap` moves the entry
-	// onto a freshly minted one — and of everything on that entry the label is
-	// the only human-readable field that survives the move
-	// (vta-service/src/operations/acl.rs `with_label(old.label.clone())`).
-	//
-	// Grant without one and the ACL ends up holding an unidentifiable did:key —
-	// and since removal happens at a `pnm acl list` prompt, that label is what
-	// the person deciding is reading. Cheaper to insist here.
 	label := strings.TrimSpace(body.Label)
-	if label == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "label is required — it is the only identifier that survives PNM's key rotation, " +
-				"and without it this entry cannot be attributed to anyone later",
-		})
-		return
-	}
 	if len(label) > 64 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "label must be 64 characters or fewer"})
 		return
