@@ -453,30 +453,23 @@ Three things about that are easy to get wrong:
   scales back. `reissueDidsEnroll` does the same dance against the dids daemon
   and is the template. The mediator and dids daemons are separate Deployments
   and stay up, so `vta_only` sessions are unaffected; what goes down is this
-  stack's own VTA and its VTC. Reading costs the same window, which is why
-  **nothing here stores a copy of the ACL** — `pnm acl list` answers that against
-  the running VTA for free, and any copy would be stale within minutes anyway.
-- **A grant row is an event, not a permission.** The DID a co-admin submits is
-  the temporary `did:key` from `pnm setup`, and PNM swaps it for a long-lived
-  one on first connect (`POST /acl/swap`, which preserves role, contexts **and
-  label**). `vta_admin_grants.did` therefore goes stale by design, and `label`
-  is the only human-readable field that survives the move — which is why the API
-  requires one: it is what somebody reads at a `pnm acl list` prompt. Nothing
-  here tracks where the entry moved to.
+  stack's own VTA and its VTC. Every successful grant captures `vta acl list`
+  while the store is already offline; explicit refresh uses another maintenance
+  window. The database snapshot is dated and never treated as authoritative.
+- **The submitted DID rotates.** The DID a co-admin submits is the temporary
+  `did:key` from `pnm setup`, and PNM swaps it for a long-lived one on first
+  connect (`POST /acl/swap`, which preserves role, contexts and label). The next
+  ACL refresh follows that move. Labels are optional, but remain the only
+  human-readable way to attribute the rotated entry.
 - **One window at a time.** `runVtaAclJob` holds a process-wide `TryLock` for the
-  whole window, and the grant route additionally refuses when a live `pending`
-  row exists (the cross-replica half — the lock is in-process). Two concurrent
-  grants would scale the same VTA down twice and run two Jobs under one name,
-  each able to delete the other's.
+  whole window. `vta_acl_snapshots.maintenance_started_at` is the cross-replica
+  lock, acquired atomically before anything is scaled and expired after the
+  maximum Job/restart budget. Two concurrent operations would otherwise scale
+  the same VTA down twice and run two Jobs under one name.
 
-**Platform stack only, and `runVtaAclJob` enforces it** — it refuses any session
-whose `domain_type` is not `platform`, on top of the routes already resolving
-only that session. Everything under it is session-generic by construction (the
-table is keyed by `session_id`, the K8s names derive from `session.ID`), so
-without that check a per-session route wired to it later would silently hand out
-unrestricted super admin on a stack the farm merely operates. Widening the scope
-is gated on the approval flow of design §7.4 — the `pending` status and
-`requested_by` column exist for it — not on deleting that check.
+The platform route resolves only the platform session; the owner route resolves
+through the authenticated user's own `user_id`. The shared Job helper assumes
+the caller has already established that authority.
 
 Design: `docs/platform-stack-admin-grant-design.md` (§7 is the section to read).
 

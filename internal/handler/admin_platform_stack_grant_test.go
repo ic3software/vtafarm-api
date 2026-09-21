@@ -146,10 +146,8 @@ func TestSortVtaAclEntriesNewestFirst(t *testing.T) {
 	}
 }
 
-// The label is what identifies the entry after PNM rotates the DID away, so it
-// has to reach the ACL. The handler rejects an empty one; grantCmd still omits
-// the flag rather than passing an empty string, for any caller that gets there
-// another way.
+// A label identifies the entry after PNM rotates the DID away. It is optional,
+// so an empty value must omit the flag rather than pass an empty string.
 func TestGrantCmdCarriesTheLabel(t *testing.T) {
 	withLabel := grantCmd("did:key:z6MkTest", "alice")
 	if !strings.Contains(withLabel, "--label 'alice'") {

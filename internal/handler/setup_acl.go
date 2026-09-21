@@ -56,6 +56,10 @@ func (h *SetupHandler) RefreshSessionAdmins(c *gin.Context) {
 		return
 	}
 
+	h.refreshVtaAclSnapshot(c, session)
+}
+
+func (h *SetupHandler) refreshVtaAclSnapshot(c *gin.Context, session *model.SetupSession) {
 	logs, restartErr, runErr := h.runVtaAclJob(c.Request.Context(), session, aclListCmd())
 	if runErr != nil {
 		respondAclJobError(c, session, runErr, restartErr)

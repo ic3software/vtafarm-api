@@ -34,7 +34,7 @@ Prerequisite reading: [`full-stack-setup-design.md`](full-stack-setup-design.md)
 | The **platform stack** only — one session, owned by the `platform` system account | every other `full_stack`; every `vta_only` (§10.1) |
 | Granting `role=admin` with **no contexts** — unrestricted, identical to `pnm-bootstrap` | context-scoped grants, `initiator`/`application`/`reader`, expiry (§10.2) |
 | Adding an admin | **removing** one — that is `pnm acl delete` against the live VTA (§10.4) |
-| A record of **what was added from here** | any copy of the VTA's own admin list (§7.1) |
+| A synchronized, dated copy of the VTA ACL | treating that snapshot as authoritative (§7.1) |
 | Accepting ~60–120s of VTA downtime per operation (§3) | zero-downtime grants (§10.3 records what that costs) |
 
 ---
@@ -101,40 +101,18 @@ back would cost.
 
 ## 4. Data model
 
-Migration `000027_vta_admin_grants`.
+Migration `000031_vta_acl_snapshots` stores the last complete `vta acl list`
+result in `vta_acl_snapshots` and `vta_acl_entries`. The snapshot timestamp is
+shown in the UI so cached data is never confused with the VTA's current state.
 
-```sql
-CREATE TABLE vta_admin_grants (
-    id          BIGSERIAL PRIMARY KEY,
-    session_id  BIGINT NOT NULL REFERENCES setup_sessions(id) ON DELETE CASCADE,
-    did         TEXT   NOT NULL,
-    label       TEXT   NOT NULL DEFAULT '',
-    status      TEXT   NOT NULL DEFAULT 'pending'
-                CHECK (status IN ('pending','granted','failed')),
-    error_msg   TEXT   NOT NULL DEFAULT '',
-    requested_by BIGINT NULL REFERENCES admins(id) ON DELETE SET NULL,
-    granted_at  TIMESTAMPTZ NULL,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
+`vta_acl_snapshots.maintenance_started_at` is also the cross-replica lock for
+all offline ACL operations. An atomic conditional upsert acquires it, and a
+15-minute stale threshold prevents an interrupted request from wedging future
+maintenance indefinitely.
 
--- One live grant per DID per session. Partial, so a failed attempt stays as
--- history and the same DID can be retried without deleting the first record.
-CREATE UNIQUE INDEX vta_admin_grants_live_unique
-    ON vta_admin_grants (session_id, did)
-    WHERE status IN ('pending','granted');
-```
-
-Named for the session, not for the platform stack, because the mechanism is
-session-generic and only the *route* is narrowed (§1). Generalising later is a
-route addition, not a migration.
-
-`ON DELETE CASCADE`: the grants describe a store that is deleted with the
-session. There is nothing to orphan.
-
-**No `role` or `contexts` column.** Every row is an unrestricted admin — that is
-the feature. Adding a column that only ever holds one value invites a second
-value without the authorization work §7.4 would need.
+Migration `000032_drop_vta_admin_grants` removes the old grant-event table. Its
+submitted DIDs became stale after PNM rotation, it was no longer displayed, and
+its locking responsibility is now covered by the snapshot row.
 
 ---
 
@@ -144,22 +122,18 @@ All admin-cookie only, all under the existing `/api/v1/admin` group.
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET` | `/api/v1/admin/platform-stack/admins` | The grant rows — what was added from here. Never blocks, never causes downtime. |
-| `POST` | `/api/v1/admin/platform-stack/admins` | `{did, label, confirm}` → grants. Synchronous; 60–120s. 409 while another grant holds the window (§7.6). |
-
-`confirm` must equal the platform stack's label, mirroring the guard on
-`DELETE /admin/setup-sessions/:id` and enforced at the API, not the UI. It is
-the speed bump on an irreversible privilege grant that also takes production
-down for a minute — see §7.4 for why a speed bump and not a second approver.
+| `GET` | `/api/v1/admin/platform-stack/admins` | Last complete ACL snapshot. Never blocks or causes downtime. |
+| `POST` | `/api/v1/admin/platform-stack/admins` | `{did, label?}` → grants and refreshes the snapshot. |
+| `POST` | `/api/v1/admin/platform-stack/admins/refresh` | Runs `vta acl list`, synchronizes the snapshot, and restarts the VTA. |
 
 Validation on `did`: must start with `did:`, must be `did:key:` (the VTA's DI
 proof verifier is `did:key`-only, so anything else produces an ACL entry that
-can never authenticate), and must not already hold a live grant (409).
+can never authenticate). The offline Job asks the VTA whether it is already
+present and reports that as a successful no-op.
 
-Synchronous, following `reissueDidsEnroll`. The row is written `pending`
-**before** the k8s work starts, so a client that times out at an ingress proxy
-has not lost the operation — `GET` still shows it, and it lands `granted` or
-`failed` regardless of who is listening.
+The operation is synchronous, following `reissueDidsEnroll`. A client timeout
+does not cancel the deferred VTA restart, but the client must read or refresh the
+ACL snapshot to determine the final state.
 
 ---
 
@@ -168,7 +142,7 @@ has not lost the operation — `GET` still shows it, and it lands `granted` or
 One helper, `runVtaAclJob(ctx, session, cmd)`.
 
 ```
-0. refuse unless domain_type = platform (§1); TryLock or 409 (§7.6)
+0. caller resolves and authorizes the session; acquire both locks or return 409 (§7.6)
 1. resolve ns, deployment name (k8s.FSVtaName), selector "app=fs-vta,session-id=<id>"
 2. ScaleComponentDeployment(vta, 0)
 3. defer: ScaleComponentDeployment(vta, 1) + WaitForComponentDeploymentReady
@@ -196,13 +170,12 @@ fi
 ```
 
 `VTAFARM_ALREADY_PRESENT` is not an error — it is the idempotent outcome, and
-the row still lands `granted`.
+the response returns `already_present: true`.
 
 A condition's exit status does not trigger `set -e`, so the probe stays a test
-rather than a failure. `set -e` itself is now defensive rather than load-bearing
-— the import is the last command, so its status is the script's — and it stays in
-front of whoever appends a line next, since a trailing command would otherwise
-mask a failed import and have the API report a grant that never happened.
+rather than a failure. `set -e` ensures a failed import stops before the
+trailing ACL list and end marker can mask it and make the API report a grant
+that never happened.
 
 ---
 
@@ -227,34 +200,29 @@ and parked in their keyring. On their first authenticated command PNM rotates:
 `POST /acl/swap` atomically moves the entry — same role, same contexts — onto a
 fresh long-lived DID and deletes the temp (`vta-sdk/src/session.rs:1107`).
 
-So minutes after a successful grant, `vta_admin_grants.did` names a DID that is
-no longer in the ACL, while the co-admin holds full super admin under a DID this
-farm has never seen.
+Minutes after a successful grant, the submitted DID may no longer be in the ACL,
+while the co-admin holds full super admin under its rotated replacement.
 
 This is not a bug to fix, it is the protocol working. What follows from it:
 
-- A grant row is **a record of an event**, not a statement of current access.
-  The UI must label it that way (`granted <date>`) and must not present it as
-  the admin list.
-- The **label is required** for exactly this reason. `POST /acl/swap` carries
+- The ACL snapshot is a dated cache, not a statement of current access. The UI
+  displays its synchronization time and offers an explicit refresh.
+- An optional label remains useful because `POST /acl/swap` carries
   role, contexts and label onto the new entry
   (`vta-service/src/operations/acl.rs`, `with_label(old.label.clone())`), and of
-  those the label is the only human-readable one. Grant without it and the ACL
-  holds a did:key nobody can attribute to a person.
+  those the label is the only human-readable one.
 - The next explicit ACL refresh follows the DID to where it moved. Until then,
   the displayed snapshot remains clearly dated.
 - **This is why removal is not built here.** Deleting a granted DID after a
   rotation would remove nothing; a removal that works must target a DID from the
-  freshly synchronized VTA ACL, not the original grant row.
+  freshly synchronized VTA ACL, not the originally submitted DID.
 
   It is the strongest argument for keeping removal out of scope (§10.4).
   Attributing a rotated entry to a person is not something this side can do:
   `vta acl list` prints DID / role / label / contexts / created, so the only
-  handle is the **label** — which the swap does preserve
-  (`with_label(old.label.clone())`), and which is why the API requires one. An
-  operator at a `pnm` prompt reads that label with the whole ACL in front of them
-  and decides. A form cannot do better, and would take a maintenance window to do
-  worse.
+  handle is the optional label, which the swap preserves
+  (`with_label(old.label.clone())`). Without one, the full DID remains visible
+  but cannot be attributed to a person by this service.
 
 ### 7.3 Nothing stops the last admin being removed
 
@@ -282,19 +250,14 @@ effect. It is accepted here because the platform stack is the farm's own stack,
 run by the same operators, on a cluster where those operators already have PVC
 access — the authority exists whether or not there is a button for it.
 
-Two things make it accountable rather than silent:
-
-- `requested_by` records which admin, and the row is permanent.
-- `confirm` (§5) means it cannot be a stray click or a CSRF-shaped accident.
-
 A second-approver flow (`pending` → approved by someone already holding a VTA
 credential) was considered and deferred. It remains the right shape for any
 future **admin-cookie** route that can reach a customer's stack, where the
 argument above does not hold. The owner-facing `/setup/{id}/admins` route added
 later is different: it resolves the session through the authenticated user's
-own `user_id`, so it cannot grant on somebody else's VTA. The `pending` status
-and `requested_by` column still leave room for an approval transition if that
-broader admin route is ever added.
+own `user_id`, so it cannot grant on somebody else's VTA. If durable per-actor
+grant auditing or approval is required later, it should use a purpose-built
+immutable audit/approval model rather than stale ACL identifiers.
 
 ### 7.5 A failed scale-back leaves the stack down
 
@@ -324,25 +287,22 @@ Two guards, because one does not cover it:
   `TryLock`, not `Lock`: a caller who queued would sit through one outage and
   then start another, and a queue of these is a queue of outages. Refusing with
   409 says the true thing — nothing is broken, come back in a minute.
-- The grant route additionally refuses while a live `pending` row exists for the
-  session. The lock is in-process and cannot see a second API replica; the row is
-  written before any Kubernetes work and can. Bounded by `aclJobStale` (15 min,
-  past the Job's own `ActiveDeadlineSeconds`) so a request that died mid-window
-  cannot wedge the route permanently.
+- `runVtaAclJob` also acquires `vta_acl_snapshots.maintenance_started_at` with an
+  atomic conditional upsert. That lock is visible across API replicas and is
+  bounded by `aclJobStale` (15 minutes, past the Job and restart budget), so a
+  request that dies mid-window cannot wedge the route permanently.
 
-Both sit inside `runVtaAclJob` and the grant handler rather than in middleware,
-so nothing can reach the window by another path.
+Both sit inside `runVtaAclJob` rather than in middleware, so grant and refresh
+cannot bypass them through another route.
 
 ## 8. Frontend
 
 `src/pages/admin/PlatformStackView.tsx`, one new section below the existing
 stack detail. Client methods in `src/lib/api.ts` alongside `getPlatformStack`.
 
-- **Add admin** — the primary action, and the reason the page exists. A
-  `did:key` field, a **required** label ("who is this?"), and a confirm input
-  taking the stack label. The copy has to state three things plainly: the grant
-  is **unrestricted super admin**, the VTA will be **down for about a minute**,
-  and the DID being pasted is expected to change once its holder connects.
+- **Add admin** — a `did:key` field and optional label. No typed confirmation;
+  the authenticated admin action submits directly and temporarily stops and
+  restarts the VTA.
 
   Worth spelling out the flow it sits in, because a co-admin doing this for the
   first time will otherwise stop halfway: run `pnm setup --name <slug>` locally,
@@ -352,17 +312,12 @@ stack detail. Client methods in `src/lib/api.ts` alongside `getPlatformStack`.
   A 409 while another grant is running is not an error state — say "another
   admin is updating the ACL, try again in a minute" and keep the form filled in.
 
-- **Added from here** — the `vta_admin_grants` rows, labelled as events (§7.2).
-  Empty on a new stack, and it says why: the first administrator was set during
-  provisioning and was never a row here.
-
-  This is the only list on the page, so it also carries the pointer to the real
-  one: `pnm acl list` for the VTA's actual administrators, `pnm acl delete <did>`
-  to remove one. Both belong next to the rows they qualify, not in a footnote.
+- **Live ACL** — the dated database snapshot from `vta acl list`, with the same
+  explicit refresh action and full-DID presentation as the owner portal.
 
 ## 9. Phasing
 
-1. ~~Migration + model + `runVtaAclJob`, with `GET`.~~ **Done.**
+1. ~~Snapshot migration + `runVtaAclJob`, with `GET`.~~ **Done.**
 2. ~~`POST` (grant), with the concurrency guards of §7.6.~~ **Done.** Revoke was
    cut — see §10.4.
 3. ~~Frontend section.~~ **Done** — `src/pages/admin/PlatformStackAdmins.tsx`,
@@ -370,7 +325,7 @@ stack detail. Client methods in `src/lib/api.ts` alongside `getPlatformStack`.
 
 The owner portal additionally exposes a dated ACL snapshot and an explicit
 refresh action. Refresh uses the same offline Job and therefore carries the
-same one-minute maintenance window as a grant.
+same maintenance window as a grant.
 
 The shared `runVtaAclJob` machinery now also backs the owner-only
 `POST /setup/{id}/admins` route. That route performs its own ownership and
@@ -405,12 +360,10 @@ it with no downtime and no code here. Building it into the API would mean
 answering "which of these entries is the person I want to remove" — and after a
 rotation the only handle is a label somebody typed (§7.2). An operator at a `pnm`
 prompt has the full ACL in front of them and can decide; a form cannot. The
-schema keeps no `revoked` status, so this is an addition rather than a
-resurrection if it is ever wanted.
+service keeps no local permission ledger, so this would be a new operation if it
+is ever wanted.
 
-**10.5 Keeping any copy of the VTA's ACL.** Dropped along with the snapshot it
-was built for — §7.1 has the reasoning. A corollary: the once-planned fourth
-phase, capturing the ACL during `fsStepImportAdminDid`, is dropped too. It would
-have put a parse of `vta acl list` in the provisioning critical path, where a
-changed output format or a renamed flag fails the Job, fails the step and fails
-the whole stack build — for a display nobody needs.
+**10.5 Treating the ACL snapshot as live state.** The database stores only the
+last complete explicit synchronization. It is intentionally not refreshed from
+the provisioning critical path or on ordinary page loads, both to avoid extra
+downtime and to keep output parsing failures from blocking stack creation.
