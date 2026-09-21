@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -222,5 +223,24 @@ func (h *SetupHandler) sessionAclSnapshot(sessionID uint) (sessionAclResponse, e
 	if len(response.Entries) != snapshot.EntryCount {
 		return response, fmt.Errorf("ACL snapshot expected %d entries, found %d", snapshot.EntryCount, len(response.Entries))
 	}
+	sortVtaAclEntriesNewestFirst(response.Entries)
 	return response, nil
+}
+
+func sortVtaAclEntriesNewestFirst(entries []model.VtaAclEntry) {
+	const layout = "2006-01-02 15:04:05 -07:00"
+	sort.SliceStable(entries, func(i, j int) bool {
+		left, leftErr := time.Parse(layout, entries[i].AclCreatedAt)
+		right, rightErr := time.Parse(layout, entries[j].AclCreatedAt)
+		if leftErr == nil && rightErr == nil {
+			return left.After(right)
+		}
+		if leftErr == nil {
+			return true
+		}
+		if rightErr == nil {
+			return false
+		}
+		return entries[i].Did < entries[j].Did
+	})
 }

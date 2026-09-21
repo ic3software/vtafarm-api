@@ -129,6 +129,23 @@ func TestParseVtaAclListRejectsCountMismatch(t *testing.T) {
 	}
 }
 
+func TestSortVtaAclEntriesNewestFirst(t *testing.T) {
+	entries := []model.VtaAclEntry{
+		{Did: "did:key:zOld", AclCreatedAt: "2026-09-21 09:57:56 -07:00"},
+		{Did: "did:key:zInvalid", AclCreatedAt: "unknown"},
+		{Did: "did:key:zNewest", AclCreatedAt: "2026-09-21 17:32:35 +00:00"},
+		{Did: "did:key:zMiddle", AclCreatedAt: "2026-09-21 09:53:03 -07:00"},
+	}
+
+	sortVtaAclEntriesNewestFirst(entries)
+	want := []string{"did:key:zNewest", "did:key:zOld", "did:key:zMiddle", "did:key:zInvalid"}
+	for i, did := range want {
+		if entries[i].Did != did {
+			t.Fatalf("entry %d = %q, want %q", i, entries[i].Did, did)
+		}
+	}
+}
+
 // The label is what identifies the entry after PNM rotates the DID away, so it
 // has to reach the ACL. The handler rejects an empty one; grantCmd still omits
 // the flag rather than passing an empty string, for any caller that gets there
