@@ -73,10 +73,14 @@ func FSJobVtaACL(sessionID uint) string { return fmt.Sprintf("fs-%d-vta-acl", se
 // full_stack-only Jobs (design §8). FSJobVtcInvite is the reissue
 // endpoint's `vtc admin invite` Job (POST /setup/:id/vtc/reissue-install),
 // not a pipeline step — mirrors how FSJobDidsInvite doubles for reissue.
-func FSJobVtcSetupKey(sessionID uint) string { return fmt.Sprintf("fs-%d-vtc-setup-key", sessionID) }
-func FSJobVtcAclGrant(sessionID uint) string { return fmt.Sprintf("fs-%d-vtc-acl-grant", sessionID) }
-func FSJobVtcSetup(sessionID uint) string    { return fmt.Sprintf("fs-%d-vtc-setup", sessionID) }
-func FSJobVtcInvite(sessionID uint) string   { return fmt.Sprintf("fs-%d-vtc-invite", sessionID) }
+func FSJobVtcSetupKey(sessionID uint) string  { return fmt.Sprintf("fs-%d-vtc-setup-key", sessionID) }
+func FSJobVtcAclGrant(sessionID uint) string  { return fmt.Sprintf("fs-%d-vtc-acl-grant", sessionID) }
+func FSJobVtcSetup(sessionID uint) string     { return fmt.Sprintf("fs-%d-vtc-setup", sessionID) }
+func FSJobVtcInvite(sessionID uint) string    { return fmt.Sprintf("fs-%d-vtc-invite", sessionID) }
+func FSJobConfigUpdate(sessionID uint) string { return fmt.Sprintf("fs-%d-config-update", sessionID) }
+func FSJobConfigRollback(sessionID uint) string {
+	return fmt.Sprintf("fs-%d-config-rollback", sessionID)
+}
 
 // allFSJobNames lists every setup Job name for a session — used by teardown
 // to best-effort delete each one (and its ConfigMap, where one exists).
@@ -99,5 +103,7 @@ func allFSJobNames(sessionID uint) []string {
 		FSJobVtcAclGrant(sessionID),
 		FSJobVtcSetup(sessionID),
 		FSJobVtcInvite(sessionID),
+		FSJobConfigUpdate(sessionID),
+		FSJobConfigRollback(sessionID),
 	}
 }

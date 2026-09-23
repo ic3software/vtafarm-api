@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -536,6 +537,16 @@ func (h *SetupHandler) reissueDidsEnroll(c *gin.Context, session *model.SetupSes
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "k8s not configured"})
 		return
 	}
+	release, err := h.acquireSessionMaintenance(session.ID)
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, errAclJobBusy) {
+			status = http.StatusConflict
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+	defer release()
 
 	ctx := c.Request.Context()
 	ns := h.k8s.UserNamespace(fmt.Sprintf("%d", session.UserID))

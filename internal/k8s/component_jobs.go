@@ -39,6 +39,11 @@ type ComponentJobSpec struct {
 	ConfigMapKey  string // e.g. "vta-setup.toml", mounted at /config/<key>
 	ConfigMapData string
 
+	// SecretData is mounted read-only at /config, like the ConfigMap above, but
+	// keeps credential-bearing inputs (such as a rendered config.toml) out of a
+	// ConfigMap. It is mutually exclusive with ConfigMapName.
+	SecretData map[string][]byte
+
 	Env []corev1.EnvVar
 
 	// ActiveDeadlineSeconds defaults to 600 (10 min) when zero.
@@ -79,6 +84,9 @@ func (c *Client) CreateComponentPVC(ctx context.Context, ns, name, storageSize s
 // described by spec. WaitForJob/JobLogs/StreamJobLogs (setup_jobs.go) are
 // already generic over job name and are reused as-is to drive it.
 func (c *Client) CreateComponentJob(ctx context.Context, ns string, spec ComponentJobSpec) error {
+	if spec.ConfigMapName != "" && len(spec.SecretData) > 0 {
+		return fmt.Errorf("component job %s cannot use both ConfigMapData and SecretData", spec.Name)
+	}
 	if spec.ConfigMapName != "" {
 		_, err := c.kube.CoreV1().ConfigMaps(ns).Create(ctx, &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{Name: spec.ConfigMapName, Namespace: ns},
@@ -86,6 +94,15 @@ func (c *Client) CreateComponentJob(ctx context.Context, ns string, spec Compone
 		}, metav1.CreateOptions{})
 		if err != nil && !k8serrors.IsAlreadyExists(err) {
 			return fmt.Errorf("create configmap %s: %w", spec.ConfigMapName, err)
+		}
+	}
+	if len(spec.SecretData) > 0 {
+		_, err := c.kube.CoreV1().Secrets(ns).Create(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: spec.Name, Namespace: ns},
+			Data:       spec.SecretData,
+		}, metav1.CreateOptions{})
+		if err != nil && !k8serrors.IsAlreadyExists(err) {
+			return fmt.Errorf("create secret %s: %w", spec.Name, err)
 		}
 	}
 
@@ -110,6 +127,15 @@ func (c *Client) CreateComponentJob(ctx context.Context, ns string, spec Compone
 			},
 		})
 		mounts = append(mounts, corev1.VolumeMount{Name: "config", MountPath: "/config"})
+	}
+	if len(spec.SecretData) > 0 {
+		volumes = append(volumes, corev1.Volume{
+			Name: "config",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: spec.Name},
+			},
+		})
+		mounts = append(mounts, corev1.VolumeMount{Name: "config", MountPath: "/config", ReadOnly: true})
 	}
 
 	backoff := int32(0)
@@ -155,9 +181,10 @@ func (c *Client) DeleteComponentJob(ctx context.Context, ns, name string) {
 	opts := metav1.DeleteOptions{PropagationPolicy: &propagation}
 	_ = c.kube.BatchV1().Jobs(ns).Delete(ctx, name, opts)
 	_ = c.kube.CoreV1().ConfigMaps(ns).Delete(ctx, name, metav1.DeleteOptions{})
+	_ = c.kube.CoreV1().Secrets(ns).Delete(ctx, name, metav1.DeleteOptions{})
 }
 
-// DeleteAllComponentJobs removes every full_stack setup Job (+ ConfigMap)
+// DeleteAllComponentJobs removes every full_stack setup Job (+ ConfigMap or Secret)
 // for a session. Best-effort.
 func (c *Client) DeleteAllComponentJobs(ctx context.Context, ns string, sessionID uint) {
 	for _, name := range allFSJobNames(sessionID) {

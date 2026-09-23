@@ -90,7 +90,30 @@ var aclJobLocks = aclJobLockSet{held: make(map[uint]struct{})}
 // errAclJobBusy is a sentinel so the handler answers 409 (come back in a
 // minute) rather than 502 (something broke). Nothing is wrong when this fires.
 var errAclJobBusy = errors.New(
-	"another ACL operation is running for this VTA — that takes about a minute; try again after it finishes")
+	"another maintenance operation is running for this stack — try again after it finishes")
+
+// acquireSessionMaintenance serialises every operation that stops one or more
+// components in a stack. The in-process lock is fast; the database timestamp
+// closes the same race across API replicas. Callers must invoke the returned
+// release function.
+func (h *SetupHandler) acquireSessionMaintenance(sessionID uint) (func(), error) {
+	if !aclJobLocks.TryLock(sessionID) {
+		return nil, errAclJobBusy
+	}
+	startedAt, ok, err := h.acquireVtaAclMaintenance(sessionID)
+	if err != nil {
+		aclJobLocks.Unlock(sessionID)
+		return nil, fmt.Errorf("failed to lock stack maintenance: %w", err)
+	}
+	if !ok {
+		aclJobLocks.Unlock(sessionID)
+		return nil, errAclJobBusy
+	}
+	return func() {
+		h.releaseVtaAclMaintenance(sessionID, startedAt)
+		aclJobLocks.Unlock(sessionID)
+	}, nil
+}
 
 // platformSession loads the platform stack's session, writing the response and
 // returning nil when there isn't one. Same two-step lookup GetPlatformStack
@@ -183,21 +206,11 @@ func (h *SetupHandler) runVtaAclJob(
 	// rather than Lock: a caller who waits would sit through the other window
 	// and then start their own, so the honest answer is to refuse now and let
 	// them retry once — a queue of these is a queue of outages.
-	if !aclJobLocks.TryLock(session.ID) {
-		return "", nil, errAclJobBusy
-	}
-	defer aclJobLocks.Unlock(session.ID)
-
-	// The in-process lock above protects callers handled by this replica. This
-	// row closes the same race across replicas and doubles as snapshot metadata.
-	lockStartedAt, ok, lockErr := h.acquireVtaAclMaintenance(session.ID)
+	release, lockErr := h.acquireSessionMaintenance(session.ID)
 	if lockErr != nil {
-		return "", nil, fmt.Errorf("failed to lock ACL maintenance: %w", lockErr)
+		return "", nil, lockErr
 	}
-	if !ok {
-		return "", nil, errAclJobBusy
-	}
-	defer h.releaseVtaAclMaintenance(session.ID, lockStartedAt)
+	defer release()
 
 	ns := h.k8s.UserNamespace(fmt.Sprintf("%d", session.UserID))
 	target := vtaAclTargetFor(session)

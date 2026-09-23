@@ -52,6 +52,36 @@ func TestCreateComponentPVCRejectsInvalidStorageSize(t *testing.T) {
 	}
 }
 
+func TestCreateComponentJobMountsSecretConfig(t *testing.T) {
+	client := &Client{kube: fake.NewSimpleClientset()}
+	if err := client.CreateComponentJob(context.Background(), "test", ComponentJobSpec{
+		Name:       "config-update",
+		Image:      "example/vta:test",
+		SecretData: map[string][]byte{"vta.toml": []byte("ok = true\n")},
+	}); err != nil {
+		t.Fatalf("CreateComponentJob() error = %v", err)
+	}
+	secret, err := client.kube.CoreV1().Secrets("test").Get(
+		context.Background(), "config-update", metav1.GetOptions{},
+	)
+	if err != nil {
+		t.Fatalf("get Secret: %v", err)
+	}
+	if got := string(secret.Data["vta.toml"]); got != "ok = true\n" {
+		t.Fatalf("secret data = %q", got)
+	}
+	job, err := client.kube.BatchV1().Jobs("test").Get(
+		context.Background(), "config-update", metav1.GetOptions{},
+	)
+	if err != nil {
+		t.Fatalf("get Job: %v", err)
+	}
+	mounts := job.Spec.Template.Spec.Containers[0].VolumeMounts
+	if len(mounts) != 1 || mounts[0].MountPath != "/config" || !mounts[0].ReadOnly {
+		t.Fatalf("secret mount = %#v", mounts)
+	}
+}
+
 func TestCreateComponentDeploymentUsesConfiguredHealthReadinessProbe(t *testing.T) {
 	client := &Client{kube: fake.NewSimpleClientset()}
 

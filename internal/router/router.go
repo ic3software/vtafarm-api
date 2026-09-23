@@ -205,6 +205,9 @@ func Setup(
 		// a domains row for our own zone.
 		adminAuth.POST("/admin/platform-stack", sh.CreatePlatformStack)
 		adminAuth.GET("/admin/platform-stack", sh.GetPlatformStack)
+		adminAuth.GET("/admin/platform-stack/config", sh.AdminGetPlatformStackConfigs)
+		adminAuth.POST("/admin/platform-stack/config/validate", sh.AdminValidatePlatformStackConfigs)
+		adminAuth.PUT("/admin/platform-stack/config", sh.AdminApplyPlatformStackConfigs)
 		// Co-admins on that stack's VTA — self-service, so a second admin can
 		// add the did:key their own `pnm setup` minted instead of asking
 		// whoever holds the credential to run `pnm acl create` for them.
@@ -287,6 +290,9 @@ func Setup(
 		// binary wrote to its PVC, and the pods' own logs — no Job logs.
 		userAuth.GET("/setup/:id/export/configs", sh.ExportConfigs)
 		userAuth.GET("/setup/:id/export/logs", sh.ExportLogs)
+		userAuth.GET("/setup/:id/config", sh.GetStackConfigs)
+		userAuth.POST("/setup/:id/config/validate", sh.ValidateStackConfigs)
+		userAuth.PUT("/setup/:id/config", sh.ApplyStackConfigs)
 		// Self-service image upgrade/downgrade — a user can only ever change
 		// their own session (looked up by unique_id AND user_id).
 		userAuth.POST("/setup/:id/upgrade", uph.CreateForSession)

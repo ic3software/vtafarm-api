@@ -4,7 +4,7 @@ import "time"
 
 // VtaAclSnapshot records when the farm last read the complete ACL directly
 // from a stopped VTA. MaintenanceStartedAt is also the cross-replica lock for
-// every offline ACL operation on that session.
+// every operation that stops one or more components in that session.
 type VtaAclSnapshot struct {
 	SessionID            uint       `json:"-" gorm:"primaryKey;column:session_id"`
 	SyncedAt             *time.Time `json:"synced_at"`
