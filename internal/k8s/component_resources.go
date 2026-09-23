@@ -198,6 +198,48 @@ func (c *Client) WaitForComponentDeploymentReady(ctx context.Context, ns, name s
 	}
 }
 
+// WaitForComponentDeploymentReadyOrRestarts is for configuration updates: a
+// repeatedly crashing new pod should trigger rollback before the full readiness
+// timeout, while a pod that simply never becomes ready still has that timeout.
+func (c *Client) WaitForComponentDeploymentReadyOrRestarts(ctx context.Context, ns, name, selector string, timeout time.Duration, restartLimit int32) error {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		deploy, deployErr := c.kube.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
+		pods, podsErr := c.kube.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: selector})
+		podReady := false
+		if podsErr == nil {
+			for _, pod := range pods.Items {
+				if pod.DeletionTimestamp != nil || len(pod.Spec.Containers) == 0 {
+					continue
+				}
+				mainContainer := pod.Spec.Containers[0].Name
+				for _, status := range pod.Status.ContainerStatuses {
+					if status.Name != mainContainer {
+						continue
+					}
+					if status.RestartCount >= restartLimit {
+						return fmt.Errorf("pod %s restarted %d times during configuration startup check", pod.Name, status.RestartCount)
+					}
+					podReady = podReady || status.Ready
+				}
+			}
+		}
+		if deployErr == nil && podsErr == nil && deploy.Status.ObservedGeneration >= deploy.Generation && deploy.Status.ReadyReplicas > 0 && podReady {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("timeout waiting for deployment %s to become ready", name)
+		case <-ticker.C:
+		}
+	}
+}
+
 // ComponentDeploymentReady reports the current readiness state without
 // waiting. A ready replica means the workload's configured readiness probe has
 // succeeded; callers use this for explicit admin health checks.

@@ -246,5 +246,7 @@ func (c *Client) DeleteVtaResources(ctx context.Context, ns string, sessionID ui
 	_ = c.kube.CoreV1().Services(ns).Delete(ctx, vtaServiceName(sessionID), metav1.DeleteOptions{})
 	_ = c.kube.BatchV1().Jobs(ns).Delete(ctx, ProvisionJobName(sessionID), opts)
 	_ = c.kube.BatchV1().Jobs(ns).Delete(ctx, VtaACLJobName(sessionID), opts)
+	c.DeleteComponentJob(ctx, ns, FSJobConfigUpdate(sessionID))
+	c.DeleteComponentJob(ctx, ns, FSJobConfigRollback(sessionID))
 	_ = c.kube.CoreV1().PersistentVolumeClaims(ns).Delete(ctx, VtaPVCName(sessionID), metav1.DeleteOptions{})
 }
