@@ -1,5 +1,16 @@
 # Changelog
 
+## [v0.7.0] - 2026-09-23
+
+### Added
+
+- Session owners can read, validate and update the TOML configuration of each
+  component in a running agent; admins can do the same for the platform stack.
+  VTA-only agents expose only their VTA configuration.
+- Applying a change restarts only the selected component and checks its
+  readiness. If writing or starting it fails, the API attempts to restore the
+  previous configuration and restart the component.
+
 ## [v0.6.1] - 2026-09-21
 
 ### Changed
