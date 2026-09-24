@@ -1,5 +1,13 @@
 # Changelog
 
+## [v0.7.1] - 2026-09-24
+
+### Fixed
+
+- Configuration updates can create and remove the temporary Kubernetes Secrets
+  used by write and rollback Jobs, so applying a change no longer fails before
+  the Job starts.
+
 ## [v0.7.0] - 2026-09-23
 
 ### Added
