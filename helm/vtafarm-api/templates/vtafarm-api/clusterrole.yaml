@@ -19,11 +19,14 @@ rules:
     resources: ["roles", "rolebindings"]
     verbs: ["get", "list", "create", "delete"]
   # VTA setup wizard: config injection, storage, networking, jobs, deployments.
-  # The master seed lives in HashiCorp Vault (not a K8s Secret), so vtafarm-api
-  # no longer needs secrets permissions or the secret-manager ClusterRole bind.
+  # Configuration updates pass TOML through temporary Secrets and remove them
+  # after the write or rollback Job finishes. No Secret read access is needed.
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "delete"]
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["get", "list", "create", "delete", "watch"]
