@@ -37,12 +37,6 @@ type SetupHandler struct {
 	orch       *setup.Orchestrator
 	ghcr       *ghcr.Client // nil when not configured
 	capacity   *CapacityService
-	// maxStackConnections caps how many vta_only sessions may connect to one
-	// shared full_stack; 0 disables the cap. Not a capacity model — the
-	// consumer's own pod is what this cluster accounts for. It bounds what a
-	// single share code can commit of somebody else's storage and message
-	// volume, which matters because a provider cannot remove one connection.
-	maxStackConnections int
 
 	// full_stack mode
 	mediatorGhcr *ghcr.Client // nil when not configured
@@ -61,20 +55,18 @@ func NewSetupHandler(
 	mediatorGhcrClient *ghcr.Client,
 	didsGhcrClient *ghcr.Client,
 	vtcGhcrClient *ghcr.Client,
-	maxStackConnections int,
 ) *SetupHandler {
 	return &SetupHandler{
-		db:                  db,
-		cf:                  cf,
-		appEnv:              appEnv,
-		ingressIP:           ingressIP,
-		clusterDomain:       clusterDomain,
-		didHosting:          dhFactory,
-		k8s:                 k8sClient,
-		orch:                orch,
-		ghcr:                ghcrClient,
-		capacity:            NewCapacityService(k8sClient),
-		maxStackConnections: maxStackConnections,
+		db:            db,
+		cf:            cf,
+		appEnv:        appEnv,
+		ingressIP:     ingressIP,
+		clusterDomain: clusterDomain,
+		didHosting:    dhFactory,
+		k8s:           k8sClient,
+		orch:          orch,
+		ghcr:          ghcrClient,
+		capacity:      NewCapacityService(k8sClient),
 
 		mediatorGhcr: mediatorGhcrClient,
 		didsGhcr:     didsGhcrClient,
@@ -181,13 +173,6 @@ type createSetupRequest struct {
 	DidsImage     string `json:"dids_image"`
 	VtcImage      string `json:"vtc_image"`
 	VtcName       string `json:"vtc_name"`
-	// ShareCode points a vta_only session at a full_stack in this farm other
-	// than the platform one. Omitted → the platform stack, unchanged.
-	//
-	// One code and nothing else: it is globally unique, so it identifies its
-	// stack on its own, and every value the session is built from comes off that
-	// row. There is deliberately nothing here naming a host.
-	ShareCode string `json:"share_code"`
 }
 
 // POST /api/v1/setup
@@ -201,7 +186,6 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-
 	if h.ingressIP == "" || h.clusterDomain == "" {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "cluster not configured: CLUSTER_INGRESS_IP and CLUSTER_DOMAIN must be set"})
 		return
@@ -271,15 +255,6 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	}
 
 	if req.Mode == model.ModeFullStack {
-		// A full_stack provisions its own mediator and DID host, so there is
-		// nothing for a share code to point at. Refused rather than ignored:
-		// silently dropping it would let someone believe their new stack was
-		// wired to somebody else's.
-		if req.ShareCode != "" {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "a full-stack session runs its own mediator and DID host — share_code applies only to a VTA-only agent"})
-			return
-		}
 		if !user.BetaAccess {
 			c.JSON(http.StatusForbidden, gin.H{"error": req.Mode + " mode is in beta — ask an admin to enable beta access for your account"})
 			return
@@ -298,18 +273,9 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	// source are the same read — there is no window where the check passes and
 	// the write then uses something else.
 	//
-	// Re-run in full even when the frontend already called
-	// POST /setup/connection/validate: a stack can stop running, rotate its code
-	// or fill up in between. Validate is a courtesy; this is the gate.
-	infra, provider, reason, detail := h.resolveProvider(req.ShareCode)
+	infra, _, reason, detail := h.resolvePlatformInfra()
 	if reason != "" {
-		// A refused code is the caller's problem and says which; a missing or
-		// unready platform stack is the farm's, and has always been a 503.
-		status := http.StatusServiceUnavailable
-		if req.ShareCode != "" {
-			status = connectionRefusalStatus(reason)
-		}
-		c.JSON(status, gin.H{"error": detail, "reason": reason})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": detail, "reason": reason})
 		return
 	}
 
@@ -318,7 +284,7 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	}
 
 	session, status, err := h.createManagedVtaOnlySession(
-		c.Request.Context(), userID, req, infra, provider, nil,
+		c.Request.Context(), userID, req, infra, nil,
 	)
 	if err != nil {
 		c.JSON(status, gin.H{"error": err.Error()})
@@ -342,7 +308,6 @@ func (h *SetupHandler) createManagedVtaOnlySession(
 	userID uint,
 	req createSetupRequest,
 	infra sharedInfra,
-	provider *model.SetupSession,
 	loadTestRunID *uint,
 ) (*model.SetupSession, int, error) {
 	portable := true
@@ -386,15 +351,6 @@ func (h *SetupHandler) createManagedVtaOnlySession(
 		Portable:             portable,
 		PreRotationCount:     preRotationCount,
 	}
-	if req.ShareCode != "" {
-		if provider == nil {
-			_ = h.cf.DeleteRecord(ctx, recordID)
-			return nil, http.StatusInternalServerError, errors.New("provider session missing")
-		}
-		session.ConnectionSource = model.ConnectionInFarm
-		session.ProviderSessionID = &provider.ID
-	}
-
 	if createErr := h.db.Create(session).Error; createErr != nil {
 		_ = h.cf.DeleteRecord(ctx, recordID)
 		if isUniqueViolation(createErr, "setup_sessions_vta_name_unique") ||
@@ -457,25 +413,8 @@ const (
 	// reasonProviderUnknown means the lookup itself failed — a database error,
 	// not a statement about the stack. The two callers must treat it
 	// differently, which is why it is a reason rather than a bare error: see
-	// resolveProvider.
+	// resolvePlatformInfra.
 	reasonProviderUnknown = "provider_lookup_failed"
-)
-
-// Reasons a pasted connection bundle is refused. Split across two tiers by how
-// much the caller has proved — see resolveProvider.
-const (
-	reasonBadBundle = "bad_bundle"
-	reasonWrongFarm = "wrong_farm"
-	// reasonInvalidBundle is deliberately one reason for five situations: no
-	// such stack, a stack that never shared, one that turned sharing off, a
-	// rotated code, and a mangled code. Distinguishing them would turn this into
-	// a way to discover which stacks exist and which are shared, and from the
-	// holder's side they are the same fact — this bundle does not currently open
-	// anything — with the same next step: ask for a current one.
-	reasonInvalidBundle    = "invalid_bundle"
-	reasonStackNotRunning  = "stack_not_running"
-	reasonStackChanged     = "stack_changed"
-	reasonStackAtConnLimit = "stack_at_connection_limit"
 )
 
 // sharedInfra is what a vta_only session is wired to — read from the platform
@@ -507,26 +446,8 @@ type sharedInfra struct {
 	DaemonDid string
 }
 
-// resolveProvider finds the stack a vta_only session will be wired to, and
-// reports whether it is usable.
-//
-// Today that is always the platform stack (design §3.3) — a vta_only agent is
-// only the VTA, pointed at a mediator and DID-hosting daemon it does not run
-// itself, so creating one before those exist produces an agent that can never
-// deliver a message. Naming this after the *role* rather than after the
-// platform stack is what lets a bundle-named provider join later without a
-// second, parallel path to the same values.
-//
-// reason is "" exactly when the returned sharedInfra is usable. The provider row
-// is returned alongside it because callers need more than the three values —
-// the connection has to be recorded against a row, not a URL.
-//
-// full_stack is unaffected: it provisions its own mediator and DID host.
-func (h *SetupHandler) resolveProvider(shareCode string) (v sharedInfra, provider *model.SetupSession, reason, detail string) {
-	if shareCode != "" {
-		return h.resolveShareCode(shareCode)
-	}
-
+// resolvePlatformInfra finds the platform stack a VTA-only session uses.
+func (h *SetupHandler) resolvePlatformInfra() (v sharedInfra, provider *model.SetupSession, reason, detail string) {
 	const missing = "VTA-only agents need the platform stack — the shared mediator and DID hosting they connect to. " +
 		"An admin has to create it before any VTA-only agent can be provisioned."
 	const unknown = "Couldn't check the platform stack just now. Please try again."
@@ -560,10 +481,7 @@ func (h *SetupHandler) resolveProvider(shareCode string) (v sharedInfra, provide
 // providerInfra turns a candidate provider row into what a vta_only session
 // wires itself to, or the reason it cannot be used.
 //
-// Split out from the lookup above because it is the half with all the
-// judgement in it and none of the I/O, so it can be tested directly — and
-// because a provider named by a share code has to be held to exactly the same
-// readiness bar as the platform stack. Two copies of that bar would drift.
+// Split out from the lookup above so its readiness checks can be tested directly.
 func providerInfra(s *model.SetupSession) (v sharedInfra, reason, detail string) {
 	if s.Status != "running" {
 		return v, reasonPlatformNotReady,
@@ -627,20 +545,12 @@ func (h *SetupHandler) capacityAllows(c *gin.Context, mode capacity.Mode) bool {
 func (h *SetupHandler) Availability(c *gin.Context) {
 	type modeAvail struct {
 		Count int `json:"count"`
-		// Available describes the DEFAULT path — for vta_only, the platform
-		// stack. It is not the whole story for that mode any more, because a
-		// caller carrying a connection bundle needs no platform stack at all.
+		// VTA-only availability includes the platform stack prerequisite.
 		Available bool `json:"available"`
 		// Why it's unavailable, and a sentence to show the user. Absent when
 		// the mode is creatable.
 		Reason string `json:"reason,omitempty"`
 		Detail string `json:"detail,omitempty"`
-		// CustomTargetAllowed says whether vta_only can be created against a
-		// stack the caller names, which stays true when the platform stack is
-		// missing and false only when the cluster itself is full. It is what
-		// lets the UI disable one option rather than the whole mode: the
-		// platform stack is a default, not a prerequisite.
-		CustomTargetAllowed bool `json:"custom_target_allowed,omitempty"`
 	}
 
 	// Fail open on capacity, as before: a transient metrics/Longhorn outage
@@ -670,17 +580,12 @@ func (h *SetupHandler) Availability(c *gin.Context) {
 	// sitting alongside it. full_stack runs its own and is never gated on it.
 	//
 	// reasonProviderUnknown is the exception, and the two callers of
-	// resolveProvider part company here: a database read that failed says
+	// resolvePlatformInfra part company here: a database read that failed says
 	// nothing about the stack, so reporting it as unavailable would blank the
 	// create screen on a blip. It fails open, like capacity above. POST /setup
 	// refuses on the same reason, because there it is the difference between
 	// waiting and provisioning an agent with no mediator DID at all.
-	//
-	// It gates the DEFAULT path only. Connecting to a stack the caller names
-	// needs no platform stack, so that option survives every reason below —
-	// cluster capacity, decided above, is the only thing that can close it.
-	vtaOnly.CustomTargetAllowed = vtaOnly.Available || vtaOnly.Reason != reasonAtCapacity
-	if _, _, reason, detail := h.resolveProvider(""); reason != "" && reason != reasonProviderUnknown {
+	if _, _, reason, detail := h.resolvePlatformInfra(); reason != "" && reason != reasonProviderUnknown {
 		vtaOnly.Available = false
 		vtaOnly.Reason, vtaOnly.Detail = reason, detail
 	}
@@ -750,8 +655,6 @@ func (h *SetupHandler) List(c *gin.Context) {
 		// so nothing else on the row would give it away.
 		ConnectionSource string `json:"connection_source,omitempty"`
 		ProviderGone     bool   `json:"provider_gone,omitempty"`
-		// full_stack: how many other people's agents depend on this stack.
-		ConnectionCount int64 `json:"connection_count,omitempty"`
 	}
 
 	result := make([]item, len(sessions))
@@ -778,7 +681,6 @@ func (h *SetupHandler) List(c *gin.Context) {
 				"dids":     "https://" + s.DidsFQDN(),
 				"vtc":      "https://" + s.VtcFQDN(),
 			}
-			it.ConnectionCount = h.countConnections(s.ID)
 		} else {
 			it.URL = s.PublicURL()
 			it.ConnectionSource = s.ConnectionSource

@@ -1,6 +1,6 @@
 -- Lets a vta_only session connect to a full_stack other than the platform one,
--- provided that stack is one this farm provisioned. Design:
--- docs/custom-stack-connection-design.md.
+-- provided that stack is one this farm provisioned. This connection flow was
+-- retired by migration 000033; the provider link remains for existing rows.
 --
 -- The three values a vta_only session is actually wired to — mediator_did,
 -- did_hosting_server_url, did_hosting_control_url — are already per-session

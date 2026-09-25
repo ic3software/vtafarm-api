@@ -26,26 +26,15 @@ type Config struct {
 	// CORSAllowedOrigins are the deployment's own browser origins. The localhost
 	// dev servers are allowed on top of these, see internal/router.
 	CORSAllowedOrigins []string
-	// MaxStackConnections caps how many vta_only sessions may connect to one
-	// shared full_stack. 0 disables the cap.
-	//
-	// Crude on purpose — it is not a capacity model. The consumer's own pod is
-	// what lands in this cluster's capacity accounting; what is unmodelled is
-	// the storage and message volume it puts on somebody else's mediator and
-	// DID host. The cap matters more than its bluntness suggests because a
-	// provider has no way to remove a single connection: rotating the code
-	// stops new arrivals, and this is what bounds how many arrive before they
-	// think to. See docs/custom-stack-connection-design.md §6.3.
-	MaxStackConnections int
-	DB                  DBConfig
-	K8s                 K8sConfig
-	Cloudflare          CloudflareConfig
-	GHCR                GHCRConfig
-	DidHosting          DidHostingConfig
-	WebAuthn            WebAuthnConfig
-	SIOP                SIOPConfig
-	Vault               VaultConfig
-	Monitor             MonitorConfig
+	DB                 DBConfig
+	K8s                K8sConfig
+	Cloudflare         CloudflareConfig
+	GHCR               GHCRConfig
+	DidHosting         DidHostingConfig
+	WebAuthn           WebAuthnConfig
+	SIOP               SIOPConfig
+	Vault              VaultConfig
+	Monitor            MonitorConfig
 }
 
 type SIOPConfig struct {
@@ -186,10 +175,9 @@ func Load() *Config {
 		ClusterIngressIP: getEnv("CLUSTER_INGRESS_IP", ""),
 		ClusterDomain:    getEnv("CLUSTER_DOMAIN", ""),
 
-		ACMEClusterIssuer:   getEnv("ACME_CLUSTER_ISSUER", DefaultACMEIssuer),
-		OrchestratorResume:  getEnvBool("ORCHESTRATOR_RESUME", true),
-		CORSAllowedOrigins:  splitComma(getEnv("CORS_ALLOWED_ORIGINS", "")),
-		MaxStackConnections: getEnvInt("MAX_STACK_CONNECTIONS", 10),
+		ACMEClusterIssuer:  getEnv("ACME_CLUSTER_ISSUER", DefaultACMEIssuer),
+		OrchestratorResume: getEnvBool("ORCHESTRATOR_RESUME", true),
+		CORSAllowedOrigins: splitComma(getEnv("CORS_ALLOWED_ORIGINS", "")),
 		DB: DBConfig{
 			Host:     getEnv("DB_HOST", "localhost"),
 			Port:     getEnv("DB_PORT", "5432"),

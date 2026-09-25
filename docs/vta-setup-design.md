@@ -553,6 +553,19 @@ documents they serve. `GET /admin/platform-stack` reports the platform stack's
 own result under `farm_acl`; `granted: false` means no keypair was configured
 when it was built, which is the one case still needing a human.
 
+### DID log publication and recovery
+
+An unpublished `did:webvh` cannot resolve. When the farm client keypair is
+configured, missing DID-log output, an absent hosting URL, a failed control
+client, and a failed `RegisterDid` call all fail the session. An unset farm
+client keypair remains a deployment-wide warning for local environments.
+
+One retry gap remains: the orchestrator writes `vta_setup_complete` before it
+uploads the DID log. If the process crashes between those actions, the upload
+is not retried. Moving the status write after the upload requires making the
+upload idempotent first; replaying an already-published path currently fails
+because registration uses `force=false`.
+
 ### Open: a user-supplied DID host
 
 Once a user can point a session at a DID-hosting service of their own, uploading

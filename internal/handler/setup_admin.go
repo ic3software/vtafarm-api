@@ -97,24 +97,17 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 		}
 	}
 
-	// Which stack each vta_only row on this page connects to, and how many rows
-	// connect to each full_stack on it. Support's first question about a broken
-	// agent is whose infrastructure it is on, and the answer is otherwise a
-	// URL-to-URL comparison across two queries.
+	// Which stack each vta_only row on this page connects to. Support's first
+	// question about a broken agent is whose infrastructure it is on.
 	//
 	// Batched over the page for the same reason the owner lookup above is: 20
 	// rows must not become 20 round trips.
 	providerNames := make(map[uint]string)
-	connectionCounts := make(map[uint]int64)
 	{
 		providerIDs := make([]uint, 0, len(sessions))
-		fullStackIDs := make([]uint, 0, len(sessions))
 		for _, s := range sessions {
 			if s.ProviderSessionID != nil {
 				providerIDs = append(providerIDs, *s.ProviderSessionID)
-			}
-			if s.IsFullStack() {
-				fullStackIDs = append(fullStackIDs, s.ID)
 			}
 		}
 		if len(providerIDs) > 0 {
@@ -122,21 +115,6 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 			if err := h.db.Select("id, vta_name").Where("id IN ?", providerIDs).Find(&providers).Error; err == nil {
 				for _, p := range providers {
 					providerNames[p.ID] = p.VtaName
-				}
-			}
-		}
-		if len(fullStackIDs) > 0 {
-			var counts []struct {
-				ProviderSessionID uint
-				Count             int64
-			}
-			if err := h.db.Model(&model.SetupSession{}).
-				Select("provider_session_id, COUNT(*) AS count").
-				Where("provider_session_id IN ?", fullStackIDs).
-				Group("provider_session_id").
-				Find(&counts).Error; err == nil {
-				for _, c := range counts {
-					connectionCounts[c.ProviderSessionID] = c.Count
 				}
 			}
 		}
@@ -169,10 +147,6 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 		ConnectionSource string `json:"connection_source,omitempty"`
 		Provider         string `json:"provider,omitempty"`
 		ProviderGone     bool   `json:"provider_gone,omitempty"`
-		// full_stack: whether it currently accepts connections, and how many it
-		// already has. Both matter before deleting one.
-		Shared          bool  `json:"shared,omitempty"`
-		ConnectionCount int64 `json:"connection_count,omitempty"`
 	}
 	items := make([]sessionItem, len(sessions))
 	for i, s := range sessions {
@@ -193,8 +167,6 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 			CreatedAt:     s.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		}
 		if s.IsFullStack() {
-			items[i].Shared = s.IsShared()
-			items[i].ConnectionCount = connectionCounts[s.ID]
 			continue
 		}
 		items[i].ConnectionSource = s.ConnectionSource
