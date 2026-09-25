@@ -100,7 +100,7 @@ func (h *SetupHandler) AdminCreateLoadTest(c *gin.Context) {
 		return
 	}
 
-	infra, provider, reason, detail := h.resolveProvider("")
+	infra, provider, reason, detail := h.resolvePlatformInfra()
 	if reason != "" {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": detail, "reason": reason})
 		return
@@ -174,7 +174,7 @@ func (h *SetupHandler) startLoadTest(
 					VtaName:  name,
 					VtaImage: request.VtaImage,
 					AdminDid: adminDid,
-				}, infra, provider, &runID)
+				}, infra, &runID)
 				cancel()
 				results <- createResult{err: err}
 			}

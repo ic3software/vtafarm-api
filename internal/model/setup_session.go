@@ -16,16 +16,12 @@ const (
 // both Mode and DomainType, and meaningless for full_stack, which provisions
 // its own.
 //
-// There is deliberately no "external" value: the farm's client DID is enrolled
-// as an admin in every full_stack daemon it provisioned and in nothing else, so
-// a stack this farm did not build cannot be a target. See
-// docs/custom-stack-connection-design.md §1.
+// Existing in_farm sessions retain their provider link after code sharing is removed.
 const (
-	// ConnectionPlatform is the default and the only value any session created
-	// before the connection feature can have.
+	// ConnectionPlatform is the default for new VTA-only sessions.
 	ConnectionPlatform = "platform"
-	// ConnectionInFarm means the session named another full_stack in this farm
-	// by pasting its owner's connection bundle.
+	// ConnectionInFarm marks a session that joined another stack before sharing
+	// was retired.
 	ConnectionInFarm = "in_farm"
 )
 
@@ -89,16 +85,6 @@ type SetupSession struct {
 	DidHostingServerURL  string `gorm:"column:did_hosting_server_url;not null;default:''"  json:"-"`
 	DidHostingControlURL string `gorm:"column:did_hosting_control_url;not null;default:''" json:"-"`
 
-	// ShareCode is the grant that lets somebody else's vta_only session connect
-	// to this stack. full_stack only; NULL means "not shared", which is also
-	// every session's starting state and the platform stack's permanent one —
-	// that stack is reached by the default path, which sends no bundle.
-	//
-	// Minting enables sharing, clearing disables it, and replacing invalidates
-	// every bundle already handed out. None of the three touch a session already
-	// connected: the code gates joining, never membership.
-	ShareCode *string `gorm:"column:share_code" json:"-"`
-
 	// ConnectionSource says where this session's mediator and DID host came
 	// from — ConnectionPlatform or ConnectionInFarm. ProviderSessionID is the
 	// full_stack row it connected to, and is NULL both for platform sessions
@@ -107,8 +93,7 @@ type SetupSession struct {
 	//
 	// Neither is needed to run the session; the three snapshotted values above
 	// do that, and stay authoritative because a did:webvh bakes its host in at
-	// mint time. These answer what a snapshot cannot: who the dependents of a
-	// stack are, what to call the provider in the UI, and — via
+	// mint time. These record the provider's name in the UI and — via
 	// ON DELETE SET NULL — whether that provider still exists at all.
 	ConnectionSource  string `gorm:"column:connection_source;not null;default:platform" json:"connection_source"`
 	ProviderSessionID *uint  `gorm:"column:provider_session_id"                         json:"-"`
@@ -227,21 +212,6 @@ func (s *SetupSession) VtcFQDN() string {
 // used wherever handlers and the orchestrator dispatch vta_only vs full_stack.
 func (s *SetupSession) IsFullStack() bool {
 	return s.Mode == ModeFullStack
-}
-
-// IsShared reports whether this stack currently accepts new connections.
-//
-// Only a full_stack can be shared, and only one that has finished provisioning:
-// a bundle for a stack whose mediator DID or daemon DID has not landed yet
-// would name values that are about to change. That readiness rule is the same
-// one the platform stack has always been held to before a vta_only could be
-// wired to it.
-func (s *SetupSession) IsShared() bool {
-	return s.IsFullStack() &&
-		s.ShareCode != nil && *s.ShareCode != "" &&
-		s.Status == "running" &&
-		s.MediatorDid != "" &&
-		s.DIDHostingDid != ""
 }
 
 // IsOrphaned reports whether this session connected to a stack that has since

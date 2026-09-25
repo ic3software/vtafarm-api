@@ -279,15 +279,8 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 
 	// Publishing the DID log is not a best-effort side errand: an unpublished
 	// did:webvh cannot be resolved, so the agent this session is building can
-	// never be reached. Every failure below therefore fails the session.
-	//
-	// It used to log and carry on, which produced the worst available outcome —
-	// a session marked `running`, a green badge in the portal, and an agent that
-	// silently delivers nothing. That was survivable while the only way to hit
-	// it was a platform stack whose ACL entry had gone missing, i.e. an
-	// operator's problem on a path operators watch. Once a session can be aimed
-	// at any stack in the farm it becomes an ordinary user's failure mode, and a
-	// silent one is not acceptable there.
+	// never be reached. When a hosting client is configured, publication
+	// failures below fail the session.
 	//
 	// This must stay AFTER the vta_setup_complete write above. Resume only
 	// re-runs sessions still in vta_setup_running, so a session that reaches
@@ -298,10 +291,8 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 	// session. Moving the status write later requires making the upload
 	// idempotent first.
 	//
-	// The gap that ordering leaves: a crash between the two lands the row in
-	// vta_setup_complete with nothing published and nothing retrying. That is
-	// pre-existing and unchanged here — see docs/custom-stack-connection-design.md
-	// §9.1.
+	// A crash between the status write and upload leaves a session in
+	// vta_setup_complete with no published DID and no retry.
 	log.Printf("[orchestrator] session %d: did-hosting=%v didLog_len=%d vtaDidUrl=%q",
 		sessionID, o.didHosting != nil, len(didLog), session.VtaDidUrl)
 	if o.didHosting != nil {
