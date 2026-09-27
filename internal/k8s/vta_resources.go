@@ -91,7 +91,7 @@ func (c *Client) CreateVtaDeployment(ctx context.Context, ns string, sessionID u
 							Name:      "data",
 							MountPath: "/work/vta",
 						}},
-						Resources: ComponentResources("10m", "32Mi", "64Mi"),
+						Resources: DefaultResourceRequirements(ComponentVTA),
 					}},
 					Volumes: []corev1.Volume{{
 						Name: "data",

@@ -1047,7 +1047,7 @@ func (o *Orchestrator) fsDeployDids(ctx context.Context, ns string, s *model.Set
 		Port:            8534,
 		Labels:          fsLabels("dids", s.ID),
 		HealthCheckPath: "/health",
-		Resources:       k8s.ComponentResources("10m", "64Mi", "128Mi"),
+		Resources:       k8s.DefaultResourceRequirements(k8s.ComponentDids),
 	}); err != nil {
 		return err
 	}
@@ -1075,7 +1075,7 @@ func (o *Orchestrator) fsDeployMediator(ctx context.Context, ns string, s *model
 		Port:            7037,
 		Labels:          fsLabels("mediator", s.ID),
 		HealthCheckPath: "/mediator/v1/readyz",
-		Resources:       k8s.ComponentResources("50m", "128Mi", "256Mi"),
+		Resources:       k8s.DefaultResourceRequirements(k8s.ComponentMediator),
 	}); err != nil {
 		return err
 	}
@@ -1133,7 +1133,7 @@ func (o *Orchestrator) fsDeployVta(ctx context.Context, ns string, s *model.Setu
 		Port:            8100,
 		Labels:          fsLabels("vta", s.ID),
 		HealthCheckPath: "/health",
-		Resources:       k8s.ComponentResources("10m", "32Mi", "64Mi"),
+		Resources:       k8s.DefaultResourceRequirements(k8s.ComponentVTA),
 	}); err != nil {
 		return err
 	}

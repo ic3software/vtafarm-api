@@ -97,6 +97,15 @@ components:
           type: string
       required: [error]
 
+    ResourceProfile:
+      type: object
+      properties:
+        cpu_request: { type: string, example: 10m }
+        cpu_limit: { type: string, example: "" }
+        memory_request: { type: string, example: 128Mi }
+        memory_limit: { type: string, example: 512Mi }
+      required: [cpu_request, cpu_limit, memory_request, memory_limit]
+
     VtaAclEntry:
       type: object
       properties:
@@ -1874,9 +1883,8 @@ paths:
       summary: List all setup sessions
       description: |
         Returns ALL users' setup sessions, newest first (id DESC), paginated at
-        a fixed 20 per page. Each item includes the per-component images the
-        session runs, so an admin can review what's deployed (and, later,
-        upgrade sessions to newer images).
+        a fixed 20 per page. Each item includes per-component images and memory
+        desired state so the Admin UI can render both without per-row requests.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
@@ -1953,6 +1961,18 @@ paths:
                         vtc_image:
                           type: string
                           description: full_stack only — absent otherwise.
+                        resources:
+                          type: array
+                          items:
+                            type: object
+                            required: [component, memory_request, memory_limit, customized]
+                            properties:
+                              component: { type: string, enum: [vta, mediator, dids, vtc] }
+                              memory_request: { type: string, example: 128Mi }
+                              memory_limit: { type: string, example: 512Mi }
+                              customized:
+                                type: boolean
+                                description: Whether request or limit differs from the platform default.
                         created_at:
                           type: string
                           format: date-time
@@ -1994,6 +2014,116 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  /api/v1/admin/setup-sessions/resources:
+    put:
+      summary: Apply memory resources to one or more sessions
+      description: |
+        Validates every request/limit pair, checks cluster request capacity,
+        and performs Kubernetes server-side dry-runs before saving desired
+        state or updating any Deployment. Updates use Recreate because the
+        workloads mount RWO volumes, then run sequentially with readiness
+        checks. A failed rollout is restored to its previous memory values and
+        stops the remaining changes. A component is applied only to selected
+        sessions that run it, allowing mixed VTA-only/full-stack batches.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [session_ids, resources]
+              properties:
+                session_ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  uniqueItems: true
+                  items: { type: string }
+                resources:
+                  type: array
+                  minItems: 1
+                  maxItems: 4
+                  items:
+                    type: object
+                    required: [component, memory_request, memory_limit]
+                    properties:
+                      component:
+                        type: string
+                        enum: [vta, mediator, dids, vtc]
+                      memory_request:
+                        type: string
+                        example: 128Mi
+                        description: Positive Kubernetes quantity, capped at 512Mi.
+                      memory_limit: { type: string, example: 512Mi }
+      responses:
+        "200":
+          description: Per-target rollout results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        session_id: { type: string }
+                        component: { type: string, enum: [vta, mediator, dids, vtc] }
+                        status: { type: string, enum: [applied, failed, skipped] }
+                        error: { type: string }
+        "404": { description: One or more sessions were not found }
+        "409": { description: One or more sessions are not running }
+        "422": { description: Validation, capacity, or Kubernetes dry-run failed }
+        "503": { description: Kubernetes is not configured }
+
+  /api/v1/admin/setup-sessions/{id}/resources:
+    get:
+      summary: Read one session's desired and live workload resources
+      description: |
+        Reads actual values from Deployment templates, not Pods. If the
+        session predates resource management, its live values are imported as
+        the initial desired state instead of applying the new defaults.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Per-component defaults, desired state, and actual state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_id: { type: string }
+                  mode: { type: string, enum: [vta_only, full_stack] }
+                  resources:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        component: { type: string, enum: [vta, mediator, dids, vtc] }
+                        defaults: { $ref: "#/components/schemas/ResourceProfile" }
+                        desired:
+                          type: object
+                          properties:
+                            memory_request: { type: string }
+                            memory_limit: { type: string }
+                        actual: { $ref: "#/components/schemas/ResourceProfile" }
+                        status: { type: string, enum: [in_sync, drifted, failed] }
+                        apply_error: { type: string }
+        "404": { description: Session not found }
+        "409": { description: Session is not running }
+        "503": { description: Kubernetes is not configured }
 
   /api/v1/admin/setup-sessions/{id}:
     delete:

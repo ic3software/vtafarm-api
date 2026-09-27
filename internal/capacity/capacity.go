@@ -41,16 +41,16 @@ const (
 // to its configured ceiling.
 var (
 	VtaOnly = Mode{Name: "vta_only", Components: []Component{
-		{Name: "vta", CPUMillis: 10, MemBytes: 64 * mi, StorageBytes: 200 * mi},
+		{Name: "vta", CPUMillis: 10, MemBytes: 512 * mi, StorageBytes: 200 * mi},
 	}}
 
 	// FullStack covers all four components — the VTC is always provisioned,
 	// so there is no lighter full-stack shape to plan for.
 	FullStack = Mode{Name: "full_stack", Components: []Component{
-		{Name: "dids", CPUMillis: 10, MemBytes: 128 * mi, StorageBytes: 200 * mi},
+		{Name: "dids", CPUMillis: 10, MemBytes: 512 * mi, StorageBytes: 200 * mi},
 		{Name: "mediator", CPUMillis: 50, MemBytes: 256 * mi, StorageBytes: gi},
-		{Name: "vta", CPUMillis: 10, MemBytes: 64 * mi, StorageBytes: 200 * mi},
-		{Name: "vtc", CPUMillis: 10, MemBytes: 64 * mi, StorageBytes: 200 * mi},
+		{Name: "vta", CPUMillis: 10, MemBytes: 512 * mi, StorageBytes: 200 * mi},
+		{Name: "vtc", CPUMillis: 10, MemBytes: 512 * mi, StorageBytes: 200 * mi},
 	}}
 )
 

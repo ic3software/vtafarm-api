@@ -30,11 +30,11 @@ func TestModeMemoryUsesLimits(t *testing.T) {
 	for _, comp := range FullStack.Components {
 		fullStackMem += comp.MemBytes
 	}
-	if vtaMem != 64*mi {
-		t.Fatalf("VtaOnly memory = %d, want 64Mi", vtaMem)
+	if vtaMem != 512*mi {
+		t.Fatalf("VtaOnly memory = %d, want 512Mi", vtaMem)
 	}
-	if fullStackMem != 512*mi {
-		t.Fatalf("FullStack memory = %d, want 512Mi", fullStackMem)
+	if fullStackMem != 1792*mi {
+		t.Fatalf("FullStack memory = %d, want 1792Mi", fullStackMem)
 	}
 }
 
@@ -71,13 +71,13 @@ func TestEstimateModeFragmentation(t *testing.T) {
 }
 
 func TestEstimateModePerResourceMatchesCount(t *testing.T) {
-	// Two nodes with 96Mi free each: the cluster-wide total (192Mi) divides
-	// into three 64Mi vta_only sessions, but each node holds only one. The
+	// Two nodes with 768Mi free each: the cluster-wide total divides into three
+	// 512Mi vta_only sessions, but each node holds only one. The
 	// displayed memory count must agree with Count, not report a third
 	// session that has nowhere to go.
 	nodes := []NodeFree{
-		{CPUMillis: 1000, MemBytes: 96 * mi},
-		{CPUMillis: 1000, MemBytes: 96 * mi},
+		{CPUMillis: 1000, MemBytes: 768 * mi},
+		{CPUMillis: 1000, MemBytes: 768 * mi},
 	}
 	disks := []DiskFree{{Bytes: 100 * gi}}
 
