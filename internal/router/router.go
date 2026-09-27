@@ -165,6 +165,8 @@ func Setup(
 		adminAuth.POST("/admin/invitations", ih.Create)
 		adminAuth.GET("/admin/invitations", ih.List)
 		adminAuth.GET("/admin/setup-sessions", sh.AdminListSessions)
+		adminAuth.GET("/admin/setup-sessions/:id/resources", sh.AdminSessionResources)
+		adminAuth.PUT("/admin/setup-sessions/resources", sh.AdminApplySessionResources)
 		adminAuth.POST("/admin/load-tests", sh.AdminCreateLoadTest)
 		adminAuth.GET("/admin/load-tests", sh.AdminListLoadTests)
 		adminAuth.GET("/admin/load-tests/:id", sh.AdminGetLoadTest)

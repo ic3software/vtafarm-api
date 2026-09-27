@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/model"
 )
 
@@ -76,6 +77,25 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 		return
 	}
 
+	sessionIDs := make([]uint, 0, len(sessions))
+	for _, session := range sessions {
+		sessionIDs = append(sessionIDs, session.ID)
+	}
+	storedResources := make(map[uint]map[string]model.WorkloadResource, len(sessions))
+	if len(sessionIDs) > 0 {
+		var resources []model.WorkloadResource
+		if err := h.db.Where("setup_session_id IN ?", sessionIDs).Find(&resources).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not fetch session resources"})
+			return
+		}
+		for _, resource := range resources {
+			if storedResources[resource.SetupSessionID] == nil {
+				storedResources[resource.SetupSessionID] = make(map[string]model.WorkloadResource)
+			}
+			storedResources[resource.SetupSessionID][resource.Component] = resource
+		}
+	}
+
 	// Resolve owners' public ids for just the users on this page.
 	userIDs := make([]uint, 0, len(sessions))
 	seen := make(map[uint]bool, len(sessions))
@@ -120,6 +140,12 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 		}
 	}
 
+	type sessionResourceSummary struct {
+		Component     string `json:"component"`
+		MemoryRequest string `json:"memory_request"`
+		MemoryLimit   string `json:"memory_limit"`
+		Customized    bool   `json:"customized"`
+	}
 	type sessionItem struct {
 		// The numeric PK, for ordering only — never an address. vta_name is what
 		// the routes take, so there is no separate identifier field here.
@@ -144,9 +170,10 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 		// the stack when that is in_farm; ProviderGone says the stack was
 		// deleted, which is why no name is available rather than a lookup having
 		// failed.
-		ConnectionSource string `json:"connection_source,omitempty"`
-		Provider         string `json:"provider,omitempty"`
-		ProviderGone     bool   `json:"provider_gone,omitempty"`
+		ConnectionSource string                   `json:"connection_source,omitempty"`
+		Provider         string                   `json:"provider,omitempty"`
+		ProviderGone     bool                     `json:"provider_gone,omitempty"`
+		Resources        []sessionResourceSummary `json:"resources"`
 	}
 	items := make([]sessionItem, len(sessions))
 	for i, s := range sessions {
@@ -165,6 +192,22 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 			DidsImage:     s.DidsImage,
 			VtcImage:      s.VtcImage,
 			CreatedAt:     s.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		}
+		for _, target := range sessionWorkloadTargets(&s) {
+			defaults, _ := k8s.DefaultResourceProfile(target.Component)
+			memoryRequest := defaults.MemoryRequest
+			memoryLimit := defaults.MemoryLimit
+			if stored, ok := storedResources[s.ID][target.Component]; ok {
+				memoryRequest = stored.MemoryRequest
+				memoryLimit = stored.MemoryLimit
+			}
+			items[i].Resources = append(items[i].Resources, sessionResourceSummary{
+				Component:     target.Component,
+				MemoryRequest: memoryRequest,
+				MemoryLimit:   memoryLimit,
+				Customized: !sameMemory(memoryRequest, defaults.MemoryRequest) ||
+					!sameMemory(memoryLimit, defaults.MemoryLimit),
+			})
 		}
 		if s.IsFullStack() {
 			continue

@@ -1,5 +1,23 @@
 # Changelog
 
+## [v0.9.0] - 2026-09-27
+
+### Added
+
+- Admin resource endpoints expose desired and live memory settings and apply
+  validated single-session or batch changes with sequential readiness checks
+  and rollback on failure.
+
+### Changed
+
+- New VTA, VTC and DID-hosting workloads use safer memory defaults for their
+  embedded Fjall stores, and capacity estimates account for the higher limits.
+
+### Fixed
+
+- Failed setup sessions retain the stage where they stopped, including
+  compatibility inference for sessions created before this release.
+
 ## [v0.8.0] - 2026-09-27
 
 ### Breaking
