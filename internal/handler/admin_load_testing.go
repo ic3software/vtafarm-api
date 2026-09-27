@@ -174,7 +174,7 @@ func (h *SetupHandler) startLoadTest(
 					VtaName:  name,
 					VtaImage: request.VtaImage,
 					AdminDid: adminDid,
-				}, infra, &runID)
+				}, connectionTarget{infra: infra, source: model.ConnectionPlatform}, &runID)
 				cancel()
 				results <- createResult{err: err}
 			}

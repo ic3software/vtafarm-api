@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -95,5 +96,33 @@ func TestNewResolverDisablesRedirectsAndProxy(t *testing.T) {
 	transport := client.Transport.(*http.Transport)
 	if transport.Proxy != nil {
 		t.Fatal("resolver transport unexpectedly honors an HTTP proxy")
+	}
+}
+
+func TestResolveDIDValidatesPublishedLog(t *testing.T) {
+	fixture, err := os.ReadFile("testdata/rust-chain-simple.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicLookup := func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("8.8.8.8")}}, nil
+	}
+	for _, tc := range []struct {
+		name    string
+		content string
+		valid   bool
+	}{
+		{"valid", string(fixture), true},
+		{"tampered", strings.Replace(string(fixture), "fuzz.example.com", "evil.example.com", 1), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resolver := testResolver(clientFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(tc.content))}, nil
+			}), publicLookup)
+			resolver.maxResponseBytes = int64(len(fixture) + 100)
+			if err := resolver.ResolveDID(context.Background(), rustFixtureDID); (err == nil) != tc.valid {
+				t.Fatalf("ResolveDID() error = %v, want valid = %v", err, tc.valid)
+			}
+		})
 	}
 }

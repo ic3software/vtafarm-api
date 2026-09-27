@@ -20,6 +20,7 @@ import (
 
 // Orchestrator drives a setup session through its full lifecycle.
 // Phase 1 (Start):      dns_provisioned → vta_setup_running → vta_setup_complete
+// External DID hosting waits at awaiting_did_publication before completion.
 // Phase 2 (Provision):  vta_setup_complete → provisioning → running
 // Cancellation stops the goroutine; the Delete handler owns K8s + DB cleanup.
 type Orchestrator struct {
@@ -270,12 +271,31 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 	// Extract did.jsonl content appended to the job logs after the marker.
 	didLog := ParseVtaDidLog(logs)
 
-	o.db.Model(&model.SetupSession{}).Where("id = ?", sessionID).Updates(map[string]any{
-		"status":     "vta_setup_complete",
-		"vta_did":    vtaDID,
-		"updated_at": time.Now(),
-	})
+	if session.ConnectionSource == model.ConnectionExternal {
+		if didLog == "" || len(didLog) >= MaxVtaDIDLogBytes {
+			o.markFailed(sessionID, "VTA setup produced no usable DID log for external publication")
+			return
+		}
+	}
+	readyStatus := "vta_setup_complete"
+	storedDidLog := ""
+	if session.ConnectionSource == model.ConnectionExternal {
+		readyStatus = "awaiting_did_publication"
+		storedDidLog = didLog
+	}
+	if err := o.db.Model(&model.SetupSession{}).Where("id = ?", sessionID).Updates(map[string]any{
+		"status":      readyStatus,
+		"vta_did":     vtaDID,
+		"vta_did_log": storedDidLog,
+		"updated_at":  time.Now(),
+	}).Error; err != nil {
+		o.markFailed(sessionID, "failed to save VTA setup result: "+err.Error())
+		return
+	}
 	log.Printf("[orchestrator] session %d: setup complete, VTA DID=%s", sessionID, vtaDID)
+	if session.ConnectionSource == model.ConnectionExternal {
+		return
+	}
 
 	// Publishing the DID log is not a best-effort side errand: an unpublished
 	// did:webvh cannot be resolved, so the agent this session is building can
@@ -364,12 +384,15 @@ func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDi
 	})
 	log.Printf("[orchestrator] session %d: provisioning, importing admin DID %s", sessionID, adminDid)
 
-	// If did-hosting is configured: create the ACL entry first, then run the
-	// combined provision job (import-did + did-mgmt servers add). The ACL must
-	// exist before the VTA pod starts pushing DID updates.
+	// Farm-managed hosting gets an ACL entry before the VTA starts pushing DID
+	// updates. For external hosting the owner manages that ACL; only its DID is
+	// passed to the provision job.
 	var controlDid string
 	log.Printf("[orchestrator] session %d: did-hosting configured=%v vta_did=%q", sessionID, o.didHosting != nil, session.VtaDid)
-	if o.didHosting != nil {
+	if session.ConnectionSource == model.ConnectionExternal {
+		controlDid = session.DIDHostingDid
+		log.Printf("[orchestrator] session %d: external DID host; owner manages its ACL", sessionID)
+	} else if o.didHosting != nil {
 		dh, err := o.didHosting.For(session.DidHostingControlURL, session.DIDHostingDid)
 		if err != nil {
 			o.markFailed(sessionID, "failed to reach DID hosting control API: "+err.Error())

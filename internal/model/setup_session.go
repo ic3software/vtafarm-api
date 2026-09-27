@@ -12,17 +12,19 @@ const (
 	ModeFullStack = "full_stack"
 )
 
-// Where a vta_only session's mediator and DID host came from. Orthogonal to
+// Where a vta_only session's DID host came from. Orthogonal to
 // both Mode and DomainType, and meaningless for full_stack, which provisions
 // its own.
 //
-// Existing in_farm sessions retain their provider link after code sharing is removed.
+// The in_farm provider link survives the retired code-sharing flow and also
+// records DID-hosting connections created by the explicit DID flow.
 const (
 	// ConnectionPlatform is the default for new VTA-only sessions.
 	ConnectionPlatform = "platform"
-	// ConnectionInFarm marks a session that joined another stack before sharing
-	// was retired.
+	// ConnectionInFarm marks a session using a full stack's DID host.
 	ConnectionInFarm = "in_farm"
+	// ConnectionExternal requires the owner to publish the VTA DID log.
+	ConnectionExternal = "external"
 )
 
 // Where a session's hostnames come from. Orthogonal to Mode: a session is
@@ -77,7 +79,8 @@ type SetupSession struct {
 	//
 	// Two fields because a standalone DID-hosting service splits resolution from
 	// its management API. The daemon build deployed today answers both roles on
-	// one host, so they are equal for every session that exists so far.
+	// one host. External hosting leaves ControlURL empty: the farm must never
+	// send its management credential to a user-supplied host.
 	//
 	// ServerURL scopes setup_sessions_did_path_unique: a DID path only has to be
 	// distinct among the DIDs served at the same URL, and which sessions those
@@ -85,11 +88,10 @@ type SetupSession struct {
 	DidHostingServerURL  string `gorm:"column:did_hosting_server_url;not null;default:''"  json:"-"`
 	DidHostingControlURL string `gorm:"column:did_hosting_control_url;not null;default:''" json:"-"`
 
-	// ConnectionSource says where this session's mediator and DID host came
-	// from — ConnectionPlatform or ConnectionInFarm. ProviderSessionID is the
-	// full_stack row it connected to, and is NULL both for platform sessions
-	// (which never had one) and for a session whose provider has since been
-	// deleted.
+	// ConnectionSource says where this session's DID host came from; its
+	// mediator DID may be chosen independently. ProviderSessionID is the
+	// full_stack row supplying hosting, and is NULL for platform or external
+	// sessions and for a session whose provider has since been deleted.
 	//
 	// Neither is needed to run the session; the three snapshotted values above
 	// do that, and stay authoritative because a did:webvh bakes its host in at
@@ -105,8 +107,9 @@ type SetupSession struct {
 	// Image used for the vta-setup K8s Job
 	VtaImage string `gorm:"not null;default:''"             json:"vta_image,omitempty"`
 	// Output populated after vta setup runs
-	VtaDid   string `gorm:"column:vta_did;not null;default:''"   json:"vta_did,omitempty"`
-	AdminDid string `gorm:"column:admin_did;not null;default:''" json:"admin_did,omitempty"`
+	VtaDid    string `gorm:"column:vta_did;not null;default:''"   json:"vta_did,omitempty"`
+	VtaDidLog string `gorm:"column:vta_did_log;not null;default:''" json:"-"`
+	AdminDid  string `gorm:"column:admin_did;not null;default:''" json:"admin_did,omitempty"`
 
 	// full_stack — mediator/dids subdomains. The VTA component reuses
 	// Subdomain/CFRecordID above (same as vta_only) rather than getting its
@@ -197,8 +200,7 @@ func (s *SetupSession) DidsFQDN() string {
 
 // DidsURL is the public base URL of the session's own DID-hosting daemon —
 // what gets recorded as DidHostingServerURL/DidHostingControlURL, both for the
-// session itself and, when this is the platform stack, for every vta_only
-// session wired to it.
+// session itself and VTA-only sessions using its DID hosting.
 func (s *SetupSession) DidsURL() string {
 	return "https://" + s.DidsFQDN()
 }
@@ -216,8 +218,7 @@ func (s *SetupSession) IsFullStack() bool {
 
 // IsOrphaned reports whether this session connected to a stack that has since
 // been deleted. Its pods keep running — nothing in a provider teardown touches
-// the consumer's namespace — but its did:webvh no longer resolves and its
-// mediator is gone, so it can neither be reached nor deliver.
+// the consumer's namespace — but its did:webvh no longer resolves.
 //
 // Derived from ON DELETE SET NULL rather than written by a delete handler,
 // which is why it needs no event to have fired and cannot drift.

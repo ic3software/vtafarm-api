@@ -467,17 +467,28 @@ components:
             digits, and hyphens; no consecutive hyphens (--); must start and
             end with a letter or digit; max 48 chars) and unique across ALL users'
             sessions — 409 if already taken. Also used in the DID hosting
-            path {vta_name}-vta, which for vta_only is served by the shared
-            daemon and so must additionally not collide with the platform
-            stack's own paths there — a second, separate 409.
+            path {vta_name}-vta, which for vta_only must also be unique on its
+            selected DID host — a second, separate 409.
         vta_image:
           type: string
           description: Full image URL selected from GET /setup/images.
           example: "ghcr.io/ic3software/vta:0.5.0"
         admin_did:
           type: string
-          description: Optional — the user's local `pnm setup` admin DID. When present, Phase 2 (import-did + Deployment) auto-runs after setup.
+          description: Optional — the user's local `pnm setup` admin DID. For external DID hosting, Phase 2 waits until the published DID log has been validated.
           example: "did:key:z6Mk..."
+        did_hosting_did:
+          type: string
+          description: |
+            VTA-only Customize / Connect to. Supply with `mediator_did`; omit
+            both to use the platform stack. A DID matching a running Full Stack
+            in this farm uses automatic DID-log publication. An external root
+            did:webvh host requires the owner to publish `did.jsonl` manually.
+        mediator_did:
+          type: string
+          description: |
+            VTA-only Customize / Connect to. May be chosen independently of
+            DID hosting. The DID must resolve; full_stack does not accept it.
         portable:
           type: boolean
           default: true
@@ -521,8 +532,8 @@ components:
             Attach the session to one of the caller's **verified** domains
             (`GET /domains`). Omitted → `managed`, today's behaviour.
 
-            `full_stack` only: `vta_only` points at a shared mediator and DID
-            host, so a user's own domain would cover just part of their
+            `full_stack` only: `vta_only` may use a separately managed mediator
+            and DID host, so a user's own domain may cover only part of their
             footprint.
 
             409 if the domain isn't verified or already backs a session; 404 if
@@ -556,7 +567,8 @@ components:
         status:
           type: string
           description: |
-            State-machine value. vta_only: dns_provisioned, vta_setup_running, vta_setup_complete,
+            State-machine value. vta_only: dns_provisioned, vta_setup_running,
+            awaiting_did_publication (external hosting only), vta_setup_complete,
             provisioning, running, failed. full_stack: dns_provision, dns_wait, env_provision,
             k8s_provision, tls_provision,
             step_vta_setup, step_mediator_p1, step_mediator_reprov, step_mediator_p2, step_dids_p1,
@@ -610,10 +622,17 @@ components:
           description: Populated after vta setup completes
         mediator_did:
           type: string
-          description: Mediator DID, read from the platform stack at create time (vta_only)
+          description: Mediator DID selected at create time (vta_only)
+        did_hosting_did:
+          type: string
+          description: DID of the hosting daemon selected at create time (vta_only)
         vta_did_url:
           type: string
-          description: Derived DID-hosting URL — {the platform stack's dids URL}/{vta_name}-vta
+          description: Derived DID-hosting URL — {selected hosting URL}/{vta_name}-vta
+        connection_source:
+          type: string
+          enum: [platform, in_farm, external]
+          description: VTA-only DID hosting source.
         error_msg:
           type: string
           description: Present only when status is `failed`
@@ -677,6 +696,19 @@ components:
         vta_did:
           type: string
           description: vta_only only. Populated after vta setup completes.
+        mediator_did:
+          type: string
+          description: vta_only only. The selected mediator DID.
+        did_hosting_did:
+          type: string
+          description: vta_only only. The selected hosting daemon DID.
+        did_log_url:
+          type: string
+          description: External VTA-only hosting only. Upload the downloaded DID log here.
+        connection_source:
+          type: string
+          enum: [platform, in_farm, external]
+          description: VTA-only DID hosting source.
         error_msg:
           type: string
           description: Present only when status is `failed`
@@ -796,8 +828,8 @@ components:
         available:
           type: boolean
           description: |
-            Whether this mode can be created. Covers both capacity and the
-            platform-stack prerequisite — read `reason` to tell them apart.
+            Whether this mode can be created by its default path. For VTA-only
+            Customize / Connect to, read `custom_target_allowed` instead.
           example: true
         reason:
           type: string
@@ -805,8 +837,8 @@ components:
             Absent when the mode is creatable.
 
             - `at_capacity` — no room in the cluster. Transient.
-            - `platform_stack_missing` — `vta_only` only. No platform stack
-              exists, so there is no shared mediator or DID hosting to connect to.
+            - `platform_stack_missing` — `vta_only` default path only. No platform stack
+              exists; a custom DID connection may still be allowed.
             - `platform_stack_not_ready` — `vta_only` only. It exists but hasn't
               reached `running`.
             - `shared_infra_unconfigured` — `vta_only` only. It is running but
@@ -818,6 +850,9 @@ components:
         detail:
           type: string
           description: A sentence to show the user. Prefer it over composing copy client-side.
+        custom_target_allowed:
+          type: boolean
+          description: VTA-only only. True when cluster capacity permits a custom DID connection, even if the platform stack is unavailable.
 
 paths:
   /api/v1/auth/siop/metadata:
@@ -1979,9 +2014,8 @@ paths:
         **The platform stack additionally requires a request body.** When the
         session's `domain_type` is `platform`, send `{"confirm": "<label>"}`
         with the stack's label (its `vta_name`) or the call answers 400. That
-        one is enforced by the API rather than left to the UI: it is the only
-        deletion in the product that degrades every other user's service, since
-        every `vta_only` session loses its mediator and DID host.
+        one is enforced by the API rather than left to the UI because agents
+        using this stack's mediator or DID host will be disrupted.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
@@ -2045,9 +2079,9 @@ paths:
       description: |
         The farm's own flagship `full_stack`, running under our zone's fixed
         labels — `vta.{CLUSTER_DOMAIN}`, `vtc.`, `mediator.`, `dids.` (each
-        prefixed `dev-` in development). It is the mediator and DID host that
-        every `vta_only` session points at, which is what makes that shared
-        infrastructure a stable name rather than a deletable dev session.
+        prefixed `dev-` in development). It is the default mediator and DID
+        host for `vta_only` sessions, with a stable name rather than a
+        deletable dev session.
 
         One action creates the whole thing: the `domains` row, the four proxied
         Cloudflare A records, and the session — then the orchestrator starts.
@@ -2163,14 +2197,14 @@ paths:
       summary: Platform stack state
       description: |
         Whether the stack exists and how far it has got, plus `provides` — the
-        mediator DID and DID-hosting URLs every `vta_only` session is wired to,
+        default mediator DID and DID-hosting URLs for `vta_only` sessions,
         read off this row when that session is created. Nothing here is copied
         anywhere; `mediator_did` is minted by the pipeline, so it stays empty
         until that step completes.
 
         `farm_acl` reports DID-upload access. vtafarm-api authenticates to this
-        daemon with its own keypair (`DID_HOSTING_DID`) to upload every
-        `vta_only` session's DID log, so that DID needs an `admin` ACL entry
+        daemon with its own keypair (`DID_HOSTING_DID`) to upload default-connected
+        `vta_only` sessions' DID logs, so that DID needs an `admin` ACL entry
         here. `step_dids_grant_farm` enrolls it offline while provisioning —
         `granted: false` means no keypair was configured when the stack was
         built, which is the one case still needing a human.
@@ -2223,7 +2257,7 @@ paths:
                   provides:
                     type: object
                     description: >-
-                      What every vta_only session is wired to at create time.
+                      What default-connected vta_only sessions use at create time.
                       mediator_did is empty until the pipeline mints it. The two
                       URLs are equal while the daemon answers both roles on one
                       host; they are separate fields so a standalone DID-hosting
@@ -4380,13 +4414,10 @@ paths:
         returns `determinable: false` and blocks nothing, so a transient outage
         never wrongly stops creation.
 
-        **The platform stack** — `vta_only` is only the VTA, wired to the
-        mediator and DID hosting the platform stack provides. Until an admin has
-        created that stack, it has reached `running`, and this server has been
-        pointed at its collected values, a `vta_only` agent could only ever be
-        born unable to deliver a message. That is a hard prerequisite, so unlike
-        capacity it does **not** fail open. `full_stack` provisions its own
-        mediator and DID host and is never gated on it.
+        **The platform stack** — the default VTA-only path needs its mediator
+        and DID hosting. A custom DID connection needs cluster capacity but not
+        the platform stack; `custom_target_allowed` reports that separately.
+        `full_stack` provisions its own mediator and DID host.
 
         `POST /setup` enforces both and answers 503 either way — this endpoint
         only makes the refusal visible earlier.
@@ -4418,11 +4449,11 @@ paths:
                   vta_only:
                     count: 12
                     available: false
+                    custom_target_allowed: true
                     reason: platform_stack_missing
                     detail: >-
-                      VTA-only agents need the platform stack — the shared mediator and DID
-                      hosting they connect to. An admin has to create it before any VTA-only
-                      agent can be provisioned.
+                      The default VTA-only connection needs the platform stack.
+                      An admin has to create it, or you can choose a custom DID connection.
                   full_stack: { count: 2, available: true }
                   metrics_available: true
                   storage_available: true
@@ -4494,7 +4525,12 @@ paths:
         name is already in use by any session).
 
         vta_only: creates a Cloudflare DNS A record for vta-{vta_name} under
-        CLUSTER_DOMAIN, stores the session, and begins async VTA setup.
+        CLUSTER_DOMAIN, stores the session, and begins async VTA setup. Omit
+        both DID fields for the platform stack, or supply `did_hosting_did` and
+        `mediator_did` to connect elsewhere. DID hosting is classified by its
+        daemon DID; the mediator may be chosen independently. External hosting
+        parks at `awaiting_did_publication` until the owner downloads and
+        publishes `did.jsonl`, then validates the public VTA DID.
 
         full_stack: derives four hostnames (vta-{vta_name} /
         mediator-{vta_name} / dids-{vta_name} under CLUSTER_DOMAIN, plus
@@ -4563,7 +4599,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "422":
-          description: Cluster ingress IP not configured
+          description: Cluster ingress IP not configured or a custom DID does not resolve
           content:
             application/json:
               schema:
@@ -4577,9 +4613,8 @@ paths:
         "503":
           description: |
             Cloudflare not configured on server; the cluster is at capacity; or —
-            for `vta_only` — the platform stack that provides its mediator and
-            DID hosting isn't ready. See `GET /setup/availability`, which reports
-            all three ahead of time with a `reason`.
+            for the default `vta_only` path — the platform stack isn't ready.
+            See `GET /setup/availability` for default and custom readiness.
           content:
             application/json:
               schema:
@@ -4605,6 +4640,45 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  /api/v1/setup/connection/inspect:
+    post:
+      summary: Inspect a VTA-only DID connection
+      description: |
+        Classifies DID hosting by `did_hosting_did`, independently of the
+        mediator DID. A running Full Stack on this farm can accept automatic
+        publication. External hosting must have a resolvable root did:webvh DID;
+        its owner publishes the VTA DID log manually after setup. The create
+        request repeats these checks, so inspection is advisory.
+      tags: [User]
+      security: [{ CookieAuthUser: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [did_hosting_did, mediator_did]
+              properties:
+                did_hosting_did: { type: string }
+                mediator_did: { type: string }
+      responses:
+        "200":
+          description: Connection classification and hosting URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source: { type: string, enum: [platform, in_farm, external] }
+                  provider: { type: string }
+                  did_hosting_url: { type: string }
+                  did_hosting_did: { type: string }
+                  mediator_did: { type: string }
+                  manual_publication: { type: boolean }
+        "400": { description: Invalid DID fields, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: Farm DID host is not ready, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "422": { description: Public DID does not resolve, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
   /api/v1/setup/{id}:
     get:
@@ -4644,6 +4718,8 @@ paths:
       description: |
         Cancels the session goroutine and tears down its resources.
         vta_only: the Cloudflare DNS record, K8s resources, and the session's Vault seed.
+        For external DID hosting, the owner removes the published DID log and
+        any hosting ACL entry; the farm never calls that host's control API.
         full_stack: all four Cloudflare DNS records, all four components' K8s
         resources, the mediator's/dids daemon's/VTC's Vault secrets, and the
         VTA's Vault seed.
@@ -4809,6 +4885,49 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/setup/{id}/did-log:
+    get:
+      summary: Download the generated VTA DID log for external hosting
+      description: Owner-only download. The log is retained with the session so it remains available after the setup Job expires.
+      tags: [User]
+      security: [{ CookieAuthUser: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Generated did.jsonl
+          content:
+            application/jsonl:
+              schema: { type: string }
+        "404": { description: Session not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: Not an external VTA-only session with a DID log, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api/v1/setup/{id}/did-log/validate:
+    post:
+      summary: Validate an externally published VTA DID log
+      description: |
+        Fetches the public did:webvh log, validates its cryptographic history,
+        and advances `awaiting_did_publication` to `vta_setup_complete` only
+        when the generated VTA DID resolves. The user can then supply an admin
+        DID and provision the agent.
+      tags: [User]
+      security: [{ CookieAuthUser: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: DID publication verified
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid: { type: boolean, example: true }
+                  status: { type: string, example: vta_setup_complete }
+        "404": { description: Session not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: Session is not awaiting publication, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "422": { description: DID log is missing or invalid, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
   /api/v1/setup/{id}/logs:
     get:
       summary: Stream logs
@@ -4823,7 +4942,7 @@ paths:
         - `vta_setup_running` — live output from the vta-setup K8s Job
         - `provisioning` — live output from the vta-provision K8s Job (import-did + did-mgmt servers add)
         - `running` — live output from the running VTA pod
-        - `vta_setup_complete` — replays buffered vta-setup job output then closes
+        - `vta_setup_complete` or `awaiting_did_publication` — replays buffered vta-setup job output then closes
         - `failed` — replays the last job's output then closes
         - `dns_provisioned` — returns 409 (not started yet)
 

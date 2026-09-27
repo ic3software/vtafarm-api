@@ -196,7 +196,7 @@ func Setup(
 		adminAuth.POST("/admin/setup-sessions/:id/vtc/reissue-install", sh.AdminReissueVtcInstall)
 		adminAuth.POST("/admin/setup-sessions/:id/vtc/install-ack", sh.AdminAckVtcInstall)
 		// The farm's own flagship stack at vta.{CLUSTER_DOMAIN} and friends —
-		// the mediator and DID host vta_only sessions point at. Created whole
+		// the default mediator and DID host for vta_only sessions. Created whole
 		// (domain + DNS + session) by one action; the only route that can mint
 		// a domains row for our own zone.
 		adminAuth.POST("/admin/platform-stack", sh.CreatePlatformStack)
@@ -279,9 +279,12 @@ func Setup(
 		userAuth.GET("/setup/domain-info", sh.DomainInfo)
 		userAuth.GET("/setup", sh.List)
 		userAuth.POST("/setup", sh.Create)
+		userAuth.POST("/setup/connection/inspect", middleware.RateLimit(20, time.Minute), sh.InspectConnection)
 		userAuth.GET("/setup/:id", sh.Get)
 		userAuth.DELETE("/setup/:id", sh.Delete)
 		userAuth.GET("/setup/:id/logs", sh.Logs)
+		userAuth.GET("/setup/:id/did-log", sh.DownloadDIDLog)
+		userAuth.POST("/setup/:id/did-log/validate", middleware.RateLimit(20, time.Minute), sh.ValidatePublishedDID)
 		// Zips read from the running pods: the rendered config.toml each
 		// binary wrote to its PVC, and the pods' own logs — no Job logs.
 		userAuth.GET("/setup/:id/export/configs", sh.ExportConfigs)

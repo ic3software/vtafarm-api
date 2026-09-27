@@ -28,10 +28,9 @@ type SetupHandler struct {
 	appEnv        string
 	ingressIP     string
 	clusterDomain string
-	// The mediator DID and DID-hosting URLs a vta_only session is wired to are
-	// no longer configuration: they are read from the platform stack that
-	// actually provides them (sharedInfra). What remains global is the client
-	// keypair the factory authenticates with — vtafarm-api's own identity.
+	// The default mediator DID and DID-hosting URLs come from the platform
+	// stack. Custom VTA-only sessions choose their own DIDs. The factory still
+	// authenticates with vtafarm-api's own client keypair.
 	didHosting *didhosting.Factory // nil when no keypair configured
 	k8s        *k8s.Client
 	orch       *setup.Orchestrator
@@ -173,6 +172,9 @@ type createSetupRequest struct {
 	DidsImage     string `json:"dids_image"`
 	VtcImage      string `json:"vtc_image"`
 	VtcName       string `json:"vtc_name"`
+	// VTA-only Customize / Connect to. Omit both to use the platform stack.
+	DIDHostingDid string `json:"did_hosting_did"`
+	MediatorDid   string `json:"mediator_did"`
 }
 
 // POST /api/v1/setup
@@ -255,6 +257,10 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	}
 
 	if req.Mode == model.ModeFullStack {
+		if req.DIDHostingDid != "" || req.MediatorDid != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "DID connection fields apply only to VTA-only sessions"})
+			return
+		}
 		if !user.BetaAccess {
 			c.JSON(http.StatusForbidden, gin.H{"error": req.Mode + " mode is in beta — ask an admin to enable beta access for your account"})
 			return
@@ -266,17 +272,25 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		return
 	}
 
-	// The UI disables this, but the UI is not the gate: a vta_only agent whose
-	// mediator and DID host don't exist can never deliver a message, and it
-	// would consume cluster resources looking healthy while it did so.
-	// It also yields the values the session is built from, so the gate and the
-	// source are the same read — there is no window where the check passes and
-	// the write then uses something else.
+	// Resolve the target again at creation time: the inspection response can
+	// become stale, and the session must snapshot the values actually checked.
 	//
-	infra, _, reason, detail := h.resolvePlatformInfra()
-	if reason != "" {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": detail, "reason": reason})
-		return
+	var target connectionTarget
+	if req.DIDHostingDid != "" || req.MediatorDid != "" {
+		var status int
+		var err error
+		target, status, err = h.resolveCustomConnection(c.Request.Context(), req.DIDHostingDid, req.MediatorDid)
+		if err != nil {
+			c.JSON(status, gin.H{"error": err.Error()})
+			return
+		}
+	} else {
+		infra, _, reason, detail := h.resolvePlatformInfra()
+		if reason != "" {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": detail, "reason": reason})
+			return
+		}
+		target = connectionTarget{infra: infra, source: model.ConnectionPlatform}
 	}
 
 	if !h.capacityAllows(c, capacity.VtaOnly) {
@@ -284,7 +298,7 @@ func (h *SetupHandler) Create(c *gin.Context) {
 	}
 
 	session, status, err := h.createManagedVtaOnlySession(
-		c.Request.Context(), userID, req, infra, nil,
+		c.Request.Context(), userID, req, target, nil,
 	)
 	if err != nil {
 		c.JSON(status, gin.H{"error": err.Error()})
@@ -307,7 +321,7 @@ func (h *SetupHandler) createManagedVtaOnlySession(
 	ctx context.Context,
 	userID uint,
 	req createSetupRequest,
-	infra sharedInfra,
+	target connectionTarget,
 	loadTestRunID *uint,
 ) (*model.SetupSession, int, error) {
 	portable := true
@@ -320,8 +334,8 @@ func (h *SetupHandler) createManagedVtaOnlySession(
 	}
 
 	// One path component, not two: the globally unique VTA name is also the
-	// stable path served by the shared DID-hosting daemon.
-	vtaDidURL := infra.ServerURL + "/" + setup.VtaDidPath(req.VtaName)
+	// stable path served by the selected DID host.
+	vtaDidURL := target.infra.ServerURL + "/" + setup.VtaDidPath(req.VtaName)
 	subdomain := setup.VtaHost(h.appEnv, req.VtaName)
 	fqdn := subdomain + "." + h.clusterDomain
 
@@ -339,12 +353,13 @@ func (h *SetupHandler) createManagedVtaOnlySession(
 		Subdomain:            subdomain,
 		CFRecordID:           recordID,
 		VtaName:              req.VtaName,
-		MediatorDid:          infra.MediatorDid,
+		MediatorDid:          target.infra.MediatorDid,
 		VtaDidUrl:            vtaDidURL,
-		DidHostingServerURL:  infra.ServerURL,
-		DidHostingControlURL: infra.ControlURL,
-		DIDHostingDid:        infra.DaemonDid,
-		ConnectionSource:     model.ConnectionPlatform,
+		DidHostingServerURL:  target.infra.ServerURL,
+		DidHostingControlURL: target.infra.ControlURL,
+		DIDHostingDid:        target.infra.DaemonDid,
+		ConnectionSource:     target.source,
+		ProviderSessionID:    target.providerID,
 		LoadTestRunID:        loadTestRunID,
 		VtaImage:             req.VtaImage,
 		AdminDid:             req.AdminDid,
@@ -371,14 +386,14 @@ func (h *SetupHandler) createManagedVtaOnlySession(
 // request with the response itself on any problem — callers check
 // c.IsAborted().
 //
-// vta_only is deliberately excluded: that mode points at a shared mediator and
-// DID host, so a user's domain would cover only part of their footprint.
+// vta_only is deliberately excluded: its mediator and DID host can be outside
+// the farm, so a custom domain here would cover only part of its footprint.
 func (h *SetupHandler) resolveCreateDomain(c *gin.Context, req createSetupRequest, userID uint) *model.Domain {
 	if req.DomainID == nil {
 		return nil
 	}
 	if req.Mode != model.ModeFullStack {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "a custom domain requires full_stack — vta_only uses a shared mediator and DID host"})
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "a custom domain requires full_stack"})
 		return nil
 	}
 
@@ -417,18 +432,15 @@ const (
 	reasonProviderUnknown = "provider_lookup_failed"
 )
 
-// sharedInfra is what a vta_only session is wired to — read from the platform
-// stack that actually provides it, never from configuration.
+// sharedInfra is what a vta_only session is wired to. The default comes from
+// the platform stack; custom connections resolve their own DIDs.
 //
-// These used to be MEDIATOR_DID / DID_HOSTING_SERVER_URL / DID_HOSTING_CONTROL_URL
-// in the environment, pasted in by an admin from the platform stack page once
-// the pipeline had minted them. Reading the row directly removes that copy step,
-// and with it the whole class of "the stack is running but this server is still
-// pointed at the last one" failure.
+// For the default path, these used to be environment values pasted from the
+// platform stack. Reading its row prevents a rebuilt stack from leaving new
+// sessions pointed at stale infrastructure.
 //
-// ControlURL and ServerURL are the same value today because the daemon build
-// answers both roles on one host; they are carried separately so a standalone
-// DID-hosting service can split them without a schema change.
+// Farm-managed daemons answer both roles on one host. External hosting leaves
+// ControlURL empty because the farm has no authority to manage that host.
 type sharedInfra struct {
 	MediatorDid string
 	ServerURL   string
@@ -448,8 +460,8 @@ type sharedInfra struct {
 
 // resolvePlatformInfra finds the platform stack a VTA-only session uses.
 func (h *SetupHandler) resolvePlatformInfra() (v sharedInfra, provider *model.SetupSession, reason, detail string) {
-	const missing = "VTA-only agents need the platform stack — the shared mediator and DID hosting they connect to. " +
-		"An admin has to create it before any VTA-only agent can be provisioned."
+	const missing = "The default VTA-only connection needs the platform stack. " +
+		"An admin has to create it, or you can choose a custom DID connection."
 	const unknown = "Couldn't check the platform stack just now. Please try again."
 
 	domain, err := h.platformDomain()
@@ -485,7 +497,7 @@ func (h *SetupHandler) resolvePlatformInfra() (v sharedInfra, provider *model.Se
 func providerInfra(s *model.SetupSession) (v sharedInfra, reason, detail string) {
 	if s.Status != "running" {
 		return v, reasonPlatformNotReady,
-			"The platform stack — the shared mediator and DID hosting VTA-only agents connect to — is still being set up. " +
+			"The platform stack used by the default VTA-only connection is still being set up. " +
 				"Try again once it's running."
 	}
 
@@ -551,6 +563,8 @@ func (h *SetupHandler) Availability(c *gin.Context) {
 		// the mode is creatable.
 		Reason string `json:"reason,omitempty"`
 		Detail string `json:"detail,omitempty"`
+		// Custom connections only need cluster capacity, not the platform stack.
+		CustomTargetAllowed *bool `json:"custom_target_allowed,omitempty"`
 	}
 
 	// Fail open on capacity, as before: a transient metrics/Longhorn outage
@@ -574,10 +588,12 @@ func (h *SetupHandler) Availability(c *gin.Context) {
 	if !fullStack.Available {
 		fullStack.Reason, fullStack.Detail = reasonAtCapacity, atCapacity
 	}
+	customTargetAllowed := vtaOnly.Available
+	vtaOnly.CustomTargetAllowed = &customTargetAllowed
 
-	// The shared mediator and DID host is a hard dependency of vta_only, not a
-	// capacity question — so it overrides the fail-open above rather than
-	// sitting alongside it. full_stack runs its own and is never gated on it.
+	// The default VTA-only path requires the platform mediator and DID host.
+	// Custom connections use the capacity result above instead. Full Stack
+	// runs its own and is never gated on the platform stack.
 	//
 	// reasonProviderUnknown is the exception, and the two callers of
 	// resolvePlatformInfra part company here: a database read that failed says
@@ -649,7 +665,7 @@ func (h *SetupHandler) List(c *gin.Context) {
 		ErrorMsg    string `json:"error_msg,omitempty"`
 		CreatedAt   any    `json:"created_at"`
 		UpdatedAt   any    `json:"updated_at"`
-		// vta_only: where its mediator and DID host came from, and whether that
+		// vta_only: where its DID host came from, and whether that
 		// stack still exists. On the list so an orphaned agent can be marked
 		// without opening it — its badge still reads `running`, because it is,
 		// so nothing else on the row would give it away.
@@ -708,16 +724,21 @@ func (h *SetupHandler) Get(c *gin.Context) {
 	}
 
 	resp := gin.H{
-		"id":          session.VtaName,
-		"status":      session.Status,
-		"mode":        session.Mode,
-		"domain_type": session.DomainType,
-		"domain":      session.Domain,
-		"url":         session.PublicURL(),
-		"vta_image":   session.VtaImage,
-		"vta_did":     session.VtaDid,
-		"created_at":  session.CreatedAt,
-		"updated_at":  session.UpdatedAt,
+		"id":              session.VtaName,
+		"status":          session.Status,
+		"mode":            session.Mode,
+		"domain_type":     session.DomainType,
+		"domain":          session.Domain,
+		"url":             session.PublicURL(),
+		"vta_image":       session.VtaImage,
+		"vta_did":         session.VtaDid,
+		"mediator_did":    session.MediatorDid,
+		"did_hosting_did": session.DIDHostingDid,
+		"created_at":      session.CreatedAt,
+		"updated_at":      session.UpdatedAt,
+	}
+	if session.ConnectionSource == model.ConnectionExternal {
+		resp["did_log_url"] = session.VtaDidUrl + "/did.jsonl"
 	}
 	if session.ErrorMsg != "" {
 		resp["error_msg"] = session.ErrorMsg
@@ -726,7 +747,7 @@ func (h *SetupHandler) Get(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-// describeConnection adds which stack a vta_only session is wired to.
+// describeConnection adds which DID host a vta_only session uses.
 //
 // The first question when an agent misbehaves is whose infrastructure it is
 // on, and until now the answer was a bare mediator DID. `provider` names the
@@ -806,7 +827,7 @@ func (h *SetupHandler) teardownVtaOnlySession(ctx context.Context, session *mode
 	// current one: a platform stack rebuilt since then is a different daemon,
 	// and deleting from it would leave this session's DID log behind on the old
 	// one while removing somebody else's.
-	if h.didHosting != nil && (session.VtaDidUrl != "" || session.VtaDid != "") {
+	if session.ConnectionSource != model.ConnectionExternal && h.didHosting != nil && (session.VtaDidUrl != "" || session.VtaDid != "") {
 		dh, err := h.didHosting.For(session.DidHostingControlURL, session.DIDHostingDid)
 		if err != nil {
 			log.Printf("[setup] warn: no DID hosting client for session %d (%q): %v",
@@ -965,7 +986,7 @@ func (h *SetupHandler) Logs(c *gin.Context) {
 			fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", err.Error())
 			c.Writer.Flush()
 		}
-	case "vta_setup_complete":
+	case "vta_setup_complete", "awaiting_did_publication":
 		logs, err := h.k8s.JobLogs(c.Request.Context(), ns, k8s.SetupJobName(session.ID))
 		if err != nil {
 			fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", err.Error())

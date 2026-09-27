@@ -2,7 +2,7 @@
 
 Automates VTA stack installation driven by a frontend form. Supports two modes:
 
-- **VTA Only** (`vta_only`) — deploys just the VTA service; user provides an existing external DID hosting URL.
+- **VTA Only** (`vta_only`) — deploys just the VTA service, connected to the platform stack by default or to DIDs chosen in Customize / Connect to.
 - **Full Stack** (`full_stack`) — deploys VTA + DIDComm Mediator + WebVH DID Hosting Daemon + VTC; all four are hosted in-cluster.
 
 > **The VTC is always part of Full Stack.** An earlier iteration split this into
@@ -28,27 +28,28 @@ VTA source & architecture: `verifiable-trust-infrastructure/docs/`
 
 ### Mode A — VTA Only
 
-User provides their own DID hosting endpoint. VTA Farm deploys only the VTA service.
+VTA Farm deploys only the VTA service. The user can choose a DID hosting daemon and mediator independently.
 
 ```text
 User provides (form):
   vta_name    → unique name per user (default "personal-vta")
   vta_image   → full image URL chosen from GET /setup/images
   admin_did   → optional; the user's local `pnm setup` admin DID
+  did_hosting_did, mediator_did → optional pair; omit both for the platform stack
   portable, pre_rotation_count → optional advanced VTA-DID knobs
 
 Backend derives (not user input):
   subdomain        → "vta-{vta_name}" ("dev-vta-{vta_name}" in dev), under CLUSTER_DOMAIN
   vta public URL   → https://{subdomain}.{CLUSTER_DOMAIN}
-  did_hosting_url  → {platform stack's dids URL}/{vta_name}-vta            (shared host)
-  mediator         → the platform stack's mediator DID
+  did_hosting_url  → {selected DID host URL}/{vta_name}-vta
+  mediator         → selected mediator DID, or the platform stack's default
 
 VTA TOML uses:
   [secrets]
   backend = "vault"            ← master seed in HashiCorp Vault (kubernetes auth), not plaintext
 
   [messaging]
-  kind = "existing"            ← points at the shared mediator
+  kind = "existing"            ← points at the selected mediator
   did  = "{mediator_did}"
 
   [vta_did]
@@ -64,7 +65,9 @@ parentheses:
 pending
   → dns_provision          POST /setup: create the Cloudflare A-record + persist session   (status: dns_provisioned)
   → step_vta_setup         EnsureUserEnvironment + EnsureUserAccess + render TOML, then the
-                           `vta setup` Job; parse VTA DID (1a) + upload DID log to the host  (status: vta_setup_running → vta_setup_complete)
+                           `vta setup` Job; parse VTA DID (1a)                         (status: vta_setup_running)
+  → publish_did            in-farm host: upload automatically; external host: wait for
+                           the owner to upload did.jsonl and validate it publicly     (status: awaiting_did_publication → vta_setup_complete)
   → awaiting_admin_did     gate: wait for the user's PNM admin DID
                            (auto-skipped when admin_did was supplied at POST /setup)         (status: stays at vta_setup_complete)
   → step_import_admin_did  create the hosting ACL + the `vta import-did` Job                 (status: provisioning)
@@ -385,7 +388,7 @@ auth_method = "kubernetes"
 k8s_role    = "{{ .Vault.K8sRole }}"       # vta-user-<id>
 skip_verify = {{ .Vault.SkipVerify }}
 
-[messaging]                                # vta_only: the shared external mediator
+[messaging]                                # vta_only: the selected mediator
 kind = "existing"
 did  = "{{ .MediatorDid }}"
 
@@ -460,7 +463,7 @@ type SetupSession struct {
     PreRotationCount int    // default 1
 
     // Derived / shared
-    MediatorDid string // the platform stack's, snapshotted at create (vta_only)
+    MediatorDid string // selected at create; platform stack by default (vta_only)
     VtaDidUrl   string // {DidHostingServerURL}/{vta_name}-vta
     DidHostingServerURL  string // where these DIDs resolve      (json "-")
     DidHostingControlURL string // where the daemon is managed   (json "-")
@@ -555,7 +558,7 @@ when it was built, which is the one case still needing a human.
 
 ### DID log publication and recovery
 
-An unpublished `did:webvh` cannot resolve. When the farm client keypair is
+An unpublished `did:webvh` cannot resolve. For in-farm hosting, when the farm client keypair is
 configured, missing DID-log output, an absent hosting URL, a failed control
 client, and a failed `RegisterDid` call all fail the session. An unset farm
 client keypair remains a deployment-wide warning for local environments.
@@ -566,24 +569,22 @@ is not retried. Moving the status write after the upload requires making the
 upload idempotent first; replaying an already-published path currently fails
 because registration uses `force=false`.
 
-### Open: a user-supplied DID host
+### User-supplied DID hosting
 
-Once a user can point a session at a DID-hosting service of their own, uploading
-its DID log requires vtafarm-api to be an admin in **their** daemon's ACL. Two
-shapes, neither chosen:
+`POST /setup/connection/inspect` and `POST /setup` classify hosting by
+`did_hosting_did`, independent of `mediator_did`. A DID matching a running
+Full Stack in this farm uses its recorded hosting URL and the farm's existing
+authenticated upload. Otherwise the root `did:webvh` DID must resolve at a
+public HTTPS host. The API derives that host's origin from the DID, but never
+sends its management credential there.
 
-1. **Publish our client DID and have the user enroll it.** No new secrets, and
-   the same keypair everywhere. But it hands one identity admin rights across
-   every user's daemon, so a compromise is not contained, and it puts a manual
-   enrollment step in a user-facing flow.
-2. **Mint a keypair per session (or per user) and enroll that.** Contained by
-   construction and revocable per session. Costs a private key per session,
-   which belongs in Vault next to the master seed rather than in a column — the
-   same rule the rest of the design already follows.
-
-The schema does not prejudge it: `did_hosting_control_url` is already per
-session, so only the credential lookup changes. Decide when the feature is
-actually built.
+After external VTA setup, the generated public `did.jsonl` is retained on the
+session because Kubernetes expires the setup Job after one hour. The owner
+downloads it, uploads it to the displayed URL, and calls
+`POST /setup/{id}/did-log/validate`. This uses the public did:webvh resolver's
+DNS, TLS, response-size, and cryptographic checks. Only a valid log for the
+new VTA DID advances the session to `vta_setup_complete` and permits admin
+provisioning. The owner also manages any ACL needed for later VTA DID updates.
 
 ---
 
