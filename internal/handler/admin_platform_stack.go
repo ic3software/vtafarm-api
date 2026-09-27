@@ -17,7 +17,7 @@ import (
 
 // The platform stack: one full_stack session per environment running under our
 // own zone's fixed labels (vta.firstperson.dev and friends), which is the
-// mediator and DID host every vta_only session points at.
+// default mediator and DID host for vta_only sessions.
 //
 // It is created whole — domain row, DNS, session — by a single admin action,
 // because it happens once per environment and splitting it would expose a
@@ -144,7 +144,7 @@ func (h *SetupHandler) CreatePlatformStack(c *gin.Context) {
 		var inUse int64
 		h.db.Model(&model.SetupSession{}).Where("domain_id = ?", existing.ID).Count(&inUse)
 		if inUse > 0 {
-			c.JSON(http.StatusConflict, gin.H{"error": "a platform stack already exists — delete it first (this takes every vta_only session's mediator and DID host with it)"})
+			c.JSON(http.StatusConflict, gin.H{"error": "a platform stack already exists — delete it first (this disrupts agents using its mediator or DID host)"})
 			return
 		}
 	}
@@ -237,9 +237,8 @@ func (h *SetupHandler) CreatePlatformStack(c *gin.Context) {
 		// distinct by their -vta / -mediator / -vtc suffixes (design §4.3).
 		VtaName: label,
 		VtcName: label,
-		// The stack's own daemon is also the shared one every vta_only session
-		// uploads to, so this value is what puts those rows in one namespace —
-		// resolveSharedInfra hands the same URL to each of them.
+		// Default-connected VTA-only sessions upload to this daemon, so this
+		// URL puts their DID paths in one namespace.
 		DidHostingServerURL:  "https://" + didsFQDN,
 		DidHostingControlURL: "https://" + didsFQDN,
 		VtaImage:             req.VtaImage,
@@ -343,7 +342,7 @@ func (h *SetupHandler) GetPlatformStack(c *gin.Context) {
 			"dids":     session.DidsImage,
 			"vtc":      session.VtcImage,
 		},
-		// What this stack provides to every vta_only session, read straight off
+		// What this stack provides to default-connected vta_only sessions, read straight off
 		// this row at create time. It is reported rather than pasted anywhere:
 		// MEDIATOR_DID / DID_HOSTING_SERVER_URL / DID_HOSTING_CONTROL_URL used to
 		// be environment values an admin copied here, and the window between
@@ -354,7 +353,7 @@ func (h *SetupHandler) GetPlatformStack(c *gin.Context) {
 			"did_hosting_control_url": session.DidsURL(),
 		},
 		// vtafarm-api authenticates to this daemon with its own keypair
-		// (DID_HOSTING_DID / DID_HOSTING_PRIVATE_KEY) to upload every vta_only
+		// (DID_HOSTING_DID / DID_HOSTING_PRIVATE_KEY) to upload default-connected vta_only
 		// session's DID log, so that DID has to hold an admin ACL entry here.
 		// step_dids_grant_farm enrolls it offline while provisioning, so it is
 		// reported rather than asked for — including the one case that still

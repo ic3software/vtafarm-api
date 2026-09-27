@@ -17,6 +17,7 @@ func TestIsOrphaned(t *testing.T) {
 		{"connected in farm", model.ConnectionInFarm, &providerID, false},
 		{"provider deleted", model.ConnectionInFarm, nil, true},
 		{"platform default", model.ConnectionPlatform, nil, false},
+		{"external hosting", model.ConnectionExternal, nil, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

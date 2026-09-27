@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -234,6 +235,10 @@ wait:
 	return scanner.Err()
 }
 
+func quoteShellArg(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
 // CreateProvisionJob creates a K8s Job that runs:
 //  1. `vta import-did --did <adminDid> --role admin`
 //  2. if controlDid != "": `vta did-mgmt servers add --id control --did <controlDid> --label "DID Hosting Control Plane"`
@@ -243,9 +248,9 @@ func (c *Client) CreateProvisionJob(ctx context.Context, ns string, sessionID ui
 	jobName := ProvisionJobName(sessionID)
 	pvcName := VtaPVCName(sessionID)
 
-	cmd := fmt.Sprintf("vta import-did --did %s --role admin", adminDid)
+	cmd := fmt.Sprintf("vta import-did --did %s --role admin", quoteShellArg(adminDid))
 	if controlDid != "" {
-		cmd += fmt.Sprintf(" && vta did-mgmt servers add --id control --did %s --label 'DID Hosting Control Plane'", controlDid)
+		cmd += fmt.Sprintf(" && vta did-mgmt servers add --id control --did %s --label 'DID Hosting Control Plane'", quoteShellArg(controlDid))
 	}
 
 	backoff := int32(0)

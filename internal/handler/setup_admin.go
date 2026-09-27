@@ -224,9 +224,8 @@ func (h *SetupHandler) AdminSessionLogs(c *gin.Context) {
 //
 // Deleting the platform stack additionally requires {"confirm": "<label>"} in
 // the body. That one is not left to the UI: it is the only deletion in the
-// product that degrades every other user's service — every vta_only session
-// loses its mediator and DID host — and it sits one mis-click away in an admin
-// table.
+// product that can degrade other users' service by removing a mediator or DID
+// host their agents use, and it sits one mis-click away in an admin table.
 func (h *SetupHandler) AdminDeleteSession(c *gin.Context) {
 	publicID := c.Param("id")
 
@@ -245,7 +244,7 @@ func (h *SetupHandler) AdminDeleteSession(c *gin.Context) {
 		_ = c.ShouldBindJSON(&body)
 		if body.Confirm != session.VtaName {
 			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "deleting the platform stack takes every vta_only session's mediator and DID host with it — " +
+				"error": "deleting the platform stack disrupts agents using its mediator or DID host — " +
 					`send {"confirm": "` + session.VtaName + `"} to proceed`,
 			})
 			return

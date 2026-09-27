@@ -608,7 +608,7 @@ ours, so this only makes control we necessarily have reachable through the API
 rather than only through the cluster.
 
 The platform stack additionally **depends** on it, because that daemon is the
-**shared** DID host: every `vta_only` session's DID log is uploaded to it by
+**default** DID host: default-connected `vta_only` sessions' DID logs are uploaded to it by
 this API under the same keypair, and without the entry those sessions provision
 and then silently fail to publish.
 

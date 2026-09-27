@@ -71,7 +71,7 @@ func TestForRefusesMismatchedAudience(t *testing.T) {
 	}
 }
 
-// Empty means "no expectation on record" — the state of every vta_only session
+// Empty means "no expectation on record" — the state of older vta_only sessions
 // until did_hosting_did is populated. It must not start failing them.
 func TestForWithoutExpectationAcceptsAnything(t *testing.T) {
 	var hits int32

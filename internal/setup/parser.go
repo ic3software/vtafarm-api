@@ -19,6 +19,10 @@ func ParseVtaDID(output string) (string, error) {
 
 const didLogMarker = "---DID_LOG_START---"
 
+// Match the public did:webvh resolver's maximum response size, or a generated
+// external log could be downloadable but impossible to validate.
+const MaxVtaDIDLogBytes = 1 << 20
+
 // ParseVtaDidLog extracts the did.jsonl content appended to the setup job logs.
 // The setup job command appends the marker then cats the file, so everything
 // after the marker is the raw JSONL content.

@@ -305,7 +305,7 @@ func (o *Orchestrator) runFullStack(ctx context.Context, sessionID uint) {
 	} else {
 		// Not fatal — a session with no farm ACL entry still runs, it just
 		// cannot be operated through the control API afterwards, and on the
-		// platform stack it additionally breaks every vta_only session's DID
+		// platform stack it additionally breaks default-connected vta_only sessions' DID
 		// upload. Loud, because both failures surface far from here.
 		log.Printf("[orchestrator] session %d: DID_HOSTING_DID unset — this daemon's ACL will not "+
 			"grant vtafarm-api access; DID management through the control API will fail", sessionID)
@@ -948,7 +948,7 @@ func (o *Orchestrator) fsStepDidsLoadDid(ctx context.Context, ns string, s *mode
 // API instead of only through the cluster.
 //
 // The platform stack additionally *depends* on it. That daemon is the shared
-// DID host, and every vta_only session's DID log is uploaded to it under this
+// DID host, and default-connected vta_only sessions' DID logs are uploaded to it under this
 // same keypair — without the entry those sessions provision and then silently
 // fail to publish.
 //

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"golang.org/x/net/idna"
 
@@ -81,6 +82,33 @@ func NewResolver(timeout time.Duration) *Resolver {
 }
 
 func (r *Resolver) ResolveAuthenticationKey(ctx context.Context, did, kid string) (ed25519.PublicKey, error) {
+	document, err := r.resolveDocument(ctx, did)
+	if err != nil {
+		return nil, err
+	}
+	return siop.AuthenticationKeyFromDocument(document, did, kid)
+}
+
+// ResolveDID checks that a public DID log is reachable and cryptographically valid.
+func (r *Resolver) ResolveDID(ctx context.Context, did string) error {
+	_, err := r.resolveDocument(ctx, did)
+	return err
+}
+
+// HostingBaseURL derives the public hosting origin from a daemon's root DID.
+// A path-scoped daemon DID cannot unambiguously name the base for child DIDs.
+func HostingBaseURL(did string) (string, error) {
+	logURL, _, err := resolutionURL(did)
+	if err != nil {
+		return "", err
+	}
+	if logURL.Path != "/.well-known/did.jsonl" {
+		return "", errors.New("DID hosting DID must identify the host root")
+	}
+	return "https://" + logURL.Host, nil
+}
+
+func (r *Resolver) resolveDocument(ctx context.Context, did string) ([]byte, error) {
 	if r == nil || r.client == nil || r.lookupIP == nil || r.now == nil || r.maxResponseBytes <= 0 || r.clockSkew < 0 {
 		return nil, errors.New("did:webvh resolver is not configured")
 	}
@@ -126,7 +154,7 @@ func (r *Resolver) ResolveAuthenticationKey(ctx context.Context, did, kid string
 	if err != nil {
 		return nil, fmt.Errorf("validate DID log: %w", err)
 	}
-	return siop.AuthenticationKeyFromDocument(document, did, kid)
+	return document, nil
 }
 
 func resolutionURL(did string) (*url.URL, string, error) {
@@ -134,8 +162,13 @@ func resolutionURL(did string) (*url.URL, string, error) {
 		return nil, "", errors.New("did:webvh identifier is too long")
 	}
 	rest, ok := strings.CutPrefix(did, "did:webvh:")
-	if !ok || strings.ContainsAny(did, "?#") {
+	if !ok || strings.ContainsAny(did, "?#\"\\ ") {
 		return nil, "", errors.New("invalid did:webvh identifier")
+	}
+	for _, char := range did {
+		if unicode.IsControl(char) {
+			return nil, "", errors.New("invalid did:webvh identifier")
+		}
 	}
 	parts := strings.Split(rest, ":")
 	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {

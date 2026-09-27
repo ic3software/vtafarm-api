@@ -225,7 +225,7 @@ not worth coupling the two before then.
 
 #### 3.3.5 Deletion
 
-Deleting a platform stack takes every `vta_only` session's mediator and DID
+Deleting a platform stack takes default-connected `vta_only` sessions' mediator and DID
 host with it. It requires the strongest confirmation in the product — see
 §11.1.
 
@@ -1080,7 +1080,7 @@ the first two are UI (frontend doc §6):
 | --- | --- |
 | A user's own session (existing user-facing flow) | unchanged |
 | Another user's session, from the admin view | modal naming the session **and its owner**; a plain confirm button is enough |
-| The **platform stack** | modal that spells out that every `vta_only` session loses its mediator and DID host, plus **type-to-confirm** of the label |
+| The **platform stack** | modal that warns dependent agents lose mediator or DID hosting, plus **type-to-confirm** of the label |
 
 For the platform stack the API must not rely on the UI alone: require an
 explicit body field (e.g. `{"confirm": "<label>"}`) and answer 400 without it.
@@ -1321,8 +1321,8 @@ already running in production.
 ## 18. Out of scope / future
 
 - **`vta_only` custom domains** — the same machinery with a single host. The
-  mode points at a shared mediator and DID host, so a user's domain would cover
-  only part of their footprint. Reuses §6 and §8 unchanged if wanted later.
+  mode may point at a separately managed mediator and DID host, so a user's
+  domain may cover only part of their footprint. Reuses §6 and §8 if wanted later.
 - **Apex domains** (`aaa.com` itself) — the four components need four distinct
   hostnames.
 - **More than one custom domain per account**, and more than one live session

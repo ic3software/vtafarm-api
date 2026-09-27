@@ -79,11 +79,24 @@ func TestResolutionURL(t *testing.T) {
 		"did:webvh:Qmetio9KXzDkPXDpSQVyXSTcPVvj5ysHgMZt7y5ffRNDzD:%5B::1%5D",
 		"did:webvh:Qmetio9KXzDkPXDpSQVyXSTcPVvj5ysHgMZt7y5ffRNDzD:example.com:%2e%2e",
 		"did:webvh:Qmetio9KXzDkPXDpSQVyXSTcPVvj5ysHgMZt7y5ffRNDzD:example.com#fragment",
+		"did:webvh:Qmetio9KXzDkPXDpSQVyXSTcPVvj5ysHgMZt7y5ffRNDzD:example.com:evil\"path",
+		"did:webvh:Qmetio9KXzDkPXDpSQVyXSTcPVvj5ysHgMZt7y5ffRNDzD:example.com:evil\npath",
 		"did:webvh:QmNotAFullHash:example.com",
 	} {
 		if _, _, err := resolutionURL(invalid); err == nil {
 			t.Fatalf("resolutionURL(%q) accepted an unsafe DID", invalid)
 		}
+	}
+}
+
+func TestHostingBaseURLRequiresRootDID(t *testing.T) {
+	root := "did:webvh:Qmetio9KXzDkPXDpSQVyXSTcPVvj5ysHgMZt7y5ffRNDzD:example.com"
+	got, err := HostingBaseURL(root)
+	if err != nil || got != "https://example.com" {
+		t.Fatalf("HostingBaseURL(root) = %q, %v", got, err)
+	}
+	if _, err := HostingBaseURL(root + ":people:alice"); err == nil {
+		t.Fatal("path-scoped hosting DID was accepted")
 	}
 }
 
