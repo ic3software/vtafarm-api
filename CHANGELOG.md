@@ -1,5 +1,29 @@
 # Changelog
 
+## [v0.8.0] - 2026-09-27
+
+### Breaking
+
+- The share-code connection API has been removed, including
+  `PUT /api/v1/setup/{id}/sharing`, its admin equivalent and
+  `POST /api/v1/setup/connection/validate`. `MAX_STACK_CONNECTIONS` has also
+  been removed and no longer has any effect. Clients must inspect and submit
+  DID-hosting and mediator DIDs instead.
+
+### Added
+
+- `POST /api/v1/setup/connection/inspect` validates a DID-hosting DID and a
+  separately selected mediator DID, then classifies the host as platform,
+  in-farm or external. VTA-only creation accepts the same DID pair.
+- External DID hosting retains the generated VTA `did.jsonl` for download and
+  pauses at `awaiting_did_publication`. Owner-only download and validation
+  endpoints resume setup after the published DID history resolves correctly.
+
+### Changed
+
+- In-farm custom connections identify their DID host directly instead of using
+  an owner-generated share code.
+
 ## [v0.7.1] - 2026-09-24
 
 ### Fixed
