@@ -663,6 +663,7 @@ func (h *SetupHandler) List(c *gin.Context) {
 		VtaDidUrl   string `json:"vta_did_url"`
 		VtaDid      string `json:"vta_did,omitempty"`
 		ErrorMsg    string `json:"error_msg,omitempty"`
+		FailedStage string `json:"failed_stage,omitempty"`
 		CreatedAt   any    `json:"created_at"`
 		UpdatedAt   any    `json:"updated_at"`
 		// vta_only: where its DID host came from, and whether that
@@ -687,6 +688,7 @@ func (h *SetupHandler) List(c *gin.Context) {
 			VtaDidUrl:   s.VtaDidUrl,
 			VtaDid:      s.VtaDid,
 			ErrorMsg:    s.ErrorMsg,
+			FailedStage: s.FailureStage(),
 			CreatedAt:   s.CreatedAt,
 			UpdatedAt:   s.UpdatedAt,
 		}
@@ -742,6 +744,9 @@ func (h *SetupHandler) Get(c *gin.Context) {
 	}
 	if session.ErrorMsg != "" {
 		resp["error_msg"] = session.ErrorMsg
+	}
+	if failedStage := session.FailureStage(); failedStage != "" {
+		resp["failed_stage"] = failedStage
 	}
 	h.describeConnection(resp, &session)
 	c.JSON(http.StatusOK, resp)

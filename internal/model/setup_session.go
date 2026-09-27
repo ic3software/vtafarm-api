@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // The only two setup modes. full_stack always provisions all four components
 // (VTA + mediator + dids daemon + VTC) — the VTC is not optional. An earlier
@@ -45,13 +48,14 @@ type SetupSession struct {
 	ID uint `gorm:"primaryKey;autoIncrement" json:"-"`
 	// VtaName below is the public identifier — there is no opaque id. See its
 	// comment for why that makes it globally unique.
-	UserID     uint   `gorm:"not null;index"           json:"user_id"`
-	Status     string `gorm:"not null;default:pending" json:"status"`
-	Mode       string `gorm:"not null"                 json:"mode"`
-	Domain     string `gorm:"not null"                 json:"domain"`
-	Subdomain  string `gorm:"not null"                 json:"subdomain"`
-	CFRecordID string `                                json:"-"`
-	ErrorMsg   string `gorm:"not null;default:''"      json:"error_msg,omitempty"`
+	UserID      uint   `gorm:"not null;index"           json:"user_id"`
+	Status      string `gorm:"not null;default:pending" json:"status"`
+	FailedStage string `gorm:"column:failed_stage;not null;default:''" json:"failed_stage,omitempty"`
+	Mode        string `gorm:"not null"                 json:"mode"`
+	Domain      string `gorm:"not null"                 json:"domain"`
+	Subdomain   string `gorm:"not null"                 json:"subdomain"`
+	CFRecordID  string `                                json:"-"`
+	ErrorMsg    string `gorm:"not null;default:''"      json:"error_msg,omitempty"`
 
 	// DomainID links to the domains row backing this session; NULL exactly
 	// when DomainType is managed (enforced by setup_sessions_domain_link_check).
@@ -178,6 +182,85 @@ type SetupSession struct {
 
 	CreatedAt time.Time `                                       json:"created_at"`
 	UpdatedAt time.Time `                                       json:"updated_at"`
+}
+
+// FailureStage returns the status that was active when a failed session
+// stopped. Older rows predate failed_stage, so known error prefixes provide a
+// one-time compatibility path without making new failures depend on wording.
+func (s *SetupSession) FailureStage() string {
+	if s.Status != "failed" {
+		return ""
+	}
+	if s.FailedStage != "" {
+		return s.FailedStage
+	}
+	if s.Mode == ModeVtaOnly {
+		for _, prefix := range []string{
+			"failed to reach DID hosting control API",
+			"failed to add VTA DID to hosting ACL",
+			"failed to create provision job",
+			"provision job watch error",
+			"provision job failed",
+			"failed to create VTA deployment",
+			"failed to create VTA service",
+			"failed to create VTA ingress",
+			"VTA deployment did not become ready",
+		} {
+			if strings.HasPrefix(s.ErrorMsg, prefix) {
+				return "provisioning"
+			}
+		}
+		for _, prefix := range []string{
+			"failed to ensure k8s namespace",
+			"failed to provision vault access",
+			"vault not configured",
+			"failed to render TOML",
+			"failed to create k8s resources",
+		} {
+			if strings.HasPrefix(s.ErrorMsg, prefix) {
+				return "dns_provisioned"
+			}
+		}
+		return "vta_setup_running"
+	}
+
+	prefixes := []struct {
+		prefix string
+		stage  string
+	}{
+		{"DNS not resolving", "dns_wait"},
+		{"failed to ensure k8s namespace", "env_provision"},
+		{"failed to provision vault access", "env_provision"},
+		{"vault not configured", "env_provision"},
+		{"failed to provision k8s resources", "k8s_provision"},
+		{"TLS certificate issuance failed", "tls_provision"},
+		{"vta setup failed", "step_vta_setup"},
+		{"mediator setup (phase 1) failed", "step_mediator_p1"},
+		{"mediator reprovision failed", "step_mediator_reprov"},
+		{"mediator setup (phase 2) failed", "step_mediator_p2"},
+		{"dids setup (offline-prepare) failed", "step_dids_p1"},
+		{"dids provision-integration failed", "step_dids_provision"},
+		{"dids setup (offline-complete) failed", "step_dids_p2"},
+		{"dids invite failed", "step_dids_invite"},
+		{"dids load-did failed", "step_dids_load_did"},
+		{"granting vtafarm-api access to the DID host failed", "step_dids_grant_farm"},
+		{"failed to deploy dids daemon", "deploy_dids"},
+		{"failed to deploy mediator", "deploy_mediator"},
+		{"vta register-dids failed", "step_vta_register_dids"},
+		{"import-admin-did failed", "step_import_admin_did"},
+		{"vtc setup-key generation failed", "step_vtc_setup_key"},
+		{"vtc acl grant failed", "step_vtc_acl_grant"},
+		{"failed to deploy vta", "deploy_vta"},
+		{"vtc setup failed", "step_vtc_setup"},
+		{"failed to deploy vtc", "deploy_vtc"},
+	}
+	for _, candidate := range prefixes {
+		if strings.HasPrefix(s.ErrorMsg, candidate.prefix) {
+			return candidate.stage
+		}
+	}
+
+	return ""
 }
 
 func (s *SetupSession) FQDN() string {

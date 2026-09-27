@@ -398,5 +398,8 @@ func (h *SetupHandler) GetPlatformStack(c *gin.Context) {
 	if session.ErrorMsg != "" {
 		resp["error_msg"] = session.ErrorMsg
 	}
+	if failedStage := session.FailureStage(); failedStage != "" {
+		resp["failed_stage"] = failedStage
+	}
 	c.JSON(http.StatusOK, resp)
 }

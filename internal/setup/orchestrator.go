@@ -320,10 +320,10 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 		case didLog == "":
 			// `vta setup` reported a DID but no did.jsonl followed it in the
 			// logs. Nothing to publish, and nothing that publishes it later.
-			o.markFailed(sessionID, "VTA setup produced no DID log to publish — the agent's DID would never resolve")
+			o.markFailedAt(sessionID, "vta_setup_running", "VTA setup produced no DID log to publish — the agent's DID would never resolve")
 			return
 		case session.VtaDidUrl == "":
-			o.markFailed(sessionID, "session has no VTA DID URL — cannot publish the agent's DID")
+			o.markFailedAt(sessionID, "vta_setup_running", "session has no VTA DID URL — cannot publish the agent's DID")
 			return
 		}
 
@@ -336,7 +336,7 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 		// current — the two differ the moment the platform stack is rebuilt.
 		dh, err := o.didHosting.For(session.DidHostingControlURL, session.DIDHostingDid)
 		if err != nil {
-			o.markFailed(sessionID, "cannot reach the DID hosting control API at "+
+			o.markFailedAt(sessionID, "vta_setup_running", "cannot reach the DID hosting control API at "+
 				session.DidHostingControlURL+": "+err.Error())
 			return
 		}
@@ -345,7 +345,7 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 			if ctx.Err() != nil {
 				return
 			}
-			o.markFailed(sessionID, "failed to publish the agent's DID to "+
+			o.markFailedAt(sessionID, "vta_setup_running", "failed to publish the agent's DID to "+
 				session.DidHostingControlURL+": "+err.Error())
 			return
 		}
@@ -487,10 +487,21 @@ func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDi
 }
 
 func (o *Orchestrator) markFailed(sessionID uint, msg string) {
+	o.markFailedAt(sessionID, "", msg)
+}
+
+// stage is only supplied when crash-safety requires the persisted status to
+// advance before the work represented by the previous UI phase is complete.
+func (o *Orchestrator) markFailedAt(sessionID uint, stage, msg string) {
 	log.Printf("[orchestrator] session %d: failed: %s", sessionID, msg)
+	failedStage := gorm.Expr("CASE WHEN status = 'failed' THEN failed_stage ELSE status END")
+	if stage != "" {
+		failedStage = gorm.Expr("CASE WHEN status = 'failed' THEN failed_stage ELSE ? END", stage)
+	}
 	o.db.Model(&model.SetupSession{}).Where("id = ?", sessionID).Updates(map[string]any{
-		"status":     "failed",
-		"error_msg":  msg,
-		"updated_at": time.Now(),
+		"failed_stage": failedStage,
+		"status":       "failed",
+		"error_msg":    msg,
+		"updated_at":   time.Now(),
 	})
 }
