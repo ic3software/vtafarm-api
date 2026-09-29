@@ -1,5 +1,13 @@
 # Changelog
 
+## [v0.9.4] - 2026-09-29
+
+### Changed
+
+- DID Hosting management uses signed Trust Tasks and verifies signed replies;
+  the removed REST management and bearer-token flows are no longer supported.
+- DID Hosting enrollment requires the claim code alongside the single-use URL.
+
 ## [v0.9.3] - 2026-09-29
 
 ### Changed
