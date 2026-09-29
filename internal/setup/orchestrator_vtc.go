@@ -146,7 +146,8 @@ func (o *Orchestrator) fsStepVtcSetupKey(ctx context.Context, ns string, s *mode
 
 // fsStepVtcAclGrant creates the VTA context the VTC's community lives under
 // (id = VtcName, avoiding collisions if the VTA ever hosts more than one
-// context) with the ephemeral setup key as its admin, expiring in 1h —
+// context) with the ephemeral setup key as its admin, expiring in 1h and
+// marked for one-time hand-off to the permanent admin DID —
 // `vta contexts create` is an offline fjall write with an atomic ACL entry.
 //
 // Resume tolerance (design §8): on re-run the create 409s with "context
@@ -156,7 +157,7 @@ func (o *Orchestrator) fsStepVtcSetupKey(ctx context.Context, ns string, s *mode
 // import uses. No expiry flag on that path; acceptable for a retry. Any
 // non-Conflict failure still fails the Job with its original exit code.
 func (o *Orchestrator) fsStepVtcAclGrant(ctx context.Context, ns string, s *model.SetupSession, setupKeyDid string) error {
-	create := fmt.Sprintf(`vta contexts create --id %s --name "VTC" --admin-did %s --admin-expires 1h`,
+	create := fmt.Sprintf(`vta contexts create --id %s --name "VTC" --admin-did %s --admin-expires 1h --admin-handoff`,
 		shellQuote(s.VtcName), shellQuote(setupKeyDid))
 	regrant := fmt.Sprintf(`vta import-did --did %s --role admin --context %s --label vtc-setup`,
 		shellQuote(setupKeyDid), shellQuote(s.VtcName))

@@ -1,5 +1,17 @@
 # Changelog
 
+## [v0.9.1] - 2026-09-29
+
+### Added
+
+- Failed component image upgrades automatically restore the previous image,
+  including recovery of interrupted rollbacks after an API restart.
+
+### Fixed
+
+- Full-stack setup grants the ephemeral VTC setup DID one-time handoff access,
+  allowing VTC to replace it with its permanent admin DID.
+
 ## [v0.9.0] - 2026-09-27
 
 ### Added
