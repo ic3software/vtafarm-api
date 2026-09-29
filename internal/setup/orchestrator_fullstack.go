@@ -72,6 +72,23 @@ func fsMediatorTuningEnv() []corev1.EnvVar {
 	}
 }
 
+// The dids daemon applies these budgets to each of its two Fjall stores.
+func fsDidsTuningEnv() []corev1.EnvVar {
+	return []corev1.EnvVar{
+		{Name: "STORAGE_FJALL_BLOCK_CACHE", Value: "8388608"},   // 8 MiB
+		{Name: "STORAGE_FJALL_WRITE_BUFFER", Value: "16777216"}, // 16 MiB
+		{Name: "STORAGE_FJALL_MAX_JOURNAL", Value: "67108864"},  // 64 MiB
+	}
+}
+
+func fsVtcTuningEnv() []corev1.EnvVar {
+	return []corev1.EnvVar{
+		{Name: "STORAGE_FJALL_BLOCK_CACHE", Value: "16777216"},  // 16 MiB
+		{Name: "STORAGE_FJALL_WRITE_BUFFER", Value: "33554432"}, // 32 MiB
+		{Name: "STORAGE_FJALL_MAX_JOURNAL", Value: "134217728"}, // 128 MiB
+	}
+}
+
 // vaultHostPort strips the scheme from a Vault address for the mediator's
 // vault://host:port/... storage URL form.
 func vaultHostPort(addr string) string {
@@ -1045,7 +1062,7 @@ func (o *Orchestrator) fsDeployDids(ctx context.Context, ns string, s *model.Set
 		WorkingDir:      "/work/dids",
 		ServiceAccount:  k8s.VtaServiceAccount,
 		PVCMounts:       []k8s.PVCMount{{Name: "dids-data", ClaimName: name, MountPath: "/work/dids"}},
-		Env:             fsNoColorEnv(),
+		Env:             append(fsNoColorEnv(), fsDidsTuningEnv()...),
 		Port:            8534,
 		Labels:          fsLabels("dids", s.ID),
 		HealthCheckPath: "/health",
@@ -1131,7 +1148,7 @@ func (o *Orchestrator) fsDeployVta(ctx context.Context, ns string, s *model.Setu
 		WorkingDir:      "/work/vta",
 		ServiceAccount:  k8s.VtaServiceAccount,
 		PVCMounts:       []k8s.PVCMount{{Name: "vta-data", ClaimName: name, MountPath: "/work/vta"}},
-		Env:             fsNoColorEnv(),
+		Env:             append(fsNoColorEnv(), k8s.VtaTuningEnv()...),
 		Port:            8100,
 		Labels:          fsLabels("vta", s.ID),
 		HealthCheckPath: "/health",

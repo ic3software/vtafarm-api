@@ -5,7 +5,11 @@
 // the nodes that can actually hold them.
 package capacity
 
-import "slices"
+import (
+	"slices"
+
+	"github.com/ic3software/vtafarm-api/internal/k8s"
+)
 
 // Component is one pod of a session mode plus its PVC (StorageBytes 0 = no
 // volume). Components schedule independently — full_stack's four pods may
@@ -28,31 +32,36 @@ const (
 	gi = int64(1) << 30
 )
 
-// Per-component planning costs mirror the provisioning code — keep in sync with:
-//
-//	vta_only:   internal/k8s/vta_resources.go   CreateVtaDeployment
-//	full_stack: internal/setup/orchestrator_fullstack.go     (dids, mediator, vta)
-//	            internal/setup/orchestrator_vtc.go (vtc)
-//
-// and the per-component PVC sizes (internal/k8s/setup_jobs.go and
+// CPU and memory planning costs use the provisioning resource profiles.
+// Keep storage costs in sync with the PVC sizes (internal/k8s/setup_jobs.go and
 // internal/setup/orchestrator_fullstack.go).
 // CPU uses requests (there are deliberately no CPU limits). Memory uses hard
 // limits so a reported session count still fits if every new component grows
 // to its configured ceiling.
 var (
 	VtaOnly = Mode{Name: "vta_only", Components: []Component{
-		{Name: "vta", CPUMillis: 10, MemBytes: 512 * mi, StorageBytes: 200 * mi},
+		planningComponent(k8s.ComponentVTA, 200*mi),
 	}}
 
 	// FullStack covers all four components — the VTC is always provisioned,
 	// so there is no lighter full-stack shape to plan for.
 	FullStack = Mode{Name: "full_stack", Components: []Component{
-		{Name: "dids", CPUMillis: 10, MemBytes: 512 * mi, StorageBytes: 200 * mi},
-		{Name: "mediator", CPUMillis: 50, MemBytes: 256 * mi, StorageBytes: gi},
-		{Name: "vta", CPUMillis: 10, MemBytes: 512 * mi, StorageBytes: 200 * mi},
-		{Name: "vtc", CPUMillis: 10, MemBytes: 512 * mi, StorageBytes: 200 * mi},
+		planningComponent(k8s.ComponentDids, 200*mi),
+		planningComponent(k8s.ComponentMediator, gi),
+		planningComponent(k8s.ComponentVTA, 200*mi),
+		planningComponent(k8s.ComponentVTC, 200*mi),
 	}}
 )
+
+func planningComponent(name string, storageBytes int64) Component {
+	resources := k8s.DefaultResourceRequirements(name)
+	return Component{
+		Name:         name,
+		CPUMillis:    resources.Requests.Cpu().MilliValue(),
+		MemBytes:     resources.Limits.Memory().Value(),
+		StorageBytes: storageBytes,
+	}
+}
 
 // PlanningHeadroom returns the resource budget available for new sessions.
 // Existing reservations and stable live consumption are both protected. The

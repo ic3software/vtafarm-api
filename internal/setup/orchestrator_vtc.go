@@ -254,7 +254,7 @@ func (o *Orchestrator) fsDeployVtc(ctx context.Context, ns string, s *model.Setu
 		WorkingDir:      "/work/vtc",
 		ServiceAccount:  k8s.VtaServiceAccount,
 		PVCMounts:       []k8s.PVCMount{{Name: "vtc-data", ClaimName: name, MountPath: "/work/vtc"}},
-		Env:             fsNoColorEnv(),
+		Env:             append(fsNoColorEnv(), fsVtcTuningEnv()...),
 		Port:            8200,
 		Labels:          fsLabels("vtc", s.ID),
 		HealthCheckPath: "/health",
