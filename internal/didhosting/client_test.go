@@ -2,123 +2,151 @@ package didhosting
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"sync"
-	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/ic3software/vtafarm-api/internal/didkey"
+	"github.com/ic3software/vtafarm-api/internal/siop"
 )
 
-func newClientTestServer(t *testing.T, handler http.HandlerFunc) *Client {
+type testIdentity struct {
+	did     string
+	kid     string
+	seedB64 string
+	private ed25519.PrivateKey
+}
+
+func identity(t *testing.T, fill byte) testIdentity {
 	t.Helper()
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
-	seed := make([]byte, 32)
-	client, err := New(server.URL, "did:key:z6MkLoadTest", base64.StdEncoding.EncodeToString(seed))
+	seed := make([]byte, ed25519.SeedSize)
+	for i := range seed {
+		seed[i] = fill
+	}
+	private := ed25519.NewKeyFromSeed(seed)
+	did, err := didkey.FromPublicKey(private.Public().(ed25519.PublicKey))
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatal(err)
 	}
-	return client
+	multibase := did[len("did:key:"):]
+	return testIdentity{
+		did:     did,
+		kid:     did + "#" + multibase,
+		seedB64: base64.StdEncoding.EncodeToString(seed),
+		private: private,
+	}
 }
 
-func writeJSON(t *testing.T, w http.ResponseWriter, value any) {
+func verifyTask(t *testing.T, doc *trustTask, signer testIdentity) {
 	t.Helper()
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(value); err != nil {
-		t.Errorf("encode response: %v", err)
+	if doc.Proof == nil {
+		t.Fatal("request has no proof")
+	}
+	p := *doc.Proof
+	signature, err := decodeProofValue(p.ProofValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc.Proof = nil
+	message, err := proofMessage(doc, p)
+	doc.Proof = &p
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey, err := (siop.DIDKeyResolver{}).ResolveAuthenticationKey(context.Background(), signer.did, signer.kid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ed25519.Verify(publicKey, message, signature) {
+		t.Fatal("request proof did not verify")
 	}
 }
 
-func TestConcurrentRegisterDidReusesOneAuthentication(t *testing.T) {
-	var authCount atomic.Int32
-	var registerCount atomic.Int32
-	client := newClientTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/server-info":
-			writeJSON(t, w, map[string]any{"server_did": "did:key:z6MkServer"})
-		case "/api/auth/challenge":
-			writeJSON(t, w, map[string]any{"challenge": "nonce", "sessionId": "challenge-session"})
-		case "/api/auth/":
-			authCount.Add(1)
-			writeJSON(t, w, map[string]any{"tokens": map[string]any{
-				"accessToken": "shared-token", "expiresIn": 300,
-			}})
-		case "/api/dids/register":
-			if got := r.Header.Get("Authorization"); got != "Bearer shared-token" {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-			registerCount.Add(1)
-			w.WriteHeader(http.StatusCreated)
-		default:
+func TestRegisterDidUsesSignedTrustTask(t *testing.T) {
+	clientIdentity := identity(t, 1)
+	serverIdentity := identity(t, 2)
+	var received trustTask
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != trustTaskEndpoint || r.Method != http.MethodPost {
 			http.NotFound(w, r)
+			return
 		}
-	})
-
-	const requests = 10
-	start := make(chan struct{})
-	errs := make(chan error, requests)
-	var wg sync.WaitGroup
-	for i := 0; i < requests; i++ {
-		wg.Add(1)
-		go func(sequence int) {
-			defer wg.Done()
-			<-start
-			errs <- client.RegisterDid(context.Background(), fmt.Sprintf("load-%d", sequence), "did log")
-		}(i)
-	}
-	close(start)
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatalf("RegisterDid: %v", err)
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("legacy bearer authorization was sent: %q", got)
 		}
-	}
-	if got := authCount.Load(); got != 1 {
-		t.Fatalf("authenticate calls = %d, want 1", got)
-	}
-	if got := registerCount.Load(); got != requests {
-		t.Fatalf("register calls = %d, want %d", got, requests)
-	}
-}
-
-func TestRegisterDidRetriesOnceAfterUnauthorized(t *testing.T) {
-	var authCount atomic.Int32
-	var registerCount atomic.Int32
-	client := newClientTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/server-info":
-			writeJSON(t, w, map[string]any{"server_did": "did:key:z6MkServer"})
-		case "/api/auth/challenge":
-			writeJSON(t, w, map[string]any{"challenge": "nonce", "sessionId": "challenge-session"})
-		case "/api/auth/":
-			n := authCount.Add(1)
-			writeJSON(t, w, map[string]any{"tokens": map[string]any{
-				"accessToken": fmt.Sprintf("token-%d", n), "expiresIn": 300,
-			}})
-		case "/api/dids/register":
-			registerCount.Add(1)
-			if r.Header.Get("Authorization") == "Bearer token-1" {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-			w.WriteHeader(http.StatusCreated)
-		default:
-			http.NotFound(w, r)
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
-	})
+		verifyTask(t, &received, clientIdentity)
 
-	if err := client.RegisterDid(context.Background(), "load-1", "did log"); err != nil {
+		payload, _ := json.Marshal(map[string]any{"record": map[string]any{"mnemonic": "agent-vta"}})
+		reply := trustTask{
+			ID:        "reply-id",
+			Type:      received.Type + "#response",
+			ThreadID:  received.ID,
+			Issuer:    serverIdentity.did,
+			Recipient: clientIdentity.did,
+			IssuedAt:  time.Now().UTC().Format(time.RFC3339),
+			Payload:   payload,
+		}
+		if err := signTrustTask(&reply, serverIdentity.kid, serverIdentity.private, reply.IssuedAt); err != nil {
+			t.Errorf("sign response: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(reply)
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL, clientIdentity.did, clientIdentity.seedB64, serverIdentity.did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.RegisterDid(context.Background(), "agent-vta", "did log"); err != nil {
 		t.Fatalf("RegisterDid: %v", err)
 	}
-	if got := authCount.Load(); got != 2 {
-		t.Fatalf("authenticate calls = %d, want 2", got)
+	if received.Type != didRegisterType || received.Issuer != clientIdentity.did || received.Recipient != serverIdentity.did {
+		t.Fatalf("unexpected Trust Task envelope: %+v", received)
 	}
-	if got := registerCount.Load(); got != 2 {
-		t.Fatalf("register calls = %d, want 2", got)
+	var payload map[string]any
+	if err := json.Unmarshal(received.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["path"] != "agent-vta" || payload["method"] != "webvh" || payload["didData"] != "did log" || payload["force"] != false {
+		t.Fatalf("unexpected register payload: %#v", payload)
+	}
+}
+
+func TestRegisterDidRejectsUnsignedResponse(t *testing.T) {
+	clientIdentity := identity(t, 3)
+	serverIdentity := identity(t, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request trustTask
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		_ = json.NewEncoder(w).Encode(trustTask{
+			ID:        "reply-id",
+			Type:      request.Type + "#response",
+			ThreadID:  request.ID,
+			Issuer:    serverIdentity.did,
+			Recipient: clientIdentity.did,
+			Payload:   json.RawMessage(`{}`),
+		})
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL, clientIdentity.did, clientIdentity.seedB64, serverIdentity.did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.RegisterDid(context.Background(), "agent-vta", "did log"); err == nil {
+		t.Fatal("unsigned response was accepted")
 	}
 }

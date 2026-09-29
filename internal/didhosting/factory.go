@@ -52,16 +52,9 @@ func (f *Factory) ClientDid() string {
 
 // For returns a Client for controlURL, reusing one already built for that URL.
 //
-// Caching is not just to save a round trip: New fetches the server's DID from
-// /api/server-info, so an uncached call reaches the network on every upload,
-// ACL write and teardown. Clients are keyed by URL and own the shared access-
-// token cache for that server; reuse is what lets concurrent calls coordinate
-// authentication without revoking each other's token.
-//
-// expectedServerDid, when non-empty, is the DID the caller already knows this
-// daemon to have — see checkAudience for why that matters. Empty means "no
-// expectation on record", used only for older sessions whose
-// did_hosting_did column was not populated.
+// The current control plane has no REST discovery or bearer-token surface.
+// expectedServerDid is mandatory: it is the Trust Task recipient and the
+// identity whose proof every response must carry.
 func (f *Factory) For(controlURL, expectedServerDid string) (*Client, error) {
 	if f == nil {
 		return nil, fmt.Errorf("DID hosting not configured (no client keypair)")
@@ -70,17 +63,17 @@ func (f *Factory) For(controlURL, expectedServerDid string) (*Client, error) {
 	if base == "" {
 		return nil, fmt.Errorf("session has no DID hosting control URL")
 	}
+	if expectedServerDid == "" {
+		return nil, fmt.Errorf("session has no DID hosting service DID")
+	}
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if c, ok := f.byBase[base]; ok {
 		return c, checkAudience(base, c.serverDid, expectedServerDid)
 	}
-	c, err := New(base, f.clientDid, f.privKeyB64)
+	c, err := New(base, f.clientDid, f.privKeyB64, expectedServerDid)
 	if err != nil {
-		// Deliberately not cached: /api/server-info failing is usually a daemon
-		// that is not up yet, and the next attempt should retry rather than
-		// inherit the failure.
 		return nil, err
 	}
 	// Cached before the audience check, and the error returned alongside the
@@ -91,23 +84,14 @@ func (f *Factory) For(controlURL, expectedServerDid string) (*Client, error) {
 	return c, checkAudience(base, c.serverDid, expectedServerDid)
 }
 
-// checkAudience refuses a daemon whose self-reported DID is not the one we
-// expected to be talking to.
+// checkAudience refuses to reuse a URL-pinned client for another service DID.
 //
-// serverDid comes from the daemon's own /api/server-info and becomes the `aud`
-// of every id_token this client signs — with vtafarm-api's private key, which
-// holds an admin ACL entry on every daemon the farm operates. A host that
-// answers with somebody else's DID therefore receives a token minted for that
-// somebody else, and can replay it there as us.
-//
-// Nothing has needed this while control URLs came only out of our own database
-// and named daemons we provisioned. It is written down now because the moment a
-// session can be pointed at a daemon on the strength of a value a user handed
-// us, "the daemon says who it is" stops being a safe answer to "who am I
-// signing for".
+// A cached client remains pinned to the service DID it was constructed for.
+// Sending a signed task to the same URL under a different recipient identity
+// would otherwise break the request's audience binding.
 func checkAudience(base, serverDid, expected string) error {
-	if expected == "" || serverDid == expected {
+	if serverDid == expected {
 		return nil
 	}
-	return fmt.Errorf("DID hosting daemon at %s reports server DID %q, expected %q", base, serverDid, expected)
+	return fmt.Errorf("DID hosting client for %s is pinned to service DID %q, requested %q", base, serverDid, expected)
 }
