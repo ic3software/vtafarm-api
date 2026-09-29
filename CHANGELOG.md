@@ -1,5 +1,13 @@
 # Changelog
 
+## [v0.9.2] - 2026-09-29
+
+### Added
+
+- DID Hosting enrollment responses now include the claim code required by
+  current daemon images, while remaining compatible with older link-only
+  images.
+
 ## [v0.9.1] - 2026-09-29
 
 ### Added

@@ -662,8 +662,8 @@ components:
         (`url`, `vta_image`, `vta_did`). full_stack instead uses `urls`,
         `collected`, and `action_required` — see the full_stack-only fields —
         each covering all four components, including `urls.vtc`,
-        `collected.vtc_did`, `action_required.install_url`/`claim_code`, and
-        `vtc_install_used`.
+        `collected.vtc_did`, the DID-hosting enrollment URL/claim code,
+        `action_required.install_url`/`claim_code`, and `vtc_install_used`.
       properties:
         id:
           type: string
@@ -766,6 +766,12 @@ components:
             dids_admin_enroll_url:
               type: string
               description: 3e — REQUIRED output, single-use. Visit to register a passkey for the dids admin UI.
+            dids_admin_enroll_claim_code:
+              type: string
+              description: |
+                Second-channel claim code required by current DID Hosting images.
+                Offered with `dids_admin_enroll_url`; omitted for older images
+                that issue link-only enrollment invites.
             reveal_keys_once:
               type: boolean
               description: True when mediator_admin_key/webvh_admin_key are present in this response.
@@ -787,8 +793,9 @@ components:
           description: |
             full_stack only. True once the frontend has called
             `POST /setup/{id}/dids/enroll-ack` for the current `dids_admin_enroll_url`.
-            While true, `action_required.dids_admin_enroll_url` is omitted — the URL is
-            single-use, so call `POST /setup/{id}/dids/reissue-enroll` for a fresh one.
+            While true, the DID-hosting enrollment URL and claim code are omitted —
+            the invite is single-use, so call `POST /setup/{id}/dids/reissue-enroll`
+            for a fresh pair.
         vtc_install_used:
           type: boolean
           description: |
@@ -2788,13 +2795,14 @@ paths:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         "200":
-          description: A fresh enrollment URL
+          description: A fresh enrollment URL and, for current images, its claim code
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   dids_admin_enroll_url: { type: string }
+                  dids_admin_enroll_claim_code: { type: string }
         "401": { description: Missing or invalid token, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "404": { description: Session not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "409": { description: The dids daemon isn't provisioned yet, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
@@ -5539,6 +5547,7 @@ paths:
       summary: Reissue dids admin enrollment URL
       description: |
         full_stack only. Regenerates the single-use dids admin-panel enrollment URL
+        and its second-channel claim code
         (re-runs `did-hosting-daemon invite --role admin`) — useful if the original URL
         (returned once from `step_dids_invite` / `GET /setup/{id}`) was lost or already
         consumed. Scales the dids Deployment to 0 and waits for its pod to terminate
@@ -5557,7 +5566,7 @@ paths:
             example: "ab12cd34"
       responses:
         "200":
-          description: New enrollment URL minted
+          description: New enrollment URL and claim code minted
           content:
             application/json:
               schema:
@@ -5565,7 +5574,10 @@ paths:
                 properties:
                   dids_admin_enroll_url:
                     type: string
-                    example: "https://dids.example.com/enroll/abc123"
+                    example: "https://dids.example.com/enroll?token=abc123"
+                  dids_admin_enroll_claim_code:
+                    type: string
+                    example: "7KQ4-MX2P-9TDA"
         "400":
           description: Session is not a full_stack session
           content:
@@ -5609,8 +5621,8 @@ paths:
       description: |
         full_stack only. Called by the frontend the moment the user opens
         `action_required.dids_admin_enroll_url` — marks `dids_enroll_used` true so
-        `GET /setup/{id}` stops offering that (single-use) URL. Call
-        `POST /setup/{id}/dids/reissue-enroll` to mint a fresh one afterwards.
+        `GET /setup/{id}` stops offering that single-use URL and its claim code.
+        Call `POST /setup/{id}/dids/reissue-enroll` to mint a fresh pair afterwards.
       tags: [User]
       security:
         - CookieAuthUser: []

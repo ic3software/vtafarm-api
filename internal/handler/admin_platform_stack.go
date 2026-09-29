@@ -377,6 +377,9 @@ func (h *SetupHandler) GetPlatformStack(c *gin.Context) {
 	actionRequired := gin.H{}
 	if session.DidsEnrollURL != "" && !session.DidsEnrollUsed {
 		actionRequired["dids_admin_enroll_url"] = session.DidsEnrollURL
+		if session.DidsEnrollClaimCode != "" {
+			actionRequired["dids_admin_enroll_claim_code"] = session.DidsEnrollClaimCode
+		}
 	}
 	if session.VtcInstallURL != "" && !session.VtcInstallUsed {
 		actionRequired["install_url"] = session.VtcInstallURL

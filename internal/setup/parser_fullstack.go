@@ -17,6 +17,7 @@ var (
 	webvhAdminKeyRe      = regexp.MustCompile(`Private key \(save now, not re-shown\):\s+(\S+)`)
 	serverDidRe          = regexp.MustCompile(`server_did\s*=\s*"([^"]+)"`)
 	didsEnrollURLRe      = regexp.MustCompile(`(https?://\S+/enroll\S*)`)
+	didsEnrollClaimRe    = regexp.MustCompile(`(?im)^[ \t]*Claim code:[ \t]*(?:\r?\n[ \t]*)?([A-Z0-9-]+)[ \t]*$`)
 	artifactMarkerLineRe = regexp.MustCompile(`(?m)^---ARTIFACT:[^\n]*?---\s*$`)
 	ansiEscapeRe         = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 )
@@ -93,16 +94,20 @@ func ParseServerDid(artifact string) (string, error) {
 	return "", fmt.Errorf("server_did not found in config.toml artifact")
 }
 
-// ParseDidsEnrollURL extracts the dids admin-panel enrollment URL (3e) from
-// `did-hosting-daemon invite --role admin` output. The design doc doesn't
-// pin down an exact line format beyond the response sketch
-// (".../enroll/..."), so this is a best-effort pattern — unverified against
-// the real binary's output.
-func ParseDidsEnrollURL(output string) (string, error) {
+// ParseDidsEnrollInvite extracts the admin-panel enrollment URL and the
+// second-channel claim code from `did-hosting-daemon invite --role admin`.
+// Older daemon images did not issue a claim code, so an absent code remains
+// valid while the URL is always required.
+func ParseDidsEnrollInvite(output string) (enrollURL, claimCode string, err error) {
 	if m := didsEnrollURLRe.FindStringSubmatch(output); m != nil {
-		return m[1], nil
+		enrollURL = m[1]
+	} else {
+		return "", "", fmt.Errorf("dids enrollment URL not found in output")
 	}
-	return "", fmt.Errorf("dids enrollment URL not found in output")
+	if m := didsEnrollClaimRe.FindStringSubmatch(output); m != nil {
+		claimCode = strings.TrimSpace(m[1])
+	}
+	return enrollURL, claimCode, nil
 }
 
 // ParseArtifact extracts the content following a "---ARTIFACT:<marker>---"
