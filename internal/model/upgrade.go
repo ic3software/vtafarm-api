@@ -8,11 +8,14 @@ const (
 	UpgradeBatchCompleted = "completed"
 	UpgradeBatchCancelled = "cancelled"
 
-	UpgradeTaskPending   = "pending"
-	UpgradeTaskRunning   = "running"
-	UpgradeTaskSucceeded = "succeeded"
-	UpgradeTaskFailed    = "failed"
-	UpgradeTaskSkipped   = "skipped"
+	UpgradeTaskPending        = "pending"
+	UpgradeTaskRunning        = "running"
+	UpgradeTaskSucceeded      = "succeeded"
+	UpgradeTaskFailed         = "failed"
+	UpgradeTaskSkipped        = "skipped"
+	UpgradeTaskRollingBack    = "rolling_back"
+	UpgradeTaskRolledBack     = "rolled_back"
+	UpgradeTaskRollbackFailed = "rollback_failed"
 )
 
 // UpgradeComponents are the deployable components an admin can upgrade —
@@ -39,8 +42,7 @@ type UpgradeBatch struct {
 }
 
 // UpgradeTask is one (session, component) upgrade within a batch. FromImage
-// keeps the pre-upgrade image so a failed or regretted upgrade can be
-// reverted by creating a new batch back to that image.
+// keeps the pre-upgrade image for automatic rollback on failure.
 type UpgradeTask struct {
 	ID        uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	BatchID   uint      `gorm:"not null;index"           json:"-"`

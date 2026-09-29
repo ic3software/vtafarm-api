@@ -195,6 +195,25 @@ make migrate-down                        # roll back one step
 
 ---
 
+## Automatic image rollback
+
+Image upgrades restore the task's recorded previous image when the target
+container is in `CrashLoopBackOff` with at least three restarts, or when the
+rollout fails to become ready within five minutes. Restarts are counted per
+container, not per poll; terminating pods and pods using a different image are
+ignored. This check runs during the upgrade, not as ongoing monitoring after a
+successful rollout.
+
+The batch pauses on failure. The task moves through `rolling_back` to
+`rolled_back` only after the old image is ready; a failed restoration becomes
+`rollback_failed` and includes the failure reason. Recovery waits up to five
+minutes and survives API restarts, including paused/cancelled batches. Existing
+terminal failures are not automatically retried. No schema migration is needed.
+
+Rollback restores the image only. It does not undo writes to PVCs, databases,
+or Vault. Use immutable image tags/digests and back up data before upgrades
+that change storage formats.
+
 ## Releasing
 
 Publishing a version to GHCR: [`docs/release.md`](docs/release.md).

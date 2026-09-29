@@ -104,6 +104,16 @@ func (h *UpgradeHandler) CreateForSession(c *gin.Context) {
 	// tasks forever; a fresh request supersedes it. Only the caller's own
 	// batches — a paused ADMIN batch is the admin's to resume, and its pending
 	// tasks make the in-flight guard below answer 409.
+	var restoring int64
+	if err := h.db.Model(&model.UpgradeTask{}).Where("session_id = ? AND status = ?", session.ID, model.UpgradeTaskRollingBack).
+		Count(&restoring).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not check rollback status"})
+		return
+	}
+	if restoring > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "a rollback for this session is still in progress"})
+		return
+	}
 	err := h.db.Transaction(func(tx *gorm.DB) error {
 		var pausedIDs []uint
 		if err := tx.Model(&model.UpgradeBatch{}).
@@ -132,7 +142,7 @@ func (h *UpgradeHandler) CreateForSession(c *gin.Context) {
 	var inFlight int64
 	if err := h.db.Model(&model.UpgradeTask{}).
 		Where("session_id = ? AND status IN ?", session.ID,
-			[]string{model.UpgradeTaskPending, model.UpgradeTaskRunning}).
+			[]string{model.UpgradeTaskPending, model.UpgradeTaskRunning, model.UpgradeTaskRollingBack}).
 		Count(&inFlight).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not create upgrade"})
 		return

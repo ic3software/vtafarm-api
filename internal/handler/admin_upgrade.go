@@ -243,6 +243,15 @@ func (h *UpgradeHandler) resolveTargets(req *createUpgradeRequest) ([]upgradeTar
 
 	targets := make([]upgradeTargetPair, 0, len(sessions)*len(req.Components))
 	for _, s := range sessions {
+		var active int64
+		if err := h.db.Model(&model.UpgradeTask{}).Where("session_id = ? AND status IN ?", s.ID,
+			[]string{model.UpgradeTaskPending, model.UpgradeTaskRunning, model.UpgradeTaskRollingBack}).Count(&active).Error; err != nil {
+			return nil, nil, err
+		}
+		if active > 0 {
+			skipped = append(skipped, skippedItem{SessionID: s.VtaName, Reason: "an upgrade or rollback is already in progress"})
+			continue
+		}
 		for _, ci := range req.Components {
 			switch {
 			case !slices.Contains(model.UpgradeComponentModes[ci.Component], s.Mode):
@@ -446,6 +455,16 @@ func (h *UpgradeHandler) Resume(c *gin.Context) {
 	}
 	if batch.Status != model.UpgradeBatchPaused {
 		c.JSON(http.StatusConflict, gin.H{"error": "only paused batches can be resumed (batch is " + batch.Status + ")"})
+		return
+	}
+	var active int64
+	if err := h.db.Model(&model.UpgradeTask{}).Where("batch_id = ? AND status IN ?", batch.ID,
+		[]string{model.UpgradeTaskRunning, model.UpgradeTaskRollingBack}).Count(&active).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not check active tasks"})
+		return
+	}
+	if active > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "wait for the active upgrade or rollback to finish"})
 		return
 	}
 
