@@ -33,13 +33,13 @@ type ResourceProfile struct {
 func DefaultResourceProfile(component string) (ResourceProfile, bool) {
 	switch component {
 	case ComponentVTA:
-		return ResourceProfile{CPURequest: "10m", MemoryRequest: "128Mi", MemoryLimit: "512Mi"}, true
+		return ResourceProfile{CPURequest: "10m", MemoryRequest: "64Mi", MemoryLimit: "256Mi"}, true
 	case ComponentMediator:
-		return ResourceProfile{CPURequest: "50m", MemoryRequest: "128Mi", MemoryLimit: "256Mi"}, true
+		return ResourceProfile{CPURequest: "50m", MemoryRequest: "64Mi", MemoryLimit: "256Mi"}, true
 	case ComponentDids:
-		return ResourceProfile{CPURequest: "10m", MemoryRequest: "128Mi", MemoryLimit: "512Mi"}, true
+		return ResourceProfile{CPURequest: "10m", MemoryRequest: "64Mi", MemoryLimit: "256Mi"}, true
 	case ComponentVTC:
-		return ResourceProfile{CPURequest: "10m", MemoryRequest: "256Mi", MemoryLimit: "512Mi"}, true
+		return ResourceProfile{CPURequest: "10m", MemoryRequest: "128Mi", MemoryLimit: "512Mi"}, true
 	default:
 		return ResourceProfile{}, false
 	}

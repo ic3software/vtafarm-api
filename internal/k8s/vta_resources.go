@@ -29,6 +29,15 @@ func vtaServiceName(sessionID uint) string {
 // no per-session Kubernetes Secret anymore.
 const VtaServiceAccount = "vta"
 
+// VtaTuningEnv is shared by the VTA-only and full-stack Deployments.
+func VtaTuningEnv() []corev1.EnvVar {
+	return []corev1.EnvVar{
+		{Name: "STORAGE_FJALL_BLOCK_CACHE", Value: "8388608"},   // 8 MiB
+		{Name: "STORAGE_FJALL_WRITE_BUFFER", Value: "16777216"}, // 16 MiB
+		{Name: "STORAGE_FJALL_MAX_JOURNAL", Value: "67108864"},  // 64 MiB
+	}
+}
+
 // CreateVtaDeployment creates a Deployment that runs the VTA service using the PVC created
 // during setup. Command and workingDir are set explicitly — the farm decides
 // what runs and where state lives, never the image — and the PVC is mounted at
@@ -67,10 +76,10 @@ func (c *Client) CreateVtaDeployment(ctx context.Context, ns string, sessionID u
 						// logs, log stores) stays plain text instead of leaking
 						// escape sequences. NO_COLOR is the cross-tool standard;
 						// CLICOLOR=0 covers tools that honour that convention too.
-						Env: []corev1.EnvVar{
+						Env: append([]corev1.EnvVar{
 							{Name: "NO_COLOR", Value: "1"},
 							{Name: "CLICOLOR", Value: "0"},
-						},
+						}, VtaTuningEnv()...),
 						Ports: []corev1.ContainerPort{{
 							ContainerPort: port,
 							Protocol:      corev1.ProtocolTCP,

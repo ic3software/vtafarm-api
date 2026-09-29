@@ -15,10 +15,10 @@ func TestDefaultResourceProfiles(t *testing.T) {
 	tests := []struct {
 		component, cpu, request, limit string
 	}{
-		{ComponentVTA, "10m", "128Mi", "512Mi"},
-		{ComponentMediator, "50m", "128Mi", "256Mi"},
-		{ComponentDids, "10m", "128Mi", "512Mi"},
-		{ComponentVTC, "10m", "256Mi", "512Mi"},
+		{ComponentVTA, "10m", "64Mi", "256Mi"},
+		{ComponentMediator, "50m", "64Mi", "256Mi"},
+		{ComponentDids, "10m", "64Mi", "256Mi"},
+		{ComponentVTC, "10m", "128Mi", "512Mi"},
 	}
 	for _, test := range tests {
 		profile, ok := DefaultResourceProfile(test.component)
