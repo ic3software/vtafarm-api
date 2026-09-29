@@ -264,6 +264,9 @@ func (h *SetupHandler) getFullStack(c *gin.Context, session *model.SetupSession)
 	actionRequired := gin.H{}
 	if session.DidsEnrollURL != "" && !session.DidsEnrollUsed {
 		actionRequired["dids_admin_enroll_url"] = session.DidsEnrollURL
+		if session.DidsEnrollClaimCode != "" {
+			actionRequired["dids_admin_enroll_claim_code"] = session.DidsEnrollClaimCode
+		}
 	}
 	// Single-shot like the dids enroll URL — once acked, stop offering a dead
 	// link; reissue-install mints a fresh pair.
@@ -602,17 +605,21 @@ func (h *SetupHandler) reissueDidsEnroll(c *gin.Context, session *model.SetupSes
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to read job logs: " + err.Error()})
 		return
 	}
-	enrollURL, err := setup.ParseDidsEnrollURL(logs)
+	enrollURL, claimCode, err := setup.ParseDidsEnrollInvite(logs)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "enrollment URL not found in job output"})
 		return
 	}
 
 	h.db.Model(&model.SetupSession{}).Where("id = ?", session.ID).Updates(map[string]any{
-		"dids_enroll_url":  enrollURL,
-		"dids_enroll_used": false,
+		"dids_enroll_url":        enrollURL,
+		"dids_enroll_claim_code": claimCode,
+		"dids_enroll_used":       false,
 	})
-	c.JSON(http.StatusOK, gin.H{"dids_admin_enroll_url": enrollURL})
+	c.JSON(http.StatusOK, gin.H{
+		"dids_admin_enroll_url":        enrollURL,
+		"dids_admin_enroll_claim_code": claimCode,
+	})
 }
 
 // AckDidsEnroll handles POST /api/v1/setup/:id/dids/enroll-ack — the

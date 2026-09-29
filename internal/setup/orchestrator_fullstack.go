@@ -257,12 +257,14 @@ func (o *Orchestrator) runFullStack(ctx context.Context, sessionID uint) {
 
 	// step_dids_invite — must run before deploy_dids, while no daemon pod holds the PVC.
 	o.fsSetStatus(sessionID, "step_dids_invite")
-	enrollURL, err := o.fsStepDidsInvite(ctx, ns, s)
+	enrollURL, enrollClaimCode, err := o.fsStepDidsInvite(ctx, ns, s)
 	if fail("dids invite failed", err) {
 		return
 	}
-	s.DidsEnrollURL = enrollURL
-	o.db.Model(&model.SetupSession{}).Where("id = ?", sessionID).Update("dids_enroll_url", enrollURL)
+	s.DidsEnrollURL, s.DidsEnrollClaimCode = enrollURL, enrollClaimCode
+	o.db.Model(&model.SetupSession{}).Where("id = ?", sessionID).Updates(map[string]any{
+		"dids_enroll_url": enrollURL, "dids_enroll_claim_code": enrollClaimCode,
+	})
 
 	// step_dids_load_did — loads the VTA + mediator DID logs into the dids
 	// daemon's local store directly (did-hosting-daemon load-did). Must also
@@ -860,7 +862,7 @@ func (o *Orchestrator) fsStepDidsP2(ctx context.Context, ns string, s *model.Set
 // fsStepDidsInvite mints the dids admin-panel enrollment URL (3e). Must run
 // before fsDeployDids — it opens the local store directly, so no daemon pod
 // can be holding the PVC yet.
-func (o *Orchestrator) fsStepDidsInvite(ctx context.Context, ns string, s *model.SetupSession) (enrollURL string, err error) {
+func (o *Orchestrator) fsStepDidsInvite(ctx context.Context, ns string, s *model.SetupSession) (enrollURL, claimCode string, err error) {
 	jobName := k8s.FSJobDidsInvite(s.ID)
 	cmd := fmt.Sprintf("did-hosting-daemon invite --role admin --did %s", shellQuote(s.DIDHostingAdminDid))
 
@@ -873,25 +875,25 @@ func (o *Orchestrator) fsStepDidsInvite(ctx context.Context, ns string, s *model
 		PVCMounts:      []k8s.PVCMount{{Name: "dids-data", ClaimName: k8s.FSDidsName(s.ID), MountPath: "/work/dids"}},
 		Env:            fsNoColorEnv(),
 	}); err != nil {
-		return "", fmt.Errorf("create job: %w", err)
+		return "", "", fmt.Errorf("create job: %w", err)
 	}
 
 	succeeded, failMsg, err := o.k8s.WaitForJob(ctx, ns, jobName)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if !succeeded {
-		return "", o.fsJobFailErr(ctx, ns, jobName, failMsg)
+		return "", "", o.fsJobFailErr(ctx, ns, jobName, failMsg)
 	}
 	logs, err := o.fsJobLogs(ctx, ns, jobName)
 	if err != nil {
-		return "", fmt.Errorf("read job logs: %w", err)
+		return "", "", fmt.Errorf("read job logs: %w", err)
 	}
-	enrollURL, err = ParseDidsEnrollURL(logs)
+	enrollURL, claimCode, err = ParseDidsEnrollInvite(logs)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return enrollURL, nil
+	return enrollURL, claimCode, nil
 }
 
 // fsStepDidsLoadDid loads the VTA + mediator DID logs directly into the dids

@@ -139,14 +139,16 @@ type SetupSession struct {
 	DIDHostingDid      string `gorm:"column:did_hosting_did;not null;default:''"       json:"did_hosting_did,omitempty"`       // 3d
 
 	// full_stack — admin private keys, returned to the user once for offline backup.
-	MediatorAdminKey string `gorm:"column:mediator_admin_key;not null;default:''" json:"mediator_admin_key,omitempty"` // 2c
-	WebvhAdminKey    string `gorm:"column:webvh_admin_key;not null;default:''"    json:"webvh_admin_key,omitempty"`    // 3c
-	DidsEnrollURL    string `gorm:"column:dids_enroll_url;not null;default:''"    json:"dids_enroll_url,omitempty"`    // 3e
+	MediatorAdminKey    string `gorm:"column:mediator_admin_key;not null;default:''" json:"mediator_admin_key,omitempty"`  // 2c
+	WebvhAdminKey       string `gorm:"column:webvh_admin_key;not null;default:''"    json:"webvh_admin_key,omitempty"`     // 3c
+	DidsEnrollURL       string `gorm:"column:dids_enroll_url;not null;default:''"        json:"dids_enroll_url,omitempty"` // 3e
+	DidsEnrollClaimCode string `gorm:"column:dids_enroll_claim_code;not null;default:''" json:"dids_enroll_claim_code,omitempty"`
 
 	// DidsEnrollUsed is set by the frontend (POST .../dids/enroll-ack) the
 	// moment the user opens DidsEnrollURL — it's single-use at the daemon
 	// level, so this just lets the UI stop offering a link that will fail if
-	// clicked again. Reissue clears it back to false along with the new URL.
+	// clicked again. Reissue clears it back to false along with the new URL and
+	// claim code.
 	DidsEnrollUsed bool `gorm:"column:dids_enroll_used;not null;default:false" json:"dids_enroll_used"`
 
 	// full_stack — the VTC component. Subdomain/CFRecordVtc follow the same
