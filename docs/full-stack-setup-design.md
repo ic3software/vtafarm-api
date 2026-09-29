@@ -354,7 +354,7 @@ prints a block to **stderr** via the shared
   create the vtc context and grant admin access to the setup DID:
 
     pnm contexts create --id <context> --name "VTC" \
-      --admin-did did:key:z6Mk... --admin-expires 1h
+      --admin-did did:key:z6Mk... --admin-expires 1h --admin-handoff
   ...
 ```
 
@@ -397,7 +397,7 @@ pending
   → step_import_admin_did  vta import-did --role admin --label pnm-bootstrap --did {{admin_did}}
   → step_vtc_setup_key     vtc setup --setup-key-out                 → 5a ephemeral setup did:key      (§4b)
   → step_vtc_acl_grant     vta contexts create --id {{vtc_name}} --name "VTC"
-                           --admin-did {{5a}} --admin-expires 1h                                       (§4b)
+                           --admin-did {{5a}} --admin-expires 1h --admin-handoff                       (§4b)
   → deploy_vta             Deployment vta (start it)
   → step_vtc_setup         LIVE vtc setup --from vtc-setup.toml (VTA + mediator + dids all reachable)
                            → 5b vtc DID, 5c vtc admin DID, 5d install URL, 5e claim code
@@ -432,7 +432,8 @@ right before the components that consume them.
 **Why the grant sits post-gate.** `step_vtc_acl_grant`'s `--admin-expires 1h` starts
 ticking the moment it runs. Placing it *after* the `awaiting_admin_did` gate (rather than
 before) keeps the grant-to-use window at minutes no matter how long a human takes at the
-gate, so the TTL never needs thinking about.
+gate, so the TTL never needs thinking about. `--admin-handoff` lets that ephemeral DID
+roll over once to the permanent admin DID minted during VTC setup.
 
 **Why no ACL-grant gate and no service downtime.** Every offline step above runs against a
 store whose daemon isn't running at that moment — the same trick `step_mediator_reprov`,
@@ -762,7 +763,7 @@ k8s.ComponentJobSpec{
     Name:           k8s.FSJobVtcAclGrant(s.ID),
     Image:          s.VtaImage,
     Command:        []string{"sh", "-c", fmt.Sprintf(
-        `vta contexts create --id %s --name "VTC" --admin-did %s --admin-expires 1h`,
+        `vta contexts create --id %s --name "VTC" --admin-did %s --admin-expires 1h --admin-handoff`,
         shellQuote(s.VtcName), shellQuote(setupKeyDid),
     )},
     WorkingDir:     "/work/vta",
@@ -778,7 +779,9 @@ than one context. Nothing to parse.
 
 `vta contexts create` is offline (fjall) with exactly these flags — `--id`, `--name`,
 `--admin-did` (atomically writes an admin ACL entry scoped to the new context),
-`--admin-expires N[s|m|h|d|w]` (swept by the running VTA's ACL sweeper). Because this runs
+`--admin-expires N[s|m|h|d|w]` (swept by the running VTA's ACL sweeper), and
+`--admin-handoff` (allows the ephemeral DID to roll over once to the permanent admin DID).
+Because this runs
 post-gate, minutes before `step_vtc_setup` consumes it, `1h` is comfortable
 ([§5](#5-state-machine)).
 
@@ -1680,7 +1683,7 @@ daemon), rather than taken from docs:
 | `[messaging]` fields (`mediator_did` required, `mediator_url` optional) | `vti-common/src/config.rs::MessagingConfig` |
 | `[messaging].transports` required, `["tsp","didcomm"]`, not persisted | `vtc-service/src/setup/from_toml.rs::MessagingSetup` + `wizard.rs::Transport` |
 | `[webvh].server_id` → `WEBVH_SERVER` template var | `vtc-service/src/setup/wizard.rs` (`WebvhTarget`, `build_template_vars`) |
-| `vta contexts create` offline, `--admin-did`/`--admin-expires N[s\|m\|h\|d\|w]`, atomic ACL; Conflict on existing id | `vta-service/src/main.rs::ContextCommands::Create`; `operations/contexts.rs` (`Conflict: context already exists`) |
+| `vta contexts create` offline, `--admin-did`/`--admin-expires N[s\|m\|h\|d\|w]`/`--admin-handoff`, atomic ACL; Conflict on existing id | `vta-service/src/main.rs::ContextCommands::Create`; `operations/contexts.rs` (`Conflict: context already exists`) |
 | `vta import-did --role admin --context <ctx>` as the exists-tolerant regrant | `vta-service/src/main.rs::ImportDid` (`--context Vec<String>`) |
 | `servers add` resolves the DID at add time (placement constraint, §4a) | `vta-service/src/operations/did_webvh/servers.rs::add_webvh_server` → `validate_server_did` (live resolve + `WebVHHosting`/`DIDCommMessaging` service required; Conflict on duplicate id) |
 | Hosted publish = live authed call as `vta_did` | `operations/did_webvh/mod.rs::authenticated_server_transport` + `transport.publish_did` in `create_did_webvh`; provision-integration selects it via `WEBVH_SERVER` (`operations/provision_integration/{mod,webvh}.rs`) |
