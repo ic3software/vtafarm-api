@@ -50,13 +50,13 @@ func (r *Runner) Start(batchID uint) {
 	go r.run(batchID)
 }
 
-// Resume re-attaches scheduler goroutines for batches interrupted by a
-// restart. Tasks stuck in "running" are simply re-run: the Deployment patch
-// is idempotent, so re-processing an interrupted task converges to the same
-// end state.
+// Resume also recovers in-flight tasks in paused/cancelled batches. A saved
+// rolling_back task must never reapply the failed target image after restart.
 func (r *Runner) Resume() {
 	var batches []model.UpgradeBatch
-	if err := r.db.Where("status = ?", model.UpgradeBatchRunning).Find(&batches).Error; err != nil {
+	if err := r.db.Where("status = ? OR id IN (?)", model.UpgradeBatchRunning,
+		r.db.Model(&model.UpgradeTask{}).Select("batch_id").Where("status IN ?",
+			[]string{model.UpgradeTaskRunning, model.UpgradeTaskRollingBack})).Find(&batches).Error; err != nil {
 		log.Printf("[upgrade] resume: query failed: %v", err)
 		return
 	}
@@ -81,11 +81,11 @@ func (r *Runner) run(batchID uint) {
 
 	// Snapshot the work up front — a batch's task set is fixed at creation.
 	// "running" rows are orphans from a previous process; they go first.
-	var taskIDs []uint
+	var tasks []model.UpgradeTask
 	if err := r.db.Model(&model.UpgradeTask{}).
 		Where("batch_id = ? AND status IN ?", batchID,
-			[]string{model.UpgradeTaskRunning, model.UpgradeTaskPending}).
-		Order("id").Pluck("id", &taskIDs).Error; err != nil {
+			[]string{model.UpgradeTaskRunning, model.UpgradeTaskPending, model.UpgradeTaskRollingBack}).
+		Order("CASE WHEN status = 'rolling_back' THEN 0 WHEN status = 'running' THEN 1 ELSE 2 END, id").Find(&tasks).Error; err != nil {
 		log.Printf("[upgrade] batch %d: list tasks failed: %v", batchID, err)
 		return
 	}
@@ -94,19 +94,19 @@ func (r *Runner) run(batchID uint) {
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 
-	for _, taskID := range taskIDs {
+	for _, task := range tasks {
 		sem <- struct{}{}
 		// Re-check between dispatches so pause (task failure) and cancel take
 		// effect immediately instead of after the whole snapshot.
-		if r.batchStatus(batchID) != model.UpgradeBatchRunning {
+		if task.Status == model.UpgradeTaskPending && r.batchStatus(batchID) != model.UpgradeBatchRunning {
 			<-sem
-			break
+			continue
 		}
 		wg.Add(1)
 		go func(id uint) {
 			defer func() { <-sem; wg.Done() }()
 			r.runTask(&batch, id)
-		}(taskID)
+		}(task.ID)
 	}
 	wg.Wait()
 	r.finalize(batchID)
@@ -129,7 +129,7 @@ func (r *Runner) finalize(batchID uint) {
 	var remaining int64
 	if err := r.db.Model(&model.UpgradeTask{}).
 		Where("batch_id = ? AND status IN ?", batchID,
-			[]string{model.UpgradeTaskRunning, model.UpgradeTaskPending}).
+			[]string{model.UpgradeTaskRunning, model.UpgradeTaskPending, model.UpgradeTaskRollingBack}).
 		Count(&remaining).Error; err != nil || remaining > 0 {
 		return
 	}
@@ -139,7 +139,8 @@ func (r *Runner) finalize(batchID uint) {
 }
 
 func (r *Runner) runTask(batch *model.UpgradeBatch, taskID uint) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), rolloutTimeout)
+	defer cancel()
 
 	var task model.UpgradeTask
 	if err := r.db.First(&task, taskID).Error; err != nil {
@@ -155,53 +156,113 @@ func (r *Runner) runTask(batch *model.UpgradeBatch, taskID uint) {
 		return
 	}
 
-	r.setTask(&task, model.UpgradeTaskRunning, "")
-
 	deployName, err := deploymentName(&session, task.Component)
 	if err != nil {
 		r.failTask(batch, &task, err.Error())
 		return
 	}
 	ns := r.k8s.UserNamespace(fmt.Sprintf("%d", session.UserID))
-
-	if err := r.k8s.SetDeploymentImage(ctx, ns, deployName, task.ToImage); err != nil {
-		r.failTask(batch, &task, "patch deployment: "+err.Error())
+	if task.Status == model.UpgradeTaskRollingBack {
+		r.rollbackTask(batch, &task, ns, deployName, task.ErrorMsg)
+		return
+	}
+	if task.Status != model.UpgradeTaskPending && task.Status != model.UpgradeTaskRunning {
+		return
+	}
+	if task.FromImage == "" {
+		r.failTask(batch, &task, "previous image is missing; refusing upgrade without a rollback target")
+		return
+	}
+	if err := r.setTask(&task, model.UpgradeTaskRunning, ""); err != nil {
 		return
 	}
 
-	deadline := time.Now().Add(rolloutTimeout)
-	lastReason := ""
-	for time.Now().Before(deadline) {
-		status, err := r.k8s.DeploymentRollout(ctx, ns, deployName, task.ToImage)
-		if err == nil && status.Ready {
-			if err := r.db.Model(&model.SetupSession{}).Where("id = ?", session.ID).
-				Update(model.UpgradeImageColumn(task.Component), task.ToImage).Error; err != nil {
-				log.Printf("[upgrade] task %d: record new image failed: %v", task.ID, err)
-			}
-			r.setTask(&task, model.UpgradeTaskSucceeded, "")
-			log.Printf("[upgrade] batch %d: session %d %s → %s ready", batch.ID, session.ID, task.Component, task.ToImage)
-			return
-		}
-		if err == nil && status.Reason != "" {
-			lastReason = status.Reason
-		}
-		time.Sleep(pollInterval)
+	if err := r.k8s.SetDeploymentImage(ctx, ns, deployName, task.ToImage); err != nil {
+		r.rollbackTask(batch, &task, ns, deployName, "patch deployment: "+err.Error())
+		return
 	}
-
-	msg := "timed out waiting for rollout"
-	if lastReason != "" {
-		msg += " (" + lastReason + ")"
+	if err := r.waitForRollout(ctx, ns, deployName, task.ToImage); err != nil {
+		r.rollbackTask(batch, &task, ns, deployName, err.Error())
+		return
 	}
-	r.failTask(batch, &task, msg)
+	if err := r.db.Model(&model.SetupSession{}).Where("id = ?", session.ID).
+		Update(model.UpgradeImageColumn(task.Component), task.ToImage).Error; err != nil {
+		r.rollbackTask(batch, &task, ns, deployName, "record new image: "+err.Error())
+		return
+	}
+	r.setTask(&task, model.UpgradeTaskSucceeded, "")
+	log.Printf("[upgrade] batch %d: session %d %s → %s ready", batch.ID, session.ID, task.Component, task.ToImage)
 }
 
-func (r *Runner) setTask(task *model.UpgradeTask, status, errMsg string) {
+func (r *Runner) waitForRollout(ctx context.Context, ns, deployName, image string) error {
+	ctx, cancel := context.WithTimeout(ctx, rolloutTimeout)
+	defer cancel()
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+	lastReason := ""
+	for {
+		status, err := r.k8s.DeploymentRollout(ctx, ns, deployName, image)
+		if err != nil {
+			lastReason = err.Error()
+		} else if status.CrashLoopRestarts >= 3 {
+			return fmt.Errorf("rollout failed: %s", status.Reason)
+		} else if status.Ready {
+			return nil
+		} else if status.Reason != "" {
+			lastReason = status.Reason
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timed out waiting for rollout: %w (%s)", ctx.Err(), lastReason)
+		case <-ticker.C:
+		}
+	}
+}
+
+func (r *Runner) rollbackTask(batch *model.UpgradeBatch, task *model.UpgradeTask, ns, deployName, cause string) {
+	// Persist the direction before touching Kubernetes so a restarted API
+	// continues restoring the old image even though the batch is paused.
+	if err := r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(task).Updates(map[string]any{"status": model.UpgradeTaskRollingBack, "error_msg": cause}).Error; err != nil {
+			return err
+		}
+		return tx.Model(&model.UpgradeBatch{}).Where("id = ? AND status = ?", batch.ID, model.UpgradeBatchRunning).
+			Update("status", model.UpgradeBatchPaused).Error
+	}); err != nil {
+		log.Printf("[upgrade] task %d: cannot persist rollback: %v", task.ID, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), rolloutTimeout)
+	defer cancel()
+	if task.FromImage == "" {
+		r.setTask(task, model.UpgradeTaskRollbackFailed, cause+"; rollback failed: previous image is missing")
+		return
+	}
+	if err := r.k8s.SetDeploymentImage(ctx, ns, deployName, task.FromImage); err != nil {
+		r.setTask(task, model.UpgradeTaskRollbackFailed, cause+"; rollback failed: "+err.Error())
+		return
+	}
+	if err := r.waitForRollout(ctx, ns, deployName, task.FromImage); err != nil {
+		r.setTask(task, model.UpgradeTaskRollbackFailed, cause+"; rollback failed: "+err.Error())
+		return
+	}
+	if err := r.db.Model(&model.SetupSession{}).Where("id = ?", task.SessionID).
+		Update(model.UpgradeImageColumn(task.Component), task.FromImage).Error; err != nil {
+		r.setTask(task, model.UpgradeTaskRollbackFailed, cause+"; previous image is ready but recording it failed: "+err.Error())
+		return
+	}
+	r.setTask(task, model.UpgradeTaskRolledBack, cause+"; rolled back to "+task.FromImage+" and confirmed ready")
+}
+
+func (r *Runner) setTask(task *model.UpgradeTask, status, errMsg string) error {
 	if err := r.db.Model(task).Updates(map[string]any{
 		"status":    status,
 		"error_msg": errMsg,
 	}).Error; err != nil {
 		log.Printf("[upgrade] task %d: update to %s failed: %v", task.ID, status, err)
+		return err
 	}
+	return nil
 }
 
 // failTask records the failure and pauses the batch (fail-fast): no further

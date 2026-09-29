@@ -248,7 +248,7 @@ components:
                 type: string
               status:
                 type: string
-                enum: [pending, running, succeeded, failed, skipped]
+                enum: [pending, running, succeeded, failed, skipped, rolling_back, rolled_back, rollback_failed]
               error_msg:
                 type: string
               updated_at:
@@ -3280,7 +3280,10 @@ paths:
       summary: Get upgrade batch progress
       description: |
         The batch plus every task's live status — the progress view polls
-        this. Task statuses: pending, running, succeeded, failed, skipped.
+        this. Task statuses: pending, running, succeeded, failed, skipped,
+        rolling_back, rolled_back, rollback_failed. A paused batch can still
+        have a rollback in progress; keep polling until its active tasks finish.
+        Rollback restores the previous image, not stored data.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
@@ -3334,7 +3337,7 @@ paths:
                           type: string
                         status:
                           type: string
-                          enum: [pending, running, succeeded, failed, skipped]
+                          enum: [pending, running, succeeded, failed, skipped, rolling_back, rolled_back, rollback_failed]
                         error_msg:
                           type: string
                         updated_at:

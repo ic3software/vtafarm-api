@@ -211,7 +211,7 @@ func (h *SetupHandler) applyStackConfigs(c *gin.Context, session *model.SetupSes
 	var upgradesInFlight int64
 	if err := h.db.Model(&model.UpgradeTask{}).
 		Where("session_id = ? AND status IN ?", session.ID,
-			[]string{model.UpgradeTaskPending, model.UpgradeTaskRunning}).
+			[]string{model.UpgradeTaskPending, model.UpgradeTaskRunning, model.UpgradeTaskRollingBack}).
 		Count(&upgradesInFlight).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check for an in-progress upgrade"})
 		return
