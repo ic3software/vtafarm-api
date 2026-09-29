@@ -14,9 +14,8 @@
 
 ### Added
 
-- DID Hosting enrollment responses now include the claim code required by
-  current daemon images, while remaining compatible with older link-only
-  images.
+- DID Hosting enrollment responses include the required claim code together
+  with the single-use enrollment URL.
 
 ## [v0.9.1] - 2026-09-29
 

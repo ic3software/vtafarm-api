@@ -96,8 +96,8 @@ func ParseServerDid(artifact string) (string, error) {
 
 // ParseDidsEnrollInvite extracts the admin-panel enrollment URL and the
 // second-channel claim code from `did-hosting-daemon invite --role admin`.
-// Older daemon images did not issue a claim code, so an absent code remains
-// valid while the URL is always required.
+// Current daemon images always issue both; accepting a link without its code
+// would leave the user with an enrollment ceremony they cannot complete.
 func ParseDidsEnrollInvite(output string) (enrollURL, claimCode string, err error) {
 	if m := didsEnrollURLRe.FindStringSubmatch(output); m != nil {
 		enrollURL = m[1]
@@ -106,6 +106,8 @@ func ParseDidsEnrollInvite(output string) (enrollURL, claimCode string, err erro
 	}
 	if m := didsEnrollClaimRe.FindStringSubmatch(output); m != nil {
 		claimCode = strings.TrimSpace(m[1])
+	} else {
+		return "", "", fmt.Errorf("dids enrollment claim code not found in output")
 	}
 	return enrollURL, claimCode, nil
 }

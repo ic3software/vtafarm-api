@@ -264,9 +264,7 @@ func (h *SetupHandler) getFullStack(c *gin.Context, session *model.SetupSession)
 	actionRequired := gin.H{}
 	if session.DidsEnrollURL != "" && !session.DidsEnrollUsed {
 		actionRequired["dids_admin_enroll_url"] = session.DidsEnrollURL
-		if session.DidsEnrollClaimCode != "" {
-			actionRequired["dids_admin_enroll_claim_code"] = session.DidsEnrollClaimCode
-		}
+		actionRequired["dids_admin_enroll_claim_code"] = session.DidsEnrollClaimCode
 	}
 	// Single-shot like the dids enroll URL — once acked, stop offering a dead
 	// link; reissue-install mints a fresh pair.
@@ -607,7 +605,7 @@ func (h *SetupHandler) reissueDidsEnroll(c *gin.Context, session *model.SetupSes
 	}
 	enrollURL, claimCode, err := setup.ParseDidsEnrollInvite(logs)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "enrollment URL not found in job output"})
+		c.JSON(http.StatusBadGateway, gin.H{"error": "enrollment invite not found in job output: " + err.Error()})
 		return
 	}
 

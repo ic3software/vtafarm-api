@@ -530,7 +530,7 @@ design:
 | | Whose identity | Where it lives |
 | --- | --- | --- |
 | `did_hosting_admin_did` (3b) + `webvh_admin_key` (3c) | the **daemon's** own bootstrap admin, handed to a human for offline backup | the session row |
-| `did_hosting_did` (3d) | the **daemon's** own DID | the session row (and the control client fetches it from `/api/server-info` anyway) |
+| `did_hosting_did` (3d) | the **daemon's** own DID | the session row; the control client pins signed Trust Tasks and response proofs to it |
 | `DID_HOSTING_DID` + `DID_HOSTING_PRIVATE_KEY` | **vtafarm-api's own**, from `make gen-keypair`, enrolled in a daemon's ACL with `role=admin` | configuration only |
 
 Because the last one is ours and not something a daemon issued, **one keypair
@@ -546,9 +546,9 @@ as an offline Job on the dids PVC, in the same window as `step_dids_invite` and
 `step_dids_load_did` — after the store exists and before any daemon pod holds
 it.
 
-Offline is not a convenience: the control API authenticates callers *from* the
-ACL, so enrolling over HTTP would require already being enrolled. Writing the
-store directly is the only way in.
+Offline is not a convenience: the Trust Task endpoint authorizes callers *from*
+the ACL, so enrolling through it would require already being enrolled. Writing
+the store directly is the only way in.
 
 The step runs for **every** `full_stack` session, not just the platform stack:
 the farm operates these deployments and needs to manage the `did.jsonl`

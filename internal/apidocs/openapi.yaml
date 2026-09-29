@@ -769,9 +769,9 @@ components:
             dids_admin_enroll_claim_code:
               type: string
               description: |
-                Second-channel claim code required by current DID Hosting images.
-                Offered with `dids_admin_enroll_url`; omitted for older images
-                that issue link-only enrollment invites.
+                Second-channel claim code required to use
+                `dids_admin_enroll_url`. The two fields are always offered
+                together.
             reveal_keys_once:
               type: boolean
               description: True when mediator_admin_key/webvh_admin_key are present in this response.
@@ -2795,7 +2795,7 @@ paths:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         "200":
-          description: A fresh enrollment URL and, for current images, its claim code
+          description: A fresh enrollment URL and its required claim code
           content:
             application/json:
               schema:
@@ -2803,6 +2803,7 @@ paths:
                 properties:
                   dids_admin_enroll_url: { type: string }
                   dids_admin_enroll_claim_code: { type: string }
+                required: [dids_admin_enroll_url, dids_admin_enroll_claim_code]
         "401": { description: Missing or invalid token, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "404": { description: Session not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "409": { description: The dids daemon isn't provisioned yet, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
@@ -5578,6 +5579,7 @@ paths:
                   dids_admin_enroll_claim_code:
                     type: string
                     example: "7KQ4-MX2P-9TDA"
+                required: [dids_admin_enroll_url, dids_admin_enroll_claim_code]
         "400":
           description: Session is not a full_stack session
           content:
