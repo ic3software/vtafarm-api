@@ -1,5 +1,15 @@
 # Changelog
 
+## [v0.9.3] - 2026-09-29
+
+### Changed
+
+- New VTA, mediator and DID-hosting workloads request 64 MiB of memory with
+  256 MiB limits; VTC workloads request 128 MiB with a 512 MiB limit.
+- New VTA, DID-hosting and VTC workloads apply explicit Fjall cache, write
+  buffer and journal budgets, including VTA-only sessions.
+- Capacity estimates use the same resource profiles as workload provisioning.
+
 ## [v0.9.2] - 2026-09-29
 
 ### Added
