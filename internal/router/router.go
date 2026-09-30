@@ -164,6 +164,8 @@ func Setup(
 		adminAuth.DELETE("/admin/siop/identities/:id", siopH.DeleteAdminIdentity)
 		adminAuth.POST("/admin/invitations", ih.Create)
 		adminAuth.GET("/admin/invitations", ih.List)
+		adminAuth.GET("/admin/resource-defaults", sh.AdminResourceDefaults)
+		adminAuth.PUT("/admin/resource-defaults", sh.AdminSaveResourceDefaults)
 		adminAuth.GET("/admin/setup-sessions", sh.AdminListSessions)
 		adminAuth.GET("/admin/setup-sessions/:id/resources", sh.AdminSessionResources)
 		adminAuth.PUT("/admin/setup-sessions/resources", sh.AdminApplySessionResources)
@@ -224,7 +226,7 @@ func Setup(
 		adminAuth.POST("/admin/platform-stack/admins/refresh", sh.RefreshPlatformStackAdmins)
 		// Cluster capacity overview: CPU/memory/storage totals per node plus
 		// how many more sessions of each mode still fit.
-		dashH := handler.NewDashboardHandler(k8sClient)
+		dashH := handler.NewDashboardHandler(db, k8sClient)
 		adminAuth.GET("/admin/dashboard", dashH.Get)
 		// Same handlers as their /setup/... twins — admins need the same facts
 		// (image tags for upgrades, hostname shape for the platform stack page)

@@ -65,7 +65,7 @@ func NewSetupHandler(
 		k8s:           k8sClient,
 		orch:          orch,
 		ghcr:          ghcrClient,
-		capacity:      NewCapacityService(k8sClient),
+		capacity:      NewCapacityService(db, k8sClient),
 
 		mediatorGhcr: mediatorGhcrClient,
 		didsGhcr:     didsGhcrClient,

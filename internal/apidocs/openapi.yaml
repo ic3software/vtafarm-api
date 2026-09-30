@@ -106,6 +106,24 @@ components:
         memory_limit: { type: string, example: 512Mi }
       required: [cpu_request, cpu_limit, memory_request, memory_limit]
 
+    ResourceDefaults:
+      type: object
+      required: [resources, factory_defaults]
+      properties:
+        resources:
+          $ref: "#/components/schemas/ResourceProfiles"
+        factory_defaults:
+          $ref: "#/components/schemas/ResourceProfiles"
+
+    ResourceProfiles:
+      type: object
+      required: [mediator, vtc, vta, dids]
+      properties:
+        mediator: { $ref: "#/components/schemas/ResourceProfile" }
+        vtc: { $ref: "#/components/schemas/ResourceProfile" }
+        vta: { $ref: "#/components/schemas/ResourceProfile" }
+        dids: { $ref: "#/components/schemas/ResourceProfile" }
+
     VtaAclEntry:
       type: object
       properties:
@@ -2028,6 +2046,64 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/admin/resource-defaults:
+    get:
+      summary: Read saved and factory component memory defaults
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      responses:
+        "200":
+          description: Current defaults and factory values for restoring the form
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResourceDefaults" }
+        "401": { description: Admin authentication required }
+        "403": { description: Insufficient role }
+        "500": { description: Could not read defaults }
+    put:
+      summary: Save component memory defaults
+      description: |
+        Atomically replaces all four components' memory defaults. Each request
+        and limit must be between 16Mi and 1Gi inclusive, with request <= limit.
+        Values are Kubernetes quantities. CPU settings are unchanged.
+        New deployments and subsequent capacity estimates read these settings;
+        existing Deployments are not updated or restarted. To restore factory
+        defaults, submit the memory fields from GET's factory_defaults.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resources]
+              properties:
+                resources:
+                  type: array
+                  minItems: 4
+                  maxItems: 4
+                  items:
+                    type: object
+                    required: [component, memory_request, memory_limit]
+                    properties:
+                      component: { type: string, enum: [mediator, vtc, vta, dids] }
+                      memory_request: { type: string, example: 16Mi }
+                      memory_limit: { type: string, example: 64Mi }
+      responses:
+        "200":
+          description: Saved defaults
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResourceDefaults" }
+        "400": { description: Invalid JSON body }
+        "401": { description: Admin authentication required }
+        "403": { description: Insufficient role }
+        "422": { description: Missing, duplicate, or unknown component, or invalid memory values }
+        "500": { description: Could not save defaults }
+
   /api/v1/admin/setup-sessions/resources:
     put:
       summary: Apply memory resources to one or more sessions
@@ -2070,8 +2146,8 @@ paths:
                       memory_request:
                         type: string
                         example: 128Mi
-                        description: Positive Kubernetes quantity, capped at 512Mi.
-                      memory_limit: { type: string, example: 512Mi }
+                        description: Kubernetes quantity between 16Mi and 1Gi inclusive, at most memory_limit.
+                      memory_limit: { type: string, example: 512Mi, description: "Kubernetes quantity between 16Mi and 1Gi inclusive." }
       responses:
         "200":
           description: Per-target rollout results

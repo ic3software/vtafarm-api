@@ -7,6 +7,8 @@ import (
 
 	"github.com/ic3software/vtafarm-api/internal/capacity"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
+	"github.com/ic3software/vtafarm-api/internal/resourceprofile"
+	"gorm.io/gorm"
 )
 
 // capacityStatsTTL caches one ClusterResourceStats read briefly so many users
@@ -24,6 +26,7 @@ const capacityStatsTTL = 10 * time.Second
 // requested) instead of blocking creation. Only a positive "zero fit" result
 // ever gates a create.
 type CapacityService struct {
+	db  *gorm.DB
 	k8s *k8s.Client
 
 	mu       sync.Mutex
@@ -31,8 +34,8 @@ type CapacityService struct {
 	cachedAt time.Time
 }
 
-func NewCapacityService(k8sClient *k8s.Client) *CapacityService {
-	return &CapacityService{k8s: k8sClient}
+func NewCapacityService(db *gorm.DB, k8sClient *k8s.Client) *CapacityService {
+	return &CapacityService{db: db, k8s: k8sClient}
 }
 
 // CapacityMeta flags whether live metrics and storage stats were available, so
@@ -76,7 +79,11 @@ func (s *CapacityService) Estimates(ctx context.Context) (est map[string]capacit
 		return nil, CapacityMeta{}, false
 	}
 
-	return estimatesFrom(stats), CapacityMeta{
+	profiles, err := resourceprofile.Load(ctx, s.db)
+	if err != nil {
+		return nil, CapacityMeta{}, false
+	}
+	return estimatesFrom(stats, capacity.Modes(profiles)...), CapacityMeta{
 		MetricsAvailable: stats.MetricsAvailable,
 		StorageAvailable: stats.StorageAvailable,
 	}, true
@@ -85,10 +92,13 @@ func (s *CapacityService) Estimates(ctx context.Context) (est map[string]capacit
 // estimatesFrom runs the placement simulation for every creatable mode against
 // one stats snapshot. Split out from Estimates so it can be unit-tested with a
 // synthetic ClusterStats, no cluster required.
-func estimatesFrom(stats *k8s.ClusterStats) map[string]capacity.Estimate {
+func estimatesFrom(stats *k8s.ClusterStats, modes ...capacity.Mode) map[string]capacity.Estimate {
 	nodes, disks := freeResources(stats)
 	out := make(map[string]capacity.Estimate, 2)
-	for _, mode := range []capacity.Mode{capacity.VtaOnly, capacity.FullStack} {
+	if len(modes) == 0 {
+		modes = []capacity.Mode{capacity.VtaOnly, capacity.FullStack}
+	}
+	for _, mode := range modes {
 		out[mode.Name] = capacity.EstimateMode(mode, nodes, disks, stats.StorageReplicaCount, stats.StorageAvailable)
 	}
 	return out

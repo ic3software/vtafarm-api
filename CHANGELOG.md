@@ -1,5 +1,27 @@
 # Changelog
 
+## [v0.10.0] - 2026-09-30
+
+### Added
+
+- Admin endpoints to read and save persistent component memory defaults.
+  Migration 000038 adds the resource defaults table.
+
+### Changed
+
+- New deployments and capacity estimates use the saved memory defaults.
+  Saving defaults leaves existing deployments unchanged.
+- Factory memory requests/limits are now 128Mi/256Mi for Mediator,
+  64Mi/256Mi for VTC, 16Mi/64Mi for VTA, and 64Mi/128Mi for DID Hosting,
+  totaling 272Mi/704Mi for a full stack.
+- Admin memory edits require requests and limits between 16Mi and 1Gi,
+  with requests no greater than limits. Rollback still supports older values.
+
+### Fixed
+
+- Session resource summaries read live deployments when stored settings are
+  absent instead of displaying the latest defaults as existing allocations.
+
 ## [v0.9.4] - 2026-09-29
 
 ### Changed

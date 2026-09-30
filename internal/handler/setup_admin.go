@@ -8,8 +8,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/resourceprofile"
 )
 
 // adminSessionsPageSize is fixed server-side — the admin sessions list always
@@ -175,6 +175,11 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 		ProviderGone     bool                     `json:"provider_gone,omitempty"`
 		Resources        []sessionResourceSummary `json:"resources"`
 	}
+	profiles, err := resourceprofile.Load(c.Request.Context(), h.db)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not load resource defaults"})
+		return
+	}
 	items := make([]sessionItem, len(sessions))
 	for i, s := range sessions {
 		items[i] = sessionItem{
@@ -194,12 +199,19 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 			CreatedAt:     s.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		}
 		for _, target := range sessionWorkloadTargets(&s) {
-			defaults, _ := k8s.DefaultResourceProfile(target.Component)
-			memoryRequest := defaults.MemoryRequest
-			memoryLimit := defaults.MemoryLimit
+			defaults := profiles[target.Component]
+			var memoryRequest, memoryLimit string
 			if stored, ok := storedResources[s.ID][target.Component]; ok {
-				memoryRequest = stored.MemoryRequest
-				memoryLimit = stored.MemoryLimit
+				memoryRequest, memoryLimit = stored.MemoryRequest, stored.MemoryLimit
+			} else if h.k8s != nil {
+				namespace := h.k8s.UserNamespace(strconv.FormatUint(uint64(s.UserID), 10))
+				actual, err := h.k8s.DeploymentResourceProfile(c.Request.Context(), namespace, target.Deployment)
+				if err != nil {
+					continue
+				}
+				memoryRequest, memoryLimit = actual.MemoryRequest, actual.MemoryLimit
+			} else {
+				continue
 			}
 			items[i].Resources = append(items[i].Resources, sessionResourceSummary{
 				Component:     target.Component,

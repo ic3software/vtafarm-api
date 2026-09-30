@@ -11,7 +11,7 @@ import (
 func TestCreateVtaDeploymentUsesHealthReadinessProbe(t *testing.T) {
 	client := &Client{kube: fake.NewSimpleClientset()}
 
-	if err := client.CreateVtaDeployment(context.Background(), "test", 42, "example/vta:test"); err != nil {
+	if err := client.CreateVtaDeployment(context.Background(), "test", 42, "example/vta:test", ComponentResources("10m", "32Mi", "128Mi")); err != nil {
 		t.Fatalf("CreateVtaDeployment() error = %v", err)
 	}
 
@@ -25,6 +25,10 @@ func TestCreateVtaDeploymentUsesHealthReadinessProbe(t *testing.T) {
 		t.Fatalf("container count = %d, want 1", len(deployment.Spec.Template.Spec.Containers))
 	}
 
+	resources := deployment.Spec.Template.Spec.Containers[0].Resources
+	if resources.Requests.Memory().String() != "32Mi" || resources.Limits.Memory().String() != "128Mi" {
+		t.Fatalf("deployment did not use configured memory: %+v", resources)
+	}
 	probe := deployment.Spec.Template.Spec.Containers[0].ReadinessProbe
 	if probe == nil || probe.HTTPGet == nil {
 		t.Fatal("readiness probe is not an HTTP probe")

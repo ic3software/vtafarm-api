@@ -15,6 +15,7 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/dnscheck"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/resourceprofile"
 	"github.com/ic3software/vtafarm-api/internal/vault"
 )
 
@@ -442,7 +443,12 @@ func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDi
 
 	log.Printf("[orchestrator] session %d: starting VTA deployment", sessionID)
 
-	if err := o.k8s.CreateVtaDeployment(ctx, ns, sessionID, session.VtaImage); err != nil {
+	profiles, err := resourceprofile.Load(ctx, o.db)
+	if err != nil {
+		o.markFailed(sessionID, "failed to load resource defaults: "+err.Error())
+		return
+	}
+	if err := o.k8s.CreateVtaDeployment(ctx, ns, sessionID, session.VtaImage, profiles.Requirements(k8s.ComponentVTA)); err != nil {
 		if ctx.Err() != nil {
 			return
 		}

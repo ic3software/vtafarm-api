@@ -16,6 +16,7 @@ import (
 
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/resourceprofile"
 )
 
 const maxResourceBatchSessions = 50
@@ -109,6 +110,11 @@ func (h *SetupHandler) AdminSessionResources(c *gin.Context) {
 		byComponent[item.Component] = item
 	}
 
+	profiles, err := resourceprofile.Load(c.Request.Context(), h.db)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not load resource defaults"})
+		return
+	}
 	views := make([]workloadResourceView, 0, len(sessionWorkloadTargets(session)))
 	for _, target := range sessionWorkloadTargets(session) {
 		actual, err := h.k8s.DeploymentResourceProfile(c.Request.Context(), namespace, target.Deployment)
@@ -135,7 +141,7 @@ func (h *SetupHandler) AdminSessionResources(c *gin.Context) {
 			}
 		}
 
-		defaults, _ := k8s.DefaultResourceProfile(target.Component)
+		defaults := profiles[target.Component]
 		status := "in_sync"
 		if !sameMemory(storedResource.MemoryRequest, actual.MemoryRequest) ||
 			!sameMemory(storedResource.MemoryLimit, actual.MemoryLimit) {
@@ -356,23 +362,23 @@ func validateResourceBatch(input *resourceBatchInput) error {
 		seenSessions[id] = true
 		input.SessionIDs[i] = id
 	}
+	return validateMemoryInputs(input.Resources)
+}
+
+func validateMemoryInputs(resources []memoryResourceInput) error {
 	seenComponents := map[string]bool{}
-	for i := range input.Resources {
-		item := &input.Resources[i]
+	for i := range resources {
+		item := &resources[i]
 		item.Component = strings.TrimSpace(item.Component)
 		if _, ok := k8s.DefaultResourceProfile(item.Component); !ok || seenComponents[item.Component] {
 			return fmt.Errorf("resources must contain unique known components")
 		}
 		seenComponents[item.Component] = true
-		if err := k8s.ValidateMemoryResources(item.MemoryRequest, item.MemoryLimit); err != nil {
+		if err := k8s.ValidateMemorySettings(item.MemoryRequest, item.MemoryLimit); err != nil {
 			return fmt.Errorf("%s: %w", item.Component, err)
 		}
 		request, _ := resource.ParseQuantity(strings.TrimSpace(item.MemoryRequest))
 		limit, _ := resource.ParseQuantity(strings.TrimSpace(item.MemoryLimit))
-		maxRequest := resource.MustParse("512Mi")
-		if request.Cmp(maxRequest) > 0 {
-			return fmt.Errorf("%s: memory_request must not exceed 512Mi", item.Component)
-		}
 		item.MemoryRequest = request.String()
 		item.MemoryLimit = limit.String()
 	}

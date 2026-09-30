@@ -12,6 +12,7 @@ import (
 
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/resourceprofile"
 	"github.com/ic3software/vtafarm-api/internal/vault"
 )
 
@@ -61,7 +62,7 @@ func fsNoColorEnv() []corev1.EnvVar {
 // fsMediatorTuningEnv sizes the mediator's byte budgets (mediator ≥0.17.0) for
 // the farm's single-tenant profile — half the shipped defaults. Env overrides
 // survive image upgrades without re-running mediator-setup; older images
-// ignore them. The Deployment's 256Mi memory limit is the backstop.
+// ignore them. The Deployment's configured memory limit is the backstop.
 func fsMediatorTuningEnv() []corev1.EnvVar {
 	return []corev1.EnvVar{
 		{Name: "LIMIT_WS_SEND_BUFFER", Value: "8388608"},        // 8 MiB, ships 32
@@ -1054,6 +1055,10 @@ func (o *Orchestrator) fsStepVtaRegisterDids(ctx context.Context, ns string, s *
 // Deployment object existing isn't enough. The daemon's /health endpoint
 // proves its HTTP listener and combined service router are serving.
 func (o *Orchestrator) fsDeployDids(ctx context.Context, ns string, s *model.SetupSession) error {
+	profiles, err := resourceprofile.Load(ctx, o.db)
+	if err != nil {
+		return fmt.Errorf("load resource defaults: %w", err)
+	}
 	name := k8s.FSDidsName(s.ID)
 	if err := o.k8s.CreateComponentDeployment(ctx, ns, k8s.ComponentDeploymentSpec{
 		Name:            name,
@@ -1066,7 +1071,7 @@ func (o *Orchestrator) fsDeployDids(ctx context.Context, ns string, s *model.Set
 		Port:            8534,
 		Labels:          fsLabels("dids", s.ID),
 		HealthCheckPath: "/health",
-		Resources:       k8s.DefaultResourceRequirements(k8s.ComponentDids),
+		Resources:       profiles.Requirements(k8s.ComponentDids),
 	}); err != nil {
 		return err
 	}
@@ -1082,6 +1087,10 @@ func (o *Orchestrator) fsDeployDids(ctx context.Context, ns string, s *model.Set
 // for every component, not just the one known to need it today. Its readyz
 // endpoint checks the storage backend and load-bearing background tasks.
 func (o *Orchestrator) fsDeployMediator(ctx context.Context, ns string, s *model.SetupSession) error {
+	profiles, err := resourceprofile.Load(ctx, o.db)
+	if err != nil {
+		return fmt.Errorf("load resource defaults: %w", err)
+	}
 	name := k8s.FSMediatorName(s.ID)
 	if err := o.k8s.CreateComponentDeployment(ctx, ns, k8s.ComponentDeploymentSpec{
 		Name:            name,
@@ -1094,7 +1103,7 @@ func (o *Orchestrator) fsDeployMediator(ctx context.Context, ns string, s *model
 		Port:            7037,
 		Labels:          fsLabels("mediator", s.ID),
 		HealthCheckPath: "/mediator/v1/readyz",
-		Resources:       k8s.DefaultResourceRequirements(k8s.ComponentMediator),
+		Resources:       profiles.Requirements(k8s.ComponentMediator),
 	}); err != nil {
 		return err
 	}
@@ -1140,6 +1149,10 @@ func (o *Orchestrator) fsStepImportAdminDid(ctx context.Context, ns string, s *m
 // startup, so WaitForComponentDeploymentReady below returned almost
 // instantly regardless of whether VTA could actually serve a request yet.
 func (o *Orchestrator) fsDeployVta(ctx context.Context, ns string, s *model.SetupSession) error {
+	profiles, err := resourceprofile.Load(ctx, o.db)
+	if err != nil {
+		return fmt.Errorf("load resource defaults: %w", err)
+	}
 	name := k8s.FSVtaName(s.ID)
 	if err := o.k8s.CreateComponentDeployment(ctx, ns, k8s.ComponentDeploymentSpec{
 		Name:            name,
@@ -1152,7 +1165,7 @@ func (o *Orchestrator) fsDeployVta(ctx context.Context, ns string, s *model.Setu
 		Port:            8100,
 		Labels:          fsLabels("vta", s.ID),
 		HealthCheckPath: "/health",
-		Resources:       k8s.DefaultResourceRequirements(k8s.ComponentVTA),
+		Resources:       profiles.Requirements(k8s.ComponentVTA),
 	}); err != nil {
 		return err
 	}

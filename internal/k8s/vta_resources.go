@@ -43,7 +43,7 @@ func VtaTuningEnv() []corev1.EnvVar {
 // what runs and where state lives, never the image — and the PVC is mounted at
 // /work/vta to match, so VTA resolves its relative config.toml and data_dir
 // onto it. Port 8100. Idempotent — AlreadyExists is ignored.
-func (c *Client) CreateVtaDeployment(ctx context.Context, ns string, sessionID uint, image string) error {
+func (c *Client) CreateVtaDeployment(ctx context.Context, ns string, sessionID uint, image string, resources corev1.ResourceRequirements) error {
 	name := vtaDeploymentName(sessionID)
 	pvcName := VtaPVCName(sessionID)
 	replicas := int32(1)
@@ -100,7 +100,7 @@ func (c *Client) CreateVtaDeployment(ctx context.Context, ns string, sessionID u
 							Name:      "data",
 							MountPath: "/work/vta",
 						}},
-						Resources: DefaultResourceRequirements(ComponentVTA),
+						Resources: resources,
 					}},
 					Volumes: []corev1.Volume{{
 						Name: "data",
