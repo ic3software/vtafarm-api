@@ -28,18 +28,17 @@ type ResourceProfile struct {
 	MemoryLimit   string `json:"memory_limit"`
 }
 
-// DefaultResourceProfile is the one source of truth for new workloads and
-// for the Admin UI's default values.
+// DefaultResourceProfile supplies factory defaults before any admin overrides.
 func DefaultResourceProfile(component string) (ResourceProfile, bool) {
 	switch component {
 	case ComponentVTA:
-		return ResourceProfile{CPURequest: "10m", MemoryRequest: "64Mi", MemoryLimit: "256Mi"}, true
+		return ResourceProfile{CPURequest: "10m", MemoryRequest: "16Mi", MemoryLimit: "64Mi"}, true
 	case ComponentMediator:
-		return ResourceProfile{CPURequest: "50m", MemoryRequest: "64Mi", MemoryLimit: "256Mi"}, true
+		return ResourceProfile{CPURequest: "50m", MemoryRequest: "128Mi", MemoryLimit: "256Mi"}, true
 	case ComponentDids:
-		return ResourceProfile{CPURequest: "10m", MemoryRequest: "64Mi", MemoryLimit: "256Mi"}, true
+		return ResourceProfile{CPURequest: "10m", MemoryRequest: "64Mi", MemoryLimit: "128Mi"}, true
 	case ComponentVTC:
-		return ResourceProfile{CPURequest: "10m", MemoryRequest: "128Mi", MemoryLimit: "512Mi"}, true
+		return ResourceProfile{CPURequest: "10m", MemoryRequest: "64Mi", MemoryLimit: "256Mi"}, true
 	default:
 		return ResourceProfile{}, false
 	}
@@ -148,4 +147,20 @@ func (c *Client) updateDeploymentMemory(ctx context.Context, namespace, name, me
 		return update()
 	}
 	return retry.RetryOnConflict(retry.DefaultRetry, update)
+}
+
+// ValidateMemorySettings applies the admin editing bounds without preventing
+// rollback to an older Deployment whose resources fall outside those bounds.
+func ValidateMemorySettings(request, limit string) error {
+	if err := ValidateMemoryResources(request, limit); err != nil {
+		return err
+	}
+	min, max := resource.MustParse("16Mi"), resource.MustParse("1Gi")
+	for _, value := range []string{request, limit} {
+		q, _ := resource.ParseQuantity(strings.TrimSpace(value))
+		if q.Cmp(min) < 0 || q.Cmp(max) > 0 {
+			return fmt.Errorf("memory request and limit must be between 16Mi and 1Gi")
+		}
+	}
+	return nil
 }

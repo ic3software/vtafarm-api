@@ -9,6 +9,7 @@ import (
 	"slices"
 
 	"github.com/ic3software/vtafarm-api/internal/k8s"
+	"github.com/ic3software/vtafarm-api/internal/resourceprofile"
 )
 
 // Component is one pod of a session mode plus its PVC (StorageBytes 0 = no
@@ -61,6 +62,20 @@ func planningComponent(name string, storageBytes int64) Component {
 		MemBytes:     resources.Limits.Memory().Value(),
 		StorageBytes: storageBytes,
 	}
+}
+
+// Modes builds independent planning costs from the current settings snapshot.
+func Modes(profiles resourceprofile.Profiles) []Mode {
+	modes := []Mode{VtaOnly, FullStack}
+	for i := range modes {
+		modes[i].Components = slices.Clone(modes[i].Components)
+		for j := range modes[i].Components {
+			comp := &modes[i].Components[j]
+			resources := profiles.Requirements(comp.Name)
+			comp.MemBytes = resources.Limits.Memory().Value()
+		}
+	}
+	return modes
 }
 
 // PlanningHeadroom returns the resource budget available for new sessions.

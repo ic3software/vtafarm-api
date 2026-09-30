@@ -1,6 +1,10 @@
 package capacity
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/ic3software/vtafarm-api/internal/resourceprofile"
+)
 
 func TestPlanningHeadroom(t *testing.T) {
 	tests := []struct {
@@ -30,11 +34,11 @@ func TestModeMemoryUsesLimits(t *testing.T) {
 	for _, comp := range FullStack.Components {
 		fullStackMem += comp.MemBytes
 	}
-	if vtaMem != 256*mi {
-		t.Fatalf("VtaOnly memory = %d, want 256Mi", vtaMem)
+	if vtaMem != 64*mi {
+		t.Fatalf("VtaOnly memory = %d, want 64Mi", vtaMem)
 	}
-	if fullStackMem != 1280*mi {
-		t.Fatalf("FullStack memory = %d, want 1280Mi", fullStackMem)
+	if fullStackMem != 704*mi {
+		t.Fatalf("FullStack memory = %d, want 704Mi", fullStackMem)
 	}
 }
 
@@ -71,13 +75,13 @@ func TestEstimateModeFragmentation(t *testing.T) {
 }
 
 func TestEstimateModePerResourceMatchesCount(t *testing.T) {
-	// Two nodes with 384Mi free each: the cluster-wide total divides into three
-	// 256Mi vta_only sessions, but each node holds only one. The
+	// Two nodes with 96Mi free each: the cluster-wide total divides into three
+	// 64Mi vta_only sessions, but each node holds only one. The
 	// displayed memory count must agree with Count, not report a third
 	// session that has nowhere to go.
 	nodes := []NodeFree{
-		{CPUMillis: 1000, MemBytes: 384 * mi},
-		{CPUMillis: 1000, MemBytes: 384 * mi},
+		{CPUMillis: 1000, MemBytes: 96 * mi},
+		{CPUMillis: 1000, MemBytes: 96 * mi},
 	}
 	disks := []DiskFree{{Bytes: 100 * gi}}
 
@@ -138,5 +142,27 @@ func TestEstimateModeStorageUnknown(t *testing.T) {
 	}
 	if est.ByStorage != -1 {
 		t.Fatalf("ByStorage = %d, want -1", est.ByStorage)
+	}
+}
+
+func TestModesUseCurrentProfiles(t *testing.T) {
+	profiles := resourceprofile.Factory()
+	before := Modes(profiles)
+	profile := profiles["vta"]
+	profile.MemoryLimit = "1Gi"
+	profiles["vta"] = profile
+	after := Modes(profiles)
+	if before[0].Components[0].MemBytes != 64*mi || after[0].Components[0].MemBytes != gi {
+		t.Fatalf("planning did not refresh costs: before=%+v after=%+v", before, after)
+	}
+	if VtaOnly.Components[0].MemBytes != 64*mi {
+		t.Fatal("factory mode was mutated")
+	}
+	var total int64
+	for _, comp := range after[1].Components {
+		total += comp.MemBytes
+	}
+	if total != (704-64+1024)*mi {
+		t.Fatalf("full stack cost = %d", total)
 	}
 }

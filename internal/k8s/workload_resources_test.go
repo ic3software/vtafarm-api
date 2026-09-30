@@ -15,10 +15,10 @@ func TestDefaultResourceProfiles(t *testing.T) {
 	tests := []struct {
 		component, cpu, request, limit string
 	}{
-		{ComponentVTA, "10m", "64Mi", "256Mi"},
-		{ComponentMediator, "50m", "64Mi", "256Mi"},
-		{ComponentDids, "10m", "64Mi", "256Mi"},
-		{ComponentVTC, "10m", "128Mi", "512Mi"},
+		{ComponentVTA, "10m", "16Mi", "64Mi"},
+		{ComponentMediator, "50m", "128Mi", "256Mi"},
+		{ComponentDids, "10m", "64Mi", "128Mi"},
+		{ComponentVTC, "10m", "64Mi", "256Mi"},
 	}
 	for _, test := range tests {
 		profile, ok := DefaultResourceProfile(test.component)
@@ -90,5 +90,20 @@ func TestUpdateDeploymentMemoryPreservesCPUAndUsesRecreate(t *testing.T) {
 	}
 	if updated.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType || updated.Spec.Strategy.RollingUpdate != nil {
 		t.Errorf("strategy = %+v, want Recreate", updated.Spec.Strategy)
+	}
+}
+
+func TestValidateMemorySettings(t *testing.T) {
+	for _, test := range []struct {
+		request, limit string
+		valid          bool
+	}{
+		{"16Mi", "1Gi", true}, {"1Gi", "1Gi", true}, {"16Mi", "16Mi", true},
+		{"15Mi", "64Mi", false}, {"16Mi", "1025Mi", false},
+		{"64Mi", "16Mi", false}, {"bad", "1Gi", false},
+	} {
+		if err := ValidateMemorySettings(test.request, test.limit); (err == nil) != test.valid {
+			t.Errorf("ValidateMemorySettings(%q, %q) = %v", test.request, test.limit, err)
+		}
 	}
 }

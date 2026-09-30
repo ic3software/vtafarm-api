@@ -9,15 +9,19 @@ import (
 
 	"github.com/ic3software/vtafarm-api/internal/capacity"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
+	"github.com/ic3software/vtafarm-api/internal/resourceprofile"
+	"gorm.io/gorm"
 )
 
 type DashboardHandler struct {
+	db    *gorm.DB
 	k8s   *k8s.Client
 	usage *usageHighWater
 }
 
-func NewDashboardHandler(k8sClient *k8s.Client) *DashboardHandler {
+func NewDashboardHandler(db *gorm.DB, k8sClient *k8s.Client) *DashboardHandler {
 	return &DashboardHandler{
+		db:    db,
 		k8s:   k8sClient,
 		usage: newUsageHighWater(capacityUsageWindow),
 	}
@@ -141,7 +145,12 @@ func (h *DashboardHandler) Get(c *gin.Context) {
 
 	replicas := stats.StorageReplicaCount
 	estimates := gin.H{}
-	for _, mode := range []capacity.Mode{capacity.VtaOnly, capacity.FullStack} {
+	profiles, err := resourceprofile.Load(ctx, h.db)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not load resource defaults"})
+		return
+	}
+	for _, mode := range capacity.Modes(profiles) {
 		est := capacity.EstimateMode(mode, freeNodes, freeDisks, replicas, stats.StorageAvailable)
 		var cpuCost, memCost, storageCost int64
 		for _, comp := range mode.Components {

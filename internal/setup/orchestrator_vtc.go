@@ -8,6 +8,7 @@ import (
 
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/resourceprofile"
 	"github.com/ic3software/vtafarm-api/internal/vault"
 )
 
@@ -246,6 +247,10 @@ func (o *Orchestrator) fsStepVtcSetup(ctx context.Context, ns string, s *model.S
 // can be marked running. Runs as SA vta — it reads its Vault key bundle at
 // every boot.
 func (o *Orchestrator) fsDeployVtc(ctx context.Context, ns string, s *model.SetupSession) error {
+	profiles, err := resourceprofile.Load(ctx, o.db)
+	if err != nil {
+		return fmt.Errorf("load resource defaults: %w", err)
+	}
 	name := k8s.FSVtcName(s.ID)
 	if err := o.k8s.CreateComponentDeployment(ctx, ns, k8s.ComponentDeploymentSpec{
 		Name:            name,
@@ -258,7 +263,7 @@ func (o *Orchestrator) fsDeployVtc(ctx context.Context, ns string, s *model.Setu
 		Port:            8200,
 		Labels:          fsLabels("vtc", s.ID),
 		HealthCheckPath: "/health",
-		Resources:       k8s.DefaultResourceRequirements(k8s.ComponentVTC),
+		Resources:       profiles.Requirements(k8s.ComponentVTC),
 	}); err != nil {
 		return err
 	}
