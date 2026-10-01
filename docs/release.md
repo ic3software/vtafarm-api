@@ -167,7 +167,7 @@ this chart:
 
 | Secret | Created by |
 | --- | --- |
-| `vtafarm-api-secrets` | `k8s/secret.yaml.example`, applied by hand |
+| `vtafarm-api-secrets` | Stack 05 in `vtafarm-k8s` |
 | `vtafarm-api-postgresql` | `kubectl create secret generic` before the first deploy |
 | `vtafarm-api-vault` | `vault-bootstrap.sh farm` in `vtafarm-k8s` |
 

@@ -8,7 +8,12 @@ import (
 	"time"
 )
 
+type MobileConnectionConfig struct {
+	SigningKey string
+}
+
 type Config struct {
+	MobileConnection MobileConnectionConfig
 	AppPort          string
 	AppEnv           string
 	JWTSecret        string
@@ -169,6 +174,9 @@ func Load() *Config {
 	appEnv := getEnv("APP_ENV", "development")
 
 	return &Config{
+		MobileConnection: MobileConnectionConfig{
+			SigningKey: getEnv("MOBILE_CONNECTION_SIGNING_KEY", ""),
+		},
 		AppPort:          getEnv("APP_PORT", "8080"),
 		AppEnv:           appEnv,
 		JWTSecret:        getEnv("JWT_SECRET", "change-me-in-production"),

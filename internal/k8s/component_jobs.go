@@ -48,6 +48,9 @@ type ComponentJobSpec struct {
 
 	// ActiveDeadlineSeconds defaults to 600 (10 min) when zero.
 	ActiveDeadlineSeconds int64
+
+	// Keep completed authorization Jobs as recovery receipts until session teardown.
+	RetainForRecovery bool
 }
 
 // CreateComponentPVC creates an RWO PVC of storageSize for a full_stack
@@ -140,6 +143,10 @@ func (c *Client) CreateComponentJob(ctx context.Context, ns string, spec Compone
 
 	backoff := int32(0)
 	ttl := int32(3600)
+	ttlSeconds := &ttl
+	if spec.RetainForRecovery {
+		ttlSeconds = nil
+	}
 	deadline := spec.ActiveDeadlineSeconds
 	if deadline == 0 {
 		deadline = 600
@@ -149,7 +156,7 @@ func (c *Client) CreateComponentJob(ctx context.Context, ns string, spec Compone
 		ObjectMeta: metav1.ObjectMeta{Name: spec.Name, Namespace: ns},
 		Spec: batchv1.JobSpec{
 			BackoffLimit:            &backoff,
-			TTLSecondsAfterFinished: &ttl,
+			TTLSecondsAfterFinished: ttlSeconds,
 			ActiveDeadlineSeconds:   &deadline,
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{

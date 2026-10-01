@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"regexp"
@@ -85,10 +86,37 @@ func (h *SetupHandler) grantVtaAdmin(
 	log.Printf("[vta-admins] granting super admin on session %d to %s (requested by %s)",
 		session.ID, did, actor)
 
-	logs, restartErr, runErr := h.runVtaAclJob(c.Request.Context(), session, grantCmd(did, label))
+	result, runErr := h.performVtaAdminGrant(c.Request.Context(), session, did, label)
 	if runErr != nil {
-		respondAclJobError(c, session, runErr, restartErr)
+		respondAclJobError(c, session, runErr, result.restartErr)
 		return
+	}
+
+	resp := gin.H{
+		"did":    did,
+		"status": "granted",
+		// The caller asked for this DID to hold super admin; it already did.
+		// Reported rather than swallowed so a UI can say "already an admin"
+		// instead of implying it just changed something.
+		"already_present": result.alreadyPresent,
+	}
+	if result.warning != "" {
+		resp["warning"] = result.warning
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+type vtaAdminGrantResult struct {
+	alreadyPresent bool
+	warning        string
+	restartErr     error
+}
+
+func (h *SetupHandler) performVtaAdminGrant(ctx context.Context, session *model.SetupSession, did, label string) (vtaAdminGrantResult, error) {
+	logs, restartErr, runErr := h.runVtaAclJob(ctx, session, grantCmd(did, label))
+	result := vtaAdminGrantResult{alreadyPresent: strings.Contains(logs, alreadyPresentMarker), restartErr: restartErr}
+	if runErr != nil {
+		return result, runErr
 	}
 
 	warnings := make([]string, 0, 2)
@@ -98,22 +126,11 @@ func (h *SetupHandler) grantVtaAdmin(
 		log.Printf("[vta-admins] error: failed to sync ACL snapshot for session %d: %v", session.ID, syncErr)
 		warnings = append(warnings, "The PNM was linked, but the ACL snapshot could not be saved. Use Refresh ACL to retry.")
 	}
-
-	resp := gin.H{
-		"did":    did,
-		"status": "granted",
-		// The caller asked for this DID to hold super admin; it already did.
-		// Reported rather than swallowed so a UI can say "already an admin"
-		// instead of implying it just changed something.
-		"already_present": strings.Contains(logs, alreadyPresentMarker),
-	}
 	if restartErr != nil {
 		warnings = append(warnings, restartWarning(session, restartErr))
 	}
-	if len(warnings) > 0 {
-		resp["warning"] = strings.Join(warnings, " ")
-	}
-	c.JSON(http.StatusOK, resp)
+	result.warning = strings.Join(warnings, " ")
+	return result, nil
 }
 
 // grantCmd probes before importing, because `vta import-did` prompts on an

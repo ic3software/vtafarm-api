@@ -120,13 +120,14 @@ func (o *Orchestrator) fsStepVtcSetupKey(ctx context.Context, ns string, s *mode
 	jobName := k8s.FSJobVtcSetupKey(s.ID)
 	cmd := fmt.Sprintf("vtc setup --setup-key-out setup-key.json --context %s", shellQuote(s.VtcName))
 	if err := o.k8s.CreateComponentJob(ctx, ns, k8s.ComponentJobSpec{
-		Name:           jobName,
-		Image:          s.VtcImage,
-		Command:        []string{"sh", "-c", cmd},
-		WorkingDir:     "/work/vtc",
-		ServiceAccount: k8s.PodOperatorServiceAccount,
-		PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/work/vtc"}},
-		Env:            fsNoColorEnv(),
+		RetainForRecovery: true,
+		Name:              jobName,
+		Image:             s.VtcImage,
+		Command:           []string{"sh", "-c", cmd},
+		WorkingDir:        "/work/vtc",
+		ServiceAccount:    k8s.PodOperatorServiceAccount,
+		PVCMounts:         []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/work/vtc"}},
+		Env:               fsNoColorEnv(),
 	}); err != nil {
 		return "", fmt.Errorf("create job: %w", err)
 	}
@@ -168,13 +169,14 @@ func (o *Orchestrator) fsStepVtcAclGrant(ctx context.Context, ns string, s *mode
 
 	jobName := k8s.FSJobVtcAclGrant(s.ID)
 	if err := o.k8s.CreateComponentJob(ctx, ns, k8s.ComponentJobSpec{
-		Name:           jobName,
-		Image:          s.VtaImage,
-		Command:        []string{"sh", "-c", cmd},
-		WorkingDir:     "/work/vta",
-		ServiceAccount: k8s.VtaServiceAccount,
-		PVCMounts:      []k8s.PVCMount{{Name: "vta-data", ClaimName: k8s.FSVtaName(s.ID), MountPath: "/work/vta"}},
-		Env:            fsNoColorEnv(),
+		RetainForRecovery: true,
+		Name:              jobName,
+		Image:             s.VtaImage,
+		Command:           []string{"sh", "-c", cmd},
+		WorkingDir:        "/work/vta",
+		ServiceAccount:    k8s.VtaServiceAccount,
+		PVCMounts:         []k8s.PVCMount{{Name: "vta-data", ClaimName: k8s.FSVtaName(s.ID), MountPath: "/work/vta"}},
+		Env:               fsNoColorEnv(),
 	}); err != nil {
 		return fmt.Errorf("create job: %w", err)
 	}
@@ -208,16 +210,17 @@ func (o *Orchestrator) fsStepVtcSetup(ctx context.Context, ns string, s *model.S
 
 	jobName := k8s.FSJobVtcSetup(s.ID)
 	if err := o.k8s.CreateComponentJob(ctx, ns, k8s.ComponentJobSpec{
-		Name:           jobName,
-		Image:          s.VtcImage,
-		Command:        []string{"sh", "-c", "vtc setup --from /config/vtc-setup.toml"},
-		WorkingDir:     "/work/vtc",
-		ServiceAccount: k8s.VtaServiceAccount,
-		PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/work/vtc"}},
-		ConfigMapName:  jobName,
-		ConfigMapKey:   "vtc-setup.toml",
-		ConfigMapData:  toml,
-		Env:            fsNoColorEnv(),
+		RetainForRecovery: true,
+		Name:              jobName,
+		Image:             s.VtcImage,
+		Command:           []string{"sh", "-c", "vtc setup --from /config/vtc-setup.toml"},
+		WorkingDir:        "/work/vtc",
+		ServiceAccount:    k8s.VtaServiceAccount,
+		PVCMounts:         []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/work/vtc"}},
+		ConfigMapName:     jobName,
+		ConfigMapKey:      "vtc-setup.toml",
+		ConfigMapData:     toml,
+		Env:               fsNoColorEnv(),
 	}); err != nil {
 		return VtcSetupOutcome{}, fmt.Errorf("create job: %w", err)
 	}

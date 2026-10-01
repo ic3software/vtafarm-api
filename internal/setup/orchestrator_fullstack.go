@@ -1116,15 +1116,17 @@ func (o *Orchestrator) fsDeployMediator(ctx context.Context, ns string, s *model
 // PNM admin DID into the VTA's (still-unclaimed) fjall store.
 func (o *Orchestrator) fsStepImportAdminDid(ctx context.Context, ns string, s *model.SetupSession, adminDid string) error {
 	jobName := k8s.FSJobImportAdminDid(s.ID)
-	cmd := fmt.Sprintf("vta import-did --role admin --label pnm-bootstrap --did %s", shellQuote(adminDid))
+	label := o.provisionAdminLabel(s.ID, adminDid, "pnm-bootstrap")
+	cmd := fmt.Sprintf("vta import-did --role admin --label %s --did %s", shellQuote(label), shellQuote(adminDid))
 	if err := o.k8s.CreateComponentJob(ctx, ns, k8s.ComponentJobSpec{
-		Name:           jobName,
-		Image:          s.VtaImage,
-		Command:        []string{"sh", "-c", cmd},
-		WorkingDir:     "/work/vta",
-		ServiceAccount: k8s.VtaServiceAccount,
-		PVCMounts:      []k8s.PVCMount{{Name: "vta-data", ClaimName: k8s.FSVtaName(s.ID), MountPath: "/work/vta"}},
-		Env:            fsNoColorEnv(),
+		RetainForRecovery: true,
+		Name:              jobName,
+		Image:             s.VtaImage,
+		Command:           []string{"sh", "-c", cmd},
+		WorkingDir:        "/work/vta",
+		ServiceAccount:    k8s.VtaServiceAccount,
+		PVCMounts:         []k8s.PVCMount{{Name: "vta-data", ClaimName: k8s.FSVtaName(s.ID), MountPath: "/work/vta"}},
+		Env:               fsNoColorEnv(),
 	}); err != nil {
 		return fmt.Errorf("create job: %w", err)
 	}
