@@ -1,5 +1,24 @@
 # Changelog
 
+## [v0.11.0] - 2026-09-30
+
+### Added
+
+- Automatic Mobile Connection APIs issue signed QR callbacks, accept mobile
+  administrator DIDs, expose progress, and record app completion for initial
+  setup and running VTAs.
+- Migration 000039 adds durable mobile connection requests so accepted work can
+  recover after retries or API restarts.
+- Mobile app integration documentation includes the QR payload, request and
+  response examples, and expected error handling.
+
+### Changed
+
+- Administrators connected through the automatic mobile flow use the
+  `mobile integration` ACL label.
+- Each environment supplies its own `MOBILE_CONNECTION_SIGNING_KEY`; VTA Farm
+  derives callback URLs from the configured cluster domain.
+
 ## [v0.10.0] - 2026-09-30
 
 ### Added
