@@ -254,15 +254,13 @@ func (c *Client) CreateProvisionJob(ctx context.Context, ns string, sessionID ui
 	}
 
 	backoff := int32(0)
-	ttl := int32(3600)
 	deadline := int64(300)
 
 	_, err := c.kube.BatchV1().Jobs(ns).Create(ctx, &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: ns},
 		Spec: batchv1.JobSpec{
-			BackoffLimit:            &backoff,
-			TTLSecondsAfterFinished: &ttl,
-			ActiveDeadlineSeconds:   &deadline,
+			BackoffLimit:          &backoff,
+			ActiveDeadlineSeconds: &deadline,
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					RestartPolicy:      corev1.RestartPolicyNever,

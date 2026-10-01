@@ -14,6 +14,7 @@ import (
 
 	"github.com/ic3software/vtafarm-api/internal/capacity"
 	"github.com/ic3software/vtafarm-api/internal/cloudflare"
+	"github.com/ic3software/vtafarm-api/internal/connection"
 	"github.com/ic3software/vtafarm-api/internal/didhosting"
 	"github.com/ic3software/vtafarm-api/internal/ghcr"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
@@ -804,7 +805,10 @@ func (h *SetupHandler) Delete(c *gin.Context) {
 // identical, so both funnel through here.
 func (h *SetupHandler) teardownSession(c *gin.Context, session *model.SetupSession) {
 	if h.orch != nil {
-		h.orch.Cancel(session.ID)
+		if err := h.orch.Cancel(session.ID); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Unable to stop provisioning before deletion. Please retry."})
+			return
+		}
 	}
 
 	if session.IsFullStack() {
@@ -1075,15 +1079,6 @@ func (h *SetupHandler) AdminProvisionAdmin(c *gin.Context) {
 // Ownership is the caller's business — both routes above funnel through here so
 // the state machine has one entry point.
 func (h *SetupHandler) provisionAdmin(c *gin.Context, session *model.SetupSession) {
-	readyStatus := "vta_setup_complete"
-	if session.IsFullStack() {
-		readyStatus = "awaiting_admin_did"
-	}
-	if session.Status != readyStatus {
-		c.JSON(http.StatusConflict, gin.H{"error": "session must be in " + readyStatus + " status"})
-		return
-	}
-
 	if h.orch == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "k8s not configured"})
 		return
@@ -1097,7 +1092,11 @@ func (h *SetupHandler) provisionAdmin(c *gin.Context, session *model.SetupSessio
 		return
 	}
 
-	h.orch.Provision(session.ID, req.AdminDid)
+	if _, err := connection.AcceptManual(c.Request.Context(), h.db, session.ID, req.AdminDid, false); err != nil {
+		writeConnectionError(c, err)
+		return
+	}
+	h.orch.KickProvision(session.ID)
 
 	c.JSON(http.StatusAccepted, gin.H{"status": "provisioning"})
 }

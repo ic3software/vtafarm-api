@@ -368,31 +368,17 @@ Each VTA's master seed is stored in HashiCorp Vault, which `vtafarm-k8s` stack
 be installed and bootstrapped **before** the API: the API needs the
 `vtafarm-api-vault` Secret that `scripts/vault-bootstrap.sh farm` produces.
 
-### 3. Create the API Secrets (one-time)
+### 3. Provide the API Secrets (one-time per environment)
 
-Copy the example secret manifest and fill in real values:
+Production and staging secrets are managed by Stack 05 in the `vtafarm-k8s`
+repository. Set each environment's inputs in its ignored `terraform.tfvars`;
+OpenTofu creates the `vtafarm-api-secrets` Secret in that cluster. Generate a
+different `mobile_connection_signing_key` for every environment with
+`openssl rand -hex 32`.
 
-```bash
-cp k8s/secret.yaml.example k8s/secret.yaml
-```
-
-Edit `k8s/secret.yaml`, then generate the values you need:
-
-```bash
-# JWT_SECRET
-openssl rand -base64 32
-
-# DID_HOSTING_PRIVATE_KEY + DID_HOSTING_DID
-make gen-keypair
-```
-
-Apply to the cluster:
-
-```bash
-kubectl apply -f k8s/secret.yaml
-```
-
-> **Note:** `k8s/secret.yaml` is listed in `.gitignore` — never commit it.
+Standalone Helm consumers must create `vtafarm-api-secrets` through their own
+secret-management system before installing the chart. Do not store secret
+values in Helm values or Git.
 
 ### 4. Create the PostgreSQL Secret (one-time)
 

@@ -95,12 +95,15 @@ func main() {
 		log.Printf("ORCHESTRATOR_RESUME=false — interrupted sessions and upgrades will not be re-attached")
 	}
 
+	workerCtx, stopWorkers := context.WithCancel(context.Background())
+	defer stopWorkers()
 	var orch *setup.Orchestrator
 	if k8sClient != nil {
 		orch = setup.NewOrchestrator(db, k8sClient, vaultClient, cfg.Vault.VTAAddr, dhFactory,
 			cfg.ClusterIngressIP, cfg.ACMEClusterIssuer)
 		if cfg.OrchestratorResume {
-			orch.Resume(context.Background())
+			orch.Resume(workerCtx)
+			go orch.RunProvisionQueue(workerCtx)
 		}
 	}
 
@@ -160,6 +163,7 @@ func main() {
 	<-quit
 
 	log.Println("shutting down server...")
+	stopWorkers()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {

@@ -11,6 +11,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/ic3software/vtafarm-api/internal/connection"
 	"github.com/ic3software/vtafarm-api/internal/didhosting"
 	"github.com/ic3software/vtafarm-api/internal/dnscheck"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
@@ -42,6 +43,7 @@ type Orchestrator struct {
 	dns        *dnscheck.Checker
 	mu         sync.Mutex
 	cancels    map[uint]context.CancelFunc
+	provisions map[uint]context.CancelFunc
 }
 
 func NewOrchestrator(
@@ -84,14 +86,7 @@ func (o *Orchestrator) Start(sessionID uint) {
 // wraps the VTC steps around import-did + deploy_vta
 // (orchestrator_vtc.go).
 func (o *Orchestrator) Provision(sessionID uint, adminDid string) {
-	o.launch(sessionID, func(ctx context.Context) {
-		switch o.sessionMode(sessionID) {
-		case model.ModeFullStack:
-			o.runFullStackFinish(ctx, sessionID, adminDid)
-		default:
-			o.runProvision(ctx, sessionID, adminDid)
-		}
-	})
+	o.queueProvision(sessionID, adminDid)
 }
 
 // sessionMode looks up a session's mode without loading the full row.
@@ -149,13 +144,26 @@ func (o *Orchestrator) TeardownVaultUserAccess(ctx context.Context, userID uint)
 }
 
 // Cancel stops the goroutine for sessionID (called by Delete handler).
-func (o *Orchestrator) Cancel(sessionID uint) {
+func (o *Orchestrator) Cancel(sessionID uint) error {
+	ctx, stop := context.WithTimeout(context.Background(), 15*time.Second)
+	defer stop()
+	if err := connection.Stop(ctx, o.db, sessionID); err != nil {
+		return err
+	}
 	o.mu.Lock()
+	if cancel, ok := o.provisions[sessionID]; ok {
+		cancel()
+	}
 	if cancel, ok := o.cancels[sessionID]; ok {
 		cancel()
 		delete(o.cancels, sessionID)
 	}
 	o.mu.Unlock()
+	// A worker on another replica observes the finished marker on its next
+	// heartbeat. Wait for its lock before deleting the resources it can create.
+	return o.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return tx.Exec("SELECT pg_advisory_xact_lock($1, $2)", 565441, int64(sessionID)).Error
+	})
 }
 
 // Resume re-attaches goroutines for sessions that were interrupted mid-run at startup.

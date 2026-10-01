@@ -2,6 +2,7 @@ package router
 
 import (
 	"log"
+	"strings"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -38,7 +39,10 @@ func Setup(
 	dhFactory *didhosting.Factory,
 	cfg *config.Config,
 ) *gin.Engine {
-	r := gin.Default()
+	r := gin.New()
+	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{Skip: func(c *gin.Context) bool {
+		return strings.HasPrefix(c.Request.URL.Path, "/api/v1/mobile-connections/")
+	}}), gin.Recovery())
 
 	// The Vite dev ports are a local convenience no deployment would configure.
 	allowOrigins := append(
@@ -258,6 +262,12 @@ func Setup(
 	v1.GET("/recovery/:token", rh.Validate)
 	v1.POST("/recovery/:token", middleware.RateLimit(10, time.Minute), rh.Consume)
 
+	mobile := handler.NewMobileConnectionHandler(db, orch, cfg.MobileConnection, cfg.ClusterDomain)
+	mobilePublic := v1.Group("/mobile-connections", middleware.MobilePrivacy(), middleware.NoStore(), middleware.RateLimit(120, time.Minute))
+	mobilePublic.POST("/callback/:token", mobile.Callback)
+	mobilePublic.GET("/:request_id", mobile.Progress)
+	mobilePublic.POST("/:request_id/complete", mobile.Progress)
+
 	// User routes — cookie: vtafarm_user
 	userAuth := v1.Group("",
 		middleware.AuthRequired(cfg.JWTSecret, middleware.CookieUser),
@@ -301,6 +311,11 @@ func Setup(
 		userAuth.POST("/setup/:id/upgrade", uph.CreateForSession)
 		userAuth.GET("/setup/:id/upgrade", uph.GetForSession)
 		userAuth.POST("/setup/:id/admin", sh.ProvisionAdmin)
+		mobileOwner := userAuth.Group("/setup/:id/mobile-connections", middleware.NoStore(), middleware.RateLimit(120, time.Minute))
+		mobileOwner.GET("/current", mobile.Current)
+		mobileOwner.POST("", mobile.Change)
+		mobileOwner.POST("/:request_id/refresh", mobile.Change)
+		mobileOwner.DELETE("/:request_id", mobile.Change)
 		// Add another PNM as an administrator after provisioning. The handler
 		// resolves :id through the authenticated owner and accepts only running
 		// sessions; the ACL maintenance window is serialized per session.

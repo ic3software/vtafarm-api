@@ -30,6 +30,8 @@ servers:
     description: Production
 
 tags:
+  - name: Mobile Connection
+    description: Partner mobile app pairing using a one-time QR token, without a VTA Farm account or cookie.
   - name: System
     description: Health and system endpoints
   - name: Auth — Admin
@@ -80,6 +82,10 @@ tags:
 
 components:
   securitySchemes:
+    MobileProgress:
+      type: http
+      scheme: bearer
+      description: Connection-scoped credential from the accepted callback; expires one hour after acceptance.
     CookieAuthUser:
       type: apiKey
       in: cookie
@@ -90,6 +96,49 @@ components:
       name: vtafarm_admin
 
   schemas:
+    MobileConnection:
+      type: object
+      required: [request_id, status, vta_did, expires_at]
+      properties:
+        request_id: {type: string, format: uuid}
+        status:
+          type: string
+          enum: [pending, expired, cancelled, provisioning, awaiting_mobile, connected, failed]
+        vta_did: {type: string}
+        expires_at: {type: string, format: date-time}
+        callback_url:
+          type: string
+          format: uri
+          description: Present only for a pending, unexpired request when the feature is enabled. Contains a secret token.
+        error: {type: string}
+    MobileConnectionState:
+      type: object
+      required: [enabled, server_time, connection]
+      properties:
+        enabled: {type: boolean}
+        server_time: {type: string, format: date-time}
+        connection:
+          oneOf:
+            - {$ref: '#/components/schemas/MobileConnection'}
+            - {type: 'null'}
+    MobileConnectionProgress:
+      type: object
+      required: [server_time, connection]
+      properties:
+        server_time: {type: string, format: date-time}
+        connection: {$ref: '#/components/schemas/MobileConnection'}
+    MobileConnectionAccepted:
+      allOf:
+        - {$ref: '#/components/schemas/MobileConnectionProgress'}
+        - type: object
+          properties:
+            progress_token:
+              type: string
+              description: Send as a Bearer credential only to progress and completion endpoints. Retries do not extend its expiry.
+            progress_url: {type: string, format: uri}
+            completion_url: {type: string, format: uri}
+            progress_expires_at: {type: string, format: date-time}
+          description: Progress fields are omitted after the one-hour credential lifetime. The original acceptance receipt remains retryable for 24 hours.
     Error:
       type: object
       properties:
@@ -2022,8 +2071,6 @@ paths:
                       all:
                         type: integer
                       vta_only:
-                        type: integer
-                      full_stack:
                         type: integer
                       full_stack:
                         type: integer
@@ -5388,7 +5435,9 @@ paths:
       description: |
         Phase 2 of setup: imports an admin DID into the VTA, then creates the VTA Deployment and Service.
         Session must be in `vta_setup_complete` status (vta_only) or `awaiting_admin_did` status
-        (full_stack) before calling this — same endpoint, shared PNM admin-DID handshake for both modes.
+        (full_stack) before first acceptance. The DID must be a valid Ed25519 did:key.
+        Acceptance atomically fixes the Admin DID, invalidates pending mobile requests, and queues durable provisioning.
+        Repeating the same DID returns the existing acceptance; a different DID conflicts.
       tags: [User]
       security:
         - CookieAuthUser: []
@@ -5874,3 +5923,200 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  /api/v1/setup/{id}/mobile-connections/current:
+    get:
+      summary: Get current mobile connection
+      description: Restore the current connection and authoritative server time. Available even when new automatic connections are disabled.
+      tags: [User]
+      security: [{CookieAuthUser: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: Current state with Cache-Control no-store
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MobileConnectionState'}
+        '401': {description: Missing or invalid user cookie}
+        '404': {description: VTA not found or belongs to another user}
+        '409': {description: VTA already claimed or request superseded}
+        '429': {description: Rate limited or QR replacement cooldown; retry later}
+        '503': {description: Automatic connection unavailable or disabled}
+
+  /api/v1/setup/{id}/mobile-connections:
+    post:
+      summary: Create mobile connection
+      description: Create a five-minute QR request or return the existing valid request. Only the VTA owner at the initial Admin DID gate can create one.
+      tags: [User]
+      security: [{CookieAuthUser: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: Current state with Cache-Control no-store
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MobileConnectionState'}
+        '401': {description: Missing or invalid user cookie}
+        '404': {description: VTA not found or belongs to another user}
+        '409': {description: VTA already claimed or request superseded}
+        '429': {description: Rate limited or QR replacement cooldown; retry later}
+        '503': {description: Automatic connection unavailable or disabled}
+
+  /api/v1/setup/{id}/mobile-connections/{request_id}/refresh:
+    post:
+      summary: Replace mobile connection QR
+      description: Atomically invalidate a pending request and create a replacement. An accepted request returns existing progress. An older request ID cannot replace a newer pending request.
+      tags: [User]
+      security: [{CookieAuthUser: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: request_id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Current state with Cache-Control no-store
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MobileConnectionState'}
+        '401': {description: Missing or invalid user cookie}
+        '404': {description: VTA not found or belongs to another user}
+        '409': {description: VTA already claimed or request superseded}
+        '429': {description: Rate limited or QR replacement cooldown; retry later}
+        '503': {description: Automatic connection unavailable or disabled}
+
+  /api/v1/setup/{id}/mobile-connections/{request_id}:
+    delete:
+      summary: Cancel pending mobile connection
+      description: Cancel a pending request before changing connection methods. Accepted requests return existing progress and cannot be cancelled here.
+      tags: [User]
+      security: [{CookieAuthUser: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: request_id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Current state with Cache-Control no-store
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MobileConnectionState'}
+        '401': {description: Missing or invalid user cookie}
+        '404': {description: VTA not found or belongs to another user}
+        '409': {description: VTA already claimed or request superseded}
+        '429': {description: Rate limited or QR replacement cooldown; retry later}
+        '503': {description: Automatic connection unavailable or disabled}
+
+  /api/v1/mobile-connections/callback/{token}:
+    post:
+      summary: Accept mobile Admin DID
+      description: |
+        The opaque token fixes the target VTA on the server. No browser cookie or account binding is required.
+        Accept once within five minutes; the same token and Admin DID can retrieve the existing receipt for
+        24 hours after acceptance. A different DID conflicts. Target override fields and extra JSON are rejected.
+        Acceptance and durable provisioning work commit together. No credential-bearing URL may be logged.
+      tags: [Mobile Connection]
+      security: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [admin_did]
+              properties:
+                admin_did: {type: string, maxLength: 128, description: Canonical Ed25519 did:key}
+      responses:
+        '202':
+          description: Accepted or existing receipt; Cache-Control no-store
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MobileConnectionAccepted'}
+        '400': {description: Invalid Admin DID, unknown fields, or body over 4096 bytes}
+        '404': {description: Invalid token or deleted connection}
+        '409': {description: Conflicting DID or VTA no longer eligible}
+        '410': {description: Unaccepted token expired or revoked, or receipt retention elapsed}
+        '429': {description: Rate limited}
+        '503': {description: Automatic connection unavailable or disabled}
+
+  /api/v1/mobile-connections/{request_id}:
+    get:
+      summary: Get mobile connection progress
+      description: The Bearer credential must match this request and be within one hour of acceptance. The callback token cannot be used here.
+      tags: [Mobile Connection]
+      security: [{MobileProgress: []}]
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Provisioning or mobile connection state; Cache-Control no-store
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MobileConnectionProgress'}
+        '401': {description: Invalid or wrong-request progress credential}
+        '404': {description: Connection deleted}
+        '410': {description: Progress credential expired}
+        '429': {description: Rate limited}
+
+  /api/v1/mobile-connections/{request_id}/complete:
+    post:
+      summary: Report completed mobile connection
+      description: |
+        The app reports successful registration and connection. The backend requires a matching live progress
+        credential and a running VTA. Completion is idempotent. This is an authenticated app report, not independent
+        proof that the phone currently has a live transport connection.
+      tags: [Mobile Connection]
+      security: [{MobileProgress: []}]
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [status]
+              properties:
+                status: {type: string, enum: [connected]}
+      responses:
+        '200':
+          description: Completion recorded or already recorded; Cache-Control no-store
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MobileConnectionProgress'}
+        '400': {description: Invalid JSON or unsupported completion status}
+        '401': {description: Invalid or wrong-request progress credential}
+        '404': {description: Connection deleted}
+        '409': {description: VTA is not running yet}
+        '410': {description: Progress credential expired}
+        '429': {description: Rate limited}

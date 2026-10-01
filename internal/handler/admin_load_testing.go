@@ -398,7 +398,10 @@ func (h *SetupHandler) deleteLoadTest(runID uint, userID *uint) {
 	for i := range sessions {
 		s := &sessions[i]
 		if h.orch != nil {
-			h.orch.Cancel(s.ID)
+			if err := h.orch.Cancel(s.ID); err != nil {
+				errorsSeen = append(errorsSeen, fmt.Sprintf("%s: unable to stop provisioning", s.VtaName))
+				continue
+			}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		_, err := h.teardownVtaOnlySession(ctx, s)
