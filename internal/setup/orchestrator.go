@@ -424,7 +424,8 @@ func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDi
 
 	provisionJobName := k8s.ProvisionJobName(sessionID)
 	log.Printf("[orchestrator] session %d: creating provision job (controlDid=%q)", sessionID, controlDid)
-	if err := o.k8s.CreateProvisionJob(ctx, ns, sessionID, session.VtaImage, adminDid, controlDid); err != nil {
+	adminLabel := o.provisionAdminLabel(sessionID, adminDid, "")
+	if err := o.k8s.CreateProvisionJob(ctx, ns, sessionID, session.VtaImage, adminDid, adminLabel, controlDid); err != nil {
 		if ctx.Err() != nil {
 			return
 		}

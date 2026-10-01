@@ -92,7 +92,7 @@ func (h *SetupHandler) runAdditionalMobile(ctx context.Context, requestID string
 		return
 	}
 
-	result, err := h.performVtaAdminGrant(ctx, &session, request.AdminDid, additionalPnmLabel(request.AdminDid))
+	result, err := h.performVtaAdminGrant(ctx, &session, request.AdminDid, connection.MobileAdminLabel)
 	if errors.Is(err, errAclJobBusy) {
 		return
 	}

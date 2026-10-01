@@ -240,15 +240,18 @@ func quoteShellArg(value string) string {
 }
 
 // CreateProvisionJob creates a K8s Job that runs:
-//  1. `vta import-did --did <adminDid> --role admin`
+//  1. `vta import-did --did <adminDid> --role admin [--label <adminLabel>]`
 //  2. if controlDid != "": `vta did-mgmt servers add --id control --did <controlDid> --label "DID Hosting Control Plane"`
 //
 // Both steps run in a single container using the session PVC. Idempotent on AlreadyExists.
-func (c *Client) CreateProvisionJob(ctx context.Context, ns string, sessionID uint, image, adminDid, controlDid string) error {
+func (c *Client) CreateProvisionJob(ctx context.Context, ns string, sessionID uint, image, adminDid, adminLabel, controlDid string) error {
 	jobName := ProvisionJobName(sessionID)
 	pvcName := VtaPVCName(sessionID)
 
 	cmd := fmt.Sprintf("vta import-did --did %s --role admin", quoteShellArg(adminDid))
+	if adminLabel != "" {
+		cmd += fmt.Sprintf(" --label %s", quoteShellArg(adminLabel))
+	}
 	if controlDid != "" {
 		cmd += fmt.Sprintf(" && vta did-mgmt servers add --id control --did %s --label 'DID Hosting Control Plane'", quoteShellArg(controlDid))
 	}

@@ -96,6 +96,8 @@ This QR code contains only the DID, has no callback, and is not subject to the f
 6. Once the VTA reaches or returns to `running`, the app uses the agreed progress mechanism to continue registration and connection locally. The user does not need to re-enter the VTA DID or callback, or return to the browser to submit data.
 7. The app reports completion after connecting. Once the backend confirms success, the browser shows “Phone connected” and offers another connection. ACL refresh remains an explicit user action because it temporarily stops and restarts the VTA.
 
+Administrators accepted through Automatic Mobile Connection are imported into the VTA ACL with the label `mobile integration`. Local and manual connection methods retain their existing PNM-oriented labels.
+
 The user only scans and completes the necessary confirmation on the phone. They should not need to register the VTA again or complete a new VTA Farm browser login. App unlocking and identity confirmation continue to follow the app's own rules.
 
 ### Draft QR payload

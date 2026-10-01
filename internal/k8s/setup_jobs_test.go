@@ -27,7 +27,7 @@ func TestInitialProvisionJobsSurviveRecovery(t *testing.T) {
 	for _, fullStack := range []bool{false, true} {
 		name := ProvisionJobName(42)
 		create := func(did string) error {
-			return client.CreateProvisionJob(ctx, "test", 42, "example/vta:test", did, "")
+			return client.CreateProvisionJob(ctx, "test", 42, "example/vta:test", did, "mobile integration", "")
 		}
 		if fullStack {
 			name = FSJobImportAdminDid(42)

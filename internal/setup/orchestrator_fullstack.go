@@ -1116,7 +1116,8 @@ func (o *Orchestrator) fsDeployMediator(ctx context.Context, ns string, s *model
 // PNM admin DID into the VTA's (still-unclaimed) fjall store.
 func (o *Orchestrator) fsStepImportAdminDid(ctx context.Context, ns string, s *model.SetupSession, adminDid string) error {
 	jobName := k8s.FSJobImportAdminDid(s.ID)
-	cmd := fmt.Sprintf("vta import-did --role admin --label pnm-bootstrap --did %s", shellQuote(adminDid))
+	label := o.provisionAdminLabel(s.ID, adminDid, "pnm-bootstrap")
+	cmd := fmt.Sprintf("vta import-did --role admin --label %s --did %s", shellQuote(label), shellQuote(adminDid))
 	if err := o.k8s.CreateComponentJob(ctx, ns, k8s.ComponentJobSpec{
 		RetainForRecovery: true,
 		Name:              jobName,

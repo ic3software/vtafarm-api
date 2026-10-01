@@ -16,6 +16,7 @@ import (
 const QRLifetime = 5 * time.Minute
 const RetryLifetime = 24 * time.Hour
 const ProgressLifetime = time.Hour
+const MobileAdminLabel = "mobile integration"
 
 // Operation describes the server-side work required after a phone claims a
 // request. It is selected from the locked session state, never by the client.

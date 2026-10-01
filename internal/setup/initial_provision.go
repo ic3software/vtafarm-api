@@ -15,6 +15,16 @@ var provisionStatuses = []string{
 	"step_vtc_acl_grant", "step_vtc_setup", "deploy_vtc",
 }
 
+func (o *Orchestrator) provisionAdminLabel(sessionID uint, adminDid, fallback string) string {
+	var count int64
+	if err := o.db.Model(&model.MobileConnection{}).
+		Where("session_id = ? AND operation = ? AND admin_did = ? AND status = ?", sessionID, connection.OperationProvisionVTA, adminDid, "accepted").
+		Count(&count).Error; err == nil && count > 0 {
+		return connection.MobileAdminLabel
+	}
+	return fallback
+}
+
 // RunProvisionQueue recovers setup work committed before an API crash.
 // Development against the shared database leaves this disabled with
 // ORCHESTRATOR_RESUME.
