@@ -144,7 +144,7 @@ func main() {
 		log.Printf("warn: GITHUB_PACKAGE_OWNER or GITHUB_VTC_PACKAGE_NAME not set — vtc image listing disabled")
 	}
 
-	r := router.Setup(db, cfClient, k8sClient, orch, upgradeRunner, ghcrClient, mediatorGhcrClient, didsGhcrClient, vtcGhcrClient, dhFactory, cfg)
+	r := router.Setup(workerCtx, db, cfClient, k8sClient, orch, upgradeRunner, ghcrClient, mediatorGhcrClient, didsGhcrClient, vtcGhcrClient, dhFactory, cfg)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.AppPort,

@@ -159,7 +159,7 @@ func (o *Orchestrator) Cancel(sessionID uint) error {
 		delete(o.cancels, sessionID)
 	}
 	o.mu.Unlock()
-	// A worker on another replica observes the finished marker on its next
+	// A worker on another replica observes the deleting state on its next
 	// heartbeat. Wait for its lock before deleting the resources it can create.
 	return o.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		return tx.Exec("SELECT pg_advisory_xact_lock($1, $2)", 565441, int64(sessionID)).Error

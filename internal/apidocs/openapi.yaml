@@ -5950,7 +5950,7 @@ paths:
   /api/v1/setup/{id}/mobile-connections:
     post:
       summary: Create mobile connection
-      description: Create a five-minute QR request or return the existing valid request. Only the VTA owner at the initial Admin DID gate can create one.
+      description: Create a five-minute QR request or return the existing valid request. The server derives the required operation from the locked VTA lifecycle state.
       tags: [User]
       security: [{CookieAuthUser: []}]
       parameters:
@@ -5973,7 +5973,7 @@ paths:
   /api/v1/setup/{id}/mobile-connections/{request_id}/refresh:
     post:
       summary: Replace mobile connection QR
-      description: Atomically invalidate a pending request and create a replacement. An accepted request returns existing progress. An older request ID cannot replace a newer pending request.
+      description: Atomically invalidate a pending request and create a replacement. A request at awaiting_mobile may also be abandoned and replaced; any completed server-side provisioning remains. Other accepted requests return existing progress. An older request ID cannot replace a newer request. This endpoint regenerates the QR token and does not refresh the VTA ACL.
       tags: [User]
       security: [{CookieAuthUser: []}]
       parameters:
@@ -5999,8 +5999,8 @@ paths:
 
   /api/v1/setup/{id}/mobile-connections/{request_id}:
     delete:
-      summary: Cancel pending mobile connection
-      description: Cancel a pending request before changing connection methods. Accepted requests return existing progress and cannot be cancelled here.
+      summary: Cancel mobile connection attempt
+      description: Cancel a pending request before changing connection methods. A request at awaiting_mobile may also be abandoned, invalidating its callback and progress credentials while retaining completed server-side provisioning. Other accepted requests return existing progress.
       tags: [User]
       security: [{CookieAuthUser: []}]
       parameters:
@@ -6031,7 +6031,7 @@ paths:
         The opaque token fixes the target VTA on the server. No browser cookie or account binding is required.
         Accept once within five minutes; the same token and Admin DID can retrieve the existing receipt for
         24 hours after acceptance. A different DID conflicts. Target override fields and extra JSON are rejected.
-        Acceptance and durable provisioning work commit together. No credential-bearing URL may be logged.
+        Acceptance and durable work commit together. Under the session lock, the server decides whether to continue setup or grant the DID through the serialized VTA ACL maintenance flow. No credential-bearing URL may be logged.
       tags: [Mobile Connection]
       security: []
       parameters:

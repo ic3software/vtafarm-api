@@ -1,6 +1,6 @@
 # VTA Mobile Connection Frontend Design
 
-Status: initial-connection frontend and backend implemented; automatic connection is labeled **Testing**. It becomes available whenever the cluster domain, signing key, and orchestrator are configured. The additional-device automatic flow defined below still requires backend implementation.
+Status: initial and additional-device frontend and backend flows are implemented; automatic connection is labeled **Testing**. It becomes available whenever the cluster domain, signing key, and orchestrator are configured.
 
 This design adds **Scan and Connect Manually** and **Automatic Mobile Connection** while retaining the local PNM flow. The same three methods appear when connecting the first administrator during VTA creation and when connecting another administrator to a running VTA. The manual option supports the current mobile app. The automatic option lets a compatible app scan a QR code, return an Admin DID, and complete VTA registration and connection without requiring the user to paste a DID into the browser.
 
@@ -38,15 +38,14 @@ The first-administrator context uses the existing points at which setup waits fo
 
 If the VTA DID is missing or the session has not reached the required state, show “Preparing your VTA. You can connect when it is ready.” Do not generate a QR code. If external DID publication is pending, complete the existing publication step first.
 
-For a running VTA, replace the separate “Link another PNM” form with the same connection card and retain its ACL list below the connection controls. Local and manual submissions use the existing additional-admin operation; they must not reuse the initial provisioning endpoint. Automatic requests carry a server-bound purpose so the callback can dispatch to either initial provisioning or an additional ACL grant.
+For a running VTA, replace the separate “Link another PNM” form with the same connection card and retain its ACL list below the connection controls. Local and manual submissions continue to use the appropriate existing endpoint. Automatic requests do not identify an administrator type; the server derives the required work from the locked session lifecycle when it accepts the callback.
 
-Keep Local Connection as the default. Label the automatic option **Automatic Mobile Connection (Testing)** at all times. Disable it only when the required server configuration is incomplete. Selecting Automatic Mobile Connection creates a request only after the user chooses it; merely opening a page must not create a bearer QR token.
+Keep Local Connection as the default. Label the automatic option **Automatic Mobile Connection (Testing)** at all times. Disable it only when the required server configuration is incomplete. Selecting Automatic Mobile Connection only reveals its controls. Create the bearer QR token only after the user selects **Generate QR code**; merely selecting the method or opening a page must not create one.
 
 ## Wireframe and UI copy
 
 ```text
 Connect your first administrator / Connect another device
-Selected VTA: {VTA name}
 
 [ Local Connection ] [ Scan and Connect Manually ] [ Automatic Mobile Connection (Testing) ]
 
@@ -61,9 +60,6 @@ Scan and Connect Manually
                                            [Connect to VTA]
 
 Automatic Mobile Connection
-  Scan with a compatible mobile app and confirm on your phone.
-  You do not need to return here to paste an Admin DID.
-
   [ QR code containing VTA DID and callback URL ]
   QR code expires in 04:59
   Waiting for confirmation from your phone…
@@ -92,13 +88,13 @@ This QR code contains only the DID, has no callback, and is not subject to the f
 
 ### Normal flow
 
-1. An authenticated user selects Automatic Mobile Connection. The browser asks the backend to create a connection request for the current user and VTA, explicitly bound to `initial_admin` or `additional_admin`.
+1. An authenticated user selects Automatic Mobile Connection. The browser asks the backend to create a connection request for the current user and VTA.
 2. The backend returns the VTA DID, a one-time callback URL, a request ID, server time, and expiry time. The request is valid for five minutes from its creation on the server.
 3. The browser generates the QR code and displays the countdown. The payload has only two application parameters: VTA DID and callback URL. The URL contains the one-time request information.
 4. The app scans the code, identifies the VTA, obtains any required user confirmation, generates or selects an Admin DID, and submits it to the callback. Until the backend confirms receipt, the browser continues to show “Waiting for confirmation from your phone”.
-5. In one database transaction, the backend verifies that the request is valid and unused, fixes the accepted Admin DID, consumes the one-time request, and records durable work for its bound purpose. `initial_admin` claims the first connection and continues VTA provisioning. `additional_admin` records an ACL grant and serialized VTA maintenance operation. Only after commit may a worker start either operation. The browser removes the QR code and shows context-specific progress.
+5. In one database transaction, the backend verifies that the request is valid and unused, fixes the accepted Admin DID, consumes the one-time request, and derives the required operation from the locked session state. A session waiting at the setup gate continues VTA provisioning; a running session uses the serialized ACL grant flow. Only after commit may a worker start the derived operation. The browser removes the QR code and shows context-specific progress.
 6. Once the VTA reaches or returns to `running`, the app uses the agreed progress mechanism to continue registration and connection locally. The user does not need to re-enter the VTA DID or callback, or return to the browser to submit data.
-7. The app reports completion after connecting. Once the backend confirms success, the browser shows “Phone connected” and offers “View VTA details”.
+7. The app reports completion after connecting. Once the backend confirms success, the browser shows “Phone connected” and offers another connection. ACL refresh remains an explicit user action because it temporarily stops and restarts the VTA.
 
 The user only scans and completes the necessary confirmation on the phone. They should not need to register the VTA again or complete a new VTA Farm browser login. App unlocking and identity confirmation continue to follow the app's own rules.
 
@@ -113,9 +109,9 @@ The following JSON is a proposed integration format, not an agreement with the a
 }
 ```
 
-The QR code contains no Admin DID, private key, or VTA Farm login credentials. The phone generates or selects the Admin DID. The callback targets a backend endpoint; a redirect to a browser page is not a substitute. The request purpose is stored server-side and is never accepted as a callback override.
+The QR code contains no Admin DID, private key, or VTA Farm login credentials. The phone generates or selects the Admin DID. The callback targets a backend endpoint; a redirect to a browser page is not a substitute. The client cannot select or override the server-side operation.
 
-The QR still includes `vta_did` so the app can identify the VTA. The callback URL contains only the opaque token as its request identifier; it does not contain a VTA DID. The backend stores an immutable mapping from that token to one VTA record and its DID, together with the initiating owner, purpose, and expiry. The phone cannot change that mapping.
+The QR still includes `vta_did` so the app can identify the VTA. The callback URL contains only the opaque token as its request identifier; it does not contain a VTA DID. The backend stores an immutable mapping from that token to one VTA record and its DID, together with the initiating owner and expiry. The phone cannot change that mapping.
 
 The proposed callback is `POST {callback_url}` with this body:
 
@@ -131,20 +127,20 @@ The URL supplies the token; the body supplies the Admin DID. Do not accept a cli
 
 - The five-minute limit applies to the backend first accepting the phone's confirmation. Scanning before expiry is insufficient if acceptance occurs afterward. Check server time at the atomic acceptance step and reject a new acceptance when `now >= expires_at`. A retry of an already accepted callback follows the duplicate handling rules below and cannot authorize anything again.
 - Calculate the countdown from `expires_at` and `server_time`. Resynchronize when the user returns to the tab rather than relying only on a browser counter that decrements every second.
-- At expiry, immediately cover the old QR code and show “This QR code has expired. Generating a new QR code.” The old code must no longer be usable.
-- First check whether the request has already been accepted. If it has not, automatically request a replacement from the backend. After showing the new code, retain the message “The previous QR code has expired. Please scan the new QR code.” The new five-minute period starts at the replacement request's server creation time.
+- At expiry, immediately cover the old QR code and show that it has expired. The old code must no longer be usable.
+- Do not generate a replacement automatically. Show a replacement action and wait for the user to select it. The new five-minute period starts at the replacement request's server creation time.
 - If replacement fails, keep the expired state and offer “Retry QR generation”. Never make the old code appear valid again. Pause network retries while offline; when connectivity returns, synchronize state before replacing the code.
 - Apply the same rules when the user selects “Generate new QR code”. The backend atomically invalidates the old request and creates its replacement. Allow at most one pending request per VTA, and synchronize older pages with the latest state.
 - The backend resolves races between callbacks and replacement. If the callback is accepted first, the replacement operation returns the in-progress state. If the old request is invalidated first, reject its callback and ask the user to scan again in the app.
-- Once a callback has been accepted within the validity window, do not replace the code, cancel setup, or require another scan even if provisioning takes longer than five minutes.
+- Once a callback has been accepted within the validity window, do not replace it while server-side work is still running. After a request reaches `awaiting_mobile`, the owner may explicitly regenerate the QR code or switch connection methods. The backend then marks that mobile attempt cancelled, invalidating both its callback and progress credentials; completed provisioning or an administrator already written to the VTA ACL remains in place.
 
 ### Navigation and recovery
 
 When switching to another VTA, immediately clear the old QR code, input, and timers to prevent mixing data between VTAs. Match every asynchronous result against the VTA and request ID, ignoring delayed responses from older requests.
 
-When switching from automatic mode to local or manual mode while confirmation is pending, cancel the pending request before allowing another submission. If cancellation fails, synchronize state and offer a retry. Once the callback has been accepted, all options share the same setup progress and must not allow a second submission.
+Switching between automatic, local, and manual controls does not cancel a pending request. Returning to automatic mode must show the same unexpired QR without creating or replacing its token. If the user actually submits an Admin DID through a local or manual method, that accepted submission cancels the pending mobile request atomically. While an accepted request is provisioning, all options share the same progress and must not allow a second submission. A request may be abandoned after it reaches `awaiting_mobile`; switching methods must cancel that attempt before enabling the selected method.
 
-After a refresh or return to the detail page, retrieve the current connection state from the backend. Show the current QR if it is still valid, follow the replacement flow if it has expired, restore provisioning progress if it has been accepted, or show the result if it has completed. Closing the tab must not depend on a successful unload cancellation: pending requests expire naturally within five minutes, and accepted provisioning can continue.
+After a refresh or return to the detail page, retrieve the current connection state from the backend. If a pending request is still valid, render its existing callback URL as the same QR code without creating or replacing a request. Follow the replacement flow only after it expires, restore provisioning progress if it has been accepted, or show the result if it has completed. Closing the tab must not depend on a successful unload cancellation: pending requests expire naturally within five minutes, and accepted provisioning can continue.
 
 ## Automatic connection UI states
 
@@ -161,28 +157,28 @@ The following connection request states are separate from the existing deploymen
 | Connected `connected` | Phone connected to this VTA | View VTA details |
 | Failed `failed` | Error for the relevant stage and an actionable next step | Retry only as permitted by the backend; do not blindly restart provisioning |
 
-If status cannot be retrieved, show “Unable to confirm connection status. Retrying” and retain the last confirmed progress. Do not infer success or failure. Polling may pause while the page is hidden, but must synchronize immediately when visible again. Reusing the current three-second polling interval is recommended for the first version.
+If status cannot be retrieved, show “Unable to confirm connection status. Retrying” and retain the last confirmed progress. Do not infer success or failure. Synchronize once when the page opens, then poll every three seconds only for `pending`, `provisioning`, or `awaiting_mobile`. Stop polling when no request exists or it reaches a terminal state. Polling may pause while the page is hidden, but must synchronize immediately when visible again.
 
 `running` means only that the VTA is ready. `connected` requires confirmation that the phone has completed registration and connection. If the partner app can only return an Admin DID, the browser can report no more than “VTA is ready”; the complete automatic connection flow has not passed acceptance.
 
 ## Frontend backend and mobile integration contract
 
-The manual flow reuses the existing initial- and additional-admin APIs. Automatic requests use the same mobile protocol in both contexts and store their purpose server-side. The initial-purpose interfaces below are implemented; accepting `additional_admin` and running its durable ACL grant are required before automatic additional-device connection can be enabled.
+The manual flow reuses the existing setup and running-VTA APIs. Automatic requests use one mobile protocol and one current-request stream in both contexts. The backend selects the operation from session state when it accepts the callback; a running VTA uses the serialized ACL maintenance worker.
 
 | Caller | Interface | Behavior |
 | --- | --- | --- |
-| Browser | `POST /api/v1/setup/:id/mobile-connections` | Verify authentication, VTA ownership, requested purpose, and session state; create a request or return the existing valid request on repeated calls |
-| Browser | `GET /api/v1/setup/:id/mobile-connections/current` | Restore or poll the current request for the selected purpose; return an empty state if none exists |
-| Browser | `POST /api/v1/setup/:id/mobile-connections/:request_id/refresh` | Replace the request atomically; an older request ID must not invalidate a newer request |
-| Browser | `DELETE /api/v1/setup/:id/mobile-connections/:request_id` | Cancel a request that has not been accepted; return current progress if already accepted |
-| Mobile app | `POST {callback_url}` | Supply the token in the URL and `admin_did` in the body; atomically accept the request and record initial provisioning or additional ACL work according to its stored purpose |
+| Browser | `POST /api/v1/setup/:id/mobile-connections` | Verify authentication, VTA ownership, and session eligibility; create a request or return the existing valid request on repeated calls |
+| Browser | `GET /api/v1/setup/:id/mobile-connections/current` | Restore or poll the current request; return an empty state if none exists |
+| Browser | `POST /api/v1/setup/:id/mobile-connections/:request_id/refresh` | Regenerate the QR by replacing a pending request atomically, or abandon a request at `awaiting_mobile`; an older request ID must not invalidate a newer request. This does not refresh the ACL |
+| Browser | `DELETE /api/v1/setup/:id/mobile-connections/:request_id` | Cancel a pending request, or abandon a request at `awaiting_mobile`, before changing methods |
+| Mobile app | `POST {callback_url}` | Supply the token in the URL and `admin_did` in the body; atomically accept the request and let the server select setup provisioning or an ACL grant from session state |
 | Mobile app | `GET /api/v1/mobile-connections/:request_id` and `POST /api/v1/mobile-connections/:request_id/complete` | Use the separate progress bearer token to retrieve VTA readiness and report completed mobile registration |
 
 The browser's request data must include at least `request_id`, `status`, `vta_did`, `server_time`, and `expires_at`. Return `callback_url` only while `pending`. After acceptance, return displayable provisioning progress; on failure, return an identifiable error code and retry capabilities. The frontend must not generate authorization tokens or decide their validity period.
 
-The callback must not depend on the phone having a VTA Farm account binding or browser cookie. The agreed authorization uses a high-entropy, one-time token bound on the server to the initiating user, one VTA, and one purpose. No separate DID signature or proof-of-control exchange is required by this callback contract. Scanning or making an HTTP GET request must not directly grant administrator access.
+The callback must not depend on the phone having a VTA Farm account binding or browser cookie. The agreed authorization uses a high-entropy, one-time token bound on the server to the initiating user and one VTA. No separate DID signature or proof-of-control exchange is required by this callback contract. Scanning or making an HTTP GET request must not directly grant administrator access.
 
-This makes possession of a valid QR token the authority to nominate an Admin DID for the stored purpose. The immutable mapping prevents changing the target VTA or switching between first and additional administrator operations, but does not establish that the scanning phone belongs to the owner. Someone who obtains an unused token could submit their own DID first; the five-minute window and one-time use limit that exposure without eliminating it. This is the trust boundary of the agreed flow.
+This makes possession of a valid QR token the authority to nominate an Admin DID for the mapped VTA. The immutable mapping prevents changing the target VTA, but does not establish that the scanning phone belongs to the owner. Someone who obtains an unused token could submit their own DID first; the five-minute window and one-time use limit that exposure without eliminating it. This is the trust boundary of the agreed flow.
 
 ### Atomic acceptance in the database
 
@@ -191,12 +187,12 @@ Checking that a token is unused and marking it used in separate operations is in
 Use a database transaction with row locking or conditional updates to enforce the following steps as one acceptance operation:
 
 1. Resolve the token to its stored request and VTA. Validate the supplied Admin DID, then inspect any previously accepted result for duplicate handling.
-2. For a new acceptance, verify that the token is pending, unexpired, and not revoked, and that the VTA is eligible for its stored purpose: waiting for its first administrator or running and able to accept an additional administrator.
-3. Persist the accepted Admin DID. For `initial_admin`, atomically claim the VTA's one initial connection. For `additional_admin`, atomically claim the session's one active additional connection slot. The DID is fixed for that operation and cannot be overwritten by a competing submission.
-4. Consume the token and invalidate other pending requests for the same VTA and purpose.
-5. Record durable initial provisioning or additional ACL work tied to the accepted operation, then commit. If any step fails, roll back the entire acceptance; do not start external work.
+2. For a new acceptance, verify that the token is pending, unexpired, and not revoked, and inspect the locked VTA lifecycle state.
+3. Persist the accepted Admin DID and derive `provision_vta` when the session is waiting at its setup gate, or `grant_acl` when it is already running. These are backend work operations, not administrator types, and the client cannot select them.
+4. Consume the token and invalidate other pending requests for the same VTA.
+5. Commit the accepted request together with the setup-session transition or ACL work marker. If any step fails, roll back the entire acceptance; do not start external work.
 
-Only the transaction that successfully claims the VTA may create the logical provisioning operation. A competing transaction must reread the committed state and return the existing result or a conflict. Enforce uniqueness for the initial connection operation at the database level so correctness holds across API replicas and restarts.
+Only the transaction that successfully locks and claims the VTA may create the logical operation. A competing transaction must reread the committed state and return the existing result or a conflict. The database allows only one pending request and one unfinished accepted request per session so correctness holds across API replicas and restarts.
 
 Callbacks, QR replacement, cancellation, and existing local/manual submission endpoints must use the same VTA-level acceptance rules. Token-level protection alone is insufficient because manual submissions and replacement tokens are different entry points to the same initial setup. Replacement or cancellation can invalidate only a pending request; they cannot undo an accepted operation or alter its Admin DID.
 
@@ -218,7 +214,7 @@ Persisting the accepted request and its pending work in the same transaction clo
 
 Workers must coordinate through durable claims and resume safely after a crash. A database transaction cannot make external Kubernetes or VTA actions execute exactly once: a worker can lose its response after an action succeeded. Use stable operation and resource identifiers, inspect existing results, and make provisioning steps safe to retry. Retries must preserve the original Admin DID and must not create duplicate grants. An uncertain outcome must be reconciled before repeating the action.
 
-Both `provisionAdmin` and the mobile callback now enter the same database acceptance operation. A unique `initial_provisions.session_id` stores the fixed Admin DID and durable work; a row lock on `setup_sessions` serializes all acceptance and QR replacement operations. Process-local worker tracking is only an optimization; a PostgreSQL advisory lock on a dedicated connection excludes other provisioning workers for the same session.
+Both `provisionAdmin` and the mobile callback lock the same `setup_sessions` row. The setup session's Admin DID and lifecycle status are the durable record for setup provisioning; no separate first-administrator table exists. An accepted mobile row stores the server-derived operation needed for callback recovery. Process-local worker tracking is only an optimization; a PostgreSQL advisory lock on a dedicated connection excludes other setup provisioning workers for the same session.
 
 Mobile progress queries and completion reports require a separate credential scoped to that connection. Do not extend the consumed callback token into indefinite authorization. The progress credential lasts one hour from acceptance, allowing setup beyond the five-minute QR window. The backend authenticates completion with this request-scoped credential and requires a running VTA. Completion is a report from the app, not independent verification of its transport connection; the browser cannot declare success independently.
 
@@ -234,10 +230,10 @@ Use one shared connection card in the Create VTA Admin DID step, the equivalent 
 | [FullStackCreateProgress.tsx](../../vtafarm/src/pages/portal/FullStackCreateProgress.tsx) | Show the shared connection card at the full-stack Admin DID step |
 | [SessionDetailView.tsx](../../vtafarm/src/pages/portal/SessionDetailView.tsx) | Show the shared card for both a waiting first administrator and a running VTA |
 | [portalUtils.tsx](../../vtafarm/src/pages/portal/portalUtils.tsx) | Reuse `isValidAdminDid` and existing display conventions |
-| [api.ts](../../vtafarm/src/lib/api.ts) | Route local/manual submission by purpose and include purpose in automatic owner requests |
+| [api.ts](../../vtafarm/src/lib/api.ts) | Route local/manual submissions to their existing endpoints and expose one automatic owner request stream |
 | [SessionPnmCard.tsx](../../vtafarm/src/pages/portal/SessionPnmCard.tsx) | Retain the ACL display, but move additional-device connection controls into the shared card |
 
-The existing backend distinguishes initial provisioning in `provisionAdmin` in [setup.go](../internal/handler/setup.go) from adding an administrator in [setup_admins.go](../internal/handler/setup_admins.go). Keep these operations separate even though they share UI and mobile transport. A mobile request must persist `initial_admin` or `additional_admin`; the callback never infers or accepts a client override for that purpose.
+The existing backend distinguishes setup provisioning in `provisionAdmin` in [setup.go](../internal/handler/setup.go) from adding an administrator in [setup_admins.go](../internal/handler/setup_admins.go). These remain separate backend operations even though every Admin DID has the same meaning and the UI/mobile transport are shared. The callback derives which operation is necessary from the locked session state.
 
 ## Acceptance scenarios
 
@@ -245,7 +241,7 @@ The existing backend distinguishes initial provisioning in `provisionAdmin` in [
 | --- | --- |
 | Reach the Admin DID step during creation | All three connection methods are available without leaving the creation flow |
 | Open a running VTA and connect another device | The same three methods are available above the existing ACL list |
-| Switch among all three methods | Content changes within the same card; QR always belongs to the current VTA and purpose |
+| Switch among all three methods | Content changes within the same card; QR always belongs to the current VTA |
 | Use the existing local flow | Existing submission and provisioning complete normally |
 | Scan the manual QR with the existing app | App recognizes the VTA and provides a usable Admin DID without an app update |
 | Submit a local or manual DID for a running VTA | Use the additional-admin endpoint, restart the VTA safely, refresh its ACL, and leave prior administrators intact |
@@ -294,11 +290,11 @@ The complete request and response definitions are in [OpenAPI](../internal/apido
 4. GET `progress_url` with `Authorization: Bearer <progress_token>`. Poll approximately every three seconds. `provisioning` means setup is unfinished; `awaiting_mobile` means the VTA is ready for the app's existing registration flow. Resolve and connect to the returned VTA DID using the app's supported VTA protocol.
 5. Only after registration and connection succeed, POST `{ "status": "connected" }` to `completion_url` using the same bearer credential. Completion before the VTA reaches `running` returns 409. Repeated valid completion reports are idempotent; the browser then shows `connected`.
 
-Owner status responses contain `{ enabled, server_time, connection }`, with `connection: null` when no request exists. Mobile progress responses contain `{ server_time, connection }`. Connection views contain `request_id`, `status`, `vta_did`, `expires_at`, and an optional safe `error`. Only an owner view of a valid pending request contains `callback_url`. Browser responses never include mobile progress credentials.
+Owner status responses contain `{ enabled, server_time, connection }`, with `connection: null` when no request exists. Mobile progress responses contain `{ server_time, connection }`. Connection views contain `request_id`, `status`, `vta_did`, `expires_at`, and an optional safe `error`. Only an owner view of a valid pending request contains `callback_url`. Browser responses never include the internal operation or mobile progress credentials.
 
 | Limit or response | Implemented behavior |
 | --- | --- |
-| Initial QR acceptance | Five minutes from database creation time; database clock checked after acquiring the VTA lock |
+| QR acceptance | Five minutes from database creation time; database clock checked after acquiring the VTA lock |
 | Accepted callback retry | 24 hours from acceptance; HTTP 202 acknowledges existing work |
 | Mobile progress and completion | One hour from acceptance; expired credentials return 410 |
 | Progress timeout while VTA runs | Show mobile confirmation expired; preserve the configured VTA and finish manually in the app |
@@ -315,7 +311,7 @@ The API stores a random request UUID and immutable VTA mapping. Callback and pro
 
 ### Deployment configuration
 
-Apply migration `000039_mobile_connections` before running this API version: manual initial provisioning also uses the durable work table. All existing migrations remain unchanged.
+Apply migration `000039_mobile_connections` before running this API version. It creates one mobile connection schema for both setup-time and running-VTA connections. Setup provisioning remains durable in `setup_sessions`; there is no separate first-administrator table.
 
 | Configuration | Purpose |
 | --- | --- |
@@ -328,9 +324,9 @@ The API sets `Cache-Control: no-store`, omits mobile credential paths from acces
 
 ### Durable provisioning and deletion
 
-Acceptance commits the Admin DID, session transition, consumed request, and initial provisioning work in one transaction. The queue checks unfinished work every ten seconds and also starts immediately after acceptance. A dedicated PostgreSQL connection holds a per-session advisory lock, with a heartbeat that cancels work on connection loss or teardown. Kubernetes Jobs use stable session-based names; authorization and post-gate setup Jobs retain their completion receipts until session teardown rather than expiring after an hour. Recovery reuses those Jobs and their results instead of replacing completed authorization work.
+Acceptance commits the Admin DID, consumed request, and server-derived operation in one transaction. The queues check unfinished work every ten seconds and also start immediately after acceptance. Setup provisioning uses a dedicated PostgreSQL advisory lock and heartbeat. ACL grants use the existing cross-replica VTA maintenance lock, idempotently probe the ACL before importing, synchronize the ACL snapshot, and wait for the VTA to restart before reporting `awaiting_mobile`. Kubernetes Jobs use stable session-based names; authorization and post-gate setup Jobs retain their completion receipts until session teardown rather than expiring after an hour.
 
-Deleting a VTA locks the same session, cancels pending QR requests, and records a finished work marker even if no DID was accepted. This prevents a delayed callback or manual submission from starting provisioning during teardown. Deletion waits for an active initial provisioning worker to release its database lock before removing resources. If that wait or the database update fails, deletion reports an error and can be retried.
+Deleting a VTA locks the same session, marks its lifecycle as deleting, and cancels unfinished QR requests. This prevents a delayed callback or manual submission from starting work during teardown and stops a setup worker on another replica through its heartbeat. Deletion waits for an active setup provisioning worker to release its database lock before removing resources. If that wait or the database update fails, deletion reports an error and can be retried.
 
 The existing provisioning pipeline still owns Kubernetes and VTA behavior. This implementation does not claim exactly-once external execution under arbitrary cluster failure or manual deletion of retained Jobs. Lost external state requires reconciliation; a failed setup does not automatically authorize another DID.
 

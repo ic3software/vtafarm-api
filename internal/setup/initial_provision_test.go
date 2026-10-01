@@ -18,7 +18,7 @@ func TestProvisionRecoveryAndReplicaExclusion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := connection.AcceptManual(context.Background(), db, s.ID, did, false); err != nil {
+	if err := connection.AcceptManual(context.Background(), db, s.ID, did, false); err != nil {
 		t.Fatal(err)
 	}
 	// No worker was started before this new orchestrator instance recovers.
@@ -36,19 +36,17 @@ func TestProvisionRecoveryAndReplicaExclusion(t *testing.T) {
 			t.Error(err)
 		}
 	}
-	go func() { defer close(done); first.runInitialProvision(context.Background(), s.ID, execute) }()
+	go func() { defer close(done); first.runProvisionOperation(context.Background(), s.ID, execute) }()
 	<-entered
-	second.runInitialProvision(context.Background(), s.ID, func(context.Context, *model.SetupSession, string) { calls.Add(1) })
+	second.runProvisionOperation(context.Background(), s.ID, func(context.Context, *model.SetupSession, string) { calls.Add(1) })
 	if calls.Load() != 1 {
 		t.Fatal("two replicas executed the same operation")
 	}
 	close(release)
 	<-done
-	second.runInitialProvision(context.Background(), s.ID, func(context.Context, *model.SetupSession, string) { calls.Add(1) })
-	var op model.InitialProvision
-	db.First(&op, "session_id = ?", s.ID)
-	if calls.Load() != 1 || op.FinishedAt == nil {
-		t.Fatal("completed work was repeated or not recorded")
+	second.runProvisionOperation(context.Background(), s.ID, func(context.Context, *model.SetupSession, string) { calls.Add(1) })
+	if calls.Load() != 1 {
+		t.Fatal("completed work was repeated")
 	}
 }
 
@@ -56,19 +54,14 @@ func TestProvisionResumesAfterWorkerCancellation(t *testing.T) {
 	db := testutil.Postgres(t)
 	s := testutil.SetupSession(t, db, model.ModeVtaOnly)
 	did, _ := didkey.Generate()
-	if _, err := connection.AcceptManual(context.Background(), db, s.ID, did, false); err != nil {
+	if err := connection.AcceptManual(context.Background(), db, s.ID, did, false); err != nil {
 		t.Fatal(err)
 	}
 	o := &Orchestrator{db: db}
 	ctx, cancel := context.WithCancel(context.Background())
-	o.runInitialProvision(ctx, s.ID, func(context.Context, *model.SetupSession, string) { cancel() })
-	var op model.InitialProvision
-	db.First(&op, "session_id = ?", s.ID)
-	if op.FinishedAt != nil {
-		t.Fatal("interrupted work marked finished")
-	}
+	o.runProvisionOperation(ctx, s.ID, func(context.Context, *model.SetupSession, string) { cancel() })
 	recovered := false
-	o.runInitialProvision(context.Background(), s.ID, func(ctx context.Context, s *model.SetupSession, got string) {
+	o.runProvisionOperation(context.Background(), s.ID, func(ctx context.Context, s *model.SetupSession, got string) {
 		recovered = got == did
 		db.WithContext(ctx).Model(s).Update("status", "running")
 	})
@@ -81,14 +74,14 @@ func TestTeardownStopsWorkerOnAnotherReplica(t *testing.T) {
 	db := testutil.Postgres(t)
 	s := testutil.SetupSession(t, db, model.ModeVtaOnly)
 	did, _ := didkey.Generate()
-	if _, err := connection.AcceptManual(context.Background(), db, s.ID, did, false); err != nil {
+	if err := connection.AcceptManual(context.Background(), db, s.ID, did, false); err != nil {
 		t.Fatal(err)
 	}
 	worker, deleter := &Orchestrator{db: db}, &Orchestrator{db: db}
 	entered, done := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(done)
-		worker.runInitialProvision(context.Background(), s.ID, func(ctx context.Context, _ *model.SetupSession, _ string) {
+		worker.runProvisionOperation(context.Background(), s.ID, func(ctx context.Context, _ *model.SetupSession, _ string) {
 			close(entered)
 			<-ctx.Done()
 		})
@@ -98,7 +91,7 @@ func TestTeardownStopsWorkerOnAnotherReplica(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-done
-	worker.runInitialProvision(context.Background(), s.ID, func(context.Context, *model.SetupSession, string) {
+	worker.runProvisionOperation(context.Background(), s.ID, func(context.Context, *model.SetupSession, string) {
 		t.Error("teardown work restarted")
 	})
 }

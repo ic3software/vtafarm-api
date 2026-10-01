@@ -32,11 +32,12 @@ type SetupHandler struct {
 	// The default mediator DID and DID-hosting URLs come from the platform
 	// stack. Custom VTA-only sessions choose their own DIDs. The factory still
 	// authenticates with vtafarm-api's own client keypair.
-	didHosting *didhosting.Factory // nil when no keypair configured
-	k8s        *k8s.Client
-	orch       *setup.Orchestrator
-	ghcr       *ghcr.Client // nil when not configured
-	capacity   *CapacityService
+	didHosting   *didhosting.Factory // nil when no keypair configured
+	k8s          *k8s.Client
+	orch         *setup.Orchestrator
+	ghcr         *ghcr.Client // nil when not configured
+	capacity     *CapacityService
+	mobileWorker *additionalMobileWorker
 
 	// full_stack mode
 	mediatorGhcr *ghcr.Client // nil when not configured
@@ -67,6 +68,7 @@ func NewSetupHandler(
 		orch:          orch,
 		ghcr:          ghcrClient,
 		capacity:      NewCapacityService(db, k8sClient),
+		mobileWorker:  &additionalMobileWorker{work: make(map[string]struct{})},
 
 		mediatorGhcr: mediatorGhcrClient,
 		didsGhcr:     didsGhcrClient,
@@ -810,6 +812,12 @@ func (h *SetupHandler) teardownSession(c *gin.Context, session *model.SetupSessi
 			return
 		}
 	}
+	release, err := h.acquireSessionMaintenance(session.ID)
+	if err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "A VTA maintenance operation is still running. Retry deletion after it finishes."})
+		return
+	}
+	defer release()
 
 	if session.IsFullStack() {
 		h.deleteFullStack(c, session)
@@ -1092,7 +1100,7 @@ func (h *SetupHandler) provisionAdmin(c *gin.Context, session *model.SetupSessio
 		return
 	}
 
-	if _, err := connection.AcceptManual(c.Request.Context(), h.db, session.ID, req.AdminDid, false); err != nil {
+	if err := connection.AcceptManual(c.Request.Context(), h.db, session.ID, req.AdminDid, false); err != nil {
 		writeConnectionError(c, err)
 		return
 	}

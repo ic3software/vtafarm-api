@@ -23,17 +23,18 @@ import (
 )
 
 type MobileConnectionHandler struct {
-	db      *gorm.DB
-	kick    func(uint)
-	enabled bool
-	origin  string
-	key     []byte
+	db             *gorm.DB
+	kickInitial    func(uint)
+	kickAdditional func(string)
+	enabled        bool
+	origin         string
+	key            []byte
 }
 
-func NewMobileConnectionHandler(db *gorm.DB, orch *setup.Orchestrator, cfg config.MobileConnectionConfig, clusterDomain string) *MobileConnectionHandler {
-	h := &MobileConnectionHandler{db: db, key: []byte(cfg.SigningKey)}
+func NewMobileConnectionHandler(db *gorm.DB, orch *setup.Orchestrator, kickAdditional func(string), cfg config.MobileConnectionConfig, clusterDomain string) *MobileConnectionHandler {
+	h := &MobileConnectionHandler{db: db, key: []byte(cfg.SigningKey), kickAdditional: kickAdditional}
 	if orch != nil {
-		h.kick = orch.KickProvision
+		h.kickInitial = orch.KickProvision
 	}
 	domain := strings.TrimSuffix(clusterDomain, ".")
 	origin := "https://vtafarm-api." + domain
@@ -45,19 +46,19 @@ func NewMobileConnectionHandler(db *gorm.DB, orch *setup.Orchestrator, cfg confi
 	return h
 }
 
-func (h *MobileConnectionHandler) token(purpose, id string) string {
+func (h *MobileConnectionHandler) token(scope, id string) string {
 	mac := hmac.New(sha256.New, h.key)
-	mac.Write([]byte("vtafarm/mobile/" + purpose + "/" + id))
+	mac.Write([]byte("vtafarm/mobile/" + scope + "/" + id))
 	return id + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
-func (h *MobileConnectionHandler) tokenID(purpose, token string) (string, bool) {
+func (h *MobileConnectionHandler) tokenID(scope, token string) (string, bool) {
 	id, _, ok := strings.Cut(token, ".")
 	if !ok || len(token) != 80 || len(h.key) < 32 {
 		return "", false
 	}
 	parsed, err := uuid.Parse(id)
-	if err != nil || parsed.String() != id || !hmac.Equal([]byte(h.token(purpose, id)), []byte(token)) {
+	if err != nil || parsed.String() != id || !hmac.Equal([]byte(h.token(scope, id)), []byte(token)) {
 		return "", false
 	}
 	return id, true
@@ -114,16 +115,24 @@ func (h *MobileConnectionHandler) view(r *model.MobileConnection, s *model.Setup
 		}
 	case "accepted":
 		v.Status = "provisioning"
-		if s.Status == "failed" {
+		if r.Operation == connection.OperationGrantACL {
+			if r.ProvisionedAt != nil {
+				v.Status = "awaiting_mobile"
+			}
+		} else if s.Status == "failed" {
 			v.Status, v.Error = "failed", "VTA setup failed. View the setup details for the next step."
 		} else if r.ConnectedAt != nil {
 			v.Status = "connected"
 		} else if s.Status == "running" {
 			v.Status = "awaiting_mobile"
-			if r.AcceptedAt != nil && !now.Before(r.AcceptedAt.Add(connection.ProgressLifetime)) {
-				v.Status, v.Error = "failed", "Mobile confirmation expired. Your VTA remains configured; continue in your app."
-			}
 		}
+		if r.ConnectedAt != nil {
+			v.Status = "connected"
+		} else if r.AcceptedAt != nil && !now.Before(r.AcceptedAt.Add(connection.ProgressLifetime)) {
+			v.Status, v.Error = "failed", "Mobile confirmation expired. Your VTA remains configured; continue in your app."
+		}
+	case "failed":
+		v.Error = r.ProvisionError
 	}
 	return v
 }
@@ -146,6 +155,9 @@ func (h *MobileConnectionHandler) Current(c *gin.Context) {
 	if err != nil {
 		writeConnectionError(c, err)
 		return
+	}
+	if r != nil && r.Operation == connection.OperationGrantACL && r.Status == "accepted" && r.ProvisionedAt == nil && h.kickAdditional != nil {
+		h.kickAdditional(r.ID)
 	}
 	h.reply(c, r, s)
 }
@@ -213,7 +225,13 @@ func (h *MobileConnectionHandler) Callback(c *gin.Context) {
 		writeConnectionError(c, err)
 		return
 	}
-	h.kick(r.SessionID)
+	if r.Operation == connection.OperationGrantACL {
+		if h.kickAdditional != nil {
+			h.kickAdditional(r.ID)
+		}
+	} else if h.kickInitial != nil {
+		h.kickInitial(r.SessionID)
+	}
 	var s model.SetupSession
 	if err := h.db.WithContext(c.Request.Context()).First(&s, r.SessionID).Error; err != nil {
 		writeConnectionError(c, err)
@@ -254,8 +272,16 @@ func (h *MobileConnectionHandler) Progress(c *gin.Context) {
 		writeConnectionError(c, err)
 		return
 	}
-	if r.Status != "accepted" || r.AcceptedAt == nil || !now.Before(r.AcceptedAt.Add(connection.ProgressLifetime)) {
+	if r.AcceptedAt == nil || !now.Before(r.AcceptedAt.Add(connection.ProgressLifetime)) {
 		writeConnectionError(c, connection.ErrExpired)
+		return
+	}
+	if r.Status != "accepted" && r.Status != "failed" {
+		writeConnectionError(c, connection.ErrExpired)
+		return
+	}
+	if r.Status == "failed" && c.Request.Method == "POST" {
+		writeConnectionError(c, connection.ErrConflict)
 		return
 	}
 	if c.Request.Method == "POST" {

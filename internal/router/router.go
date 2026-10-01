@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"log"
 	"strings"
 	"time"
@@ -27,6 +28,7 @@ import (
 )
 
 func Setup(
+	workerCtx context.Context,
 	db *gorm.DB,
 	cfClient *cloudflare.Client,
 	k8sClient *k8s.Client,
@@ -71,6 +73,9 @@ func Setup(
 		dhFactory, k8sClient, orch, ghcrClient,
 		mediatorGhcrClient, didsGhcrClient, vtcGhcrClient,
 	)
+	if k8sClient != nil {
+		sh.StartAdditionalMobileWorker(workerCtx, cfg.OrchestratorResume)
+	}
 
 	v1 := r.Group("/api/v1")
 
@@ -262,7 +267,7 @@ func Setup(
 	v1.GET("/recovery/:token", rh.Validate)
 	v1.POST("/recovery/:token", middleware.RateLimit(10, time.Minute), rh.Consume)
 
-	mobile := handler.NewMobileConnectionHandler(db, orch, cfg.MobileConnection, cfg.ClusterDomain)
+	mobile := handler.NewMobileConnectionHandler(db, orch, sh.KickAdditionalMobile, cfg.MobileConnection, cfg.ClusterDomain)
 	mobilePublic := v1.Group("/mobile-connections", middleware.MobilePrivacy(), middleware.NoStore(), middleware.RateLimit(120, time.Minute))
 	mobilePublic.POST("/callback/:token", mobile.Callback)
 	mobilePublic.GET("/:request_id", mobile.Progress)

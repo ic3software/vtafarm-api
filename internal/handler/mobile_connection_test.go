@@ -21,7 +21,7 @@ import (
 )
 
 func TestMobileTokensAreScoped(t *testing.T) {
-	h := NewMobileConnectionHandler(nil, nil, config.MobileConnectionConfig{SigningKey: strings.Repeat("test-only-", 4)}, "example.com")
+	h := NewMobileConnectionHandler(nil, nil, nil, config.MobileConnectionConfig{SigningKey: strings.Repeat("test-only-", 4)}, "example.com")
 	id := uuid.NewString()
 	token := h.token("callback", id)
 	if got, ok := h.tokenID("callback", token); !ok || got != id {
@@ -40,7 +40,7 @@ func TestMobileTokensAreScoped(t *testing.T) {
 
 func TestMobileConfigFailsClosed(t *testing.T) {
 	for _, domain := range []string{"", "example.com/path", "user@example.com", "example.com?token=x"} {
-		h := NewMobileConnectionHandler(nil, nil, config.MobileConnectionConfig{SigningKey: strings.Repeat("x", 32)}, domain)
+		h := NewMobileConnectionHandler(nil, nil, nil, config.MobileConnectionConfig{SigningKey: strings.Repeat("x", 32)}, domain)
 		if h.origin != "" || h.enabled {
 			t.Errorf("accepted cluster domain %q", domain)
 		}
@@ -48,14 +48,14 @@ func TestMobileConfigFailsClosed(t *testing.T) {
 }
 
 func TestMobileConfigEnablesWithoutFeatureFlag(t *testing.T) {
-	h := NewMobileConnectionHandler(nil, &setup.Orchestrator{}, config.MobileConnectionConfig{
+	h := NewMobileConnectionHandler(nil, &setup.Orchestrator{}, nil, config.MobileConnectionConfig{
 		SigningKey: strings.Repeat("x", 32),
 	}, "example.com")
 	if !h.enabled || h.origin != "https://vtafarm-api.example.com" {
 		t.Fatal("valid mobile connection configuration was not enabled")
 	}
 
-	h = NewMobileConnectionHandler(nil, &setup.Orchestrator{}, config.MobileConnectionConfig{}, "example.com")
+	h = NewMobileConnectionHandler(nil, &setup.Orchestrator{}, nil, config.MobileConnectionConfig{}, "example.com")
 	if h.enabled {
 		t.Fatal("mobile connection enabled without a signing key")
 	}
@@ -66,9 +66,11 @@ func TestMobileHTTPFlow(t *testing.T) {
 	db := testutil.Postgres(t)
 	s := testutil.SetupSession(t, db, model.ModeVtaOnly)
 	other := testutil.SetupSession(t, db, model.ModeVtaOnly)
-	h := NewMobileConnectionHandler(db, nil, config.MobileConnectionConfig{SigningKey: strings.Repeat("test-only-", 4)}, "example.com")
+	h := NewMobileConnectionHandler(db, nil, nil, config.MobileConnectionConfig{SigningKey: strings.Repeat("test-only-", 4)}, "example.com")
 	h.enabled = true
-	h.kick = func(uint) {}
+	h.kickInitial = func(uint) {}
+	var additionalKicked string
+	h.kickAdditional = func(id string) { additionalKicked = id }
 	router := gin.New()
 	router.Use(middleware.NoStore(), middleware.MobilePrivacy())
 	router.POST("/callback/:token", h.Callback)
@@ -157,6 +159,40 @@ func TestMobileHTTPFlow(t *testing.T) {
 	w = call("POST", "/progress/"+r.ID+"/complete", `{"status":"connected"}`, result.ProgressToken)
 	if w.Code != 200 || !bytes.Contains(w.Body.Bytes(), []byte(`"status":"connected"`)) {
 		t.Fatal("completion failed", w.Code, w.Body)
+	}
+
+	w = call("POST", "/owner/"+s.VtaName, "", "")
+	if w.Code != 200 {
+		t.Fatalf("additional create=%d %s", w.Code, w.Body)
+	}
+	additional, err := connection.Current(db, s.ID)
+	if err != nil || additional == nil {
+		t.Fatal("no additional request", err)
+	}
+	additionalToken := h.token("callback", additional.ID)
+	additionalDID, err := didkey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w = call("POST", "/callback/"+additionalToken, `{"admin_did":"`+additionalDID+`"}`, "")
+	if w.Code != 202 || additionalKicked != additional.ID {
+		t.Fatalf("additional accept=%d kicked=%q body=%s", w.Code, additionalKicked, w.Body)
+	}
+	var additionalReceipt struct {
+		ProgressToken string `json:"progress_token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &additionalReceipt); err != nil {
+		t.Fatal(err)
+	}
+	if w := call("POST", "/progress/"+additional.ID+"/complete", `{"status":"connected"}`, additionalReceipt.ProgressToken); w.Code != 409 {
+		t.Fatal("additional completion before ACL grant accepted", w.Code)
+	}
+	now := time.Now()
+	if err := db.Model(additional).Update("provisioned_at", now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if w := call("POST", "/progress/"+additional.ID+"/complete", `{"status":"connected"}`, additionalReceipt.ProgressToken); w.Code != 200 {
+		t.Fatal("additional completion failed", w.Code, w.Body)
 	}
 	// A disabled rollout still exposes existing state, but creates no new QR.
 	h.enabled = false
