@@ -1,5 +1,13 @@
 # Changelog
 
+## [v0.11.1] - 2026-10-04
+
+### Changed
+
+- Farm-provisioned VTC communities enable single-admin mode, allowing the
+  initial administrator to add another administrator without requiring a
+  second existing approver.
+
 ## [v0.11.0] - 2026-09-30
 
 ### Added
