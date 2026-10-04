@@ -31,6 +31,7 @@ base_url       = "{{ .VtcPublicURL }}"
 vta_did        = "{{ .VtaDid }}"
 context        = "{{ .VtcName }}"
 setup_key_file = "setup-key.json"
+single_admin_mode = true
 
 [webvh]
 server_id = "dids"
