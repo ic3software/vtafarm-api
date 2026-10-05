@@ -1318,7 +1318,7 @@ create, so that grant was removed.
 ## 12. API surface
 
 `mode = "full_stack"` on `POST /api/v1/setup` selects this path. It is gated on
-`users.beta_access` (see `CLAUDE.md` § Beta Access) — an admin-only switch the user can't
+`users.fullstack_access` (see `CLAUDE.md` § Fullstack Access) — an admin-only switch the user can't
 flip themselves.
 
 | Method | Path | Change vs `vta_only` |

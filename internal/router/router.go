@@ -159,7 +159,7 @@ func Setup(
 		adminAuth.GET("/admin/admins", adminH.List)
 		adminAuth.POST("/admin/admins", adminH.Create)
 		adminAuth.GET("/admin/users", uh.List)
-		adminAuth.PUT("/admin/users/:id/beta-access", uh.SetBetaAccess)
+		adminAuth.PUT("/admin/users/:id/fullstack-access", uh.SetFullstackAccess)
 		// Lost-passkey recovery: issues a 1h single-use login link the admin
 		// delivers out of band; consuming it is the public /recovery route.
 		adminAuth.POST("/admin/users/:id/recovery-link", rh.Create)

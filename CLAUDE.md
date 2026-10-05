@@ -156,8 +156,8 @@ To create additional admins, an authenticated admin calls `POST /api/v1/admin/ad
 | --- | --- | --- | --- |
 | `POST` | `/api/v1/admin/admins` | admin | Create admin + return enrollment token |
 | `GET` | `/api/v1/admin/dashboard` | admin | Cluster capacity overview: CPU/memory/storage per node + remaining-session estimates |
-| `GET` | `/api/v1/admin/users` | admin | List user accounts (includes `beta_access`) |
-| `PUT` | `/api/v1/admin/users/:id/beta-access` | admin | Grant/revoke a user's beta access — the only way it's ever changed |
+| `GET` | `/api/v1/admin/users` | admin | List user accounts (includes `fullstack_access`) |
+| `PUT` | `/api/v1/admin/users/:id/fullstack-access` | admin | Grant/revoke a user's Fullstack Access — the only way it's ever changed |
 | `POST` | `/api/v1/admin/users/:id/recovery-link` | admin | Issue a 1h single-use login link for a user who lost their passkey |
 | `POST` | `/api/v1/admin/invitations` | admin | Create a user invitation link |
 | `GET` | `/api/v1/admin/invitations` | admin | List invitation links |
@@ -205,10 +205,10 @@ the account and logs the holder in to register a fresh one.
 
 | Method | Path | Role | Description |
 | --- | --- | --- | --- |
-| `GET` | `/api/v1/user/me` | user | Get own profile, incl. `beta_access` (read-only) |
+| `GET` | `/api/v1/user/me` | user | Get own profile, incl. `fullstack_access` (read-only) |
 | `POST` | `/api/v1/setup/validate` | user | Check Cloudflare connectivity |
 | `GET` | `/api/v1/setup/domain-info` | user | Hostname facts for this environment (`managed_domain`, `env_prefix`, `target_ip`, `target_host`) so the portal never hardcodes the production hostname shape |
-| `POST` | `/api/v1/setup` | user | Create session + provision DNS (`mode=vta_only` or `full_stack`; `full_stack` requires `beta_access`). Optional `domain_id` runs it on a verified custom domain — then `label` replaces `vta_name`/`vtc_name`, and no DNS is created |
+| `POST` | `/api/v1/setup` | user | Create session + provision DNS (`mode=vta_only` or `full_stack`; `full_stack` requires `fullstack_access`). Optional `domain_id` runs it on a verified custom domain — then `label` replaces `vta_name`/`vtc_name`, and no DNS is created |
 | `GET` | `/api/v1/domains` | user | The caller's domains (at most one) |
 | `POST` | `/api/v1/domains` | user | Attach a domain → row + fresh TXT token + the 5 records to create |
 | `GET` | `/api/v1/domains/:id` | user | Detail, resolved live; promotes to verified when everything passes |
@@ -428,7 +428,7 @@ below).
   user-facing route can never be called for it.
 - **No verification, no ACME, no Let's Encrypt quota** — the zone is ours and
   the `*.firstperson.dev` wildcard already covers the names.
-- `beta_access` doesn't apply (it's a user gate); cluster capacity does.
+- `fullstack_access` doesn't apply (it's a user gate); cluster capacity does.
 
 ### Co-admins on the platform stack
 
@@ -473,15 +473,18 @@ the caller has already established that authority.
 
 Design: `docs/platform-stack-admin-grant-design.md` (§7 is the section to read).
 
-## Beta Access
+## Fullstack Access
 
-`users.beta_access` (bool, default `false`) gates access to features still in
-beta — currently the `full_stack` mode on `POST /setup`. It's a plain on/off
-switch, not a tier: only an admin can flip it
-(`PUT /api/v1/admin/users/:id/beta-access`), never the user themselves.
+`users.fullstack_access` (bool, default `false`) allows `full_stack` creation and
+removes the account's VTA count limit. Without it, users can hold at most two
+undeleted VTA-only sessions; setup in progress and failed sessions also count.
+Deletion releases a slot. Revocation preserves existing sessions and blocks new
+creation when the count is at least two. Cluster capacity still applies.
+Only an admin can flip it
+(`PUT /api/v1/admin/users/:id/fullstack-access`), never the user themselves.
 `GET /api/v1/user/me` lets the frontend check the caller's own value fresh
 (not from the JWT, which doesn't carry it) so it can decide whether to offer
-the beta mode at all.
+Full Stack mode and the remaining quota (`vta_count`, `vta_limit`; null is unlimited).
 
 ## API Docs Rule
 

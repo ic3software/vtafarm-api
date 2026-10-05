@@ -598,7 +598,7 @@ provisioning. The owner also manages any ACL needed for later VTA DID updates.
 `POST /api/v1/setup` then validates the body:
 
 1. `mode`: required, `vta_only` | `full_stack` (`full_stack` additionally requires the
-   caller's `beta_access`)
+   caller's `fullstack_access`)
 2. `vta_image`: required; `full_stack` also requires `mediator_image`, `dids_image`, and
    `vtc_image`
 3. `vta_name`: must be unique for this user (`409` on conflict; defaults to `personal-vta`)
