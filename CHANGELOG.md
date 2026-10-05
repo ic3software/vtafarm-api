@@ -1,5 +1,12 @@
 # Changelog
 
+## [v0.12.1] - 2026-10-05
+
+### Changed
+
+- Updated Go dependencies for Kubernetes, CORS handling, database migrations,
+  the PostgreSQL driver, networking, and synchronization.
+
 ## [v0.12.0] - 2026-10-05
 
 ### Breaking
