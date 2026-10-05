@@ -26,7 +26,7 @@ func NewRecoveryHandler(db *gorm.DB, jwtSecret string, cookieSecure bool) *Recov
 }
 
 // Create — admin: POST /api/v1/admin/users/:id/recovery-link (:id is the
-// user's unique_id, matching the beta-access route). Issues a 1-hour,
+// user's unique_id, matching the fullstack-access route). Issues a 1-hour,
 // single-use login link for that account. The admin verifies the requester's
 // identity (e.g. against the account's email) and delivers the URL out of
 // band — the system sends nothing. Any previous unused link for the same

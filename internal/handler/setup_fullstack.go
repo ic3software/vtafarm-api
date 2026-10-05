@@ -187,8 +187,11 @@ func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest, d
 	}
 	// A single insert: there is no random id left to collide, so the retry loop
 	// that used to wrap this went with unique_id.
-	if createErr := h.db.Create(&session).Error; createErr != nil {
+	if createErr := h.persistUserSession(c.Request.Context(), &session); createErr != nil {
 		rollback()
+		if writeSessionAccessError(c, createErr) {
+			return
+		}
 		// The pre-insert count checks race with concurrent creates; the DB
 		// unique indexes are the real gate.
 		if isUniqueViolation(createErr, "setup_sessions_vta_name_unique") {

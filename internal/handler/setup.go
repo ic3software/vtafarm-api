@@ -203,6 +203,12 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
 		return
 	}
+	if err := checkSessionAccess(h.db.WithContext(c.Request.Context()), user, req.Mode); err != nil {
+		if !writeSessionAccessError(c, err) {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check VTA access"})
+		}
+		return
+	}
 
 	// The domain is resolved first because it decides what the names mean: on
 	// the managed zone vta_name/vtc_name *are* hostnames and must be globally
@@ -264,10 +270,6 @@ func (h *SetupHandler) Create(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "DID connection fields apply only to VTA-only sessions"})
 			return
 		}
-		if !user.BetaAccess {
-			c.JSON(http.StatusForbidden, gin.H{"error": req.Mode + " mode is in beta — ask an admin to enable beta access for your account"})
-			return
-		}
 		if !h.capacityAllows(c, capacity.FullStack) {
 			return
 		}
@@ -304,7 +306,9 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		c.Request.Context(), userID, req, target, nil,
 	)
 	if err != nil {
-		c.JSON(status, gin.H{"error": err.Error()})
+		if !writeSessionAccessError(c, err) {
+			c.JSON(status, gin.H{"error": err.Error()})
+		}
 		return
 	}
 
@@ -369,8 +373,18 @@ func (h *SetupHandler) createManagedVtaOnlySession(
 		Portable:             portable,
 		PreRotationCount:     preRotationCount,
 	}
-	if createErr := h.db.Create(session).Error; createErr != nil {
+	var createErr error
+	if loadTestRunID != nil {
+		// Admin load tests use a non-login system owner, outside user quotas.
+		createErr = h.db.WithContext(ctx).Create(session).Error
+	} else {
+		createErr = h.persistUserSession(ctx, session)
+	}
+	if createErr != nil {
 		_ = h.cf.DeleteRecord(ctx, recordID)
+		if errors.Is(createErr, errVTALimitReached) || errors.Is(createErr, errFullstackAccessRequired) {
+			return nil, http.StatusForbidden, createErr
+		}
 		if isUniqueViolation(createErr, "setup_sessions_vta_name_unique") ||
 			isUniqueViolation(createErr, "setup_sessions_did_path_unique") {
 			return nil, http.StatusConflict, errors.New("vta_name already in use")

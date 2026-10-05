@@ -99,7 +99,7 @@ type createPlatformStackRequest struct {
 // CreatePlatformStack — POST /api/v1/admin/platform-stack (admin only).
 //
 // Creates the domain row, the four proxied Cloudflare A records, and the
-// full_stack session against them, then starts the orchestrator. beta_access
+// full_stack session against them, then starts the orchestrator. fullstack_access
 // does not apply (that gate is for users); cluster capacity does — the stack
 // consumes the same resources as any other full stack, and an admin needs to
 // know if it will not fit rather than have it silently over-commit.

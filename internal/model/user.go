@@ -18,11 +18,7 @@ type User struct {
 	// Unique when present: one email can never map to two accounts.
 	Email *string `json:"email,omitempty" gorm:"column:email"`
 
-	// BetaAccess gates access to features still in beta (currently: full_stack
-	// setup mode). A plain on/off switch, not a tier — if a second beta feature
-	// ever needs independent control, add another column then rather than
-	// building a generic flag system now.
-	BetaAccess bool `json:"beta_access" gorm:"column:beta_access;not null;default:false"`
+	FullstackAccess bool `json:"fullstack_access" gorm:"column:fullstack_access;not null;default:false"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

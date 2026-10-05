@@ -187,7 +187,7 @@ POST /api/v1/admin/platform-stack { label, vta_image, mediator_image, dids_image
 - `label` defaults to `firstperson`; it never appears in a hostname and only
   reaches the DID paths — `did:webvh:<scid>:dids.firstperson.dev:firstperson-vta`
   and friends (§4.3).
-- **`beta_access` does not apply** — that gate exists for users, and the caller
+- **`fullstack_access` does not apply** — that gate exists for users, and the caller
   here is an admin.
 - **Cluster capacity still applies.** The platform stack consumes the same
   resources as any other full stack; if the cluster genuinely cannot fit it,
@@ -256,7 +256,7 @@ and the `setup_sessions` row hang off that id.
 - It is not tied to a person. Binding the farm's flagship stack to a real
   admin's user account would mean deleting that account cascade-deletes the
   platform stack.
-- `beta_access` on that row is meaningless and never checked (§3.3.2).
+- `fullstack_access` on that row is meaningless and never checked (§3.3.2).
 - `GET /api/v1/admin/users` should mark or filter the row so it doesn't read as
   a real signup.
 

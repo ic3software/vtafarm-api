@@ -1569,15 +1569,15 @@ paths:
                         Self-declared email left at public signup (unverified).
                         Null for accounts created before email signup existed
                         and for admin-invited accounts.
-                    beta_access:
+                    fullstack_access:
                       type: boolean
-                      description: Whether this user can create full_stack setup sessions.
+                      description: Allows full_stack creation and removes the 2-VTA account limit. Defaults to false.
                     system:
                       type: boolean
                       description: >
                         True for the account that owns the platform stack
                         (`unique_id: platform`). Not a login — no passkey, no
-                        email — so the UI should not offer it beta access, a
+                        email — so the UI should not offer it Fullstack Access, a
                         recovery link, or anything else meant for a person.
                     created_at:
                       type: string
@@ -1598,13 +1598,14 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /api/v1/admin/users/{id}/beta-access:
+  /api/v1/admin/users/{id}/fullstack-access:
     put:
-      summary: Set a user's beta access
+      summary: Set a user's Fullstack Access
       description: |
-        Grants or revokes a user's access to features still in beta (currently:
-        `mode=full_stack` on `POST /setup`). Admin-only — there is no user-facing
-        way to self-enable this.
+        Grants or revokes Full Stack creation and unlimited VTA access.
+        Defaults to false (VTA-only, at most two undeleted sessions).
+        Revocation preserves existing sessions. Admin-only — there is no
+        user-facing way to self-enable this.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
@@ -1621,9 +1622,9 @@ paths:
           application/json:
             schema:
               type: object
-              required: [beta_access]
+              required: [fullstack_access]
               properties:
-                beta_access:
+                fullstack_access:
                   type: boolean
       responses:
         "200":
@@ -1636,7 +1637,7 @@ paths:
                   id:
                     type: string
                     example: "a1b2c3d4"
-                  beta_access:
+                  fullstack_access:
                     type: boolean
         "400":
           description: Invalid request body
@@ -2367,7 +2368,7 @@ paths:
         rather than the one owning user.
 
         Notes:
-        - `beta_access` does not apply — that gate is for users.
+        - `fullstack_access` does not apply — that gate is for users.
         - Cluster capacity does apply; 503 when the stack would not fit.
         - Exactly one per environment. 409 while one exists.
         - The session is owned by a dedicated **system account** (a `users` row
@@ -4236,11 +4237,12 @@ paths:
     get:
       summary: Get the caller's own profile
       description: |
-        Returns the logged-in user's own `beta_access` state, fetched fresh from
+        Returns the logged-in user's own `fullstack_access` state, fetched fresh from
         the database (not from the JWT, which doesn't carry it — an admin can
         flip it at any time without the user needing to log in again). The
-        frontend uses this to decide whether to offer `mode=full_stack` on the
-        setup wizard.
+        frontend uses this for Full Stack permissions and the VTA quota.
+        `vta_count` includes all undeleted sessions regardless of status or mode.
+        `vta_limit` is 2 without Fullstack Access, or null for unlimited access.
       tags: [User]
       security:
         - CookieAuthUser: []
@@ -4255,8 +4257,16 @@ paths:
                   id:
                     type: string
                     example: "a1b2c3d4"
-                  beta_access:
+                  fullstack_access:
                     type: boolean
+                    default: false
+                  vta_count:
+                    type: integer
+                    minimum: 0
+                  vta_limit:
+                    type: integer
+                    nullable: true
+                    description: 2 without Fullstack Access; null means no account count limit.
                   created_at:
                     type: string
                     format: date-time
@@ -4815,8 +4825,14 @@ paths:
         `vtc_name` doubles as the VTA context id.
 
         **`mode=full_stack` requires the caller's
-        `beta_access` to be `true`** (see `GET /user/me`); an admin grants this via
-        `PUT /admin/users/{id}/beta-access`.
+        `fullstack_access` to be `true`** (see `GET /user/me`); an admin grants this via
+        `PUT /admin/users/{id}/fullstack-access`.
+
+        Without Fullstack Access, the caller may hold at most two undeleted
+        sessions (including setup in progress and failed sessions). Deleting a
+        session releases its slot. The check and insert are serialized per user
+        across API instances. Fullstack Access removes the account count limit;
+        cluster capacity checks still apply.
 
         **On a custom domain (`domain_id`) none of the above applies to the
         names.** The four hostnames are fixed (`vta.aaa.com`, `vtc.`,
@@ -4853,7 +4869,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "403":
-          description: mode=full_stack requested but the caller doesn't have beta_access
+          description: |
+            `reason=fullstack_access_required` when mode=full_stack is requested
+            without Fullstack Access; `reason=vta_limit_reached` when an account
+            without Fullstack Access already holds at least two sessions.
           content:
             application/json:
               schema:

@@ -40,10 +40,10 @@ func (h *UserHandler) List(c *gin.Context) {
 	}
 
 	type userItem struct {
-		ID         uint    `json:"id"`
-		UniqueId   string  `json:"unique_id"`
-		Email      *string `json:"email"` // null for pre-email and admin-invited accounts
-		BetaAccess bool    `json:"beta_access"`
+		ID              uint    `json:"id"`
+		UniqueId        string  `json:"unique_id"`
+		Email           *string `json:"email"` // null for pre-email and admin-invited accounts
+		FullstackAccess bool    `json:"fullstack_access"`
 		// System is true for non-login owners such as the platform stack and
 		// provisioning load tests. The UI must not offer controls meant for a
 		// person.
@@ -54,20 +54,20 @@ func (h *UserHandler) List(c *gin.Context) {
 	result := make([]userItem, len(users))
 	for i, u := range users {
 		result[i] = userItem{
-			ID:         u.ID,
-			UniqueId:   u.UniqueId,
-			Email:      u.Email,
-			BetaAccess: u.BetaAccess,
-			System:     u.UniqueId == systemAccountUniqueID || strings.HasPrefix(u.UniqueId, "load-test-"),
-			CreatedAt:  u.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
-			UpdatedAt:  u.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			ID:              u.ID,
+			UniqueId:        u.UniqueId,
+			Email:           u.Email,
+			FullstackAccess: u.FullstackAccess,
+			System:          u.UniqueId == systemAccountUniqueID || strings.HasPrefix(u.UniqueId, "load-test-"),
+			CreatedAt:       u.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			UpdatedAt:       u.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		}
 	}
 	c.JSON(http.StatusOK, result)
 }
 
 // Me — GET /api/v1/user/me. Lets the frontend know the caller's own
-// beta_access without waiting for a re-login (the JWT itself doesn't carry
+// fullstack_access without waiting for a re-login (the JWT itself doesn't carry
 // it, since an admin can flip it at any time).
 func (h *UserHandler) Me(c *gin.Context) {
 	userID := c.MustGet(middleware.ContextUserID).(uint)
@@ -77,25 +77,37 @@ func (h *UserHandler) Me(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
 		return
 	}
+	var vtaCount int64
+	if err := h.db.Model(&model.SetupSession{}).Where("user_id = ?", userID).Count(&vtaCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch VTA usage"})
+		return
+	}
+	var vtaLimit *int
+	if !user.FullstackAccess {
+		limit := defaultVTALimit
+		vtaLimit = &limit
+	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"id":          user.UniqueId,
-		"email":       user.Email,
-		"beta_access": user.BetaAccess,
-		"created_at":  user.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		"id":               user.UniqueId,
+		"email":            user.Email,
+		"fullstack_access": user.FullstackAccess,
+		"vta_count":        vtaCount,
+		"vta_limit":        vtaLimit,
+		"created_at":       user.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 	})
 }
 
-type setBetaAccessRequest struct {
-	BetaAccess bool `json:"beta_access"`
+type setFullstackAccessRequest struct {
+	FullstackAccess *bool `json:"fullstack_access" binding:"required"`
 }
 
-// SetBetaAccess — PUT /api/v1/admin/users/:id/beta-access (admin only). Grants
-// or revokes a user's access to beta features (currently: full_stack setup mode).
-func (h *UserHandler) SetBetaAccess(c *gin.Context) {
+// SetFullstackAccess — PUT /api/v1/admin/users/:id/fullstack-access (admin only). Grants
+// or revokes Full Stack creation and unlimited VTA access.
+func (h *UserHandler) SetFullstackAccess(c *gin.Context) {
 	publicID := c.Param("id")
 
-	var req setBetaAccessRequest
+	var req setFullstackAccessRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -107,13 +119,13 @@ func (h *UserHandler) SetBetaAccess(c *gin.Context) {
 		return
 	}
 
-	if err := h.db.Model(&user).Update("beta_access", req.BetaAccess).Error; err != nil {
+	if err := h.db.Model(&user).Update("fullstack_access", *req.FullstackAccess).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update user"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"id":          user.UniqueId,
-		"beta_access": req.BetaAccess,
+		"id":               user.UniqueId,
+		"fullstack_access": *req.FullstackAccess,
 	})
 }
