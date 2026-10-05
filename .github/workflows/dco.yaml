@@ -27,6 +27,9 @@ jobs:
             | ($c.commit.committer.email | ascii_downcase) as $committer
             | if (($signoffs | index($author)) != null) or (($signoffs | index($committer)) != null)
               then empty
+              elif ($c.author.login == "dependabot[bot]") and ($c.author.type == "Bot")
+                and (($signoffs | index("support@github.com")) != null)
+              then empty
               elif ($signoffs | length) == 0
               then "\($c.sha[0:7]) \($c.commit.author.email): no Signed-off-by trailer"
               else "\($c.sha[0:7]) \($c.commit.author.email): sign-off \($signoffs | join(", ")) does not match the author or committer email"
