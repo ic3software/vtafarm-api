@@ -1,5 +1,19 @@
 # Changelog
 
+## [v0.12.0] - 2026-10-05
+
+### Breaking
+
+- `fullstack_access` replaces `beta_access`, and the admin endpoint moves to
+  `/api/v1/admin/users/{id}/fullstack-access`.
+
+### Added
+
+- Users without Fullstack Access can hold at most two undeleted VTAs, including
+  provisioning and failed sessions. Deletion frees a slot; concurrent creation
+  cannot exceed the limit.
+- User profiles include `vta_count` and `vta_limit` (null for unlimited access).
+
 ## [v0.11.1] - 2026-10-04
 
 ### Changed
