@@ -14,6 +14,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -37,6 +38,17 @@ type Config struct {
 type Client struct {
 	cfg  Config
 	http *http.Client
+}
+
+type responseError struct {
+	method     string
+	path       string
+	statusCode int
+	body       string
+}
+
+func (e *responseError) Error() string {
+	return fmt.Sprintf("%s %s: status %d: %s", e.method, e.path, e.statusCode, e.body)
 }
 
 // New returns a Vault client, or an error if the required fields are missing.
@@ -173,8 +185,7 @@ func (c *Client) DeleteMediatorSecrets(ctx context.Context, userID, sessionID ui
 	if err != nil {
 		return err
 	}
-	return c.do(ctx, http.MethodDelete,
-		fmt.Sprintf("/v1/%s/metadata/%s", c.cfg.KVMount, MediatorPrefix(userID, sessionID)), token, nil, nil)
+	return c.deleteSecretTree(ctx, token, MediatorPrefix(userID, sessionID))
 }
 
 // DeleteDidsSecrets destroys all versions of a full_stack session's dids
@@ -184,8 +195,7 @@ func (c *Client) DeleteDidsSecrets(ctx context.Context, userID, sessionID uint) 
 	if err != nil {
 		return err
 	}
-	return c.do(ctx, http.MethodDelete,
-		fmt.Sprintf("/v1/%s/metadata/%s", c.cfg.KVMount, DidsPrefix(userID, sessionID)), token, nil, nil)
+	return c.deleteSecretTree(ctx, token, DidsPrefix(userID, sessionID))
 }
 
 // DeleteVtcSecrets destroys all versions of a full_stack session's
@@ -195,8 +205,58 @@ func (c *Client) DeleteVtcSecrets(ctx context.Context, userID, sessionID uint) e
 	if err != nil {
 		return err
 	}
-	return c.do(ctx, http.MethodDelete,
-		fmt.Sprintf("/v1/%s/metadata/%s", c.cfg.KVMount, VtcPrefix(userID, sessionID)), token, nil, nil)
+	return c.deleteSecretTree(ctx, token, VtcPrefix(userID, sessionID))
+}
+
+// deleteSecretTree permanently deletes every KV v2 key below prefix. Vault's
+// metadata DELETE endpoint removes one exact key; it does not recursively
+// remove children, so each leaf returned by LIST must be deleted separately.
+func (c *Client) deleteSecretTree(ctx context.Context, token, prefix string) error {
+	var out struct {
+		Data struct {
+			Keys []string `json:"keys"`
+		} `json:"data"`
+	}
+	if err := c.do(ctx, "LIST",
+		fmt.Sprintf("/v1/%s/metadata/%s", c.cfg.KVMount, prefix), token, nil, &out); err != nil {
+		var responseErr *responseError
+		if errors.As(err, &responseErr) && responseErr.statusCode == http.StatusNotFound {
+			// A path with no children may itself be a secret key. Deleting a
+			// nonexistent exact key is also safe, which keeps teardown idempotent.
+			return c.do(ctx, http.MethodDelete,
+				fmt.Sprintf("/v1/%s/metadata/%s", c.cfg.KVMount, prefix), token, nil, nil)
+		}
+		return fmt.Errorf("list vault secrets below %s: %w", prefix, err)
+	}
+
+	var errs []error
+	for _, key := range out.Data.Keys {
+		directory := strings.HasSuffix(key, "/")
+		name := strings.TrimSuffix(key, "/")
+		if name == "" || name == "." || name == ".." || strings.Contains(name, "/") {
+			errs = append(errs, fmt.Errorf("invalid vault child key %q below %s", key, prefix))
+			continue
+		}
+
+		path := prefix + "/" + name
+		if directory {
+			if err := c.deleteSecretTree(ctx, token, path); err != nil {
+				errs = append(errs, err)
+			}
+			continue
+		}
+		if err := c.do(ctx, http.MethodDelete,
+			fmt.Sprintf("/v1/%s/metadata/%s", c.cfg.KVMount, path), token, nil, nil); err != nil {
+			errs = append(errs, fmt.Errorf("delete vault secret %s: %w", path, err))
+		}
+	}
+	// A KV path can have both data of its own and children below it. Remove the
+	// exact prefix after its children; deleting an empty prefix is idempotent.
+	if err := c.do(ctx, http.MethodDelete,
+		fmt.Sprintf("/v1/%s/metadata/%s", c.cfg.KVMount, prefix), token, nil, nil); err != nil {
+		errs = append(errs, fmt.Errorf("delete vault secret %s: %w", prefix, err))
+	}
+	return errors.Join(errs...)
 }
 
 // login exchanges the AppRole role_id/secret_id for a short-lived token. The
@@ -244,7 +304,12 @@ func (c *Client) do(ctx context.Context, method, path, token string, body, out a
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("%s %s: status %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(data)))
+		return &responseError{
+			method:     method,
+			path:       path,
+			statusCode: resp.StatusCode,
+			body:       strings.TrimSpace(string(data)),
+		}
 	}
 	if out != nil && len(data) > 0 {
 		return json.Unmarshal(data, out)
