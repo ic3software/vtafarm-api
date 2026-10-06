@@ -10,13 +10,25 @@ import (
 	"testing"
 )
 
-func TestDeleteFullStackSecretsDeletesEveryLeaf(t *testing.T) {
+func TestDeleteSessionSecretsDeletesEveryLeaf(t *testing.T) {
 	tests := []struct {
 		name       string
 		delete     func(*Client) error
 		listings   map[string][]string
 		wantDelete []string
 	}{
+		{
+			name:   "vta keys",
+			delete: func(c *Client) error { return c.DeleteVtaSecrets(context.Background(), 7, 9) },
+			listings: map[string][]string{
+				"/v1/secret/metadata/vta/user-7/session-9": {"master-seed", "future-secret"},
+			},
+			wantDelete: []string{
+				"/v1/secret/metadata/vta/user-7/session-9",
+				"/v1/secret/metadata/vta/user-7/session-9/master-seed",
+				"/v1/secret/metadata/vta/user-7/session-9/future-secret",
+			},
+		},
 		{
 			name:   "mediator nested keys",
 			delete: func(c *Client) error { return c.DeleteMediatorSecrets(context.Background(), 7, 9) },
@@ -138,22 +150,6 @@ func TestDeleteSecretTreeFallsBackToExactKey(t *testing.T) {
 	want := "/v1/secret/metadata/vtc/user-7/session-9"
 	if deleted != want {
 		t.Fatalf("deleted path = %q, want %q", deleted, want)
-	}
-}
-
-func TestDeleteSeedDeletesExactKeyWithoutListing(t *testing.T) {
-	var requestMethod, requestPath string
-	client, closeServer := testClient(t, func(w http.ResponseWriter, r *http.Request) {
-		requestMethod, requestPath = r.Method, r.URL.Path
-		w.WriteHeader(http.StatusNoContent)
-	})
-	defer closeServer()
-
-	if err := client.DeleteSeed(context.Background(), SeedPath(7, 9)); err != nil {
-		t.Fatalf("delete seed: %v", err)
-	}
-	if requestMethod != http.MethodDelete || requestPath != "/v1/secret/metadata/vta/user-7/session-9/master-seed" {
-		t.Fatalf("request = %s %s", requestMethod, requestPath)
 	}
 }
 

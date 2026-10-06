@@ -120,14 +120,14 @@ func (o *Orchestrator) launch(sessionID uint, fn func(context.Context)) {
 	}()
 }
 
-// TeardownVaultSeed deletes a session's master seed from Vault (best-effort).
+// TeardownVaultSecrets deletes all of a session's VTA secrets from Vault (best-effort).
 // Called by the Delete handler. No-op when Vault isn't configured.
-func (o *Orchestrator) TeardownVaultSeed(ctx context.Context, userID, sessionID uint) {
+func (o *Orchestrator) TeardownVaultSecrets(ctx context.Context, userID, sessionID uint) {
 	if o.vault == nil {
 		return
 	}
-	if err := o.vault.DeleteSeed(ctx, vault.SeedPath(userID, sessionID)); err != nil {
-		log.Printf("[orchestrator] warn: delete vault seed (user %d session %d): %v", userID, sessionID, err)
+	if err := o.vault.DeleteVtaSecrets(ctx, userID, sessionID); err != nil {
+		log.Printf("[orchestrator] warn: delete VTA vault secrets (user %d session %d): %v", userID, sessionID, err)
 	}
 }
 

@@ -75,10 +75,16 @@ func New(cfg Config) (*Client, error) {
 // KVMount returns the configured KV v2 mount (e.g. "secret").
 func (c *Client) KVMount() string { return c.cfg.KVMount }
 
+// VtaPrefix is the KV v2 path (under the mount) containing a session's VTA
+// secrets. The farm Vault policy globs over secret/{data,metadata}/vta/user-<id>/*.
+func VtaPrefix(userID, sessionID uint) string {
+	return fmt.Sprintf("vta/user-%d/session-%d", userID, sessionID)
+}
+
 // SeedPath is the KV v2 path (under the mount) where a session's master seed
-// lives. The farm Vault policy globs over secret/{data,metadata}/vta/user-<id>/*.
+// currently lives.
 func SeedPath(userID, sessionID uint) string {
-	return fmt.Sprintf("vta/user-%d/session-%d/master-seed", userID, sessionID)
+	return VtaPrefix(userID, sessionID) + "/master-seed"
 }
 
 // UserName is the shared name for a user's Vault policy AND kubernetes-auth
@@ -168,18 +174,17 @@ func (c *Client) DeleteUserAccess(ctx context.Context, userID uint) error {
 	return nil
 }
 
-// DeleteSeed destroys all versions of a session's seed (KV v2 metadata delete).
-func (c *Client) DeleteSeed(ctx context.Context, secretPath string) error {
+// DeleteVtaSecrets destroys all versions of every VTA secret for a session.
+func (c *Client) DeleteVtaSecrets(ctx context.Context, userID, sessionID uint) error {
 	token, err := c.login(ctx)
 	if err != nil {
 		return err
 	}
-	return c.do(ctx, http.MethodDelete,
-		fmt.Sprintf("/v1/%s/metadata/%s", c.cfg.KVMount, secretPath), token, nil, nil)
+	return c.deleteSecretTree(ctx, token, VtaPrefix(userID, sessionID))
 }
 
 // DeleteMediatorSecrets destroys all versions of a full_stack session's
-// mediator secrets (KV v2 metadata delete) — mirrors DeleteSeed.
+// mediator secrets (KV v2 metadata delete) — mirrors DeleteVtaSecrets.
 func (c *Client) DeleteMediatorSecrets(ctx context.Context, userID, sessionID uint) error {
 	token, err := c.login(ctx)
 	if err != nil {

@@ -887,9 +887,9 @@ func (h *SetupHandler) teardownVtaOnlySession(ctx context.Context, session *mode
 		h.k8s.DeleteVtaResources(ctx, ns, session.ID)
 	}
 
-	// Delete this session's master seed from Vault (best-effort).
+	// Delete this session's VTA secrets from Vault (best-effort).
 	if h.orch != nil {
-		h.orch.TeardownVaultSeed(ctx, session.UserID, session.ID)
+		h.orch.TeardownVaultSecrets(ctx, session.UserID, session.ID)
 	}
 
 	if err := h.db.Delete(session).Error; err != nil {

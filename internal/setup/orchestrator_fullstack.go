@@ -1251,7 +1251,7 @@ func (o *Orchestrator) resumeFullStack() {
 // ── Teardown ─────────────────────────────────────────────────────────────────
 
 // TeardownMediatorVault deletes the mediator's KV secrets. Best-effort,
-// mirrors TeardownVaultSeed. No token to revoke — the mediator authenticates
+// mirrors TeardownVaultSecrets. No token to revoke — the mediator authenticates
 // via kubernetes auth (design §9), not a minted VAULT_TOKEN.
 func (o *Orchestrator) TeardownMediatorVault(ctx context.Context, userID, sessionID uint) {
 	if o.vault == nil {
