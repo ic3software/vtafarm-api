@@ -355,7 +355,7 @@ func (h *SetupHandler) deleteFullStack(c *gin.Context, session *model.SetupSessi
 	}
 
 	if h.orch != nil {
-		h.orch.TeardownVaultSeed(ctx, session.UserID, session.ID)
+		h.orch.TeardownVaultSecrets(ctx, session.UserID, session.ID)
 	}
 
 	if err := h.db.Delete(session).Error; err != nil {
