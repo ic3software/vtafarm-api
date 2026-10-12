@@ -123,28 +123,10 @@ Copy `.env.example` and adjust as needed:
 The wallet puts this value in the login token's `aud` claim; the API does not
 sign with it and has no `SIOP_RP_PRIVATE_KEY` setting.
 
-For local browser testing, put this development-only `did:key` in `.env`:
-
-```dotenv
-SIOP_RP_DID=did:key:z6MkkVc5EPGcCa3ZWB5i2YGX7BnLBm8vgf1qUwqTb9i87wLj
-```
-
-Restart the API and verify that wallet login is enabled:
-
-```bash
-curl http://localhost:8080/api/v1/auth/siop/metadata
-```
-
-The response should contain `"enabled":true` and the same `rp_did`. This DID is
-a public test fixture, carries no VTA Farm private key, and is not suitable for
-production.
-
-#### Production RP DID
-
-Production should use a dedicated `vtafarm-auth` VTA identity with persistent
-key storage and a `did:webvh` history that resolves over public HTTPS. It may
-use the existing DID-hosting deployment; a separate hosting service is not
-required. Do not reuse `DID_HOSTING_DID`: that `did:key` and its
+Before enabling SIOP, provision a dedicated `vtafarm-auth` VTA identity with
+persistent key storage and a `did:webvh` history that resolves over public
+HTTPS. It may use an existing DID-hosting deployment; a separate hosting
+service is not required. Do not reuse `DID_HOSTING_DID`: that `did:key` and its
 `DID_HOSTING_PRIVATE_KEY` are the privileged machine credential that
 vtafarm-api uses to upload DID logs and manage hosting ACLs.
 
@@ -178,6 +160,30 @@ Provision the RP DID with PNM:
      --path vtafarm-auth \
      --server <server-id>
    ```
+
+1. Verify that the generated DID history is publicly reachable. Use the host
+   encoded in the returned DID:
+
+   ```bash
+   curl --fail https://<did-host>/vtafarm-auth/did.jsonl
+   ```
+
+1. Put the returned DID in `.env`:
+
+   ```dotenv
+   SIOP_RP_DID=did:webvh:<scid>:<did-host>:vtafarm-auth
+   ```
+
+Restart the API and verify that wallet login is enabled:
+
+```bash
+curl http://localhost:8080/api/v1/auth/siop/metadata
+```
+
+The response must contain `"enabled":true` and the same `rp_did`. The RP VTA
+state and the DID-hosting data must remain persistent for the DID to keep
+resolving. If either is rebuilt from empty state, provision a new RP DID and
+update `SIOP_RP_DID`.
 
 ### Generating JWT_SECRET
 
