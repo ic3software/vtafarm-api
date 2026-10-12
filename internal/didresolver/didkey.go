@@ -1,4 +1,4 @@
-package siop
+package didresolver
 
 import (
 	"context"

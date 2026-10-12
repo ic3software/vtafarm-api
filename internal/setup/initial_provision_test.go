@@ -4,12 +4,61 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/ic3software/vtafarm-api/internal/connection"
 	"github.com/ic3software/vtafarm-api/internal/didkey"
 	"github.com/ic3software/vtafarm-api/internal/model"
 	"github.com/ic3software/vtafarm-api/internal/testutil"
 )
+
+func TestProvisionAdminLabelRecognizesWalletClaimLifecycle(t *testing.T) {
+	db := testutil.Postgres(t)
+	now := time.Now()
+	tests := []struct {
+		status string
+		want   string
+	}{
+		{status: "accepted", want: connection.MobileAdminLabel},
+		{status: "confirmed", want: connection.MobileAdminLabel},
+		{status: "provisioning", want: connection.MobileAdminLabel},
+		{status: "released", want: connection.MobileAdminLabel},
+		{status: "claimed", want: "fallback"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.status, func(t *testing.T) {
+			s := testutil.SetupSession(t, db, model.ModeVtaOnly)
+			r := model.MobileConnection{
+				ID:        uuid.NewString(),
+				SessionID: s.ID,
+				VtaDid:    s.VtaDid,
+				Operation: connection.OperationProvisionVTA,
+				AdminDid:  "did:key:z6MkAdmin",
+				Status:    tt.status,
+				CreatedAt: now,
+				ExpiresAt: now.Add(time.Minute),
+			}
+			if tt.status == "claimed" {
+				r.ClaimedAt = &now
+				r.ConfirmBy = &now
+			}
+			if tt.status == "confirmed" {
+				r.ConfirmedAt = &now
+			}
+			if tt.status == "released" {
+				r.ReleasedAt = &now
+			}
+			if err := db.Create(&r).Error; err != nil {
+				t.Fatal(err)
+			}
+			o := &Orchestrator{db: db}
+			if got := o.provisionAdminLabel(s.ID, r.AdminDid, "fallback"); got != tt.want {
+				t.Fatalf("label = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
 
 func TestProvisionRecoveryAndReplicaExclusion(t *testing.T) {
 	db := testutil.Postgres(t)

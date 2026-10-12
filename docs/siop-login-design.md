@@ -1,5 +1,10 @@
 # VTA-proxied SIOPv2 login — Design
 
+> **Superseded.** VTA Farm removed this login and identity-linking flow in
+> favor of passkeys. The VTI `sign-in` flow may replace it in a future feature;
+> see [`vta-claim-implementation-design.md`](vta-claim-implementation-design.md)
+> for the shared Trust Task infrastructure plan.
+
 ## Status and recommendation
 
 **Proposed; not implemented.** Put this cross-cutting design in `vtafarm-api/docs`.

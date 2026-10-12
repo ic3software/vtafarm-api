@@ -8,7 +8,7 @@ import (
 
 	"github.com/ic3software/vtafarm-api/internal/model"
 	"github.com/ic3software/vtafarm-api/internal/setup"
-	"github.com/ic3software/vtafarm-api/internal/siop/webvh"
+	"github.com/ic3software/vtafarm-api/internal/webvh"
 )
 
 // DownloadDIDLog gives the owner the exact log produced by VTA setup.

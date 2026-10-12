@@ -73,7 +73,7 @@ Farm from signing a terminal success while the person can still select
 | `provision/vta/redeem/0.1` | Merged and published; status is draft | Implement the polling and terminal hand-over exactly as specified. Do not retain the old progress-token protocol. |
 | Go bindings | Published in `trust-tasks-go v0.7.1`; proof support is a separate module | Pin `trust-tasks-go v0.7.1` and `trust-tasks-go/proof v0.1.2`. Do not copy generated payload types into this repository. |
 | VTI PR #58 | Open and internally consistent for VTI-LNK-110 through 117, but its introduction still says the Farm returns the DID in the first response and VTI-LNK-112 does not name `TrustTaskHTTPS` | Not a coding blocker. Treat the merged task specifications as authoritative for the exchange lifecycle. Re-review PR #58 before release. |
-| Development Farm DID | The current published log resolves, but its document does not yet advertise `TrustTaskHTTPS` | Backend work and fixture-based tests can proceed. Wallet integration waits for a DID update containing the service and Farm signing key. |
+| Development Farm DID | The development log is reported as published; its final `TrustTaskHTTPS` service and assertion key still need environment verification | Backend and fixture tests can proceed. Startup now fails closed until the published document matches all three Farm settings. |
 | Production Farm DID | Not published at the planned URL | Production release blocker. |
 | Keyring `vta-claim` support | External implementation dependency | API implementation can proceed. End-to-end acceptance waits for support for both claim and redeem. |
 | `link.trustoverip.org` | No public DNS at the time of this review | In-app scanning can be tested. System-camera and universal-link testing wait for the host or an agreed temporary `LINK_HOST`. |
@@ -344,12 +344,14 @@ Evolve the existing table rather than create a parallel claim table:
 | `claim_handle VARCHAR(22) UNIQUE` | Trigger-link `_id`, generated with `crypto/rand`; required for every new VTI reservation and nullable only for retained legacy history. |
 | `status` | The reservation state above. |
 | `admin_did` | Candidate `K_a`; populated only after a valid claim. |
+| `claimant_digest` | SHA-256 digest of `K_a`; authenticates redeem after a rejected or lapsed claim without retaining the discarded key. |
 | `operation` | Server-derived `provision_vta` or `grant_acl`; never supplied by the wallet. |
 | `expires_at` | End of the initial claim window (`_exp`). |
 | `confirm_by` | End of the post-claim confirmation hold. |
 | `claimed_at` | Time the valid claim locked the handle. |
 | `confirmed_at` | Time the owner confirmed the check. |
 | `released_at` | Time the VTA answered with `K_a` installed. |
+| `redeem_poll_id`, `redeem_poll_until` | Cross-replica lease that permits only one held redeem poll for the reservation. |
 | `provision_error` | Internal diagnostics only; never returned in Trust Task replies. |
 
 Use the existing session and VTA columns to derive operation and terminal
@@ -381,13 +383,15 @@ Add one shared table for the Trust Task consumer pipeline:
 | `document_digest` | SHA-256 of the canonical complete document, proof included. |
 | `state` | `executing` or `completed`. |
 | `response_bytes` | Exact bytes of the signed next step, response, or error when retained. |
-| `http_status` | Status returned with the retained body. |
 | `retain_until` | End of the document acceptance window. |
 | `lease_expires_at` | Recovery deadline for an abandoned executor. |
 | timestamps | Operations and cleanup visibility. |
 
 Store reply bytes rather than `JSONB`, so a bit-for-bit retry can receive the
-same signed bytes. All API replicas consult the same table.
+same signed bytes. The HTTPS status is deterministically recovered from the
+retained document (`trust-task-error` code mapping versus a successful
+document), so it is not stored separately. All API replicas consult the same
+table.
 
 Rules:
 
@@ -604,6 +608,10 @@ The private key belongs in the existing external `vtafarm-api-secrets`
 Kubernetes Secret. It must never appear in Helm values, committed environment
 files, logs, examples, or documentation.
 
+The key is a base64-encoded 32-byte Ed25519 seed. Its verification method ID is
+derived deterministically as `<FARM_DID>#<public-multikey>`; the same method
+must appear under the Farm DID document's `assertionMethod` relationship.
+
 Each environment's Farm DID document must contain:
 
 1. a `TrustTaskHTTPS` service whose HTTPS endpoint equals `TRUST_TASK_BASE`;
@@ -723,6 +731,8 @@ link, handle, proof, or claim check appears in logs.
 5. Provide a working link host for system-camera flows, or explicitly launch
    with in-app scanning only.
 6. Drain or cancel legacy mobile attempts before the no-bridge deployment.
+7. Update the `vtafarm-k8s` Stack 05 secret schema to supply
+   `FARM_SIGNING_KEY` instead of the removed mobile callback HMAC key.
 
 ## 17. Implementation sequence
 

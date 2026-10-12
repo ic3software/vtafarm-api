@@ -64,9 +64,6 @@ The database being shared has consequences worth reading once:
    The API is now available at `http://localhost:8080`.
    API docs: `http://localhost:8080/docs`
 
-   To exercise optional VTA Wallet login in Chrome, follow
-   [`docs/siop-browser-testing.md`](docs/siop-browser-testing.md).
-
 4. (Optional) Generate a DID hosting keypair (required only if DID hosting is enabled):
 
    ```bash
@@ -106,10 +103,10 @@ Copy `.env.example` and adjust as needed:
 | `DB_HOST` | `localhost` | The `make forward-db` tunnel to the shared dev database |
 | `DB_NAME` | `vtafarm` | |
 | `JWT_SECRET` | _(required)_ | HS256 signing secret — must match the team, see below |
-| `SIOP_RP_DID` | _(empty)_ | Dedicated public RP DID; enables linked VTA Wallet login when set |
-| `SIOP_CHALLENGE_TTL_SECONDS` | `120` | One-time wallet challenge lifetime |
-| `SIOP_CLOCK_SKEW_SECONDS` | `60` | Allowed SIOP token clock skew |
-| `SIOP_DID_RESOLUTION_TIMEOUT_SECONDS` | `5` | Public DID resolution timeout |
+| `FARM_DID` | _(empty)_ | Public `vtafarm-auth` DID used as the VTA Claim sender/recipient |
+| `FARM_SIGNING_KEY` | _(empty)_ | Base64-encoded Ed25519 seed for the Farm DID's dedicated `assertionMethod` key |
+| `TRUST_TASK_BASE` | _(empty)_ | Public base URL advertised by the Farm DID's `TrustTaskHTTPS` service |
+| `LINK_HOST` | `https://link.trustoverip.org` | VTI trigger-link origin |
 | `ORCHESTRATOR_RESUME` | `true` | Re-attach interrupted sessions at startup. Set `false` locally — see [`docs/shared-dev-database.md`](docs/shared-dev-database.md) |
 | `CLUSTER_INGRESS_IP` | _(required)_ | External IP of the cluster's Traefik LoadBalancer |
 | `CLOUDFLARE_API_TOKEN` | _(optional)_ | Required for VTA setup wizard |
@@ -117,73 +114,60 @@ Copy `.env.example` and adjust as needed:
 | `KUBECONFIG` | _(empty)_ | Auto-detects `~/.kube/config` when empty |
 | `K8S_NAMESPACE_PREFIX` | `vtafarm-user` | Per-user namespace: `vtafarm-user-{userID}` |
 
-### SIOP RP DID
+### VTA Farm DID
 
-`SIOP_RP_DID` is the public identity of VTA Farm as a SIOPv2 relying party.
-The wallet puts this value in the login token's `aud` claim; the API does not
-sign with it and has no `SIOP_RP_PRIVATE_KEY` setting.
+VTA Farm signs Trust Task replies with a dedicated key published in its
+`vtafarm-auth` DID. Do not reuse the DID-hosting admin credentials.
 
-Before enabling SIOP, provision a dedicated `vtafarm-auth` VTA identity with
-persistent key storage and a `did:webvh` history that resolves over public
-HTTPS. It may use an existing DID-hosting deployment; a separate hosting
-service is not required. Do not reuse `DID_HOSTING_DID`: that `did:key` and its
-`DID_HOSTING_PRIVATE_KEY` are the privileged machine credential that
-vtafarm-api uses to upload DID logs and manage hosting ACLs.
-
-Provision the RP DID with PNM:
-
-1. Select the VTA that is connected to the DID-hosting daemon:
+1. Select the controlling VTA and, if needed, create the Farm DID:
 
    ```bash
-   pnm vta use <rp-vta-slug>
-   ```
-
-1. Find its registered hosting server ID:
-
-   ```bash
+   pnm vta use <farm-vta-slug>
    pnm did-mgmt servers list
-   ```
-
-1. Create the RP context:
-
-   ```bash
-   pnm contexts create \
-     --id vtafarm-auth \
-     --name vtafarm-auth
-   ```
-
-1. Create the RP DID:
-
-   ```bash
+   pnm contexts create --id vtafarm-auth --name vtafarm-auth
    pnm did-mgmt dids create \
      --context vtafarm-auth \
      --path vtafarm-auth \
      --server <server-id>
    ```
 
-1. Verify that the generated DID history is publicly reachable. Use the host
-   encoded in the returned DID:
+2. Generate the signing key and updated DID document:
 
    ```bash
-   curl --fail https://<did-host>/vtafarm-auth/did.jsonl
+   make gen-farm-key \
+     FARM_DID='did:webvh:<scid>:<did-host>:vtafarm-auth' \
+     TRUST_TASK_BASE='https://<api-host>/trust-task'
    ```
 
-1. Put the returned DID in `.env`:
+   Keep `FARM_SIGNING_KEY` secret. The command validates the existing public
+   history and preserves its keys and services.
+
+3. Publish the generated JSON through the controlling VTA:
+
+   ```bash
+   pnm did-mgmt dids edit \
+     --did 'did:webvh:<scid>:<did-host>:vtafarm-auth'
+   ```
+
+   Replace the editor contents with the generated JSON, then save and confirm.
+   PNM signs and appends the new history entry; never overwrite `did.jsonl`
+   directly.
+
+4. Verify the update and configure the API with the key from the same run:
+
+   ```bash
+   curl --fail --silent https://<did-host>/vtafarm-auth/did.jsonl | jq -s '.[-1]'
+   ```
 
    ```dotenv
-   SIOP_RP_DID=did:webvh:<scid>:<did-host>:vtafarm-auth
+   FARM_DID=did:webvh:<scid>:<did-host>:vtafarm-auth
+   FARM_SIGNING_KEY=<base64-encoded-32-byte-ed25519-seed>
+   TRUST_TASK_BASE=https://<api-host>/trust-task
+   LINK_HOST=https://link.trustoverip.org
    ```
 
-Restart the API and verify that wallet login is enabled:
-
-```bash
-curl http://localhost:8080/api/v1/auth/siop/metadata
-```
-
-The response must contain `"enabled":true` and the same `rp_did`. The RP VTA
-state and the DID-hosting data must remain persistent for the DID to keep
-resolving. If either is rebuilt from empty state, provision a new RP DID and
-update `SIOP_RP_DID`.
+Keep the VTA state and signing key persistent. The API disables VTA Claim when
+the configured key or Trust Task endpoint does not match the public DID.
 
 ### Generating JWT_SECRET
 
@@ -377,10 +361,12 @@ be installed and bootstrapped **before** the API: the API needs the
 ### 3. Provide the API Secrets (one-time per environment)
 
 Production and staging secrets are managed by Stack 05 in the `vtafarm-k8s`
-repository. Set each environment's inputs in its ignored `terraform.tfvars`;
-OpenTofu creates the `vtafarm-api-secrets` Secret in that cluster. Generate a
-different `mobile_connection_signing_key` for every environment with
-`openssl rand -hex 32`.
+repository. Before deploying VTA Claim, update that stack's secret schema to
+provide `FARM_SIGNING_KEY` in `vtafarm-api-secrets`, then set a different value
+for each environment in its ignored `terraform.tfvars`. Generate each seed and
+the matching merged public DID document with `make gen-farm-key
+FARM_DID='did:webvh:...' TRUST_TASK_BASE='https://<api-host>/trust-task'`, then
+publish it with `pnm did-mgmt dids edit` from the controlling VTA.
 
 Standalone Helm consumers must create `vtafarm-api-secrets` through their own
 secret-management system before installing the chart. Do not store secret

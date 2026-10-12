@@ -22,11 +22,15 @@ func newDID(t *testing.T) string {
 	}
 	return did
 }
+
 func mustRequest(t *testing.T, db *gorm.DB, s model.SetupSession) *model.MobileConnection {
 	t.Helper()
 	r, err := Change(context.Background(), db, s.ID, "create", "")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if r.Status != "open" || r.ClaimHandle == nil || len(*r.ClaimHandle) != 22 {
+		t.Fatalf("invalid reservation: %+v", r)
 	}
 	return r
 }
@@ -44,134 +48,204 @@ func TestAdminDIDValidation(t *testing.T) {
 	}
 }
 
-func TestConnectionTransactions(t *testing.T) {
-	db := testutil.Postgres(t)
-	ctx := context.Background()
-	t.Run("concurrent same token accepts one DID", func(t *testing.T) {
-		s := testutil.SetupSession(t, db, model.ModeVtaOnly)
-		r := mustRequest(t, db, s)
-		dids := []string{newDID(t), newDID(t)}
-		start := make(chan struct{})
-		errs := make([]error, 2)
-		var wg sync.WaitGroup
-		for i := range dids {
-			wg.Add(1)
-			go func(i int) { defer wg.Done(); <-start; _, errs[i] = AcceptMobile(ctx, db, r.ID, dids[i]) }(i)
-		}
-		close(start)
-		wg.Wait()
-		successes := 0
-		for _, err := range errs {
-			if err == nil {
-				successes++
-			} else if !errors.Is(err, ErrConflict) {
-				t.Fatal(err)
-			}
-		}
-		if successes != 1 {
-			t.Fatalf("successful acceptances=%d errors=%v", successes, errs)
-		}
-		var saved model.SetupSession
-		db.First(&saved, s.ID)
-		var accepted model.MobileConnection
-		db.First(&accepted, "id = ?", r.ID)
-		if saved.AdminDid == "" || accepted.Operation != OperationProvisionVTA || accepted.AdminDid != saved.AdminDid {
-			t.Fatalf("claim not stored on session/request: %+v %+v", saved, accepted)
-		}
-		if _, err := AcceptMobile(ctx, db, r.ID, saved.AdminDid); err != nil {
-			t.Fatalf("duplicate: %v", err)
-		}
-		db.Model(r).Update("expires_at", time.Now().Add(-time.Minute))
-		if _, err := AcceptMobile(ctx, db, r.ID, saved.AdminDid); err != nil {
-			t.Fatalf("accepted retry after QR expiry: %v", err)
-		}
-	})
-	t.Run("manual and mobile compete for same VTA", func(t *testing.T) {
-		s := testutil.SetupSession(t, db, model.ModeFullStack)
-		r := mustRequest(t, db, s)
-		did1, did2 := newDID(t), newDID(t)
-		start := make(chan struct{})
-		var e1, e2 error
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() { defer wg.Done(); <-start; _, e1 = AcceptMobile(ctx, db, r.ID, did1) }()
-		go func() { defer wg.Done(); <-start; e2 = AcceptManual(ctx, db, s.ID, did2, false) }()
-		close(start)
-		wg.Wait()
-		if (e1 == nil) == (e2 == nil) {
-			t.Fatalf("both or neither accepted: %v / %v", e1, e2)
-		}
-		var saved model.SetupSession
-		db.First(&saved, s.ID)
-		if saved.AdminDid == "" || saved.Status != "step_import_admin_did" {
-			t.Fatalf("claim not durable: %+v", saved)
-		}
-	})
-	t.Run("refresh invalidates old token and stale tab", func(t *testing.T) {
-		s := testutil.SetupSession(t, db, model.ModeVtaOnly)
-		r := mustRequest(t, db, s)
-		db.Model(r).Update("created_at", time.Now().Add(-10*time.Second))
-		next, err := Change(ctx, db, s.ID, "refresh", r.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if next.ID == r.ID {
-			t.Fatal("token reused")
-		}
-		if _, err := AcceptMobile(ctx, db, r.ID, newDID(t)); !errors.Is(err, ErrExpired) {
-			t.Fatalf("old token: %v", err)
-		}
-		if _, err := Change(ctx, db, s.ID, "cancel", r.ID); !errors.Is(err, ErrConflict) {
-			t.Fatalf("stale cancellation: %v", err)
-		}
-	})
-	t.Run("expiry is checked after lock acquisition", func(t *testing.T) {
-		s := testutil.SetupSession(t, db, model.ModeVtaOnly)
-		r := mustRequest(t, db, s)
-		tx := db.Begin()
-		if _, err := lockSession(tx, s.ID); err != nil {
-			t.Fatal(err)
-		}
-		done := make(chan error, 1)
-		did := newDID(t)
-		go func() { _, err := AcceptMobile(ctx, db, r.ID, did); done <- err }()
-		if err := tx.Model(r).Update("expires_at", time.Now().Add(-time.Second)).Error; err != nil {
-			t.Fatal(err)
-		}
-		tx.Commit()
-		if err := <-done; !errors.Is(err, ErrExpired) {
-			t.Fatalf("accepted expired request: %v", err)
-		}
-	})
-	t.Run("mobile completion requires readiness and live credential", func(t *testing.T) {
-		s := testutil.SetupSession(t, db, model.ModeVtaOnly)
-		r := mustRequest(t, db, s)
-		did := newDID(t)
-		if _, err := AcceptMobile(ctx, db, r.ID, did); err != nil {
-			t.Fatal(err)
-		}
-		if err := Complete(ctx, db, r.ID); !errors.Is(err, ErrConflict) {
-			t.Fatalf("early completion: %v", err)
-		}
-		db.Model(&s).Update("status", "running")
-		if err := Complete(ctx, db, r.ID); err != nil {
-			t.Fatal(err)
-		}
-		if err := Complete(ctx, db, r.ID); err != nil {
-			t.Fatal("completion retry", err)
-		}
-		db.Model(r).Update("accepted_at", time.Now().Add(-2*ProgressLifetime))
-		if err := Complete(ctx, db, r.ID); !errors.Is(err, ErrExpired) {
-			t.Fatalf("expired completion: %v", err)
-		}
-		db.Model(r).Update("accepted_at", time.Now().Add(-2*RetryLifetime))
-		if _, err := AcceptMobile(ctx, db, r.ID, did); !errors.Is(err, ErrExpired) {
-			t.Fatalf("expired receipt retry: %v", err)
-		}
-	})
+func TestClaimCheckVector(t *testing.T) {
+	const did = "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH"
+	if got := ClaimCheck(did); got != "WNLAZG" {
+		t.Fatalf("claim check = %s", got)
+	}
 }
 
-func TestTeardownRejectsNewAcceptance(t *testing.T) {
+func TestClaimRequiresOwnerConfirmation(t *testing.T) {
+	db := testutil.Postgres(t)
+	ctx := context.Background()
+	s := testutil.SetupSession(t, db, model.ModeVtaOnly)
+	r := mustRequest(t, db, s)
+	dids := []string{newDID(t), newDID(t)}
+	errValues := make([]error, len(dids))
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range dids {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, errValues[i] = Claim(ctx, db, *r.ClaimHandle, dids[i])
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	successes := 0
+	for _, err := range errValues {
+		if err == nil {
+			successes++
+		} else if !errors.Is(err, ErrAlreadyClaimed) {
+			t.Fatal(err)
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("successful claims=%d errors=%v", successes, errValues)
+	}
+
+	var claimed model.MobileConnection
+	if err := db.First(&claimed, "id = ?", r.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var before model.SetupSession
+	db.First(&before, s.ID)
+	if claimed.Status != "claimed" || claimed.AdminDid == "" || before.AdminDid != "" {
+		t.Fatalf("claim crossed confirmation boundary: request=%+v session=%+v", claimed, before)
+	}
+
+	confirmed, err := Confirm(ctx, db, s.ID, r.ID)
+	if err != nil || confirmed.Status != "confirmed" {
+		t.Fatalf("confirm: %+v %v", confirmed, err)
+	}
+	db.First(&before, s.ID)
+	if before.AdminDid != "" {
+		t.Fatal("confirmation started provisioning inside its transaction")
+	}
+	started, err := StartProvisioning(ctx, db, r.ID)
+	if err != nil || started.Status != "provisioning" {
+		t.Fatalf("start provisioning: %+v %v", started, err)
+	}
+	var after model.SetupSession
+	db.First(&after, s.ID)
+	if after.AdminDid != claimed.AdminDid || after.Status != "provisioning" {
+		t.Fatalf("confirmed key not installed in setup session: %+v", after)
+	}
+	if err := db.Model(&after).Update("status", "running").Error; err != nil {
+		t.Fatal(err)
+	}
+	after.Status = "running"
+	if err := Reconcile(ctx, db, started, &after); err != nil || started.Status != "released" {
+		t.Fatalf("release: %+v %v", started, err)
+	}
+}
+
+func TestRejectDiscardsCandidate(t *testing.T) {
+	db := testutil.Postgres(t)
+	ctx := context.Background()
+	s := testutil.SetupSession(t, db, model.ModeVtaOnly)
+	r := mustRequest(t, db, s)
+	if _, err := Claim(ctx, db, *r.ClaimHandle, newDID(t)); err != nil {
+		t.Fatal(err)
+	}
+	rejected, err := Reject(ctx, db, s.ID, r.ID)
+	if err != nil || rejected.Status != "rejected" || rejected.AdminDid != "" {
+		t.Fatalf("reject: %+v %v", rejected, err)
+	}
+	if _, err := Confirm(ctx, db, s.ID, r.ID); !errors.Is(err, ErrExpired) {
+		t.Fatalf("rejected reservation confirmed: %v", err)
+	}
+}
+
+func TestRedeemPollLeaseIsSharedAndReclaimable(t *testing.T) {
+	db := testutil.Postgres(t)
+	ctx := context.Background()
+	s := testutil.SetupSession(t, db, model.ModeVtaOnly)
+	r := mustRequest(t, db, s)
+	if _, err := Claim(ctx, db, *r.ClaimHandle, newDID(t)); err != nil {
+		t.Fatal(err)
+	}
+	acquired, err := AcquireRedeemPoll(ctx, db, r.ID, "poll-1", time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("first lease: acquired=%v err=%v", acquired, err)
+	}
+	acquired, err = AcquireRedeemPoll(ctx, db, r.ID, "poll-2", time.Minute)
+	if err != nil || acquired {
+		t.Fatalf("concurrent lease: acquired=%v err=%v", acquired, err)
+	}
+	if err := ReleaseRedeemPoll(ctx, db, r.ID, "poll-1"); err != nil {
+		t.Fatal(err)
+	}
+	acquired, err = AcquireRedeemPoll(ctx, db, r.ID, "poll-2", time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("replacement lease: acquired=%v err=%v", acquired, err)
+	}
+}
+
+func TestManualProvisionConflictsWithClaim(t *testing.T) {
+	db := testutil.Postgres(t)
+	ctx := context.Background()
+	s := testutil.SetupSession(t, db, model.ModeFullStack)
+	r := mustRequest(t, db, s)
+	if _, err := Claim(ctx, db, *r.ClaimHandle, newDID(t)); err != nil {
+		t.Fatal(err)
+	}
+	if err := AcceptManual(ctx, db, s.ID, newDID(t), false); !errors.Is(err, ErrConflict) {
+		t.Fatalf("manual provisioning bypassed claim: %v", err)
+	}
+}
+
+func TestAdditionalAdministratorRelease(t *testing.T) {
+	db := testutil.Postgres(t)
+	ctx := context.Background()
+	s := testutil.SetupSession(t, db, model.ModeVtaOnly)
+	if err := db.Model(&s).Update("status", "running").Error; err != nil {
+		t.Fatal(err)
+	}
+	r := mustRequest(t, db, s)
+	if r.Operation != OperationGrantACL {
+		t.Fatalf("operation=%s", r.Operation)
+	}
+	if _, err := Claim(ctx, db, *r.ClaimHandle, newDID(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Confirm(ctx, db, s.ID, r.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := StartProvisioning(ctx, db, r.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkReleased(ctx, db, r.ID); err != nil {
+		t.Fatal(err)
+	}
+	var released model.MobileConnection
+	db.First(&released, "id = ?", r.ID)
+	if released.Status != "released" || released.ReleasedAt == nil {
+		t.Fatalf("not released: %+v", released)
+	}
+}
+
+func TestInitialReleaseRequiresClaimantKeyInstalled(t *testing.T) {
+	db := testutil.Postgres(t)
+	ctx := context.Background()
+	s := testutil.SetupSession(t, db, model.ModeVtaOnly)
+	r := mustRequest(t, db, s)
+	did := newDID(t)
+	if _, err := Claim(ctx, db, *r.ClaimHandle, did); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Confirm(ctx, db, s.ID, r.ID); err != nil {
+		t.Fatal(err)
+	}
+	started, err := StartProvisioning(ctx, db, r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&s).Updates(map[string]any{"status": "running", "admin_did": newDID(t)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&s, s.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := Reconcile(ctx, db, started, &s); err != nil {
+		t.Fatal(err)
+	}
+	if started.Status != "provisioning" {
+		t.Fatalf("released with another administrator installed: %+v", started)
+	}
+	if err := db.Model(&s).Update("admin_did", did).Error; err != nil {
+		t.Fatal(err)
+	}
+	s.AdminDid = did
+	if err := Reconcile(ctx, db, started, &s); err != nil || started.Status != "released" {
+		t.Fatalf("did not release after claimant was installed: %+v %v", started, err)
+	}
+}
+
+func TestTeardownRejectsClaim(t *testing.T) {
 	db := testutil.Postgres(t)
 	ctx := context.Background()
 	s := testutil.SetupSession(t, db, model.ModeVtaOnly)
@@ -179,127 +253,7 @@ func TestTeardownRejectsNewAcceptance(t *testing.T) {
 	if err := Stop(ctx, db, s.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := AcceptMobile(ctx, db, r.ID, newDID(t)); !errors.Is(err, ErrExpired) {
-		t.Fatalf("callback after teardown: %v", err)
+	if _, err := Claim(ctx, db, *r.ClaimHandle, newDID(t)); !errors.Is(err, ErrExpired) {
+		t.Fatalf("claim after teardown: %v", err)
 	}
-	if err := AcceptManual(ctx, db, s.ID, newDID(t), false); !errors.Is(err, ErrConflict) {
-		t.Fatalf("manual after teardown: %v", err)
-	}
-	if _, err := Change(ctx, db, s.ID, "create", ""); !errors.Is(err, ErrConflict) {
-		t.Fatalf("QR after teardown: %v", err)
-	}
-}
-
-func TestAdditionalMobileConnection(t *testing.T) {
-	db := testutil.Postgres(t)
-	ctx := context.Background()
-	s := testutil.SetupSession(t, db, model.ModeVtaOnly)
-	if err := db.Model(&s).Update("status", "running").Error; err != nil {
-		t.Fatal(err)
-	}
-
-	r, err := Change(ctx, db, s.ID, "create", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	did := newDID(t)
-	accepted, err := AcceptMobile(ctx, db, r.ID, did)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if accepted.Operation != OperationGrantACL || accepted.AdminDid != did {
-		t.Fatalf("unexpected accepted request: %+v", accepted)
-	}
-	var saved model.SetupSession
-	db.First(&saved, s.ID)
-	if saved.AdminDid != "" {
-		t.Fatal("running-session connection replaced the setup Admin DID")
-	}
-	if err := Complete(ctx, db, r.ID); !errors.Is(err, ErrConflict) {
-		t.Fatalf("completed before ACL grant: %v", err)
-	}
-	now := time.Now()
-	if err := db.Model(accepted).Update("provisioned_at", now).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := Complete(ctx, db, r.ID); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := db.Model(accepted).Update("created_at", time.Now().Add(-10*time.Second)).Error; err != nil {
-		t.Fatal(err)
-	}
-	next, err := Change(ctx, db, s.ID, "create", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if next.ID == r.ID || next.Status != "pending" {
-		t.Fatalf("new device did not receive a fresh request: %+v", next)
-	}
-}
-
-func TestAdditionalAwaitingMobileCanBeRevoked(t *testing.T) {
-	db := testutil.Postgres(t)
-	ctx := context.Background()
-
-	newAccepted := func(t *testing.T) (model.SetupSession, *model.MobileConnection, string) {
-		t.Helper()
-		s := testutil.SetupSession(t, db, model.ModeVtaOnly)
-		if err := db.Model(&s).Update("status", "running").Error; err != nil {
-			t.Fatal(err)
-		}
-		r, err := Change(ctx, db, s.ID, "create", "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		did := newDID(t)
-		if _, err := AcceptMobile(ctx, db, r.ID, did); err != nil {
-			t.Fatal(err)
-		}
-		return s, r, did
-	}
-
-	t.Run("refresh replaces the attempt after ACL provisioning", func(t *testing.T) {
-		s, r, did := newAccepted(t)
-		current, err := Change(ctx, db, s.ID, "refresh", r.ID)
-		if err != nil || current.ID != r.ID || current.Status != "accepted" {
-			t.Fatalf("provisioning attempt was replaced: %+v %v", current, err)
-		}
-		if err := db.Model(r).Update("provisioned_at", time.Now()).Error; err != nil {
-			t.Fatal(err)
-		}
-		next, err := Change(ctx, db, s.ID, "refresh", r.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if next.ID == r.ID || next.Status != "pending" {
-			t.Fatalf("awaiting attempt was not replaced: %+v", next)
-		}
-		if _, err := AcceptMobile(ctx, db, r.ID, did); !errors.Is(err, ErrExpired) {
-			t.Fatalf("replaced callback remained valid: %v", err)
-		}
-		if err := Complete(ctx, db, r.ID); !errors.Is(err, ErrExpired) {
-			t.Fatalf("replaced progress credential remained valid: %v", err)
-		}
-	})
-
-	t.Run("cancel invalidates the attempt after ACL provisioning", func(t *testing.T) {
-		s, r, did := newAccepted(t)
-		if err := db.Model(r).Update("provisioned_at", time.Now()).Error; err != nil {
-			t.Fatal(err)
-		}
-		cancelled, err := Change(ctx, db, s.ID, "cancel", r.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if cancelled.ID != r.ID || cancelled.Status != "cancelled" {
-			t.Fatalf("unexpected cancelled attempt: %+v", cancelled)
-		}
-		if _, err := AcceptMobile(ctx, db, r.ID, did); !errors.Is(err, ErrExpired) {
-			t.Fatalf("cancelled callback remained valid: %v", err)
-		}
-		if err := Complete(ctx, db, r.ID); !errors.Is(err, ErrExpired) {
-			t.Fatalf("cancelled progress credential remained valid: %v", err)
-		}
-	})
 }

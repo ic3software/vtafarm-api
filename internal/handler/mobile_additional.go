@@ -37,7 +37,7 @@ func (h *SetupHandler) runAdditionalMobileQueue(ctx context.Context) {
 	for {
 		var requests []model.MobileConnection
 		if err := h.db.WithContext(ctx).
-			Where("operation = ? AND status = ? AND provisioned_at IS NULL", connection.OperationGrantACL, "accepted").
+			Where("operation = ? AND status IN ?", connection.OperationGrantACL, []string{"confirmed", "provisioning"}).
 			Find(&requests).Error; err == nil {
 			for i := range requests {
 				h.KickAdditionalMobile(requests[i].ID)
@@ -81,11 +81,19 @@ func (h *SetupHandler) KickAdditionalMobile(requestID string) {
 }
 
 func (h *SetupHandler) runAdditionalMobile(ctx context.Context, requestID string) {
-	var request model.MobileConnection
-	if err := h.db.WithContext(ctx).First(&request, "id = ?", requestID).Error; err != nil ||
-		request.Operation != connection.OperationGrantACL || request.Status != "accepted" || request.ProvisionedAt != nil {
+	started, err := connection.StartProvisioning(ctx, h.db, requestID)
+	if err != nil {
+		if !errors.Is(err, connection.ErrConflict) {
+			h.failAdditionalMobile(ctx, requestID, err)
+		}
 		return
 	}
+	var request model.MobileConnection
+	if err := h.db.WithContext(ctx).First(&request, "id = ?", requestID).Error; err != nil ||
+		request.Operation != connection.OperationGrantACL || request.Status != "provisioning" {
+		return
+	}
+	request = *started
 	var session model.SetupSession
 	if err := h.db.WithContext(ctx).First(&session, request.SessionID).Error; err != nil || session.Status != "running" {
 		h.failAdditionalMobile(ctx, requestID, errors.New("session is not running"))
@@ -107,10 +115,7 @@ func (h *SetupHandler) runAdditionalMobile(ctx context.Context, requestID string
 	if result.warning != "" {
 		log.Printf("[mobile-connection] additional ACL warning for request %s: %s", requestID, result.warning)
 	}
-	now := time.Now()
-	if err := h.db.WithContext(ctx).Model(&model.MobileConnection{}).
-		Where("id = ? AND operation = ? AND status = ? AND provisioned_at IS NULL", requestID, connection.OperationGrantACL, "accepted").
-		Update("provisioned_at", now).Error; err != nil {
+	if err := connection.MarkReleased(ctx, h.db, requestID); err != nil {
 		log.Printf("[mobile-connection] could not finish additional request %s: %v", requestID, err)
 	}
 }
@@ -118,8 +123,8 @@ func (h *SetupHandler) runAdditionalMobile(ctx context.Context, requestID string
 func (h *SetupHandler) failAdditionalMobile(ctx context.Context, requestID string, err error) {
 	log.Printf("[mobile-connection] additional request %s failed: %v", requestID, err)
 	if updateErr := h.db.WithContext(ctx).Model(&model.MobileConnection{}).
-		Where("id = ? AND operation = ? AND status = ?", requestID, connection.OperationGrantACL, "accepted").
-		Updates(map[string]any{"status": "failed", "provision_error": additionalMobileFailure}).Error; updateErr != nil {
+		Where("id = ? AND operation = ? AND status IN ?", requestID, connection.OperationGrantACL, []string{"confirmed", "provisioning"}).
+		Update("provision_error", additionalMobileFailure).Error; updateErr != nil {
 		log.Printf("[mobile-connection] could not record failure for request %s: %v", requestID, updateErr)
 	}
 }
