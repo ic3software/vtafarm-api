@@ -3,6 +3,7 @@ package setup
 import (
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 // Subdomains are derived from user-chosen names rather than random IDs:
@@ -18,6 +19,11 @@ import (
 // validating.
 const maxNameLength = 48
 
+// The Farm identity uses vtafarm-auth. Reserve the whole prefix so a
+// user-controlled VTA cannot mint a lookalike DID path such as
+// vtafarm-auth-vta beside it.
+const reservedNamePrefix = "vtafarm"
+
 // Alphanumeric runs joined by single hyphens — no leading/trailing hyphen and
 // no "--" (consecutive hyphens are DNS-legal but IDNA reserves the "??--"
 // form for punycode, so reject them outright rather than mint lookalikes).
@@ -29,6 +35,9 @@ var namePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 func ValidateName(name string) error {
 	if len(name) > maxNameLength {
 		return fmt.Errorf("must be at most %d characters", maxNameLength)
+	}
+	if strings.HasPrefix(name, reservedNamePrefix) {
+		return fmt.Errorf("names beginning with %q are reserved", reservedNamePrefix)
 	}
 	if !namePattern.MatchString(name) {
 		return fmt.Errorf("Only lowercase letters, digits, and hyphens are allowed. Consecutive hyphens (--) are not permitted, and names must start and end with a letter or digit")

@@ -589,9 +589,10 @@ Move generic `did:webvh` resolution helpers out of SIOP packages before
 deleting those packages because Trust Task recipient and Farm proof validation
 still need DID support.
 
-For rollback safety, stop all runtime reads/writes of SIOP tables in this
-release, then drop `user_siop_identities`, `admin_siop_identities`, and
-`siop_challenges` in a later migration after rollback is no longer required.
+Migration 42 drops `user_siop_identities`, `admin_siop_identities`, and
+`siop_challenges` after their runtime readers and writers have been removed.
+Its down migration recreates the empty legacy schema but cannot restore rows
+that were deleted when the tables were dropped.
 
 ## 13. Configuration and DID publication
 

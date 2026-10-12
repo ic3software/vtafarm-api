@@ -5750,7 +5750,7 @@ paths:
             schema: {$ref: '#/components/schemas/TrustTaskDocument'}
       responses:
         '200':
-          description: Signed next-step, terminal hand-over, or Trust Task error
+          description: Signed claim next-step or terminal redeem hand-over
           content:
             application/json:
               schema: {$ref: '#/components/schemas/TrustTaskDocument'}

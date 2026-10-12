@@ -6,7 +6,7 @@ import (
 )
 
 func TestValidateName(t *testing.T) {
-	valid := []string{"devtest1", "a", "a1", "my-vta", "vtc", "a-b-c", strings.Repeat("x", 48)}
+	valid := []string{"devtest1", "a", "a1", "my-vta", "my-vtafarm", "vtc", "a-b-c", strings.Repeat("x", 48)}
 	for _, name := range valid {
 		if err := ValidateName(name); err != nil {
 			t.Errorf("ValidateName(%q) = %v, want nil", name, err)
@@ -22,6 +22,10 @@ func TestValidateName(t *testing.T) {
 		"dev_test",
 		"dev.test",
 		"dev test",
+		"vtafarm",
+		"vtafarm-auth",
+		"vtafarm-auth-vta",
+		"vtafarming",
 		strings.Repeat("x", 49),
 	}
 	for _, name := range invalid {
