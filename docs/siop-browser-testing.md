@@ -1,22 +1,21 @@
 # VTA Wallet SIOP browser test
 
-VTA Wallet login is disabled until `SIOP_RP_DID` is set. Production must use
-the dedicated VTA Farm RP `did:webvh` whose history resolves over public HTTPS.
-Do not reuse `DID_HOSTING_DID`.
+VTA Wallet login is disabled until `SIOP_RP_DID` is set. Use a dedicated VTA
+Farm RP `did:webvh` whose history resolves over public HTTPS. Do not reuse
+`DID_HOSTING_DID`.
 
-For a local browser-contract test, a public `did:key` can be used as the
-audience because the RP does not sign with it. This exercises wallet discovery,
-challenge persistence, VTA token minting, persona verification, account
-linking, and the role-matched cookie. It is not a substitute for the production
-`did:webvh` consent and resolution check.
+Provision the RP VTA and DID by following [SIOP RP DID](../README.md#siop-rp-did),
+then confirm its `did.jsonl` is publicly reachable before starting the browser
+test. This keeps wallet discovery and RP resolution in the test path alongside
+challenge persistence, token minting, persona verification, account linking,
+and the role-matched cookie.
 
-## Start locally
+## Start services
 
-With the database tunnel running, start the API with a dev-only RP DID:
+With the database tunnel running, start the API with the dedicated RP DID:
 
 ```bash
-SIOP_RP_DID=did:key:z6MkkVc5EPGcCa3ZWB5i2YGX7BnLBm8vgf1qUwqTb9i87wLj
-make dev
+SIOP_RP_DID='did:webvh:<scid>:<did-host>:vtafarm-auth' make dev
 ```
 
 Start the frontend in its repository:

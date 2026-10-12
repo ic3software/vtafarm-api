@@ -90,9 +90,11 @@ the API with its DID as `SIOP_RP_DID`. The frontend obtains the same value from
 an unauthenticated API metadata endpoint; it must not be baked into the image.
 
 Before enabling the feature, verify the DID resolves from an extension context
-over public HTTPS. A development `localhost` DID may be useful for tests, but
-some `did:webvh` resolvers always use HTTPS and wallet consent will show it as
-unresolved. It is not an acceptable production identity.
+over public HTTPS. Use this dedicated hosted RP DID for browser testing as well
+as deployment; a `did:key` fixture or `localhost` DID bypasses the hosting and
+resolution behaviour that the SIOP flow needs to exercise. Keep both the RP
+VTA state and its DID-hosting data persistent. Rebuilding either from empty
+state requires provisioning a new RP DID and updating `SIOP_RP_DID`.
 
 ### 3.2 Go token verifier
 
