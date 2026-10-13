@@ -259,7 +259,7 @@ func (h *PasskeyHandler) Delete(c *gin.Context) {
 	}
 
 	err = h.db.Transaction(func(tx *gorm.DB) error {
-		var passkeyCount, identityCount int64
+		var passkeyCount int64
 		if role == model.RoleAdmin {
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&model.Admin{}, uid).Error; err != nil {
 				return err
@@ -271,11 +271,8 @@ func (h *PasskeyHandler) Delete(c *gin.Context) {
 			if err := tx.Model(&model.AdminPasskey{}).Where("admin_id = ?", uid).Count(&passkeyCount).Error; err != nil {
 				return err
 			}
-			if err := tx.Model(&model.AdminSIOPIdentity{}).Where("admin_id = ?", uid).Count(&identityCount).Error; err != nil {
-				return err
-			}
-			if identityCount > 0 && passkeyCount <= 1 {
-				return errSIOPRequiresPasskey
+			if passkeyCount <= 1 {
+				return errLastPasskey
 			}
 			return tx.Delete(&passkey).Error
 		}
@@ -290,16 +287,13 @@ func (h *PasskeyHandler) Delete(c *gin.Context) {
 		if err := tx.Model(&model.UserPasskey{}).Where("user_id = ?", uid).Count(&passkeyCount).Error; err != nil {
 			return err
 		}
-		if err := tx.Model(&model.UserSIOPIdentity{}).Where("user_id = ?", uid).Count(&identityCount).Error; err != nil {
-			return err
-		}
-		if identityCount > 0 && passkeyCount <= 1 {
-			return errSIOPRequiresPasskey
+		if passkeyCount <= 1 {
+			return errLastPasskey
 		}
 		return tx.Delete(&passkey).Error
 	})
-	if errors.Is(err, errSIOPRequiresPasskey) {
-		c.JSON(http.StatusConflict, gin.H{"error": "unlink VTA Wallet identities before removing the last passkey"})
+	if errors.Is(err, errLastPasskey) {
+		c.JSON(http.StatusConflict, gin.H{"error": "cannot remove the last passkey"})
 		return
 	}
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -313,7 +307,7 @@ func (h *PasskeyHandler) Delete(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-var errSIOPRequiresPasskey = errors.New("SIOP-linked account must retain a passkey")
+var errLastPasskey = errors.New("account must retain a passkey")
 
 // loginBegin is the shared implementation for admin and user passkey login begin.
 func (h *PasskeyHandler) loginBegin(c *gin.Context) {

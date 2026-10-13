@@ -8,7 +8,7 @@ info:
 
     ## Authentication
 
-    All accounts use passkeys, with optional linked **VTA Wallet SIOPv2** login. There are no passwords.
+    All accounts use passkeys. There are no passwords.
     Protected endpoints use **httpOnly cookies** set at login.
     Cookie `vtafarm_user` is required for User endpoints; `vtafarm_admin` for Admin endpoints.
 
@@ -30,8 +30,8 @@ servers:
     description: Production
 
 tags:
-  - name: Mobile Connection
-    description: Partner mobile app pairing using a one-time QR token, without a VTA Farm account or cookie.
+  - name: Trust Tasks
+    description: Public Trust Task HTTPS binding for signed VTA claim and redeem documents.
   - name: System
     description: Health and system endpoints
   - name: Auth — Admin
@@ -75,17 +75,8 @@ tags:
       1. `POST /user/passkeys/register/begin` — receive WebAuthn creation options
       2. Pass `options.publicKey` to `startRegistration()`
       3. `POST /user/passkeys/register/complete?name=<device-name>` — save passkey
-  - name: VTA Wallet
-    description: |
-      Optional SIOPv2 login and identity linking. Linking requires an existing
-      role-matched cookie and at least one registered passkey.
-
 components:
   securitySchemes:
-    MobileProgress:
-      type: http
-      scheme: bearer
-      description: Connection-scoped credential from the accepted callback; expires one hour after acceptance.
     CookieAuthUser:
       type: apiKey
       in: cookie
@@ -98,18 +89,27 @@ components:
   schemas:
     MobileConnection:
       type: object
-      required: [request_id, status, vta_did, expires_at]
+      required: [request_id, status, vta_did, operation, expires_at]
       properties:
         request_id: {type: string, format: uuid}
         status:
           type: string
-          enum: [pending, expired, cancelled, provisioning, awaiting_mobile, connected, failed]
+          enum: [open, claimed, confirmed, provisioning, released, rejected, lapsed]
         vta_did: {type: string}
+        operation: {type: string, enum: [provision_vta, grant_acl]}
         expires_at: {type: string, format: date-time}
-        callback_url:
+        confirm_by: {type: string, format: date-time}
+        trigger_link:
           type: string
           format: uri
-          description: Present only for a pending, unexpired request when the feature is enabled. Contains a secret token.
+          description: Present only while the reservation is open. The browser renders this exact VTI trigger link as the QR payload.
+        claim_check:
+          type: string
+          pattern: '^[A-Z2-7]{6}$'
+          description: Present only to the authenticated owner while confirmation is required.
+        candidate_did:
+          type: string
+          description: Proof-bound candidate administrator DID; present only while confirmation is required.
         error: {type: string}
     MobileConnectionState:
       type: object
@@ -121,24 +121,19 @@ components:
           oneOf:
             - {$ref: '#/components/schemas/MobileConnection'}
             - {type: 'null'}
-    MobileConnectionProgress:
+    TrustTaskDocument:
       type: object
-      required: [server_time, connection]
+      required: [id, type, payload]
+      additionalProperties: true
       properties:
-        server_time: {type: string, format: date-time}
-        connection: {$ref: '#/components/schemas/MobileConnection'}
-    MobileConnectionAccepted:
-      allOf:
-        - {$ref: '#/components/schemas/MobileConnectionProgress'}
-        - type: object
-          properties:
-            progress_token:
-              type: string
-              description: Send as a Bearer credential only to progress and completion endpoints. Retries do not extend its expiry.
-            progress_url: {type: string, format: uri}
-            completion_url: {type: string, format: uri}
-            progress_expires_at: {type: string, format: date-time}
-          description: Progress fields are omitted after the one-hour credential lifetime. The original acceptance receipt remains retryable for 24 hours.
+        id: {type: string}
+        type: {type: string, format: uri}
+        issuer: {type: string}
+        recipient: {type: string}
+        issuedAt: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time}
+        payload: {type: object}
+        proof: {type: object}
     Error:
       type: object
       properties:
@@ -340,60 +335,6 @@ components:
             role:
               type: string
               enum: [admin, user]
-
-    SIOPMetadata:
-      type: object
-      required: [enabled, rp_did]
-      properties:
-        enabled: { type: boolean }
-        rp_did: { type: string, description: Dedicated relying-party DID; empty when disabled }
-
-    SIOPChallengeRequest:
-      type: object
-      additionalProperties: false
-      required: [did]
-      properties:
-        did: { type: string, maxLength: 2048 }
-
-    SIOPChallengeResponse:
-      type: object
-      required: [challenge, session_id, expires_at]
-      properties:
-        challenge: { type: string, description: One-time nonce passed to wallet.proxyLogin }
-        session_id: { type: string }
-        expires_at: { type: string, format: date-time }
-
-    SIOPAuthenticateRequest:
-      type: object
-      additionalProperties: false
-      required: [id_token, session_id]
-      properties:
-        id_token: { type: string, description: Compact SIOPv2 JWS minted by the VTA Wallet }
-        session_id: { type: string }
-        label: { type: string, maxLength: 80, description: Link flow only }
-
-    SIOPLoginResponse:
-      type: object
-      required: [user]
-      properties:
-        user:
-          type: object
-          required: [id, unique_id, role]
-          properties:
-            id: { type: integer }
-            unique_id: { type: string }
-            role: { type: string, enum: [admin, user] }
-
-    SIOPIdentity:
-      type: object
-      required: [id, did, label, created_at, last_kid]
-      properties:
-        id: { type: integer }
-        did: { type: string }
-        label: { type: string }
-        created_at: { type: string, format: date-time }
-        last_authenticated_at: { type: [string, "null"], format: date-time }
-        last_kid: { type: string }
 
     ValidateResponse:
       type: object
@@ -944,153 +885,6 @@ components:
           description: VTA-only only. True when cluster capacity permits a custom DID connection, even if the platform stack is unavailable.
 
 paths:
-  /api/v1/auth/siop/metadata:
-    get:
-      summary: Discover VTA Wallet login configuration
-      tags: [VTA Wallet]
-      responses:
-        "200":
-          description: Feature state and RP audience DID
-          content: { application/json: { schema: { $ref: "#/components/schemas/SIOPMetadata" } } }
-
-  /api/v1/auth/user/siop/challenge:
-    post:
-      summary: "(public) Begin user VTA Wallet login"
-      tags: [VTA Wallet, Auth — User]
-      requestBody:
-        required: true
-        content: { application/json: { schema: { $ref: "#/components/schemas/SIOPChallengeRequest" } } }
-      responses:
-        "200": { description: One-time challenge, content: { application/json: { schema: { $ref: "#/components/schemas/SIOPChallengeResponse" } } } }
-        "400": { description: Invalid DID, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
-        "429": { description: Rate limited, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
-        "503": { description: SIOP disabled, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
-
-  /api/v1/auth/user/siop/authenticate:
-    post:
-      summary: "(public) Complete user VTA Wallet login"
-      description: Consumes the challenge once and sets only the vtafarm_user httpOnly cookie.
-      tags: [VTA Wallet, Auth — User]
-      requestBody:
-        required: true
-        content: { application/json: { schema: { $ref: "#/components/schemas/SIOPAuthenticateRequest" } } }
-      responses:
-        "200": { description: User login successful, content: { application/json: { schema: { $ref: "#/components/schemas/SIOPLoginResponse" } } } }
-        "401": { description: Challenge, assertion, or user link rejected, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
-
-  /api/v1/auth/admin/siop/challenge:
-    post:
-      summary: "(public) Begin admin VTA Wallet login"
-      tags: [VTA Wallet, Auth — Admin]
-      requestBody:
-        required: true
-        content: { application/json: { schema: { $ref: "#/components/schemas/SIOPChallengeRequest" } } }
-      responses:
-        "200": { description: One-time challenge, content: { application/json: { schema: { $ref: "#/components/schemas/SIOPChallengeResponse" } } } }
-        "400": { description: Invalid DID, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
-        "429": { description: Rate limited, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
-        "503": { description: SIOP disabled, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
-
-  /api/v1/auth/admin/siop/authenticate:
-    post:
-      summary: "(public) Complete admin VTA Wallet login"
-      description: Consumes the challenge once and sets only the vtafarm_admin httpOnly cookie.
-      tags: [VTA Wallet, Auth — Admin]
-      requestBody:
-        required: true
-        content: { application/json: { schema: { $ref: "#/components/schemas/SIOPAuthenticateRequest" } } }
-      responses:
-        "200": { description: Admin login successful, content: { application/json: { schema: { $ref: "#/components/schemas/SIOPLoginResponse" } } } }
-        "401": { description: Challenge, assertion, or admin link rejected, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
-
-  /api/v1/user/siop/link/challenge:
-    post:
-      summary: Begin linking a user VTA Wallet identity
-      tags: [VTA Wallet]
-      security: [{ CookieAuthUser: [] }]
-      requestBody:
-        required: true
-        content: { application/json: { schema: { $ref: "#/components/schemas/SIOPChallengeRequest" } } }
-      responses:
-        "200": { description: One-time link challenge, content: { application/json: { schema: { $ref: "#/components/schemas/SIOPChallengeResponse" } } } }
-        "409": { description: Account has no passkey, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
-
-  /api/v1/user/siop/link/authenticate:
-    post:
-      summary: Complete linking a user VTA Wallet identity
-      tags: [VTA Wallet]
-      security: [{ CookieAuthUser: [] }]
-      requestBody:
-        required: true
-        content: { application/json: { schema: { $ref: "#/components/schemas/SIOPAuthenticateRequest" } } }
-      responses:
-        "201": { description: Identity linked, content: { application/json: { schema: { $ref: "#/components/schemas/SIOPIdentity" } } } }
-        "409": { description: Identity already linked or account has no passkey, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
-
-  /api/v1/user/siop/identities:
-    get:
-      summary: List linked user VTA Wallet identities
-      tags: [VTA Wallet]
-      security: [{ CookieAuthUser: [] }]
-      responses:
-        "200":
-          description: Caller-owned identities
-          content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/SIOPIdentity" } } } }
-
-  /api/v1/user/siop/identities/{id}:
-    delete:
-      summary: Unlink a user VTA Wallet identity
-      tags: [VTA Wallet]
-      security: [{ CookieAuthUser: [] }]
-      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
-      responses:
-        "204": { description: Identity unlinked }
-        "404": { description: Identity not owned by caller, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
-
-  /api/v1/admin/siop/link/challenge:
-    post:
-      summary: Begin linking an admin VTA Wallet identity
-      tags: [VTA Wallet]
-      security: [{ CookieAuthAdmin: [] }]
-      requestBody:
-        required: true
-        content: { application/json: { schema: { $ref: "#/components/schemas/SIOPChallengeRequest" } } }
-      responses:
-        "200": { description: One-time link challenge, content: { application/json: { schema: { $ref: "#/components/schemas/SIOPChallengeResponse" } } } }
-        "409": { description: Account has no passkey, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
-
-  /api/v1/admin/siop/link/authenticate:
-    post:
-      summary: Complete linking an admin VTA Wallet identity
-      tags: [VTA Wallet]
-      security: [{ CookieAuthAdmin: [] }]
-      requestBody:
-        required: true
-        content: { application/json: { schema: { $ref: "#/components/schemas/SIOPAuthenticateRequest" } } }
-      responses:
-        "201": { description: Identity linked, content: { application/json: { schema: { $ref: "#/components/schemas/SIOPIdentity" } } } }
-        "409": { description: Identity already linked or account has no passkey, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
-
-  /api/v1/admin/siop/identities:
-    get:
-      summary: List linked admin VTA Wallet identities
-      tags: [VTA Wallet]
-      security: [{ CookieAuthAdmin: [] }]
-      responses:
-        "200":
-          description: Caller-owned identities
-          content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/SIOPIdentity" } } } }
-
-  /api/v1/admin/siop/identities/{id}:
-    delete:
-      summary: Unlink an admin VTA Wallet identity
-      tags: [VTA Wallet]
-      security: [{ CookieAuthAdmin: [] }]
-      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
-      responses:
-        "204": { description: Identity unlinked }
-        "404": { description: Identity not owned by caller, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
-
   /health:
     get:
       summary: Health check
@@ -5943,6 +5737,32 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /trust-task/trust-tasks:
+    post:
+      summary: Consume a VTA claim or redeem Trust Task
+      description: Public Trust Task HTTPS binding 0.2 endpoint. Request authority comes from the document's Data Integrity proof, not a browser cookie. A redeem request may be held for up to 25 seconds while confirmation or provisioning changes state.
+      tags: [Trust Tasks]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TrustTaskDocument'}
+      responses:
+        '200':
+          description: Signed claim next-step or terminal redeem hand-over
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TrustTaskDocument'}
+        '202': {description: Identical document is still executing}
+        '204': {description: Completed duplicate has no retained response}
+        '400': {description: Malformed document or payload}
+        '409': {description: Document ID reused with different content}
+        '415': {description: Content-Type is not application/json}
+        '422': {description: Task, proof, recipient, expiry, or business-policy rejection}
+        '429': {description: Rate limited}
+        '503': {description: Trust Task service or replay record unavailable}
+
   /api/v1/setup/{id}/mobile-connections/current:
     get:
       summary: Get current mobile connection
@@ -5991,8 +5811,8 @@ paths:
 
   /api/v1/setup/{id}/mobile-connections/{request_id}/refresh:
     post:
-      summary: Replace mobile connection QR
-      description: Atomically invalidate a pending request and create a replacement. A request at awaiting_mobile may also be abandoned and replaced; any completed server-side provisioning remains. Other accepted requests return existing progress. An older request ID cannot replace a newer request. This endpoint regenerates the QR token and does not refresh the VTA ACL.
+      summary: Replace an open VTA Claim trigger link
+      description: Atomically lapse the matching open reservation and create a fresh handle. Claimed or confirmed reservations cannot be replaced.
       tags: [User]
       security: [{CookieAuthUser: []}]
       parameters:
@@ -6018,8 +5838,8 @@ paths:
 
   /api/v1/setup/{id}/mobile-connections/{request_id}:
     delete:
-      summary: Cancel mobile connection attempt
-      description: Cancel a pending request before changing connection methods. A request at awaiting_mobile may also be abandoned, invalidating its callback and progress credentials while retaining completed server-side provisioning. Other accepted requests return existing progress.
+      summary: Cancel an open VTA Claim reservation
+      description: Lapse an open reservation before changing connection methods. A claimed reservation must instead be explicitly confirmed or rejected.
       tags: [User]
       security: [{CookieAuthUser: []}]
       parameters:
@@ -6043,99 +5863,53 @@ paths:
         '429': {description: Rate limited or QR replacement cooldown; retry later}
         '503': {description: Automatic connection unavailable or disabled}
 
-  /api/v1/mobile-connections/callback/{token}:
+  /api/v1/setup/{id}/mobile-connections/{request_id}/confirm:
     post:
-      summary: Accept mobile Admin DID
-      description: |
-        The opaque token fixes the target VTA on the server. No browser cookie or account binding is required.
-        Accept once within five minutes; the same token and Admin DID can retrieve the existing receipt for
-        24 hours after acceptance. A different DID conflicts. Target override fields and extra JSON are rejected.
-        Acceptance and durable work commit together. Under the session lock, the server decides whether to continue setup or grant the DID through the serialized VTA ACL maintenance flow. No credential-bearing URL may be logged.
-      tags: [Mobile Connection]
-      security: []
+      summary: Confirm matching VTA Claim checks
+      description: Move the owner-visible reservation from claimed to confirmed, then start the server-derived provisioning or ACL worker. The candidate key is never installed before this action commits.
+      tags: [User]
+      security: [{CookieAuthUser: []}]
       parameters:
-        - name: token
+        - name: id
           in: path
           required: true
           schema: {type: string}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [admin_did]
-              properties:
-                admin_did: {type: string, maxLength: 128, description: Canonical Ed25519 did:key}
-      responses:
-        '202':
-          description: Accepted or existing receipt; Cache-Control no-store
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/MobileConnectionAccepted'}
-        '400': {description: Invalid Admin DID, unknown fields, or body over 4096 bytes}
-        '404': {description: Invalid token or deleted connection}
-        '409': {description: Conflicting DID or VTA no longer eligible}
-        '410': {description: Unaccepted token expired or revoked, or receipt retention elapsed}
-        '429': {description: Rate limited}
-        '503': {description: Automatic connection unavailable or disabled}
-
-  /api/v1/mobile-connections/{request_id}:
-    get:
-      summary: Get mobile connection progress
-      description: The Bearer credential must match this request and be within one hour of acceptance. The callback token cannot be used here.
-      tags: [Mobile Connection]
-      security: [{MobileProgress: []}]
-      parameters:
         - name: request_id
           in: path
           required: true
           schema: {type: string, format: uuid}
       responses:
         '200':
-          description: Provisioning or mobile connection state; Cache-Control no-store
+          description: Current state with Cache-Control no-store
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/MobileConnectionProgress'}
-        '401': {description: Invalid or wrong-request progress credential}
-        '404': {description: Connection deleted}
-        '410': {description: Progress credential expired}
-        '429': {description: Rate limited}
+              schema: {$ref: '#/components/schemas/MobileConnectionState'}
+        '401': {description: Missing or invalid user cookie}
+        '404': {description: VTA or reservation not found}
+        '409': {description: Reservation is not awaiting confirmation}
+        '410': {description: Confirmation window expired}
 
-  /api/v1/mobile-connections/{request_id}/complete:
+  /api/v1/setup/{id}/mobile-connections/{request_id}/reject:
     post:
-      summary: Report completed mobile connection
-      description: |
-        The app reports successful registration and connection. The backend requires a matching live progress
-        credential and a running VTA. Completion is idempotent. This is an authenticated app report, not independent
-        proof that the phone currently has a live transport connection.
-      tags: [Mobile Connection]
-      security: [{MobileProgress: []}]
+      summary: Reject a VTA Claim
+      description: Move the owner-visible reservation from claimed to rejected and discard the candidate administrator key without mutating the VTA.
+      tags: [User]
+      security: [{CookieAuthUser: []}]
       parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
         - name: request_id
           in: path
           required: true
           schema: {type: string, format: uuid}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [status]
-              properties:
-                status: {type: string, enum: [connected]}
       responses:
         '200':
-          description: Completion recorded or already recorded; Cache-Control no-store
+          description: Current state with Cache-Control no-store
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/MobileConnectionProgress'}
-        '400': {description: Invalid JSON or unsupported completion status}
-        '401': {description: Invalid or wrong-request progress credential}
-        '404': {description: Connection deleted}
-        '409': {description: VTA is not running yet}
-        '410': {description: Progress credential expired}
-        '429': {description: Rate limited}
+              schema: {$ref: '#/components/schemas/MobileConnectionState'}
+        '401': {description: Missing or invalid user cookie}
+        '404': {description: VTA or reservation not found}
+        '409': {description: Reservation is not awaiting confirmation}

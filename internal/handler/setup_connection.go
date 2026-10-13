@@ -11,7 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/ic3software/vtafarm-api/internal/model"
-	"github.com/ic3software/vtafarm-api/internal/siop/webvh"
+	"github.com/ic3software/vtafarm-api/internal/webvh"
 )
 
 type connectionTarget struct {

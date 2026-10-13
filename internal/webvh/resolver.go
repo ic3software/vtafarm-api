@@ -17,7 +17,7 @@ import (
 
 	"golang.org/x/net/idna"
 
-	"github.com/ic3software/vtafarm-api/internal/siop"
+	"github.com/ic3software/vtafarm-api/internal/didresolver"
 )
 
 const (
@@ -77,21 +77,21 @@ func NewResolver(timeout time.Duration) *Resolver {
 		lookupIP:         net.DefaultResolver.LookupIPAddr,
 		maxResponseBytes: DefaultMaxResponseBytes,
 		now:              time.Now,
-		clockSkew:        siop.DefaultClockSkew,
+		clockSkew:        didresolver.DefaultClockSkew,
 	}
 }
 
 func (r *Resolver) ResolveAuthenticationKey(ctx context.Context, did, kid string) (ed25519.PublicKey, error) {
-	document, err := r.resolveDocument(ctx, did)
+	document, err := r.ResolveDocument(ctx, did)
 	if err != nil {
 		return nil, err
 	}
-	return siop.AuthenticationKeyFromDocument(document, did, kid)
+	return didresolver.AuthenticationKeyFromDocument(document, did, kid)
 }
 
 // ResolveDID checks that a public DID log is reachable and cryptographically valid.
 func (r *Resolver) ResolveDID(ctx context.Context, did string) error {
-	_, err := r.resolveDocument(ctx, did)
+	_, err := r.ResolveDocument(ctx, did)
 	return err
 }
 
@@ -108,7 +108,9 @@ func HostingBaseURL(did string) (string, error) {
 	return "https://" + logURL.Host, nil
 }
 
-func (r *Resolver) resolveDocument(ctx context.Context, did string) ([]byte, error) {
+// ResolveDocument returns the current DID document only after validating the
+// complete did:webvh history.
+func (r *Resolver) ResolveDocument(ctx context.Context, did string) ([]byte, error) {
 	if r == nil || r.client == nil || r.lookupIP == nil || r.now == nil || r.maxResponseBytes <= 0 || r.clockSkew < 0 {
 		return nil, errors.New("did:webvh resolver is not configured")
 	}
@@ -250,4 +252,4 @@ func isPublicAddress(ip net.IP) bool {
 	return true
 }
 
-var _ siop.AuthenticationKeyResolver = (*Resolver)(nil)
+var _ didresolver.AuthenticationKeyResolver = (*Resolver)(nil)

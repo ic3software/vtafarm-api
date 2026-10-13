@@ -1,8 +1,9 @@
-package siop
+package didresolver
 
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,6 +40,7 @@ type didDocument struct {
 	ID                 string               `json:"id"`
 	VerificationMethod []verificationMethod `json:"verificationMethod"`
 	Authentication     []json.RawMessage    `json:"authentication"`
+	AssertionMethod    []json.RawMessage    `json:"assertionMethod"`
 }
 
 type verificationMethod struct {
@@ -57,6 +59,21 @@ func AuthenticationKeyFromDocument(document []byte, did, kid string) (ed25519.Pu
 	if err := json.Unmarshal(document, &parsed); err != nil {
 		return nil, fmt.Errorf("decode DID document: %w", err)
 	}
+	return relationshipKeyFromDocument(parsed, did, kid, parsed.Authentication, "authentication")
+}
+
+// AssertionMethodKeyFromDocument selects kid only when the DID document lists
+// it under assertionMethod. The document must already have passed
+// method-specific history and proof verification.
+func AssertionMethodKeyFromDocument(document []byte, did, kid string) (ed25519.PublicKey, error) {
+	var parsed didDocument
+	if err := json.Unmarshal(document, &parsed); err != nil {
+		return nil, fmt.Errorf("decode DID document: %w", err)
+	}
+	return relationshipKeyFromDocument(parsed, did, kid, parsed.AssertionMethod, "assertionMethod")
+}
+
+func relationshipKeyFromDocument(parsed didDocument, did, kid string, relationship []json.RawMessage, name string) (ed25519.PublicKey, error) {
 	if parsed.ID != did {
 		return nil, errors.New("resolved DID document id does not match DID")
 	}
@@ -73,7 +90,7 @@ func AuthenticationKeyFromDocument(document []byte, did, kid string) (ed25519.Pu
 		declared[method.ID] = method
 	}
 
-	for _, raw := range parsed.Authentication {
+	for _, raw := range relationship {
 		var reference string
 		if err := json.Unmarshal(raw, &reference); err == nil {
 			if absoluteVerificationMethodID(reference, did) != kid {
@@ -81,21 +98,21 @@ func AuthenticationKeyFromDocument(document []byte, did, kid string) (ed25519.Pu
 			}
 			method, ok := declared[kid]
 			if !ok {
-				return nil, errors.New("authentication references an undeclared verification method")
+				return nil, fmt.Errorf("%s references an undeclared verification method", name)
 			}
 			return ed25519KeyFromVerificationMethod(method, did)
 		}
 
 		var embedded verificationMethod
 		if err := json.Unmarshal(raw, &embedded); err != nil {
-			return nil, errors.New("authentication entry is neither a reference nor a verification method")
+			return nil, fmt.Errorf("%s entry is neither a reference nor a verification method", name)
 		}
 		embedded.ID = absoluteVerificationMethodID(embedded.ID, did)
 		if embedded.ID == kid {
 			return ed25519KeyFromVerificationMethod(embedded, did)
 		}
 	}
-	return nil, errors.New("kid is not an authentication verification method")
+	return nil, fmt.Errorf("kid is not an %s verification method", name)
 }
 
 func absoluteVerificationMethodID(id, did string) string {
@@ -103,6 +120,17 @@ func absoluteVerificationMethodID(id, did string) string {
 		return did + id
 	}
 	return id
+}
+
+func decodeCanonicalBase64URL(value string) ([]byte, error) {
+	decoded, err := base64.RawURLEncoding.Strict().DecodeString(value)
+	if err != nil {
+		return nil, err
+	}
+	if base64.RawURLEncoding.EncodeToString(decoded) != value {
+		return nil, errors.New("non-canonical base64url encoding")
+	}
+	return decoded, nil
 }
 
 func ed25519KeyFromVerificationMethod(method verificationMethod, did string) (ed25519.PublicKey, error) {

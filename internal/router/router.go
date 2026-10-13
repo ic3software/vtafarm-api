@@ -22,8 +22,6 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/model"
 	"github.com/ic3software/vtafarm-api/internal/passkey"
 	"github.com/ic3software/vtafarm-api/internal/setup"
-	"github.com/ic3software/vtafarm-api/internal/siop"
-	"github.com/ic3software/vtafarm-api/internal/siop/webvh"
 	"github.com/ic3software/vtafarm-api/internal/upgrade"
 )
 
@@ -62,6 +60,11 @@ func Setup(
 	}))
 
 	r.GET("/health", handler.Health)
+	trustTask := handler.NewTrustTaskHandler(db, cfg.VTAClaim)
+	if !trustTask.Enabled() && cfg.VTAClaim.FarmDID != "" {
+		log.Printf("warn: VTA Claim identity validation failed — Trust Task and trigger-link endpoints disabled")
+	}
+	r.POST("/trust-task/trust-tasks", middleware.MobilePrivacy(), middleware.NoStore(), middleware.RateLimit(120, time.Minute), trustTask.Consume)
 
 	if cfg.AppEnv != "production" {
 		r.GET("/openapi.yaml", apidocs.ServeSpec)
@@ -122,21 +125,6 @@ func Setup(
 	v1.POST("/auth/user/passkey/begin", pkh.UserLoginBegin)
 	v1.POST("/auth/user/passkey/complete", pkh.UserLoginComplete)
 
-	// VTA Wallet login is fail-closed until a dedicated RP DID is configured.
-	// Metadata remains public so the frontend can hide the feature when disabled.
-	siopResolver := siop.MethodResolver{WebVH: webvh.NewResolver(cfg.SIOP.ResolutionTimeout)}
-	siopH := handler.NewSIOPHandler(db, siopResolver, handler.SIOPHandlerConfig{
-		RPDID:        cfg.SIOP.RPDID,
-		ChallengeTTL: cfg.SIOP.ChallengeTTL,
-		ClockSkew:    cfg.SIOP.ClockSkew,
-		MaxBodyBytes: cfg.SIOP.MaxBodyBytes,
-	}, cfg.JWTSecret, cfg.CookieSecure())
-	v1.GET("/auth/siop/metadata", siopH.Metadata)
-	v1.POST("/auth/user/siop/challenge", middleware.NoStore(), middleware.RateLimit(20, time.Minute), siopH.UserLoginChallenge)
-	v1.POST("/auth/user/siop/authenticate", middleware.NoStore(), middleware.RateLimit(30, time.Minute), siopH.UserLoginAuthenticate)
-	v1.POST("/auth/admin/siop/challenge", middleware.NoStore(), middleware.RateLimit(20, time.Minute), siopH.AdminLoginChallenge)
-	v1.POST("/auth/admin/siop/authenticate", middleware.NoStore(), middleware.RateLimit(30, time.Minute), siopH.AdminLoginAuthenticate)
-
 	// Admin enrollment (public — no auth required)
 	aeh := handler.NewAdminEnrollHandler(db, cfg.JWTSecret, cfg.CookieSecure())
 	v1.GET("/admin/enroll/:token", aeh.Validate)
@@ -167,10 +155,6 @@ func Setup(
 		adminAuth.POST("/admin/passkeys/register/complete", pkh.RegisterComplete)
 		adminAuth.GET("/admin/passkeys", pkh.List)
 		adminAuth.DELETE("/admin/passkeys/:id", pkh.Delete)
-		adminAuth.POST("/admin/siop/link/challenge", middleware.RateLimit(20, time.Minute), siopH.AdminLinkChallenge)
-		adminAuth.POST("/admin/siop/link/authenticate", middleware.RateLimit(30, time.Minute), siopH.AdminLinkAuthenticate)
-		adminAuth.GET("/admin/siop/identities", siopH.AdminIdentities)
-		adminAuth.DELETE("/admin/siop/identities/:id", siopH.DeleteAdminIdentity)
 		adminAuth.POST("/admin/invitations", ih.Create)
 		adminAuth.GET("/admin/invitations", ih.List)
 		adminAuth.GET("/admin/resource-defaults", sh.AdminResourceDefaults)
@@ -267,11 +251,7 @@ func Setup(
 	v1.GET("/recovery/:token", rh.Validate)
 	v1.POST("/recovery/:token", middleware.RateLimit(10, time.Minute), rh.Consume)
 
-	mobile := handler.NewMobileConnectionHandler(db, orch, sh.KickAdditionalMobile, cfg.MobileConnection, cfg.ClusterDomain)
-	mobilePublic := v1.Group("/mobile-connections", middleware.MobilePrivacy(), middleware.NoStore(), middleware.RateLimit(120, time.Minute))
-	mobilePublic.POST("/callback/:token", mobile.Callback)
-	mobilePublic.GET("/:request_id", mobile.Progress)
-	mobilePublic.POST("/:request_id/complete", mobile.Progress)
+	mobile := handler.NewMobileConnectionHandler(db, orch, sh.KickAdditionalMobile, cfg.VTAClaim, trustTask.Enabled())
 
 	// User routes — cookie: vtafarm_user
 	userAuth := v1.Group("",
@@ -284,10 +264,6 @@ func Setup(
 		userAuth.POST("/user/passkeys/register/complete", pkh.RegisterComplete)
 		userAuth.GET("/user/passkeys", pkh.List)
 		userAuth.DELETE("/user/passkeys/:id", pkh.Delete)
-		userAuth.POST("/user/siop/link/challenge", middleware.RateLimit(20, time.Minute), siopH.UserLinkChallenge)
-		userAuth.POST("/user/siop/link/authenticate", middleware.RateLimit(30, time.Minute), siopH.UserLinkAuthenticate)
-		userAuth.GET("/user/siop/identities", siopH.UserIdentities)
-		userAuth.DELETE("/user/siop/identities/:id", siopH.DeleteUserIdentity)
 		userAuth.POST("/setup/validate", sh.Validate)
 		userAuth.GET("/setup/images", sh.Images)
 		// Remaining per-mode cluster capacity — the create screen checks this to
@@ -321,6 +297,8 @@ func Setup(
 		mobileOwner.POST("", mobile.Change)
 		mobileOwner.POST("/:request_id/refresh", mobile.Change)
 		mobileOwner.DELETE("/:request_id", mobile.Change)
+		mobileOwner.POST("/:request_id/confirm", mobile.Confirm)
+		mobileOwner.POST("/:request_id/reject", mobile.Reject)
 		// Add another PNM as an administrator after provisioning. The handler
 		// resolves :id through the authenticated owner and accepts only running
 		// sessions; the ACL maintenance window is serialized per session.

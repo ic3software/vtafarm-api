@@ -18,8 +18,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ic3software/vtafarm-api/internal/didkey"
-	"github.com/ic3software/vtafarm-api/internal/siop"
-	"github.com/ic3software/vtafarm-api/internal/siop/webvh"
+	"github.com/ic3software/vtafarm-api/internal/didresolver"
+	"github.com/ic3software/vtafarm-api/internal/webvh"
 )
 
 const (
@@ -63,7 +63,7 @@ type Client struct {
 	kid       string
 	privKey   ed25519.PrivateKey
 	hc        *http.Client
-	resolver  siop.AuthenticationKeyResolver
+	resolver  didresolver.AuthenticationKeyResolver
 }
 
 func (c *Client) ServerDid() string { return c.serverDid }
@@ -116,7 +116,7 @@ func New(baseURL, clientDid, privKeyB64, serverDid string) (*Client, error) {
 				return http.ErrUseLastResponse
 			},
 		},
-		resolver: siop.MethodResolver{WebVH: webvh.NewResolver(5 * time.Second)},
+		resolver: didresolver.MethodResolver{WebVH: webvh.NewResolver(5 * time.Second)},
 	}, nil
 }
 
@@ -235,7 +235,7 @@ func signTrustTask(doc *trustTask, kid string, privateKey ed25519.PrivateKey, cr
 	if err != nil {
 		return err
 	}
-	proofConfig.ProofValue = "z" + siop.EncodeBase58BTC(ed25519.Sign(privateKey, message))
+	proofConfig.ProofValue = "z" + didresolver.EncodeBase58BTC(ed25519.Sign(privateKey, message))
 	doc.Proof = &proofConfig
 	return nil
 }
@@ -251,7 +251,7 @@ func (c *Client) verifyReply(ctx context.Context, reply, request *trustTask) err
 		return errors.New("DID hosting Trust Task response recipient does not match DID_HOSTING_DID")
 	}
 	issuedAt, err := time.Parse(time.RFC3339, reply.IssuedAt)
-	if err != nil || issuedAt.Before(time.Now().Add(-5*time.Minute)) || issuedAt.After(time.Now().Add(siop.DefaultClockSkew)) {
+	if err != nil || issuedAt.Before(time.Now().Add(-5*time.Minute)) || issuedAt.After(time.Now().Add(didresolver.DefaultClockSkew)) {
 		return errors.New("DID hosting Trust Task response is outside the freshness window")
 	}
 	if reply.Proof == nil {
@@ -266,7 +266,7 @@ func (c *Client) verifyReply(ctx context.Context, reply, request *trustTask) err
 		return errors.New("DID hosting Trust Task response proof does not belong to the service DID")
 	}
 	created, err := time.Parse(time.RFC3339, p.Created)
-	if err != nil || created.After(time.Now().Add(siop.DefaultClockSkew)) {
+	if err != nil || created.After(time.Now().Add(didresolver.DefaultClockSkew)) {
 		return errors.New("DID hosting Trust Task response proof has an invalid creation time")
 	}
 	signature, err := decodeProofValue(p.ProofValue)
@@ -319,8 +319,8 @@ func decodeProofValue(value string) ([]byte, error) {
 	if !strings.HasPrefix(value, "z") {
 		return nil, errors.New("DID hosting Trust Task proofValue is not base58btc multibase")
 	}
-	decoded, err := siop.DecodeBase58BTC(value[1:])
-	if err != nil || siop.EncodeBase58BTC(decoded) != value[1:] {
+	decoded, err := didresolver.DecodeBase58BTC(value[1:])
+	if err != nil || didresolver.EncodeBase58BTC(decoded) != value[1:] {
 		return nil, errors.New("DID hosting Trust Task proofValue is not canonical base58btc")
 	}
 	return decoded, nil

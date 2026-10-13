@@ -47,6 +47,10 @@ See `.env.example` for all options. Key ones:
 | `KUBECONFIG` | `~/.kube/config` | Leave empty; auto-detected |
 | `K8S_NAMESPACE_PREFIX` | `vtafarm-user` | Per-user namespace prefix |
 | `DID_HOSTING_DID` / `DID_HOSTING_PRIVATE_KEY` | — | vtafarm-api's **own** keypair (`make gen-keypair`) for the DID-hosting control API, enrolled in a daemon's ACL with `role=admin`. Not anything a daemon issued, so one keypair serves every daemon it is enrolled in. There are deliberately no DID-hosting **URLs** here — see "Shared infrastructure comes from the platform stack" below |
+| `FARM_DID` | — | Public `vtafarm-auth` DID used in VTA Claim trigger links, requests, and signed replies |
+| `FARM_SIGNING_KEY` | — | Secret base64 Ed25519 seed whose public key is an `assertionMethod` of `FARM_DID` |
+| `TRUST_TASK_BASE` | — | Public HTTPS base ending in `/trust-task`; must exactly match the Farm DID's `TrustTaskHTTPS` service |
+| `LINK_HOST` | `https://link.trustoverip.org` | Origin used to build VTI trigger links |
 | `CLOUDFLARE_API_TOKEN` | — | Cloudflare API token (`Zone:DNS:Edit` permission) |
 | `CLOUDFLARE_ZONE_ID` | — | Cloudflare Zone ID for the user's root domain |
 | `CLUSTER_INGRESS_IP` | — | External IP of the Traefik LoadBalancer |
@@ -218,6 +222,19 @@ the account and logs the holder in to register a fresh one.
 | `POST` | `/api/v1/setup/:id/upgrade` | user | Self-service image upgrade/downgrade of the user's **own** session (looked up by `vta_name AND user_id` — never another user's) |
 | `GET` | `/api/v1/setup/:id/upgrade` | user | Latest self-service upgrade of that session, for progress polling |
 
+### VTA Claim connection
+
+`POST /trust-task/trust-tasks` is the public, proof-authenticated endpoint for
+`provision/vta/claim/0.1` and `provision/vta/redeem/0.1`. It is deliberately
+outside `/api/v1`: the signed Trust Task supplies authority instead of a portal
+cookie.
+
+The authenticated owner manages the browser side at
+`/api/v1/setup/:id/mobile-connections`: create, read `current`, refresh, cancel,
+confirm matching codes, or reject a claimant. A reservation moves through
+`open → claimed → confirmed → provisioning → released`; rejection is terminal.
+The trigger link and QR are sensitive bearer material and must not be logged.
+
 ## Setup Modes
 
 There are exactly two: **`vta_only`** and **`full_stack`**.
@@ -317,6 +334,9 @@ call their session `main`.
 must survive if sessions ever stop being addressed by name.
 
 Users and admins keep their own `unique_id`; only sessions lost theirs.
+
+Names beginning with `vtafarm` are reserved. In particular, no user-controlled
+session may mint a DID path resembling the Farm identity at `vtafarm-auth`.
 
 ### Shared infrastructure comes from the platform stack, not configuration
 

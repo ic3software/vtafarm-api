@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/ic3software/vtafarm-api/internal/didkey"
-	"github.com/ic3software/vtafarm-api/internal/siop"
+	"github.com/ic3software/vtafarm-api/internal/didresolver"
 )
 
 type testIdentity struct {
@@ -57,7 +57,7 @@ func verifyTask(t *testing.T, doc *trustTask, signer testIdentity) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	publicKey, err := (siop.DIDKeyResolver{}).ResolveAuthenticationKey(context.Background(), signer.did, signer.kid)
+	publicKey, err := (didresolver.DIDKeyResolver{}).ResolveAuthenticationKey(context.Background(), signer.did, signer.kid)
 	if err != nil {
 		t.Fatal(err)
 	}

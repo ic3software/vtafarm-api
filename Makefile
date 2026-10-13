@@ -21,7 +21,7 @@ DEV_DB       ?= vtafarm-dev-postgres
 DB_PORT      ?= 5432
 VAULT_PORT   ?= 8200
 
-.PHONY: build test check-pg-image gen-keypair tidy dev \
+.PHONY: build test check-pg-image gen-keypair gen-farm-key tidy dev \
         migrate migrate-down migrate-new enroll enroll-prod \
         deploy-db forward-db forward-vault \
         image-build image-push \
@@ -53,6 +53,11 @@ check-pg-image:
 
 gen-keypair:
 	go run ./cmd/gen-keypair
+
+gen-farm-key:
+	@test -n "$(FARM_DID)" || (echo "usage: make gen-farm-key FARM_DID=did:webvh:... TRUST_TASK_BASE=https://api.example.com/trust-task"; exit 1)
+	@test -n "$(TRUST_TASK_BASE)" || (echo "usage: make gen-farm-key FARM_DID=did:webvh:... TRUST_TASK_BASE=https://api.example.com/trust-task"; exit 1)
+	go run ./cmd/gen-farm-key "$(FARM_DID)" "$(TRUST_TASK_BASE)"
 
 tidy:
 	go mod tidy

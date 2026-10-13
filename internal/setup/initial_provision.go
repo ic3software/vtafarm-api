@@ -17,8 +17,9 @@ var provisionStatuses = []string{
 
 func (o *Orchestrator) provisionAdminLabel(sessionID uint, adminDid, fallback string) string {
 	var count int64
+	statuses := []string{"accepted", "confirmed", "provisioning", "released"}
 	if err := o.db.Model(&model.MobileConnection{}).
-		Where("session_id = ? AND operation = ? AND admin_did = ? AND status = ?", sessionID, connection.OperationProvisionVTA, adminDid, "accepted").
+		Where("session_id = ? AND operation = ? AND admin_did = ? AND status IN ?", sessionID, connection.OperationProvisionVTA, adminDid, statuses).
 		Count(&count).Error; err == nil && count > 0 {
 		return connection.MobileAdminLabel
 	}

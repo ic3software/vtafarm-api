@@ -14,7 +14,7 @@ import (
 
 	"github.com/cyberphone/json-canonicalization/go/src/webpki.org/jsoncanonicalizer"
 
-	"github.com/ic3software/vtafarm-api/internal/siop"
+	"github.com/ic3software/vtafarm-api/internal/didresolver"
 )
 
 const scidPlaceholder = "{SCID}"
@@ -377,7 +377,7 @@ func verifyEntryProof(entry logEntry) error {
 	if !ok || !strings.HasPrefix(did, "did:key:") || fragment != strings.TrimPrefix(did, "did:key:") {
 		return errors.New("proof verificationMethod is not a canonical did:key")
 	}
-	publicKey, err := (siop.DIDKeyResolver{}).ResolveAuthenticationKey(
+	publicKey, err := (didresolver.DIDKeyResolver{}).ResolveAuthenticationKey(
 		context.Background(), did, entry.proof.verificationMethod,
 	)
 	if err != nil {
@@ -425,7 +425,7 @@ func verifyGenesisSCID(entry logEntry) error {
 		return err
 	}
 	digest := sha256.Sum256(canonical)
-	calculated := siop.EncodeBase58BTC(append([]byte{0x12, 0x20}, digest[:]...))
+	calculated := didresolver.EncodeBase58BTC(append([]byte{0x12, 0x20}, digest[:]...))
 	if calculated != scid {
 		return errors.New("genesis SCID does not match log entry")
 	}
@@ -454,17 +454,17 @@ func hashJSON(value any) (string, error) {
 		return "", err
 	}
 	digest := sha256.Sum256(canonical)
-	return siop.EncodeBase58BTC(append([]byte{0x12, 0x20}, digest[:]...)), nil
+	return didresolver.EncodeBase58BTC(append([]byte{0x12, 0x20}, digest[:]...)), nil
 }
 
 func hashMultibaseString(value string) string {
 	digest := sha256.Sum256([]byte(value))
-	return siop.EncodeBase58BTC(append([]byte{0x12, 0x20}, digest[:]...))
+	return didresolver.EncodeBase58BTC(append([]byte{0x12, 0x20}, digest[:]...))
 }
 
 func parseSHA256Multihash(value string) ([]byte, error) {
-	decoded, err := siop.DecodeBase58BTC(value)
-	if err != nil || siop.EncodeBase58BTC(decoded) != value || len(decoded) != 34 || decoded[0] != 0x12 || decoded[1] != 0x20 {
+	decoded, err := didresolver.DecodeBase58BTC(value)
+	if err != nil || didresolver.EncodeBase58BTC(decoded) != value || len(decoded) != 34 || decoded[0] != 0x12 || decoded[1] != 0x20 {
 		return nil, errors.New("value is not a canonical SHA-256 multihash")
 	}
 	return decoded[2:], nil
@@ -474,8 +474,8 @@ func decodeProofValue(value string) ([]byte, error) {
 	if !strings.HasPrefix(value, "z") {
 		return nil, errors.New("proofValue is not base58btc multibase")
 	}
-	decoded, err := siop.DecodeBase58BTC(value[1:])
-	if err != nil || siop.EncodeBase58BTC(decoded) != value[1:] {
+	decoded, err := didresolver.DecodeBase58BTC(value[1:])
+	if err != nil || didresolver.EncodeBase58BTC(decoded) != value[1:] {
 		return nil, errors.New("proofValue is not canonical base58btc")
 	}
 	return decoded, nil
@@ -483,7 +483,7 @@ func decodeProofValue(value string) ([]byte, error) {
 
 func decodeUpdateKey(value string) (ed25519.PublicKey, error) {
 	did := "did:key:" + value
-	return (siop.DIDKeyResolver{}).ResolveAuthenticationKey(context.Background(), did, did+"#"+value)
+	return (didresolver.DIDKeyResolver{}).ResolveAuthenticationKey(context.Background(), did, did+"#"+value)
 }
 
 func proofKeyAuthorized(verificationMethod string, keys []string) bool {
