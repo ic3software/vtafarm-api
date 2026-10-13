@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -148,6 +149,21 @@ func TestTrustTaskClaimAndRedeemFlow(t *testing.T) {
 	response = postTrustTask(router, newRedeem())
 	if response.Code != http.StatusUnprocessableEntity || !bytes.Contains(response.Body.Bytes(), []byte("provision/vta/redeem:pending")) {
 		t.Fatalf("pending redeem=%d %s", response.Code, response.Body)
+	}
+	var pending struct {
+		Payload struct {
+			Details struct {
+				State     string          `json:"state"`
+				ConfirmBy json.RawMessage `json:"confirmBy"`
+			} `json:"details"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &pending); err != nil {
+		t.Fatal(err)
+	}
+	// The registered detailsSchema declares confirmBy as an integer (epoch seconds), like the link's _exp.
+	if pending.Payload.Details.State != "claimed" || !regexp.MustCompile(`^[0-9]+$`).Match(pending.Payload.Details.ConfirmBy) {
+		t.Fatalf("pending details are not as the schema declares: %s", response.Body)
 	}
 
 	if _, err := connection.Confirm(t.Context(), db, session.ID, reservation.ID); err != nil {

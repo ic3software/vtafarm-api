@@ -287,7 +287,7 @@ func (h *TrustTaskHandler) redeemOutcome(request *trusttasks.Document[provisionv
 	case "claimed", "confirmed", "provisioning":
 		details := map[string]json.RawMessage{"state": mustJSON(reservation.Status)}
 		if reservation.ConfirmBy != nil {
-			details["confirmBy"] = mustJSON(reservation.ConfirmBy.UTC().Format(time.RFC3339))
+			details["confirmBy"] = mustJSON(reservation.ConfirmBy.Unix())
 		}
 		return nil, trustTaskRefuse(h, request, trusttasks.StandardCode("provision/vta/redeem:pending"), "claim is not ready for hand-over", true, details)
 	case "rejected":

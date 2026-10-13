@@ -59,9 +59,12 @@ Resolve the DID from `_from` and find its `TrustTaskHTTPS` service. Append
 Example:
 
 ```text
-serviceEndpoint: https://vtafarm-api.example.com/trust-task
-POST endpoint:   https://vtafarm-api.example.com/trust-task/trust-tasks
+serviceEndpoint: https://vtafarm-api.example.com
+POST endpoint:   https://vtafarm-api.example.com/trust-tasks
 ```
+
+The `serviceEndpoint` may carry a path prefix; `/trust-tasks` is appended to
+whatever it says, and a trailing slash on it is ignored.
 
 Use the Farm DID document's `assertionMethod` keys to verify Farm replies. Do
 not obtain the API endpoint or Farm key from any other QR field or response.
@@ -198,7 +201,8 @@ https://trusttasks.org/spec/provision/vta/redeem/0.1
 ```
 
 Send the first redeem request after the next-step. Use the same mobile key and
-handle, but create a new `id`, timestamps, and proof for every new poll.
+handle, and keep the claim's `threadId` and `parentThreadId` on every poll, but
+create a new `id`, timestamps, and proof for every new poll.
 
 ```json
 {
@@ -236,9 +240,13 @@ HTTP 422 with a signed Trust Task error:
 
 ```json
 {
+  "id": "urn:uuid:5a0c2d4e-7f81-4b36-9c2a-d4e5f6a7b8c9",
+  "threadId": "urn:uuid:a8e6cbd9-16d7-4668-93bb-b5300a65b6ac",
+  "parentThreadId": "q3Vt7mXo9LwA2bR5cJ8kNg",
   "type": "https://trusttasks.org/spec/trust-task-error/0.5",
   "issuer": "did:webvh:example-farm-did",
   "recipient": "did:key:z6MkExampleClaimantKey",
+  "issuedAt": "2026-10-12T20:00:27Z",
   "payload": {
     "code": "provision/vta/redeem:pending",
     "inResponseTo": {
@@ -249,7 +257,7 @@ HTTP 422 with a signed Trust Task error:
     "retryable": true,
     "details": {
       "state": "claimed",
-      "confirmBy": "2026-10-12T20:05:01Z"
+      "confirmBy": 1791626701
     }
   },
   "proof": {
@@ -270,6 +278,10 @@ HTTP 422 with a signed Trust Task error:
 | `claimed` | Waiting for the user to compare the codes |
 | `confirmed` | Codes matched; Farm is starting the operation |
 | `provisioning` | Farm is installing the administrator or waiting for the VTA |
+
+While the state is `claimed`, `details.confirmBy` says when the confirmation
+window closes, as UTC Unix seconds like the link's `_exp`. It is an integer,
+not a timestamp string, and is absent in the other states.
 
 For `retryable: true`, wait briefly and send a new signed redeem document.
 
@@ -321,6 +333,11 @@ Required payload fields:
 and correlation fields, store the VTA association and retain the administrator
 key.
 
+The hand-over can be fetched again. After terminal success, a new redeem
+document signed by the same key returns the same hand-over for as long as the
+Farm keeps the reservation's record, so a wallet that lost the response does not
+need the original bytes to recover it.
+
 ### Terminal rejection or expiry
 
 These are signed `trust-task-error` responses with HTTP 422:
@@ -339,7 +356,7 @@ The old handle cannot be claimed again after rejection or expiry.
 | --- | --- | --- |
 | `provision/vta:keyUnsupported` | Claim issuer is not a supported Ed25519 `did:key` | Fix key generation and scan a new QR |
 | `provision/vta:handleNotFound` | Handle does not exist | Request a new QR |
-| `provision/vta/claim:alreadyClaimed` | Another key claimed the handle first | Compare the browser code; use **Not mine** and generate a new QR when it does not match |
+| `provision/vta/claim:alreadyClaimed` | Another key claimed the handle first | This wallet holds no claim and shows no code. Tell the user to select **Not mine** on the Farm page, which shows the other key's code, and generate a new QR |
 | `malformedRequest` / HTTP 400 | Envelope or payload is invalid | Fix the request; do not retry unchanged |
 | `proofRequired` or `proofInvalid` | Proof is missing or invalid | Fix signing; do not treat it as a network retry |
 | `wrongRecipient` | `recipient` is not the Farm DID | Re-read `_from` and rebuild the request |
@@ -350,9 +367,11 @@ The old handle cannot be claimed again after rejection or expiry.
 | HTTP 429 | Client rate limit | Back off before retrying |
 | HTTP 500 | Unexpected Farm failure | Retry conservatively |
 
-For signed `trust-task-error` documents, use `payload.retryable` to decide
-whether to retry. HTTP 422 is expected for `redeem:pending` and is not by itself
-a terminal failure.
+For signed `trust-task-error` documents, `payload.code` is authoritative and
+the HTTP status is informative. The Trust Task HTTPS binding maps no status to
+the `provision/vta` codes, so the Farm answers them with HTTP 422; use
+`payload.retryable` to decide whether to retry. HTTP 422 is expected for
+`redeem:pending` and is not by itself a terminal failure.
 
 ## 10. Retry rules
 
