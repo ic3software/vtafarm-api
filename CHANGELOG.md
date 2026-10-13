@@ -1,5 +1,31 @@
 # Changelog
 
+## [v0.13.0] - 2026-10-13
+
+### Breaking
+
+- Removed the VTA Browser Plugin SIOP login and identity-linking endpoints and
+  storage; passkeys remain the account authentication method.
+- Replaced the legacy mobile-connection callback states with VTA Claim
+  reservations, VTI trigger links, and explicit claim confirmation or
+  rejection.
+
+### Added
+
+- A public `/trust-task/trust-tasks` endpoint accepts proof-authenticated,
+  replay-protected `provision/vta/claim/0.1` and
+  `provision/vta/redeem/0.1` Trust Tasks and returns signed responses.
+- VTA Claim reservations support initial VTA provisioning and granting
+  additional administrator access, with short-code verification before the
+  claimant key is installed.
+- Farm signing-key generation and configuration support the public Farm DID,
+  Trust Task endpoint, and VTI trigger-link host.
+
+### Fixed
+
+- Deleting a session recursively removes all of its VTA secrets from Vault
+  instead of leaving non-seed secrets behind.
+
 ## [v0.12.1] - 2026-10-05
 
 ### Changed
