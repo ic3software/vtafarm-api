@@ -59,8 +59,8 @@ Resolve the DID from `_from` and find its `TrustTaskHTTPS` service. Append
 Example:
 
 ```text
-serviceEndpoint: https://vtafarm-api.example.com
-POST endpoint:   https://vtafarm-api.example.com/trust-tasks
+serviceEndpoint: https://vtafarm-api.example.com/trust-task
+POST endpoint:   https://vtafarm-api.example.com/trust-task/trust-tasks
 ```
 
 The `serviceEndpoint` may carry a path prefix; `/trust-tasks` is appended to
@@ -257,7 +257,7 @@ HTTP 422 with a signed Trust Task error:
     "retryable": true,
     "details": {
       "state": "claimed",
-      "confirmBy": 1791626701
+      "confirmBy": 1791835501
     }
   },
   "proof": {
