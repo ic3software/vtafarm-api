@@ -149,13 +149,51 @@ func TestTrustTaskClaimAndRedeemFlow(t *testing.T) {
 	if response.Code != http.StatusUnprocessableEntity || !bytes.Contains(response.Body.Bytes(), []byte("provision/vta/redeem:pending")) {
 		t.Fatalf("pending redeem=%d %s", response.Code, response.Body)
 	}
+	type pendingResponse struct {
+		Payload struct {
+			Details struct {
+				State     string `json:"state"`
+				ConfirmBy *int64 `json:"confirmBy"`
+			} `json:"details"`
+		} `json:"payload"`
+	}
+	var pending pendingResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending.Payload.Details.State != "claimed" || pending.Payload.Details.ConfirmBy == nil || claimed.ConfirmBy == nil ||
+		*pending.Payload.Details.ConfirmBy != claimed.ConfirmBy.Unix() {
+		t.Fatalf("pending details are not as the schema declares: %s", response.Body)
+	}
 
 	if _, err := connection.Confirm(t.Context(), db, session.ID, reservation.ID); err != nil {
 		t.Fatal(err)
 	}
+	response = postTrustTask(router, newRedeem())
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("confirmed redeem=%d %s", response.Code, response.Body)
+	}
+	pending = pendingResponse{}
+	if err := json.Unmarshal(response.Body.Bytes(), &pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending.Payload.Details.State != "confirmed" || pending.Payload.Details.ConfirmBy != nil {
+		t.Fatalf("confirmed details include a confirmation deadline: %s", response.Body)
+	}
 	started, err := connection.StartProvisioning(t.Context(), db, reservation.ID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	response = postTrustTask(router, newRedeem())
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("provisioning redeem=%d %s", response.Code, response.Body)
+	}
+	pending = pendingResponse{}
+	if err := json.Unmarshal(response.Body.Bytes(), &pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending.Payload.Details.State != "provisioning" || pending.Payload.Details.ConfirmBy != nil {
+		t.Fatalf("provisioning details include a confirmation deadline: %s", response.Body)
 	}
 	if err := db.Model(&session).Update("status", "running").Error; err != nil {
 		t.Fatal(err)

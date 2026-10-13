@@ -1,5 +1,18 @@
 # Changelog
 
+## [v0.13.1] - 2026-10-13
+
+### Changed
+
+- Clarified the mobile connection guide's endpoint construction, redeem
+  correlation, hand-over recovery, and error handling.
+
+### Fixed
+
+- Pending VTA claim redemption replies emit `details.confirmBy` as UTC Unix
+  seconds only while the claim is awaiting confirmation, matching the Trust
+  Task schema.
+
 ## [v0.13.0] - 2026-10-13
 
 ### Breaking
