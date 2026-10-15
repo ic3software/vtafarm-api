@@ -106,14 +106,9 @@ func (h *SetupHandler) Validate(c *gin.Context) {
 // GET /api/v1/setup/images?component=vta|mediator|dids|vtc
 // component defaults to "vta" (vta_only's existing behavior, unchanged).
 // mediator/dids are full_stack-only and vtc is full_stack-only —
-// same GHCR-package-tags pattern as vta.
+// same GHCR-package-tags pattern as vta. The response rows are ghcr.ImageTag
+// as-is: tag, image, the latest/nightly/main flags and the creation time.
 func (h *SetupHandler) Images(c *gin.Context) {
-	type imageOption struct {
-		Tag    string `json:"tag"`
-		Image  string `json:"image"`
-		Latest bool   `json:"latest,omitempty"`
-	}
-
 	component := c.DefaultQuery("component", "vta")
 	var client *ghcr.Client
 	switch component {
@@ -141,11 +136,7 @@ func (h *SetupHandler) Images(c *gin.Context) {
 		return
 	}
 
-	result := make([]imageOption, len(tags))
-	for i, t := range tags {
-		result[i] = imageOption{Tag: t.Tag, Image: t.Image, Latest: t.Latest}
-	}
-	c.JSON(http.StatusOK, result)
+	c.JSON(http.StatusOK, tags)
 }
 
 type createSetupRequest struct {

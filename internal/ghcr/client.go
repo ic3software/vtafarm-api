@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,10 +26,19 @@ type Client struct {
 
 // ImageTag is one entry in the version dropdown.
 type ImageTag struct {
-	Tag    string `json:"tag"`
-	Image  string `json:"image"`
-	Latest bool   `json:"latest,omitempty"`
+	Tag     string `json:"tag"`
+	Image   string `json:"image"`
+	Latest  bool   `json:"latest,omitempty"`  // the image "latest" points to (last tagged release)
+	Nightly bool   `json:"nightly,omitempty"` // the image "nightly" points to
+	Main    bool   `json:"main,omitempty"`    // the image "main" points to
+	Created string `json:"created,omitempty"` // image creation time, RFC 3339 UTC; "" when unknown
 }
+
+// channelTags are the moving tags the build pipeline repoints on each build of
+// its source (devops fpp/build-pipeline.md). They are never rows of their own:
+// the versioned tag that shares a channel's digest carries the flag instead,
+// so the dropdown only ever offers immutable <version>-<sha> images.
+var channelTags = []string{"latest", "nightly", "main"}
 
 func New(token, owner, packageName string) *Client {
 	return &Client{
@@ -47,7 +57,8 @@ func (c *Client) FullImage() string {
 // ListTags fetches all tags for the package, sorted newest-first by image
 // creation time — the same order GitHub shows package versions. Tags whose
 // creation time can't be resolved keep a semver-descending fallback order
-// after the dated ones. The tag that "latest" points to is marked Latest=true.
+// after the dated ones. The tags that "latest", "nightly" and "main" point to
+// are marked Latest, Nightly and Main; the Latest row is moved to the front.
 func (c *Client) ListTags(ctx context.Context) ([]ImageTag, error) {
 	registryToken, err := c.fetchRegistryToken(ctx)
 	if err != nil {
@@ -78,26 +89,37 @@ func (c *Client) ListTags(ctx context.Context) ([]ImageTag, error) {
 		return nil, fmt.Errorf("decode tags: %w", err)
 	}
 
-	// Separate versioned tags from "latest"; semver order is the fallback for
-	// tags whose creation time can't be resolved below.
+	// Separate versioned tags from the channel tags; semver order is the
+	// fallback for tags whose creation time can't be resolved below.
 	var tags []string
-	hasLatest := false
+	present := map[string]bool{}
 	for _, t := range body.Tags {
-		if t == "latest" {
-			hasLatest = true
+		if slices.Contains(channelTags, t) {
+			present[t] = true
 		} else {
 			tags = append(tags, t)
 		}
 	}
 	sortSemverDesc(tags)
 
-	// Resolve each tag's manifest digest and image creation time, best-effort.
+	// Resolve each tag's manifest digest and image creation time, and each
+	// present channel tag's digest, best-effort.
 	infos := make([]tagInfo, len(tags))
+	channelDigest := make([]string, len(channelTags))
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(5)
 	for i, t := range tags {
 		g.Go(func() error {
 			infos[i] = c.resolveTag(gctx, registryToken, t)
+			return nil
+		})
+	}
+	for i, t := range channelTags {
+		if !present[t] {
+			continue
+		}
+		g.Go(func() error {
+			channelDigest[i], _ = c.manifestDigest(gctx, registryToken, t)
 			return nil
 		})
 	}
@@ -109,22 +131,33 @@ func (c *Client) ListTags(ctx context.Context) ([]ImageTag, error) {
 		return infos[i].created.After(infos[j].created)
 	})
 
-	// Resolve which versioned tag "latest" points to by comparing manifest digests.
-	latestDigest := ""
-	if hasLatest {
-		latestDigest, _ = c.manifestDigest(ctx, registryToken, "latest")
-	}
-
+	// Flag the versioned tag each channel points to by comparing manifest
+	// digests. Only the first (newest) match per channel is flagged.
 	base := c.FullImage()
 	result := make([]ImageTag, len(infos))
+	flagged := make([]bool, len(channelTags))
 	latestFound := false
 	for i, info := range infos {
-		isLatest := false
-		if latestDigest != "" && !latestFound && info.digest == latestDigest {
-			isLatest = true
-			latestFound = true
+		r := ImageTag{Tag: info.tag, Image: base + ":" + info.tag}
+		if !info.created.IsZero() {
+			r.Created = info.created.UTC().Format(time.RFC3339)
 		}
-		result[i] = ImageTag{Tag: info.tag, Image: base + ":" + info.tag, Latest: isLatest}
+		for k, digest := range channelDigest {
+			if digest == "" || flagged[k] || info.digest != digest {
+				continue
+			}
+			flagged[k] = true
+			switch channelTags[k] {
+			case "latest":
+				r.Latest = true
+				latestFound = true
+			case "nightly":
+				r.Nightly = true
+			case "main":
+				r.Main = true
+			}
+		}
+		result[i] = r
 	}
 
 	// Ensure the latest-marked tag is first so frontends can default to result[0].
