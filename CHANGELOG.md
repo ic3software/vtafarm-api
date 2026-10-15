@@ -1,5 +1,23 @@
 # Changelog
 
+## [v0.14.0] - 2026-10-15
+
+### Added
+
+- Administrators can create batches of pre-provisioned VTAs, reserve them for
+  QR-based claims, confirm or reject claimants, retry failed preparation, and
+  clean up unused inventory.
+- Pooled VTAs prepare DNS, DID, storage, and Kubernetes resources in advance,
+  then remain scaled to zero until a confirmed claim activates them.
+- Container image responses identify `latest`, `nightly`, and `main` builds and
+  include image creation times.
+
+### Changed
+
+- Cluster capacity estimates account for pooled inventory while distinguishing
+  parked, zero-replica VTAs from active workloads.
+- Updated Go networking, synchronization, and WebAuthn dependencies.
+
 ## [v0.13.1] - 2026-10-13
 
 ### Changed
