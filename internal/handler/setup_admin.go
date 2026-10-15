@@ -156,10 +156,11 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 		Mode         string `json:"mode"`
 		// managed | custom | platform — the platform row is the farm's own
 		// stack and the one deletion that needs an explicit confirm.
-		DomainType string `json:"domain_type"`
-		Status     string `json:"status"`
-		ErrorMsg   string `json:"error_msg,omitempty"`
-		Fqdn       string `json:"fqdn"`
+		DomainType  string `json:"domain_type"`
+		Status      string `json:"status"`
+		FailedStage string `json:"failed_stage,omitempty"`
+		ErrorMsg    string `json:"error_msg,omitempty"`
+		Fqdn        string `json:"fqdn"`
 		// Per-component images — empty for components the mode doesn't run.
 		VtaImage      string `json:"vta_image,omitempty"`
 		MediatorImage string `json:"mediator_image,omitempty"`
@@ -190,6 +191,7 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 			Mode:          s.Mode,
 			DomainType:    s.DomainType,
 			Status:        s.Status,
+			FailedStage:   s.FailureStage(),
 			ErrorMsg:      s.ErrorMsg,
 			Fqdn:          s.FQDN(),
 			VtaImage:      s.VtaImage,

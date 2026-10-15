@@ -11,8 +11,8 @@ import (
 )
 
 var provisionStatuses = []string{
-	"provisioning", "step_import_admin_did", "deploy_vta", "step_vtc_setup_key",
-	"step_vtc_acl_grant", "step_vtc_setup", "deploy_vtc",
+	"provisioning", "step_import_admin_did", "step_vtc_setup_key",
+	"step_vtc_acl_grant", "step_vtc_setup",
 }
 
 func (o *Orchestrator) provisionAdminLabel(sessionID uint, adminDid, fallback string) string {
