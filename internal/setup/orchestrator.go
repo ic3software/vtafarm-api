@@ -18,6 +18,7 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/model"
 	"github.com/ic3software/vtafarm-api/internal/resourceprofile"
 	"github.com/ic3software/vtafarm-api/internal/vault"
+	"github.com/ic3software/vtafarm-api/internal/webvh"
 )
 
 // Orchestrator drives a setup session through its full lifecycle.
@@ -169,7 +170,11 @@ func (o *Orchestrator) Cancel(sessionID uint) error {
 // Resume re-attaches goroutines for sessions that were interrupted mid-run at startup.
 func (o *Orchestrator) Resume(ctx context.Context) {
 	var running []model.SetupSession
-	if err := o.db.Where("status = ?", "vta_setup_running").Find(&running).Error; err != nil {
+	query := o.db.Where("status = ?", "vta_setup_running")
+	if o.db.Migrator().HasTable(&model.PoolSession{}) {
+		query = query.Where("NOT EXISTS (SELECT 1 FROM pool_sessions WHERE session_id = setup_sessions.id)")
+	}
+	if err := query.Find(&running).Error; err != nil {
 		log.Printf("[orchestrator] resume: query failed: %v", err)
 	}
 	for _, s := range running {
@@ -195,6 +200,11 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 	var session model.SetupSession
 	if err := o.db.First(&session, sessionID).Error; err != nil {
 		log.Printf("[orchestrator] session %d: load failed: %v", sessionID, err)
+		return
+	}
+	pooled, err := o.isPoolSession(ctx, sessionID)
+	if err != nil {
+		log.Printf("[orchestrator] session %d: pool membership lookup failed: %v", sessionID, err)
 		return
 	}
 
@@ -280,7 +290,7 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 	// Extract did.jsonl content appended to the job logs after the marker.
 	didLog := ParseVtaDidLog(logs)
 
-	if session.ConnectionSource == model.ConnectionExternal {
+	if session.ConnectionSource == model.ConnectionExternal || pooled {
 		if didLog == "" || len(didLog) >= MaxVtaDIDLogBytes {
 			o.markFailed(sessionID, "VTA setup produced no usable DID log for external publication")
 			return
@@ -292,6 +302,9 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 		readyStatus = "awaiting_did_publication"
 		storedDidLog = didLog
 	}
+	if pooled {
+		readyStatus, storedDidLog = model.StatusPoolPublishing, didLog
+	}
 	if err := o.db.Model(&model.SetupSession{}).Where("id = ?", sessionID).Updates(map[string]any{
 		"status":      readyStatus,
 		"vta_did":     vtaDID,
@@ -302,6 +315,12 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 		return
 	}
 	log.Printf("[orchestrator] session %d: setup complete, VTA DID=%s", sessionID, vtaDID)
+	if pooled {
+		if err := o.publishPoolDID(ctx, sessionID); err != nil && ctx.Err() == nil {
+			o.markFailed(sessionID, err.Error())
+		}
+		return
+	}
 	if session.ConnectionSource == model.ConnectionExternal {
 		return
 	}
@@ -457,12 +476,33 @@ func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDi
 		o.markFailed(sessionID, "failed to load resource defaults: "+err.Error())
 		return
 	}
+	pooled, err := o.isPoolSession(ctx, session.ID)
+	if err != nil {
+		o.markFailed(sessionID, "failed to identify pool session")
+		return
+	}
+	if pooled {
+		var saved model.WorkloadResource
+		if err := o.db.Where("setup_session_id = ? AND component = 'vta'", session.ID).First(&saved).Error; err != nil {
+			o.markFailed(sessionID, "pool resource profile is missing")
+			return
+		}
+		p := profiles[k8s.ComponentVTA]
+		p.MemoryRequest, p.MemoryLimit = saved.MemoryRequest, saved.MemoryLimit
+		profiles[k8s.ComponentVTA] = p
+	}
 	if err := o.k8s.CreateVtaDeployment(ctx, ns, sessionID, session.VtaImage, profiles.Requirements(k8s.ComponentVTA)); err != nil {
 		if ctx.Err() != nil {
 			return
 		}
 		o.markFailed(sessionID, "failed to create VTA deployment: "+err.Error())
 		return
+	}
+	if pooled {
+		if err := o.k8s.ScaleComponentDeployment(ctx, ns, k8s.VtaDeploymentName(sessionID), 1); err != nil {
+			o.markFailed(sessionID, "failed to start prebuilt VTA deployment: "+err.Error())
+			return
+		}
 	}
 
 	if err := o.k8s.CreateVtaService(ctx, ns, sessionID); err != nil {
@@ -499,6 +539,102 @@ func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDi
 		"updated_at": time.Now(),
 	})
 	log.Printf("[orchestrator] session %d: VTA running at %s", sessionID, session.FQDN())
+	if pooled {
+		if current, err := connection.Current(o.db, session.ID); err == nil && current != nil {
+			_ = connection.MarkReleased(ctx, o.db, current.ID)
+		}
+	}
+}
+
+// BuildPool runs synchronously under the pool worker's cross-replica lock.
+func (o *Orchestrator) BuildPool(ctx context.Context, sessionID uint) error {
+	var session model.SetupSession
+	if err := o.db.WithContext(ctx).First(&session, sessionID).Error; err != nil {
+		return err
+	}
+	pooled, err := o.isPoolSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if !pooled || session.AdminDid != "" || session.Status == "deleting" {
+		return connection.ErrConflict
+	}
+	if session.Status == model.StatusPoolWaiting {
+		return nil
+	}
+	if session.VtaDid == "" {
+		o.runSetup(ctx, sessionID)
+	} else if err := o.publishPoolDID(ctx, sessionID); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := o.db.First(&session, sessionID).Error; err != nil {
+		return err
+	}
+	if session.Status != model.StatusPoolPrepared {
+		return fmt.Errorf("pool setup did not complete: %s", session.ErrorMsg)
+	}
+	profiles, err := resourceprofile.Load(ctx, o.db)
+	if err != nil {
+		return err
+	}
+	var saved model.WorkloadResource
+	if err := o.db.Where("setup_session_id = ? AND component = 'vta'", session.ID).First(&saved).Error; err != nil {
+		return err
+	}
+	profile := profiles[k8s.ComponentVTA]
+	profile.MemoryRequest, profile.MemoryLimit = saved.MemoryRequest, saved.MemoryLimit
+	profiles[k8s.ComponentVTA] = profile
+	ns := o.k8s.UserNamespace(fmt.Sprintf("%d", session.UserID))
+	if err := o.k8s.CreateParkedVtaDeployment(ctx, ns, session.ID, session.VtaImage, profiles.Requirements(k8s.ComponentVTA)); err != nil {
+		return err
+	}
+	if err := o.k8s.CreateVtaService(ctx, ns, session.ID); err != nil {
+		return err
+	}
+	if err := o.k8s.CreateVtaIngress(ctx, ns, session.ID, session.FQDN()); err != nil {
+		return err
+	}
+	return o.db.WithContext(ctx).Model(&session).Updates(map[string]any{
+		"status": model.StatusPoolWaiting, "error_msg": "", "failed_stage": "", "updated_at": time.Now(),
+	}).Error
+}
+
+func (o *Orchestrator) publishPoolDID(ctx context.Context, sessionID uint) error {
+	var s model.SetupSession
+	if err := o.db.WithContext(ctx).First(&s, sessionID).Error; err != nil {
+		return err
+	}
+	if o.didHosting == nil || s.VtaDid == "" || s.VtaDidLog == "" {
+		return fmt.Errorf("pool DID publication is not configured or its log is missing")
+	}
+	dh, err := o.didHosting.For(s.DidHostingControlURL, s.DIDHostingDid)
+	if err != nil {
+		return err
+	}
+	resolver := webvh.NewResolver(5 * time.Second)
+	// Resolving the exact self-certifying DID validates a prior successful
+	// publication. Never overwrite a different document after a conflict.
+	if err := resolver.ResolveDID(ctx, s.VtaDid); err != nil {
+		if err := dh.RegisterDid(ctx, VtaDidPath(s.VtaName), s.VtaDidLog); err != nil {
+			return err
+		}
+		if err := resolver.ResolveDID(ctx, s.VtaDid); err != nil {
+			return err
+		}
+	}
+	return o.db.WithContext(ctx).Model(&s).Where("status <> 'deleting'").Updates(map[string]any{"status": model.StatusPoolPrepared, "error_msg": "", "failed_stage": ""}).Error
+}
+
+func (o *Orchestrator) isPoolSession(ctx context.Context, sessionID uint) (bool, error) {
+	if !o.db.Migrator().HasTable(&model.PoolSession{}) {
+		return false, nil
+	}
+	var count int64
+	err := o.db.WithContext(ctx).Model(&model.PoolSession{}).Where("session_id = ?", sessionID).Count(&count).Error
+	return count == 1, err
 }
 
 func (o *Orchestrator) markFailed(sessionID uint, msg string) {

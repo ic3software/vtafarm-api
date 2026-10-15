@@ -44,3 +44,21 @@ func TestCreateVtaDeploymentUsesHealthReadinessProbe(t *testing.T) {
 		t.Fatalf("unexpected readiness timing: %+v", probe)
 	}
 }
+
+func TestCreateParkedVtaDeploymentHasNoReplicas(t *testing.T) {
+	client := &Client{kube: fake.NewSimpleClientset()}
+
+	if err := client.CreateParkedVtaDeployment(context.Background(), "test", 43, "example/vta:test", ComponentResources("10m", "32Mi", "128Mi")); err != nil {
+		t.Fatalf("CreateParkedVtaDeployment() error = %v", err)
+	}
+
+	deployment, err := client.kube.AppsV1().Deployments("test").Get(
+		context.Background(), VtaDeploymentName(43), metav1.GetOptions{},
+	)
+	if err != nil {
+		t.Fatalf("get Deployment: %v", err)
+	}
+	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 0 {
+		t.Fatalf("replicas = %v, want 0", deployment.Spec.Replicas)
+	}
+}

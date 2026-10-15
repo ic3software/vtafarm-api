@@ -10,6 +10,7 @@ import (
 
 	"github.com/ic3software/vtafarm-api/internal/middleware"
 	"github.com/ic3software/vtafarm-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/publicid"
 )
 
 type SignupHandler struct {
@@ -60,7 +61,10 @@ func (h *SignupHandler) Signup(c *gin.Context) {
 	const maxAttempts = 5
 	var createErr error
 	for range maxAttempts {
-		user.UniqueId = generateUniqueId()
+		user.UniqueId, createErr = publicid.NewAccount()
+		if createErr != nil {
+			break
+		}
 		createErr = h.db.Create(&user).Error
 		if createErr == nil {
 			break

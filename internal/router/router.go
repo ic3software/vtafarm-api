@@ -53,7 +53,7 @@ func Setup(
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     allowOrigins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Authorization", "Content-Type"},
+		AllowHeaders:     []string{"Authorization", "Content-Type", "Idempotency-Key"},
 		ExposeHeaders:    []string{"Content-Length", "Content-Disposition"},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
@@ -133,6 +133,10 @@ func Setup(
 	// Image upgrades — shared by the admin batch routes and the user
 	// self-service routes below; background runner, DB-backed queue.
 	uph := handler.NewUpgradeHandler(db, upgradeRunner, ghcrClient, mediatorGhcrClient, didsGhcrClient, vtcGhcrClient)
+	mobile := handler.NewMobileConnectionHandler(db, orch, sh.KickAdditionalMobile, cfg.VTAClaim, trustTask.Enabled())
+	dashH := handler.NewDashboardHandler(db, k8sClient)
+	poolH := handler.NewPoolHandler(db, sh, dashH, mobile)
+	poolH.Start(workerCtx)
 
 	// Admin routes — cookie: vtafarm_admin
 	adminAuth := v1.Group("",
@@ -167,6 +171,17 @@ func Setup(
 		adminAuth.GET("/admin/load-tests/:id", sh.AdminGetLoadTest)
 		adminAuth.POST("/admin/load-tests/:id/check", sh.AdminCheckLoadTest)
 		adminAuth.DELETE("/admin/load-tests/:id", sh.AdminDeleteLoadTest)
+		adminAuth.POST("/admin/pool-batches", poolH.CreateBatch)
+		adminAuth.GET("/admin/pool-batches", poolH.ListBatches)
+		adminAuth.GET("/admin/pool-batches/:id", poolH.GetBatch)
+		adminAuth.DELETE("/admin/pool-batches/:id", poolH.CleanupBatch)
+		adminAuth.POST("/admin/pool-batches/:id/claims", poolH.Reserve)
+		adminAuth.POST("/admin/pool-sessions/cleanup", poolH.Cleanup)
+		adminAuth.POST("/admin/pool-sessions/:id/retry", poolH.Retry)
+		poolClaims := adminAuth.Group("/admin/pool-claims", middleware.NoStore(), middleware.RateLimit(120, time.Minute))
+		poolClaims.GET("/:request_id", poolH.GetClaim)
+		poolClaims.POST("/:request_id/confirm", poolH.ConfirmClaim)
+		poolClaims.POST("/:request_id/reject", poolH.RejectClaim)
 		// Same teardown as the user-facing DELETE /setup/:id, but reaches any
 		// user's session rather than only the caller's. Deleting the platform
 		// stack additionally requires {"confirm": "<label>"} in the body.
@@ -219,7 +234,6 @@ func Setup(
 		adminAuth.POST("/admin/platform-stack/admins/refresh", sh.RefreshPlatformStackAdmins)
 		// Cluster capacity overview: CPU/memory/storage totals per node plus
 		// how many more sessions of each mode still fit.
-		dashH := handler.NewDashboardHandler(db, k8sClient)
 		adminAuth.GET("/admin/dashboard", dashH.Get)
 		// Same handlers as their /setup/... twins — admins need the same facts
 		// (image tags for upgrades, hostname shape for the platform stack page)
@@ -250,8 +264,6 @@ func Setup(
 	// here. Consuming revokes the account's passkeys and sets a login cookie.
 	v1.GET("/recovery/:token", rh.Validate)
 	v1.POST("/recovery/:token", middleware.RateLimit(10, time.Minute), rh.Consume)
-
-	mobile := handler.NewMobileConnectionHandler(db, orch, sh.KickAdditionalMobile, cfg.VTAClaim, trustTask.Enabled())
 
 	// User routes — cookie: vtafarm_user
 	userAuth := v1.Group("",

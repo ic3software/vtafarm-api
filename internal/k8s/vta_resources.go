@@ -44,9 +44,18 @@ func VtaTuningEnv() []corev1.EnvVar {
 // /work/vta to match, so VTA resolves its relative config.toml and data_dir
 // onto it. Port 8100. Idempotent — AlreadyExists is ignored.
 func (c *Client) CreateVtaDeployment(ctx context.Context, ns string, sessionID uint, image string, resources corev1.ResourceRequirements) error {
+	return c.createVtaDeployment(ctx, ns, sessionID, image, resources, 1)
+}
+
+// CreateParkedVtaDeployment creates the final Deployment without starting a
+// pod. Claim confirmation later uses the ordinary provisioning path to scale it.
+func (c *Client) CreateParkedVtaDeployment(ctx context.Context, ns string, sessionID uint, image string, resources corev1.ResourceRequirements) error {
+	return c.createVtaDeployment(ctx, ns, sessionID, image, resources, 0)
+}
+
+func (c *Client) createVtaDeployment(ctx context.Context, ns string, sessionID uint, image string, resources corev1.ResourceRequirements, replicas int32) error {
 	name := vtaDeploymentName(sessionID)
 	pvcName := VtaPVCName(sessionID)
-	replicas := int32(1)
 	port := int32(8100)
 	labels := map[string]string{
 		"app":        "vta",

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -74,17 +75,45 @@ type ClusterStats struct {
 // ClusterResourceStats reads node capacity, pod requests, live usage
 // (metrics-server), and Longhorn disk stats across every node in the cluster.
 func (c *Client) ClusterResourceStats(ctx context.Context) (*ClusterStats, error) {
-	nodeList, err := c.kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("list nodes: %w", err)
-	}
+	var nodeList *corev1.NodeList
+	var podList *corev1.PodList
+	var cpuUsed, memUsed map[string]int64
+	var metricsErr error
+	var storageNodes []StorageNodeStat
+	var dataWritten int64
+	var replicas int
+	var storageErr error
 
-	// Non-terminal pods only: Succeeded/Failed pods release their requests.
-	podList, err := c.kube.CoreV1().Pods("").List(ctx, metav1.ListOptions{
-		FieldSelector: "status.phase!=Succeeded,status.phase!=Failed",
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.Go(func() error {
+		var err error
+		nodeList, err = c.kube.CoreV1().Nodes().List(groupCtx, metav1.ListOptions{})
+		if err != nil {
+			return fmt.Errorf("list nodes: %w", err)
+		}
+		return nil
 	})
-	if err != nil {
-		return nil, fmt.Errorf("list pods: %w", err)
+	group.Go(func() error {
+		var err error
+		// Non-terminal pods only: Succeeded/Failed pods release their requests.
+		podList, err = c.kube.CoreV1().Pods("").List(groupCtx, metav1.ListOptions{
+			FieldSelector: "status.phase!=Succeeded,status.phase!=Failed",
+		})
+		if err != nil {
+			return fmt.Errorf("list pods: %w", err)
+		}
+		return nil
+	})
+	group.Go(func() error {
+		cpuUsed, memUsed, metricsErr = c.nodeUsage(groupCtx)
+		return nil
+	})
+	group.Go(func() error {
+		storageNodes, dataWritten, replicas, storageErr = c.longhornStats(groupCtx)
+		return nil
+	})
+	if err := group.Wait(); err != nil {
+		return nil, err
 	}
 
 	cpuReq := map[string]int64{}
@@ -101,7 +130,6 @@ func (c *Client) ClusterResourceStats(ctx context.Context) (*ClusterStats, error
 
 	stats := &ClusterStats{StorageReplicaCount: 1}
 
-	cpuUsed, memUsed, metricsErr := c.nodeUsage(ctx)
 	stats.MetricsAvailable = metricsErr == nil
 
 	for i := range nodeList.Items {
@@ -119,7 +147,6 @@ func (c *Client) ClusterResourceStats(ctx context.Context) (*ClusterStats, error
 		stats.Nodes = append(stats.Nodes, stat)
 	}
 
-	storageNodes, dataWritten, replicas, storageErr := c.longhornStats(ctx)
 	if storageErr == nil {
 		stats.StorageAvailable = true
 		stats.StorageNodes = storageNodes

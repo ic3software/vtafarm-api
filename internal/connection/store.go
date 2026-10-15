@@ -91,7 +91,7 @@ func Ready(s *model.SetupSession) bool {
 	if s.IsFullStack() {
 		return s.Status == "awaiting_admin_did"
 	}
-	return s.Status == "vta_setup_complete"
+	return s.Status == "vta_setup_complete" || s.Status == model.StatusPoolWaiting
 }
 
 func lockSession(tx *gorm.DB, id uint) (*model.SetupSession, error) {
@@ -143,6 +143,16 @@ func finalStatus(status string) bool {
 // Change creates, refreshes, or cancels an owner-visible reservation. It always
 // locks the setup session first, matching claim/confirm/provision transitions.
 func Change(ctx context.Context, db *gorm.DB, sessionID uint, action, expectedID string) (*model.MobileConnection, error) {
+	return change(ctx, db, sessionID, action, expectedID, false)
+}
+
+// ChangePool is called inside the pool allocation transaction, after the slot
+// is reserved. Public owner routes cannot allocate prebuilt pool inventory.
+func ChangePool(ctx context.Context, db *gorm.DB, sessionID uint) (*model.MobileConnection, error) {
+	return change(ctx, db, sessionID, "create", "", true)
+}
+
+func change(ctx context.Context, db *gorm.DB, sessionID uint, action, expectedID string, pooled bool) (*model.MobileConnection, error) {
 	var result *model.MobileConnection
 	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		s, err := lockSession(tx, sessionID)
@@ -176,6 +186,10 @@ func Change(ctx context.Context, db *gorm.DB, sessionID uint, action, expectedID
 		operation, err := operationFor(s, s.VtaDid)
 		if err != nil {
 			return err
+		}
+		isPool := s.Status == model.StatusPoolWaiting
+		if isPool != pooled || isPool && operation != OperationProvisionVTA {
+			return ErrConflict
 		}
 		if current != nil {
 			switch current.Status {
@@ -403,6 +417,9 @@ func StartProvisioning(ctx context.Context, db *gorm.DB, requestID string) (*mod
 		}
 		switch result.Operation {
 		case OperationProvisionVTA:
+			if s.Status == model.StatusPoolWaiting && result.ConfirmedAt == nil {
+				return ErrConflict
+			}
 			if err := beginProvision(tx, s, result.AdminDid, now); err != nil {
 				return err
 			}
@@ -490,6 +507,9 @@ func AcceptManual(ctx context.Context, db *gorm.DB, sessionID uint, value string
 		s, err := lockSession(tx, sessionID)
 		if err != nil {
 			return err
+		}
+		if s.Status == model.StatusPoolWaiting {
+			return ErrConflict
 		}
 		current, err := Current(tx, sessionID)
 		if err != nil {
