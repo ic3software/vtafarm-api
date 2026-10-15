@@ -231,6 +231,60 @@ components:
         [id, status, requested_count, created_count, running_count,
          failed_count, vta_image, created_at, updated_at, sessions]
 
+    PoolCounts:
+      type: object
+      properties:
+        total: { type: integer }
+        creating: { type: integer }
+        waiting: { type: integer }
+        claiming: { type: integer }
+        activating: { type: integer }
+        running: { type: integer }
+        failed: { type: integer }
+        deleting: { type: integer }
+      required: [total, creating, waiting, claiming, activating, running, failed, deleting]
+
+    PoolSession:
+      type: object
+      properties:
+        session_id: { type: integer }
+        user_id: { type: integer }
+        vta_name: { type: string }
+        status: { type: string }
+        error_msg: { type: string }
+        url: { type: string, format: uri }
+        claimed: { type: boolean }
+        cleanable: { type: boolean }
+        claim_state:
+          type: string
+          enum: [open, claimed, confirmed, provisioning, released, rejected, lapsed]
+      required: [session_id, user_id, vta_name, status, url, claimed, cleanable]
+
+    PoolBatch:
+      type: object
+      properties:
+        id: { type: integer }
+        label: { type: string }
+        requested_count: { type: integer }
+        vta_image: { type: string }
+        created_at: { type: string, format: date-time }
+        counts: { $ref: "#/components/schemas/PoolCounts" }
+        sessions:
+          type: array
+          items: { $ref: "#/components/schemas/PoolSession" }
+      required: [id, label, requested_count, created_at, counts]
+
+    PoolClaim:
+      type: object
+      properties:
+        batch_id: { type: integer }
+        session_id: { type: integer }
+        vta_name: { type: string }
+        enabled: { type: boolean }
+        server_time: { type: string, format: date-time }
+        connection: { $ref: "#/components/schemas/MobileConnection" }
+      required: [batch_id, session_id, vta_name, enabled, server_time, connection]
+
     RateLimited:
       type: object
       properties:
@@ -1627,6 +1681,264 @@ paths:
         "503":
           description: Kubernetes is not configured
 
+  /api/v1/admin/pool-batches:
+    get:
+      summary: List pooled VTA batches
+      description: Returns batch summaries with counts derived from their setup sessions and latest claim records.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      responses:
+        "200":
+          description: Pool batch summaries
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/PoolBatch" }
+    post:
+      summary: Create a pooled VTA batch
+      description: |
+        Atomically creates one dedicated user and setup session per requested
+        VTA, then queues durable background preparation. The request is rejected
+        before any rows are inserted when `count` exceeds the same strict
+        VTA-only capacity shown by the Admin Dashboard.
+
+        Repeating an accepted request with the same `Idempotency-Key` and body
+        returns the original batch. Reusing the key with a different body is a
+        conflict.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label: { type: string, minLength: 1, maxLength: 120 }
+                count: { type: integer, minimum: 1 }
+                vta_image: { type: string, minLength: 1 }
+              required: [label, count, vta_image]
+      responses:
+        "201":
+          description: Batch admitted and queued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PoolBatch" }
+        "200":
+          description: Idempotent replay of an existing batch
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PoolBatch" }
+        "409":
+          description: Idempotency key conflicts with another request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: Requested count exceeds live VTA-only capacity
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/Error" }
+                  - type: object
+                    properties:
+                      reason: { type: string, const: insufficient_capacity }
+                      available: { type: integer, minimum: 0 }
+
+  /api/v1/admin/pool-batches/{id}:
+    get:
+      summary: Get one pooled VTA batch
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: Batch details and every remaining member
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PoolBatch" }
+        "404":
+          description: Batch not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/pool-batches/{id}/claims:
+    post:
+      summary: Reserve the next waiting VTA and create its Keyring QR
+      description: Concurrent calls never receive the same active setup session. The returned trigger link is rendered as the QR payload.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: Claim QR reservation
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PoolClaim" }
+        "409":
+          description: No waiting VTA is available
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/pool-claims/{request_id}:
+    get:
+      summary: Poll a pooled VTA claim
+      description: Reconciles QR and confirmation expiry before returning the latest state.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - in: path
+          name: request_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Current claim state
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PoolClaim" }
+        "404":
+          description: Claim not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/pool-claims/{request_id}/confirm:
+    post:
+      summary: Confirm matching Keyring comparison codes and activate the VTA
+      description: Confirmation permanently protects this VTA from unused-inventory cleanup and starts its parked Deployment.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - in: path
+          name: request_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Confirmed or provisioning claim
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PoolClaim" }
+        "409":
+          description: Claim is not confirmable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "410":
+          description: Confirmation window expired
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/pool-claims/{request_id}/reject:
+    post:
+      summary: Reject a mismatched pooled VTA claim
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - in: path
+          name: request_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Rejected claim; its untouched VTA may be offered again
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PoolClaim" }
+
+  /api/v1/admin/pool-sessions/cleanup:
+    post:
+      summary: Queue cleanup for selected unused pooled VTAs
+      description: The whole selection is rejected atomically if any member is claimed, actively being claimed, or has acquired login credentials.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                session_ids:
+                  type: array
+                  minItems: 1
+                  uniqueItems: true
+                  items: { type: integer, minimum: 1 }
+              required: [session_ids]
+      responses:
+        "202":
+          description: Cleanup queued; background workers will retry after restarts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_ids:
+                    type: array
+                    items: { type: integer }
+                  status: { type: string, const: deleting }
+                required: [session_ids, status]
+        "409":
+          description: At least one selected session is protected
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/pool-sessions/{id}/retry:
+    post:
+      summary: Retry preparation of an unclaimed failed pooled VTA
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "202":
+          description: Preparation requeued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_id: { type: integer }
+                  status: { type: string, const: pool_creating }
+                required: [session_id, status]
+        "409":
+          description: Session is claimed or is not a retryable failed pool member
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/v1/admin/load-tests:
     post:
       summary: Start a VTA provisioning load test
@@ -1943,7 +2255,7 @@ paths:
         "400": { description: Invalid JSON body }
         "401": { description: Admin authentication required }
         "403": { description: Insufficient role }
-        "422": { description: Missing, duplicate, or unknown component, or invalid memory values }
+        "422": { description: "Missing, duplicate, or unknown component, or invalid memory values" }
         "500": { description: Could not save defaults }
 
   /api/v1/admin/setup-sessions/resources:
@@ -2009,7 +2321,7 @@ paths:
                         error: { type: string }
         "404": { description: One or more sessions were not found }
         "409": { description: One or more sessions are not running }
-        "422": { description: Validation, capacity, or Kubernetes dry-run failed }
+        "422": { description: "Validation, capacity, or Kubernetes dry-run failed" }
         "503": { description: Kubernetes is not configured }
 
   /api/v1/admin/setup-sessions/{id}/resources:
@@ -5759,7 +6071,7 @@ paths:
         '400': {description: Malformed document or payload}
         '409': {description: Document ID reused with different content}
         '415': {description: Content-Type is not application/json}
-        '422': {description: Task, proof, recipient, expiry, or business-policy rejection}
+        '422': {description: "Task, proof, recipient, expiry, or business-policy rejection"}
         '429': {description: Rate limited}
         '503': {description: Trust Task service or replay record unavailable}
 

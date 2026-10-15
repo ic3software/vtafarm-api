@@ -859,6 +859,14 @@ func (h *SetupHandler) teardownSession(c *gin.Context, session *model.SetupSessi
 // response. The user/admin delete handlers and load-test batch cleanup share it
 // so all three remove the same DNS, DID-hosting, Kubernetes and Vault state.
 func (h *SetupHandler) teardownVtaOnlySession(ctx context.Context, session *model.SetupSession) (int, error) {
+	var poolMembership int64
+	if h.db.Migrator().HasTable(&model.PoolSession{}) {
+		if err := h.db.Model(&model.PoolSession{}).Where("session_id = ?", session.ID).Count(&poolMembership).Error; err != nil {
+			return http.StatusInternalServerError, errors.New("failed to check pool membership")
+		}
+	}
+	isPoolSession := poolMembership == 1
+
 	if h.cf != nil && session.CFRecordID != "" {
 		if err := h.cf.DeleteRecord(ctx, session.CFRecordID); err != nil {
 			return http.StatusBadGateway, fmt.Errorf("failed to delete DNS record: %w", err)
@@ -903,7 +911,38 @@ func (h *SetupHandler) teardownVtaOnlySession(ctx context.Context, session *mode
 		h.orch.TeardownVaultSecrets(ctx, session.UserID, session.ID)
 	}
 
-	if err := h.db.Delete(session).Error; err != nil {
+	if err := h.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if isPoolSession {
+			if err := tx.Delete(&model.PoolSession{}, "session_id = ?", session.ID).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Delete(session).Error; err != nil {
+			return err
+		}
+		if !isPoolSession {
+			return nil
+		}
+		var remaining int64
+		if err := tx.Model(&model.SetupSession{}).Where("user_id = ?", session.UserID).Count(&remaining).Error; err != nil {
+			return err
+		}
+		if remaining != 0 {
+			return nil
+		}
+		var user model.User
+		if err := tx.First(&user, session.UserID).Error; err != nil {
+			return err
+		}
+		var passkeys int64
+		if err := tx.Model(&model.UserPasskey{}).Where("user_id = ?", user.ID).Count(&passkeys).Error; err != nil {
+			return err
+		}
+		if user.Email == nil && passkeys == 0 && !user.FullstackAccess {
+			return tx.Delete(&user).Error
+		}
+		return nil
+	}); err != nil {
 		return http.StatusInternalServerError, errors.New("failed to delete session")
 	}
 
@@ -919,6 +958,50 @@ func (h *SetupHandler) teardownVtaOnlySession(ctx context.Context, session *mode
 		}
 	}
 	return http.StatusNoContent, nil
+}
+
+// cleanupPoolSession finalizes a session that QueueCleanup already protected
+// and moved to deleting. It is called by the durable pool runner and can be
+// retried after a process restart.
+func (h *SetupHandler) cleanupPoolSession(ctx context.Context, sessionID uint) error {
+	var session model.SetupSession
+	if err := h.db.WithContext(ctx).First(&session, sessionID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+	var membership int64
+	if err := h.db.WithContext(ctx).Model(&model.PoolSession{}).
+		Where("session_id = ?", sessionID).Count(&membership).Error; err != nil {
+		return err
+	}
+	if membership == 0 {
+		return nil
+	}
+	if session.Status != "deleting" || session.AdminDid != "" {
+		return errors.New("pool session is no longer eligible for cleanup")
+	}
+	var confirmed int64
+	if err := h.db.WithContext(ctx).Model(&model.MobileConnection{}).
+		Where("session_id = ? AND confirmed_at IS NOT NULL", sessionID).Count(&confirmed).Error; err != nil {
+		return err
+	}
+	if confirmed != 0 {
+		return errors.New("confirmed pool claim cannot be cleaned as unused inventory")
+	}
+	if h.orch != nil {
+		if err := h.orch.Cancel(sessionID); err != nil {
+			return err
+		}
+	}
+	release, err := h.acquireSessionMaintenance(sessionID)
+	if err != nil {
+		return err
+	}
+	defer release()
+	_, err = h.teardownVtaOnlySession(ctx, &session)
+	return err
 }
 
 // GET /api/v1/setup/:id/logs

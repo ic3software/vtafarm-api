@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/ic3software/vtafarm-api/internal/connection"
 	"github.com/ic3software/vtafarm-api/internal/didkey"
@@ -128,5 +129,105 @@ func TestConfirmedFailureCannotReturnToInventory(t *testing.T) {
 	}
 	if err := QueueCleanup(context.Background(), db, []uint{membership.SessionID}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("QueueCleanup() error = %v, want ErrConflict", err)
+	}
+}
+
+func TestReserveDoesNotReuseActiveClaim(t *testing.T) {
+	db := poolDatabase(t)
+	batch, _, err := admission(t, db, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.SetupSession{}).
+		Where("id IN (SELECT session_id FROM pool_sessions WHERE batch_id = ?)", batch.ID).
+		Updates(map[string]any{"status": model.StatusPoolWaiting, "vta_did": "did:webvh:example.com:test"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	first, err := Reserve(context.Background(), db, batch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Reserve(context.Background(), db, batch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.SessionID == second.SessionID {
+		t.Fatalf("two active claims used session %d", first.SessionID)
+	}
+}
+
+func TestExpiredClaimCanBeReplacedAndCleaned(t *testing.T) {
+	db := poolDatabase(t)
+	batch, _, err := admission(t, db, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var membership model.PoolSession
+	if err := db.First(&membership, "batch_id = ?", batch.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.SetupSession{}).Where("id = ?", membership.SessionID).
+		Updates(map[string]any{"status": model.StatusPoolWaiting, "vta_did": "did:webvh:example.com:test"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	first, err := Reserve(context.Background(), db, batch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-10 * time.Minute)
+	if err := db.Model(first).Updates(map[string]any{"created_at": past, "expires_at": past}).Error; err != nil {
+		t.Fatal(err)
+	}
+	second, err := Reserve(context.Background(), db, batch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ID == first.ID || second.SessionID != first.SessionID {
+		t.Fatalf("replacement claim = %+v, first = %+v", second, first)
+	}
+	if err := db.Model(second).Updates(map[string]any{"created_at": past, "expires_at": past}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := QueueCleanup(context.Background(), db, []uint{membership.SessionID}); err != nil {
+		t.Fatalf("QueueCleanup(expired claim) error = %v", err)
+	}
+	var session model.SetupSession
+	if err := db.First(&session, membership.SessionID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if session.Status != "deleting" {
+		t.Fatalf("status = %q, want deleting", session.Status)
+	}
+}
+
+func TestRetryBuildProtectsClaimedSession(t *testing.T) {
+	db := poolDatabase(t)
+	batch, _, err := admission(t, db, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var membership model.PoolSession
+	if err := db.First(&membership, "batch_id = ?", batch.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.SetupSession{}).Where("id = ?", membership.SessionID).
+		Updates(map[string]any{"status": "failed", "error_msg": "temporary"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := RetryBuild(context.Background(), db, membership.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	var session model.SetupSession
+	if err := db.First(&session, membership.SessionID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if session.Status != model.StatusPoolCreating || session.ErrorMsg != "" {
+		t.Fatalf("retried session = %+v", session)
+	}
+	if err := db.Model(&session).Updates(map[string]any{"status": "failed", "admin_did": "did:key:z6Mktest"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := RetryBuild(context.Background(), db, membership.SessionID); !errors.Is(err, ErrConflict) {
+		t.Fatalf("RetryBuild(claimed) error = %v, want ErrConflict", err)
 	}
 }

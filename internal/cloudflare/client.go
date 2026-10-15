@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 )
 
 const baseURL = "https://api.cloudflare.com/client/v4"
@@ -119,6 +120,47 @@ func (c *Client) CreateARecord(ctx context.Context, name, ip string) (string, er
 		return "", err
 	}
 	return result.Result.ID, nil
+}
+
+// EnsureARecord returns an existing matching record or creates it. Pool builds
+// use this instead of a blind create so a process crash after Cloudflare
+// accepts the record but before its ID reaches PostgreSQL is recoverable.
+func (c *Client) EnsureARecord(ctx context.Context, name, ip string) (string, error) {
+	endpoint, err := url.Parse(fmt.Sprintf("%s/zones/%s/dns_records", baseURL, c.zoneID))
+	if err != nil {
+		return "", err
+	}
+	query := endpoint.Query()
+	query.Set("type", "A")
+	query.Set("name", name)
+	endpoint.RawQuery = query.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var result apiResponse[[]DNSRecord]
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if err := cfError(result.Success, result.Errors); err != nil {
+		return "", err
+	}
+	if len(result.Result) > 1 {
+		return "", fmt.Errorf("cloudflare: multiple A records exist for %s", name)
+	}
+	if len(result.Result) == 1 {
+		record := result.Result[0]
+		if record.Content != ip || !record.Proxied {
+			return "", fmt.Errorf("cloudflare: A record for %s has unexpected target or proxy mode", name)
+		}
+		return record.ID, nil
+	}
+	return c.CreateARecord(ctx, name, ip)
 }
 
 // DeleteRecord removes the DNS record with the given Cloudflare record ID.

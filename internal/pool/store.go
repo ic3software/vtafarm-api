@@ -19,6 +19,18 @@ var (
 	ErrCapacity = errors.New("pool inventory limit reached")
 )
 
+type CapacityError struct {
+	Available int
+}
+
+func (e *CapacityError) Error() string {
+	return ErrCapacity.Error()
+}
+
+func (e *CapacityError) Unwrap() error {
+	return ErrCapacity
+}
+
 // All pool mutations use one transaction lock so two operators cannot select
 // the same waiting session.
 func lock(tx *gorm.DB) error {
@@ -69,7 +81,7 @@ func Admit(ctx context.Context, db *gorm.DB, input Admission) (*model.PoolBatch,
 			return err
 		}
 		if input.Count > available {
-			return ErrCapacity
+			return &CapacityError{Available: max(available, 0)}
 		}
 		batch = &model.PoolBatch{
 			CreatedBy: input.AdminID, Label: input.Label, RequestedCount: input.Count,
@@ -151,6 +163,15 @@ func Reserve(ctx context.Context, db *gorm.DB, batchID uint) (*model.MobileConne
 			Select("s.*").
 			Joins("JOIN pool_sessions ps ON ps.session_id = s.id").
 			Where("ps.batch_id = ? AND s.status = ? AND s.admin_did = ''", batchID, model.StatusPoolWaiting).
+			Where(`NOT EXISTS (
+				SELECT 1 FROM mobile_connections mc
+				WHERE mc.session_id = s.id
+				  AND (
+					(mc.status = 'open' AND mc.expires_at > clock_timestamp())
+					OR (mc.status = 'claimed' AND mc.confirm_by > clock_timestamp())
+					OR mc.status IN ('confirmed', 'provisioning')
+				  )
+			)`).
 			Order("s.id").Find(&candidates).Error; err != nil {
 			return err
 		}
@@ -168,7 +189,7 @@ func Reserve(ctx context.Context, db *gorm.DB, batchID uint) (*model.MobileConne
 			}
 			mobile, err := connection.ChangePool(ctx, tx, session.ID)
 			if err != nil {
-				if errors.Is(err, connection.ErrConflict) {
+				if errors.Is(err, connection.ErrConflict) || errors.Is(err, connection.ErrCooldown) {
 					continue
 				}
 				return err
@@ -232,6 +253,40 @@ func IsSession(db *gorm.DB, sessionID uint) bool {
 	return db.Model(&model.PoolSession{}).Where("session_id = ?", sessionID).Count(&count).Error == nil && count == 1
 }
 
+// RetryBuild returns an unclaimed failed member to the durable build queue.
+func RetryBuild(ctx context.Context, db *gorm.DB, sessionID uint) error {
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lock(tx); err != nil {
+			return err
+		}
+		if err := tx.Exec("SELECT pg_advisory_xact_lock(?, ?)", workerLockClass, int64(sessionID)).Error; err != nil {
+			return err
+		}
+		if !IsSession(tx, sessionID) {
+			return ErrConflict
+		}
+		var session model.SetupSession
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&session, sessionID).Error; err != nil {
+			return err
+		}
+		if session.Status != "failed" || session.AdminDid != "" {
+			return ErrConflict
+		}
+		var protected int64
+		if err := tx.Model(&model.MobileConnection{}).
+			Where("session_id = ? AND confirmed_at IS NOT NULL", sessionID).
+			Count(&protected).Error; err != nil {
+			return err
+		}
+		if protected != 0 {
+			return ErrConflict
+		}
+		return tx.Model(&session).Updates(map[string]any{
+			"status": model.StatusPoolCreating, "error_msg": "", "failed_stage": "",
+		}).Error
+	})
+}
+
 // QueueCleanup accepts setup-session IDs. Confirmed claims remain protected
 // even if activation failed and the setup session is no longer running.
 func QueueCleanup(ctx context.Context, db *gorm.DB, sessionIDs []uint) error {
@@ -245,6 +300,11 @@ func QueueCleanup(ctx context.Context, db *gorm.DB, sessionIDs []uint) error {
 			return err
 		}
 		for _, sessionID := range sessionIDs {
+			// Wait for preparation/build to finish before changing the session to
+			// deleting, otherwise a late build status update could revive it.
+			if err := tx.Exec("SELECT pg_advisory_xact_lock(?, ?)", workerLockClass, int64(sessionID)).Error; err != nil {
+				return err
+			}
 			var membership model.PoolSession
 			if err := tx.First(&membership, "session_id = ?", sessionID).Error; err != nil {
 				return err
@@ -255,6 +315,20 @@ func QueueCleanup(ctx context.Context, db *gorm.DB, sessionIDs []uint) error {
 			}
 			if session.AdminDid != "" {
 				return ErrConflict
+			}
+			now, err := connection.Now(tx)
+			if err != nil {
+				return err
+			}
+			if err := tx.Model(&model.MobileConnection{}).
+				Where("session_id = ? AND status = 'open' AND expires_at <= ?", sessionID, now).
+				Update("status", "lapsed").Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&model.MobileConnection{}).
+				Where("session_id = ? AND status = 'claimed' AND confirm_by <= ?", sessionID, now).
+				Updates(map[string]any{"status": "lapsed", "admin_did": ""}).Error; err != nil {
+				return err
 			}
 			var claims int64
 			if err := tx.Model(&model.MobileConnection{}).
