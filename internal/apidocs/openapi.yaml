@@ -254,7 +254,9 @@ components:
         error_msg: { type: string }
         url: { type: string, format: uri }
         claimed: { type: boolean }
-        cleanable: { type: boolean }
+        cleanable:
+          type: boolean
+          description: True only for an unclaimed session that is prebuilt and waiting or whose preparation failed
         claim_state:
           type: string
           enum: [open, claimed, confirmed, provisioning, released, rejected, lapsed]
@@ -1700,9 +1702,14 @@ paths:
       summary: Create a pooled VTA batch
       description: |
         Atomically creates one dedicated user and setup session per requested
-        VTA, then queues durable background preparation. The request is rejected
-        before any rows are inserted when `count` exceeds the same strict
-        VTA-only capacity shown by the Admin Dashboard.
+        VTA with bulk database writes, then queues durable background
+        preparation. The slow cluster snapshot is collected before serialized
+        database admission; after acquiring the admission lock, the API
+        rechecks current pool reservations and rejects the request before any
+        rows are inserted when `count` exceeds the remaining strict VTA-only
+        capacity shown by the Admin Dashboard. The 201 response is assembled
+        directly from the committed batch instead of waiting for a second
+        detail query.
 
         Repeating an accepted request with the same `Idempotency-Key` and body
         returns the original batch. Reusing the key with a different body is a
@@ -1757,6 +1764,7 @@ paths:
   /api/v1/admin/pool-batches/{id}:
     get:
       summary: Get one pooled VTA batch
+      description: Reads every setup session and its latest claim in one joined query. Expired open or claimed records are represented as lapsed without mutating claim rows during this GET.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
@@ -1773,6 +1781,50 @@ paths:
               schema: { $ref: "#/components/schemas/PoolBatch" }
         "404":
           description: Batch not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      summary: Clean up an entirely unused pooled VTA batch
+      description: |
+        Uses bulk database checks to verify that every remaining member is
+        unused and has finished preparation. It atomically marks every member
+        for durable cleanup and returns without waiting for external resource
+        deletion. Background workers remove the resources and delete the batch
+        after its final member. The whole request is rejected immediately if
+        any member is still preparing, claimed, has an active claim, or has
+        acquired login credentials.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "202":
+          description: Durable whole-batch cleanup accepted; background workers resume it after restarts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  batch_id: { type: integer, minimum: 1 }
+                  session_ids:
+                    type: array
+                    items: { type: integer, minimum: 1 }
+                  status: { type: string, const: deleting }
+                required: [batch_id, session_ids, status]
+        "204":
+          description: The empty batch was deleted immediately
+        "404":
+          description: Batch not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: At least one member is still preparing, claimed, active, or no longer cleanable
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1828,7 +1880,7 @@ paths:
   /api/v1/admin/pool-claims/{request_id}/confirm:
     post:
       summary: Confirm matching Keyring comparison codes and activate the VTA
-      description: Confirmation permanently protects this VTA from unused-inventory cleanup and starts its parked Deployment.
+      description: Confirmation permanently protects this VTA from unused-inventory cleanup and starts the prebuilt VTA that was waiting at zero replicas.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
@@ -1856,7 +1908,8 @@ paths:
 
   /api/v1/admin/pool-claims/{request_id}/reject:
     post:
-      summary: Reject a mismatched pooled VTA claim
+      summary: Cancel an open QR or reject a mismatched pooled VTA claim
+      description: An open request becomes lapsed; a claimed request becomes rejected. The untouched VTA returns to the batch inventory.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
@@ -1867,15 +1920,20 @@ paths:
           schema: { type: string, format: uuid }
       responses:
         "200":
-          description: Rejected claim; its untouched VTA may be offered again
+          description: Cancelled or rejected claim; its untouched VTA may be offered again
           content:
             application/json:
               schema: { $ref: "#/components/schemas/PoolClaim" }
+        "409":
+          description: Claim is no longer open or rejectable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/admin/pool-sessions/cleanup:
     post:
       summary: Queue cleanup for selected unused pooled VTAs
-      description: The whole selection is rejected atomically if any member is claimed, actively being claimed, or has acquired login credentials.
+      description: The whole selection is checked and marked deleting with bulk database operations. The request is rejected immediately if any selected session is still preparing, claimed, actively being claimed, or has acquired login credentials. A 202 response means the durable deleting state has committed; background workers perform and retry external resource deletion.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
@@ -1894,7 +1952,7 @@ paths:
               required: [session_ids]
       responses:
         "202":
-          description: Cleanup queued; background workers will retry after restarts
+          description: Durable cleanup queued; external deletion continues in background workers and retries after restarts
           content:
             application/json:
               schema:
@@ -1906,7 +1964,7 @@ paths:
                   status: { type: string, const: deleting }
                 required: [session_ids, status]
         "409":
-          description: At least one selected session is protected
+          description: At least one selected session is still preparing or otherwise protected
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -135,27 +136,69 @@ func (h *PoolHandler) CreateBatch(c *gin.Context) {
 		return
 	}
 
-	infra, _, reason, detail := h.setup.resolvePlatformInfra()
+	digestBody, _ := json.Marshal(request)
+	digestBytes := sha256.Sum256(digestBody)
+	digest := hex.EncodeToString(digestBytes[:])
+	adminID := c.MustGet(middleware.ContextUserID).(uint)
+	if existing, lookupErr := poolstore.LookupBatch(c.Request.Context(), h.db, adminID, key, digest); lookupErr == nil {
+		view, viewErr := h.batchView(c.Request.Context(), existing.ID, true)
+		if viewErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "batch exists but could not be loaded"})
+			return
+		}
+		c.JSON(http.StatusOK, view)
+		return
+	} else if !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
+		if errors.Is(lookupErr, poolstore.ErrConflict) {
+			c.JSON(http.StatusConflict, gin.H{"error": "Idempotency-Key was already used with a different request"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check pool batch request"})
+		return
+	}
+
+	var infra sharedInfra
+	var reason, detail string
+	var profiles resourceprofile.Profiles
+	var profileErr error
+	var clusterStats *k8s.ClusterStats
+	var clusterErr error
+	var reads sync.WaitGroup
+	reads.Add(3)
+	go func() {
+		defer reads.Done()
+		infra, _, reason, detail = h.setup.resolvePlatformInfra()
+	}()
+	go func() {
+		defer reads.Done()
+		profiles, profileErr = resourceprofile.Load(c.Request.Context(), h.db)
+	}()
+	go func() {
+		defer reads.Done()
+		clusterStats, clusterErr = h.dashboard.clusterCapacitySnapshot(c.Request.Context())
+	}()
+	reads.Wait()
 	if reason != "" {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": detail, "reason": reason})
 		return
 	}
-	profiles, err := resourceprofile.Load(c.Request.Context(), h.db)
-	if err != nil {
+	if profileErr != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not load resource defaults"})
 		return
 	}
+	if clusterErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not read cluster capacity"})
+		return
+	}
 	profile := profiles[k8s.ComponentVTA]
-	digestBody, _ := json.Marshal(request)
-	digestBytes := sha256.Sum256(digestBody)
-	adminID := c.MustGet(middleware.ContextUserID).(uint)
-	batch, created, err := poolstore.Admit(c.Request.Context(), h.db, poolstore.Admission{
-		AdminID:   adminID,
-		Key:       key,
-		Digest:    hex.EncodeToString(digestBytes[:]),
-		Label:     request.Label,
-		Count:     request.Count,
-		Available: h.dashboard.AvailableVTAOnly,
+	capacitySnapshot := h.dashboard.vtaOnlyCapacityFromSnapshot(clusterStats, profiles)
+	admitted, err := poolstore.Admit(c.Request.Context(), h.db, poolstore.Admission{
+		AdminID:  adminID,
+		Key:      key,
+		Digest:   digest,
+		Label:    request.Label,
+		Count:    request.Count,
+		Capacity: capacitySnapshot,
 		Session: model.SetupSession{
 			Mode:                 model.ModeVtaOnly,
 			DomainType:           model.DomainManaged,
@@ -188,15 +231,20 @@ func (h *PoolHandler) CreateBatch(c *gin.Context) {
 		}
 		return
 	}
-	h.kickBatch(batch.ID)
-	view, err := h.batchView(c.Request.Context(), batch.ID, true)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "batch was created but could not be loaded"})
-		return
+	for i := range admitted.Sessions {
+		h.runner.Kick(admitted.Sessions[i].ID)
 	}
 	status := http.StatusOK
-	if created {
+	var view *poolBatchView
+	if admitted.Created {
 		status = http.StatusCreated
+		view = buildPoolBatchView(*admitted.Batch, admitted.Sessions, nil, true)
+	} else {
+		view, err = h.batchView(c.Request.Context(), admitted.Batch.ID, true)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "batch exists but could not be loaded"})
+			return
+		}
 	}
 	c.JSON(status, view)
 }
@@ -303,7 +351,7 @@ func (h *PoolHandler) Cleanup(c *gin.Context) {
 	}
 	if err := poolstore.QueueCleanup(c.Request.Context(), h.db, request.SessionIDs); err != nil {
 		if errors.Is(err, poolstore.ErrConflict) || errors.Is(err, connection.ErrConflict) {
-			c.JSON(http.StatusConflict, gin.H{"error": "one or more sessions are claimed, active, or no longer cleanable"})
+			c.JSON(http.StatusConflict, gin.H{"error": "one or more sessions are still preparing, claimed, active, or no longer cleanable"})
 			return
 		}
 		writeConnectionError(c, err)
@@ -313,6 +361,35 @@ func (h *PoolHandler) Cleanup(c *gin.Context) {
 		h.runner.Kick(sessionID)
 	}
 	c.JSON(http.StatusAccepted, gin.H{"session_ids": request.SessionIDs, "status": "deleting"})
+}
+
+func (h *PoolHandler) CleanupBatch(c *gin.Context) {
+	batchID, ok := positiveID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid pool batch ID"})
+		return
+	}
+	sessionIDs, err := poolstore.QueueBatchCleanup(c.Request.Context(), h.db, batchID)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "pool batch not found"})
+		return
+	}
+	if errors.Is(err, poolstore.ErrConflict) || errors.Is(err, connection.ErrConflict) {
+		c.JSON(http.StatusConflict, gin.H{"error": "one or more sessions are still preparing, claimed, active, or no longer cleanable"})
+		return
+	}
+	if err != nil {
+		writeConnectionError(c, err)
+		return
+	}
+	if len(sessionIDs) == 0 {
+		c.Status(http.StatusNoContent)
+		return
+	}
+	for _, sessionID := range sessionIDs {
+		h.runner.Kick(sessionID)
+	}
+	c.JSON(http.StatusAccepted, gin.H{"batch_id": batchID, "session_ids": sessionIDs, "status": "deleting"})
 }
 
 func (h *PoolHandler) Retry(c *gin.Context) {
@@ -338,44 +415,60 @@ func (h *PoolHandler) batchView(ctx context.Context, batchID uint, includeSessio
 	if err := h.db.WithContext(ctx).First(&batch, batchID).Error; err != nil {
 		return nil, err
 	}
-	var sessions []model.SetupSession
-	if err := h.db.WithContext(ctx).Table("setup_sessions s").Select("s.*").
-		Joins("JOIN pool_sessions ps ON ps.session_id = s.id").
-		Where("ps.batch_id = ?", batchID).Order("s.id").Find(&sessions).Error; err != nil {
+	type sessionRow struct {
+		model.SetupSession `gorm:"embedded"`
+		ClaimStatus        *string    `gorm:"column:claim_status"`
+		ClaimConfirmedAt   *time.Time `gorm:"column:claim_confirmed_at"`
+		ClaimExpiresAt     *time.Time `gorm:"column:claim_expires_at"`
+		ClaimConfirmBy     *time.Time `gorm:"column:claim_confirm_by"`
+		ReadAt             time.Time  `gorm:"column:read_at"`
+	}
+	var rows []sessionRow
+	if err := h.db.WithContext(ctx).Raw(`
+		SELECT s.*,
+		       claim.status AS claim_status,
+		       claim.confirmed_at AS claim_confirmed_at,
+		       claim.expires_at AS claim_expires_at,
+		       claim.confirm_by AS claim_confirm_by,
+		       clock_timestamp() AS read_at
+		FROM setup_sessions s
+		JOIN pool_sessions ps ON ps.session_id = s.id
+		LEFT JOIN LATERAL (
+			SELECT mc.status, mc.confirmed_at, mc.expires_at, mc.confirm_by
+			FROM mobile_connections mc
+			WHERE mc.session_id = s.id
+			ORDER BY mc.created_at DESC, mc.id DESC
+			LIMIT 1
+		) claim ON true
+		WHERE ps.batch_id = ?
+		ORDER BY s.id`, batchID).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	latest := make(map[uint]model.MobileConnection, len(sessions))
-	if len(sessions) > 0 {
-		ids := make([]uint, len(sessions))
-		for i := range sessions {
-			ids[i] = sessions[i].ID
+	sessions := make([]model.SetupSession, len(rows))
+	latest := make(map[uint]poolClaimSummary, len(rows))
+	for i := range rows {
+		sessions[i] = rows[i].SetupSession
+		if rows[i].ClaimStatus == nil {
+			continue
 		}
-		now, err := connection.Now(h.db.WithContext(ctx))
-		if err != nil {
-			return nil, err
+		status := *rows[i].ClaimStatus
+		if status == "open" && rows[i].ClaimExpiresAt != nil && !rows[i].ClaimExpiresAt.After(rows[i].ReadAt) {
+			status = "lapsed"
 		}
-		if err := h.db.WithContext(ctx).Model(&model.MobileConnection{}).
-			Where("session_id IN ? AND status = 'open' AND expires_at <= ?", ids, now).
-			Update("status", "lapsed").Error; err != nil {
-			return nil, err
+		if status == "claimed" && rows[i].ClaimConfirmBy != nil && !rows[i].ClaimConfirmBy.After(rows[i].ReadAt) {
+			status = "lapsed"
 		}
-		if err := h.db.WithContext(ctx).Model(&model.MobileConnection{}).
-			Where("session_id IN ? AND status = 'claimed' AND confirm_by <= ?", ids, now).
-			Updates(map[string]any{"status": "lapsed", "admin_did": ""}).Error; err != nil {
-			return nil, err
-		}
-		var connections []model.MobileConnection
-		if err := h.db.WithContext(ctx).Raw(`
-			SELECT DISTINCT ON (session_id) *
-			FROM mobile_connections
-			WHERE session_id IN ?
-			ORDER BY session_id, created_at DESC, id DESC`, ids).Scan(&connections).Error; err != nil {
-			return nil, err
-		}
-		for _, item := range connections {
-			latest[item.SessionID] = item
-		}
+		latest[rows[i].ID] = poolClaimSummary{Status: status, ConfirmedAt: rows[i].ClaimConfirmedAt}
 	}
+	return buildPoolBatchView(batch, sessions, latest, includeSessions), nil
+}
+
+type poolClaimSummary struct {
+	Status      string
+	ConfirmedAt *time.Time
+}
+
+func buildPoolBatchView(batch model.PoolBatch, sessions []model.SetupSession, latest map[uint]poolClaimSummary, includeSessions bool) *poolBatchView {
 	view := &poolBatchView{
 		ID: batch.ID, Label: batch.Label, RequestedCount: batch.RequestedCount,
 		CreatedAt: batch.CreatedAt, Sessions: []poolSessionItem{},
@@ -395,7 +488,8 @@ func (h *PoolHandler) batchView(ctx context.Context, batchID uint, includeSessio
 		}
 		item.Claimed = session.AdminDid != "" || hasClaim && current.ConfirmedAt != nil
 		activeClaim := hasClaim && (current.Status == "open" || current.Status == "claimed" || current.Status == "confirmed" || current.Status == "provisioning")
-		item.Cleanable = !item.Claimed && !activeClaim && session.Status != "deleting"
+		cleanupReady := session.Status == model.StatusPoolWaiting || session.Status == "failed"
+		item.Cleanable = cleanupReady && !item.Claimed && !activeClaim
 		view.Counts.Total++
 		switch {
 		case session.Status == "deleting":
@@ -417,7 +511,7 @@ func (h *PoolHandler) batchView(ctx context.Context, batchID uint, includeSessio
 			view.Sessions = append(view.Sessions, item)
 		}
 	}
-	return view, nil
+	return view
 }
 
 func (h *PoolHandler) writeClaim(c *gin.Context, requestID string) {
@@ -450,17 +544,6 @@ func (h *PoolHandler) writeClaim(c *gin.Context, requestID string) {
 		Enabled: h.mobile != nil && h.mobile.enabled, ServerTime: now,
 		Connection: h.mobile.view(&claim),
 	})
-}
-
-func (h *PoolHandler) kickBatch(batchID uint) {
-	var sessionIDs []uint
-	if err := h.db.Model(&model.PoolSession{}).Where("batch_id = ?", batchID).
-		Pluck("session_id", &sessionIDs).Error; err != nil {
-		return
-	}
-	for _, sessionID := range sessionIDs {
-		h.runner.Kick(sessionID)
-	}
 }
 
 func (h *PoolHandler) prepareSession(ctx context.Context, sessionID uint) error {
@@ -506,7 +589,17 @@ func (h *PoolHandler) cleanupSession(ctx context.Context, sessionID uint) error 
 	if h.setup == nil {
 		return errors.New("setup cleanup is not configured")
 	}
-	return h.setup.cleanupPoolSession(ctx, sessionID)
+	var membership model.PoolSession
+	if err := h.db.WithContext(ctx).First(&membership, "session_id = ?", sessionID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+	if err := h.setup.cleanupPoolSession(ctx, sessionID); err != nil {
+		return err
+	}
+	return poolstore.FinalizeBatchCleanup(ctx, h.db, membership.BatchID)
 }
 
 func positiveID(value string) (uint, bool) {

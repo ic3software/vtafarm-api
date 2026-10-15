@@ -174,6 +174,7 @@ func Setup(
 		adminAuth.POST("/admin/pool-batches", poolH.CreateBatch)
 		adminAuth.GET("/admin/pool-batches", poolH.ListBatches)
 		adminAuth.GET("/admin/pool-batches/:id", poolH.GetBatch)
+		adminAuth.DELETE("/admin/pool-batches/:id", poolH.CleanupBatch)
 		adminAuth.POST("/admin/pool-batches/:id/claims", poolH.Reserve)
 		adminAuth.POST("/admin/pool-sessions/cleanup", poolH.Cleanup)
 		adminAuth.POST("/admin/pool-sessions/:id/retry", poolH.Retry)

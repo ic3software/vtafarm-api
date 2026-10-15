@@ -10,15 +10,15 @@ normal Farm resource from the beginning:
 - its namespace and Vault paths are derived from that user and session;
 - its DNS record, DID, PVC, configuration, Service, Ingress, and Deployment are
   prepared before the event;
-- its Deployment is parked at zero replicas, so it uses persistent storage but
-  no VTA pod CPU or memory;
+- its Deployment is prebuilt and waiting at zero replicas, so it uses persistent
+  storage but no VTA pod CPU or memory;
 - its setup-session status is `pool_waiting` while it is available.
 
 At the station, an administrator selects an available session and displays the
 ordinary VTA claim QR. Keyring scans it and shows the existing comparison code.
 The administrator confirms the matching code. Confirmation writes the
 claimant's admin DID through the existing mobile-connection flow, runs the
-ordinary provision operation, scales the parked Deployment to one replica, and
+ordinary provision operation, scales the prebuilt Deployment to one replica, and
 finishes at `running`.
 
 There is no Portal activation link, account transfer, resource-owner transfer,
@@ -43,7 +43,8 @@ authoritative source for everything else:
 
 Consequently, the pool does not store a second user ID, VTA name, namespace,
 Vault target, DNS zone, ingress IP, claimant DID, claim timestamps, cleanup
-cursor, or lifecycle state.
+cursor, or per-VTA lifecycle state. The batch keeps only a nullable timestamp
+to make whole-batch cleanup durable across API restarts.
 
 ## 3. Schema
 
@@ -55,6 +56,7 @@ CREATE TABLE pool_batches (
     requested_count integer NOT NULL CHECK (requested_count > 0),
     idempotency_key text NOT NULL,
     request_digest text NOT NULL,
+    cleanup_requested_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (created_by, idempotency_key)
 );
@@ -91,8 +93,12 @@ of creating another 50 users and VTAs.
 one key with a different count or configuration is rejected instead of silently
 returning an unrelated batch.
 
-`created_at` is the immutable creation timestamp. The batch has no mutable
-state, so it needs no `updated_at`.
+`cleanup_requested_at` is null during ordinary use. Whole-batch cleanup sets it
+in the same transaction that marks every member as deleting. This is the
+durable signal to delete the batch after its final member is removed.
+
+`created_at` is the immutable creation timestamp. There is no general mutable
+batch state, so the table needs no `updated_at`.
 
 ### `pool_sessions`
 
@@ -116,8 +122,8 @@ The setup session owns the lifecycle:
 | --- | --- |
 | `pool_creating` | User, session, and membership committed; preparation is pending |
 | Existing setup stages | Namespace, Vault access, PVC, configuration and DID are being prepared |
-| `pool_prepared` | DID publication completed; parked Kubernetes resources are being finalized |
-| `pool_waiting` | Deployment exists at zero replicas and the VTA is available to claim |
+| `pool_prepared` | DID publication completed; the VTA prebuild is being finalized |
+| `pool_waiting` | The VTA is prebuilt and waiting at zero replicas, ready to claim |
 | `provisioning` | A confirmed admin DID is being imported and the Deployment is starting |
 | `running` | At least one Deployment replica passed readiness |
 | `failed` | Preparation or activation failed; claim history determines whether cleanup is allowed |
@@ -147,13 +153,15 @@ as unused inventory.
 
 ## 6. Cleanup and Retention
 
-Unused inventory has no expiry. An administrator may keep it for another event
-or explicitly select setup-session IDs for cleanup.
+Unused inventory has no expiry. An administrator may keep it for another event,
+explicitly select setup-session IDs for cleanup, or clean up an entirely unused
+batch.
 
 Cleanup is allowed only when all of the following remain true while rows are
 locked:
 
 - the session is a member of `pool_sessions`;
+- the session is `pool_waiting` or is an unclaimed `failed` preparation;
 - `setup_sessions.admin_did` is empty;
 - no mobile connection is open, claimed, confirmed, provisioning, or released;
 - no mobile connection has `confirmed_at` set;
@@ -163,6 +171,16 @@ Cleanup removes the resources identified by the existing session data, then
 deletes the `pool_sessions` membership, setup session, and dedicated user. It
 never resets PostgreSQL sequences, so deleted numeric IDs are not reused and
 later users continue from the database sequence.
+
+Selected cleanup and `DELETE /api/v1/admin/pool-batches/{id}` use the same bulk
+admission path. A session still being prepared is rejected immediately instead
+of waiting for its worker; the UI disables cleanup until every selected VTA is
+either prebuilt and waiting or failed. If any member fails the cleanup rules, no
+member is changed. The API marks every accepted session as `deleting` and
+returns `202 Accepted` without waiting for external cleanup. That session status
+is the durable cleanup request for selected inventory. Whole-batch cleanup
+additionally writes `cleanup_requested_at`; after background workers remove the
+final member, that marker causes the empty `pool_batches` row to be deleted.
 
 Claimed sessions are not affected by unused-inventory cleanup. They remain
 ordinary running Farm sessions managed by an administrator until a separate
@@ -190,22 +208,41 @@ rejected and a request for 47 is allowed.
 
 Capacity is checked after an idempotency lookup, so retrying a successful
 request returns its original batch even if current capacity has fallen. New
-admissions are serialized to prevent two administrators from consuming the
-same capacity concurrently. Capacity lookup fails closed when the Dashboard
-cannot produce its estimate.
+admissions first collect one cluster snapshot outside the pool transaction.
+The independent Kubernetes node/pod, metrics-server, and Longhorn reads run in
+parallel. After the admission lock is acquired, a database query subtracts the
+current non-running pool reservations from that snapshot. This prevents two
+administrators from consuming the same capacity without holding the lock during
+slow cluster calls. Capacity lookup fails closed when the Dashboard cannot
+produce its estimate.
+
+The accepted users, setup sessions, memberships, and workload-resource rows are
+inserted in four bulk statements inside one transaction. Public account and VTA
+identifiers are generated before their corresponding insert; a uniqueness
+collision causes only the missing identifiers to be regenerated and inserted.
+The committed setup-session rows supply the background runner IDs and the
+`201 Created` representation, avoiding a batch lookup and detail reload on the
+synchronous creation path.
 
 Non-running pool members are deducted from the Dashboard's VTA-only estimate.
-This reserves their future CPU and memory while their Deployments are parked at
-zero replicas; Kubernetes pod requests alone cannot represent that future load.
-The reservation remains until the session is running, when the live Deployment
-requests become part of cluster statistics.
+This reserves their future CPU and memory while their Deployments are prebuilt
+and waiting at zero replicas; Kubernetes pod requests alone cannot represent
+that future load. The reservation remains until the session is running, when
+the live Deployment requests become part of cluster statistics.
 
 There is intentionally no fixed product limit such as 50. The positive-value
 database check protects data shape; current cluster resources decide the
 operational limit.
 
+Batch-detail polling uses one joined query for setup sessions and their latest
+claim. It interprets expired open and claimed records as lapsed without issuing
+expiry updates from a GET request. The browser schedules its next poll only
+after the previous request finishes, so a slow response cannot accumulate
+overlapping requests.
+
 ## 9. Migration Safety
 
-Migration 0043 contains only the two pool tables described above. The earlier
-ownership design and its `users.account_kind` and `setup_sessions.portal_user_id`
-columns were rolled back and are not part of this schema.
+Migration 0043 contains the two pool tables and whole-batch cleanup marker
+described above. The earlier ownership design and its `users.account_kind` and
+`setup_sessions.portal_user_id` columns were rolled back and are not part of
+this schema.

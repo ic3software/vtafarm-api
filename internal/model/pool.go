@@ -15,13 +15,14 @@ const (
 // actual users, sessions, images, infrastructure and lifecycle state remain in
 // their existing tables.
 type PoolBatch struct {
-	ID             uint      `gorm:"primaryKey" json:"id"`
-	CreatedBy      uint      `json:"created_by"`
-	Label          string    `json:"label"`
-	RequestedCount int       `json:"requested_count"`
-	IdempotencyKey string    `json:"-"`
-	RequestDigest  string    `json:"-"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID                 uint       `gorm:"primaryKey" json:"id"`
+	CreatedBy          uint       `json:"created_by"`
+	Label              string     `json:"label"`
+	RequestedCount     int        `json:"requested_count"`
+	IdempotencyKey     string     `json:"-"`
+	RequestDigest      string     `json:"-"`
+	CleanupRequestedAt *time.Time `json:"-"`
+	CreatedAt          time.Time  `json:"created_at"`
 }
 
 // PoolSession is membership, not another copy of setup-session state.

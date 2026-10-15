@@ -859,13 +859,15 @@ func (h *SetupHandler) teardownSession(c *gin.Context, session *model.SetupSessi
 // response. The user/admin delete handlers and load-test batch cleanup share it
 // so all three remove the same DNS, DID-hosting, Kubernetes and Vault state.
 func (h *SetupHandler) teardownVtaOnlySession(ctx context.Context, session *model.SetupSession) (int, error) {
-	var poolMembership int64
+	var poolMembership model.PoolSession
+	isPoolSession := false
 	if h.db.Migrator().HasTable(&model.PoolSession{}) {
-		if err := h.db.Model(&model.PoolSession{}).Where("session_id = ?", session.ID).Count(&poolMembership).Error; err != nil {
+		result := h.db.Where("session_id = ?", session.ID).First(&poolMembership)
+		if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return http.StatusInternalServerError, errors.New("failed to check pool membership")
 		}
+		isPoolSession = result.Error == nil
 	}
-	isPoolSession := poolMembership == 1
 
 	if h.cf != nil && session.CFRecordID != "" {
 		if err := h.cf.DeleteRecord(ctx, session.CFRecordID); err != nil {
@@ -923,23 +925,34 @@ func (h *SetupHandler) teardownVtaOnlySession(ctx context.Context, session *mode
 		if !isPoolSession {
 			return nil
 		}
-		var remaining int64
-		if err := tx.Model(&model.SetupSession{}).Where("user_id = ?", session.UserID).Count(&remaining).Error; err != nil {
+		var remainingSessions int64
+		if err := tx.Model(&model.SetupSession{}).Where("user_id = ?", session.UserID).Count(&remainingSessions).Error; err != nil {
 			return err
 		}
-		if remaining != 0 {
-			return nil
+		if remainingSessions == 0 {
+			var user model.User
+			if err := tx.First(&user, session.UserID).Error; err != nil {
+				return err
+			}
+			var passkeys int64
+			if err := tx.Model(&model.UserPasskey{}).Where("user_id = ?", user.ID).Count(&passkeys).Error; err != nil {
+				return err
+			}
+			if user.Email == nil && passkeys == 0 && !user.FullstackAccess {
+				if err := tx.Delete(&user).Error; err != nil {
+					return err
+				}
+			}
 		}
-		var user model.User
-		if err := tx.First(&user, session.UserID).Error; err != nil {
+		var remainingMembers int64
+		if err := tx.Model(&model.PoolSession{}).Where("batch_id = ?", poolMembership.BatchID).Count(&remainingMembers).Error; err != nil {
 			return err
 		}
-		var passkeys int64
-		if err := tx.Model(&model.UserPasskey{}).Where("user_id = ?", user.ID).Count(&passkeys).Error; err != nil {
-			return err
-		}
-		if user.Email == nil && passkeys == 0 && !user.FullstackAccess {
-			return tx.Delete(&user).Error
+		if remainingMembers == 0 {
+			if err := tx.Where("id = ? AND cleanup_requested_at IS NOT NULL", poolMembership.BatchID).
+				Delete(&model.PoolBatch{}).Error; err != nil {
+				return err
+			}
 		}
 		return nil
 	}); err != nil {

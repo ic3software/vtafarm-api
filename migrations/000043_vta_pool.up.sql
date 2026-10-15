@@ -5,6 +5,7 @@ CREATE TABLE pool_batches (
     requested_count integer NOT NULL CHECK (requested_count > 0),
     idempotency_key text NOT NULL,
     request_digest text NOT NULL,
+    cleanup_requested_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (created_by, idempotency_key)
 );

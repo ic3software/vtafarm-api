@@ -500,7 +500,7 @@ func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDi
 	}
 	if pooled {
 		if err := o.k8s.ScaleComponentDeployment(ctx, ns, k8s.VtaDeploymentName(sessionID), 1); err != nil {
-			o.markFailed(sessionID, "failed to start parked VTA deployment: "+err.Error())
+			o.markFailed(sessionID, "failed to start prebuilt VTA deployment: "+err.Error())
 			return
 		}
 	}

@@ -78,6 +78,9 @@ func (r *Runner) reconcile(ctx context.Context) {
 	for _, sessionID := range sessionIDs {
 		r.Kick(sessionID)
 	}
+	if err := FinalizeEmptyBatchCleanups(ctx, r.db); err != nil && ctx.Err() == nil {
+		log.Printf("[pool] finalize empty batch cleanup failed: %v", err)
+	}
 }
 
 func (r *Runner) runWorker(ctx context.Context) {

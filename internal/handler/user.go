@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"crypto/rand"
 	"net/http"
 	"strings"
 
@@ -11,18 +10,6 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/middleware"
 	"github.com/ic3software/vtafarm-api/internal/model"
 )
-
-const uniqueIdAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
-
-func generateUniqueId() string {
-	b := make([]byte, 8)
-	_, _ = rand.Read(b)
-	result := make([]byte, 8)
-	for i, byt := range b {
-		result[i] = uniqueIdAlphabet[int(byt)%len(uniqueIdAlphabet)]
-	}
-	return string(result)
-}
 
 type UserHandler struct {
 	db *gorm.DB

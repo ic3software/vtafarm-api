@@ -6,9 +6,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"sort"
+	"strings"
+	"time"
 
 	"github.com/ic3software/vtafarm-api/internal/connection"
 	"github.com/ic3software/vtafarm-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/publicid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -41,10 +44,16 @@ type Admission struct {
 	AdminID            uint
 	Key, Digest, Label string
 	Count              int
-	Available          func(context.Context) (int, error)
+	Capacity           int
 	Session            model.SetupSession
 	MemoryRequest      string
 	MemoryLimit        string
+}
+
+type AdmissionResult struct {
+	Batch    *model.PoolBatch
+	Sessions []model.SetupSession
+	Created  bool
 }
 
 func LookupBatch(ctx context.Context, db *gorm.DB, adminID uint, key, digest string) (*model.PoolBatch, error) {
@@ -58,88 +67,212 @@ func LookupBatch(ctx context.Context, db *gorm.DB, adminID uint, key, digest str
 
 // Admit creates real users and setup sessions. pool_sessions only groups those
 // sessions; it does not duplicate their ownership, infrastructure, or status.
-func Admit(ctx context.Context, db *gorm.DB, input Admission) (*model.PoolBatch, bool, error) {
-	if input.Count < 1 || input.Key == "" || len(input.Key) > 128 || input.Session.VtaImage == "" || input.Available == nil {
-		return nil, false, errors.New("invalid pool admission")
+func Admit(ctx context.Context, db *gorm.DB, input Admission) (*AdmissionResult, error) {
+	if input.Count < 1 || input.Key == "" || len(input.Key) > 128 || input.Session.VtaImage == "" {
+		return nil, errors.New("invalid pool admission")
 	}
-	var batch *model.PoolBatch
-	created := false
+	result := &AdmissionResult{}
 	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := lock(tx); err != nil {
 			return err
 		}
-		previous, err := LookupBatch(ctx, tx, input.AdminID, input.Key, input.Digest)
-		if err == nil {
-			batch = previous
-			return nil
-		}
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
-		}
-		available, err := input.Available(ctx)
+		batch, created, err := admitBatchRow(ctx, tx, input)
 		if err != nil {
 			return err
 		}
-		if input.Count > available {
-			return &CapacityError{Available: max(available, 0)}
+		if !created {
+			result.Batch = batch
+			return nil
 		}
-		batch = &model.PoolBatch{
-			CreatedBy: input.AdminID, Label: input.Label, RequestedCount: input.Count,
-			IdempotencyKey: input.Key, RequestDigest: input.Digest,
-		}
-		if err := tx.Create(batch).Error; err != nil {
+		users, err := createUsers(tx, input.Count)
+		if err != nil {
 			return err
 		}
-		for range input.Count {
-			user, err := createUser(tx)
-			if err != nil {
-				return err
-			}
-			name, err := randomName()
-			if err != nil {
-				return err
-			}
-			session := input.Session
-			session.ID, session.UserID, session.Status = 0, user.ID, model.StatusPoolCreating
-			session.VtaName, session.AdminDid = name, ""
-			session.Subdomain = input.Session.Subdomain + name
-			session.VtaDidUrl = session.DidHostingServerURL + "/" + name + "-vta"
-			if err := tx.Create(&session).Error; err != nil {
-				return err
-			}
-			if err := tx.Create(&model.PoolSession{BatchID: batch.ID, SessionID: session.ID}).Error; err != nil {
-				return err
-			}
-			resource := model.WorkloadResource{
-				SetupSessionID: session.ID, Component: "vta",
-				MemoryRequest: input.MemoryRequest, MemoryLimit: input.MemoryLimit,
-			}
-			if err := tx.Create(&resource).Error; err != nil {
-				return err
-			}
+		sessions, err := createSetupSessions(tx, users, input.Session)
+		if err != nil {
+			return err
 		}
-		created = true
+		if err := createPoolMembershipsAndResources(tx, batch.ID, sessions, input.MemoryRequest, input.MemoryLimit); err != nil {
+			return err
+		}
+		result.Batch, result.Sessions, result.Created = batch, sessions, true
 		return nil
 	})
-	return batch, created, err
+	return result, err
 }
 
-func createUser(tx *gorm.DB) (*model.User, error) {
-	for range 5 {
-		name, err := randomName()
+func admitBatchRow(ctx context.Context, tx *gorm.DB, input Admission) (*model.PoolBatch, bool, error) {
+	var inserted []model.PoolBatch
+	err := tx.Raw(`WITH reserved AS (
+			SELECT count(*)::integer AS count
+			FROM pool_sessions ps
+			JOIN setup_sessions s ON s.id = ps.session_id
+			WHERE s.status <> 'running'
+		)
+		INSERT INTO pool_batches (created_by, label, requested_count, idempotency_key, request_digest)
+		SELECT ?, ?, ?, ?, ? FROM reserved
+		WHERE ? <= GREATEST(? - reserved.count, 0)
+		ON CONFLICT (created_by, idempotency_key) DO NOTHING
+		RETURNING *`, input.AdminID, input.Label, input.Count, input.Key, input.Digest, input.Count, input.Capacity).
+		Scan(&inserted).Error
+	if err != nil {
+		return nil, false, err
+	}
+	if len(inserted) == 1 {
+		return &inserted[0], true, nil
+	}
+	previous, err := LookupBatch(ctx, tx, input.AdminID, input.Key, input.Digest)
+	if err == nil {
+		return previous, false, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, false, err
+	}
+	reserved, err := nonRunningSessionCount(tx)
+	if err != nil {
+		return nil, false, err
+	}
+	return nil, false, &CapacityError{Available: max(input.Capacity-reserved, 0)}
+}
+
+func nonRunningSessionCount(tx *gorm.DB) (int, error) {
+	var count int64
+	err := tx.Table("pool_sessions ps").
+		Joins("JOIN setup_sessions s ON s.id = ps.session_id").
+		Where("s.status <> ?", "running").Count(&count).Error
+	return int(count), err
+}
+
+var newAccountID = publicid.NewAccount
+var newVTAName = randomName
+
+func createUsers(tx *gorm.DB, count int) ([]model.User, error) {
+	users := make([]model.User, 0, count)
+	generated := make(map[string]struct{}, count)
+	for attempt := 0; len(users) < count && attempt < 5; attempt++ {
+		names, err := generateUniqueIDs(count-len(users), generated, newAccountID)
 		if err != nil {
 			return nil, err
 		}
-		user := &model.User{UniqueId: name}
-		result := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "unique_id"}}, DoNothing: true}).Create(user)
-		if result.Error != nil {
-			return nil, result.Error
+		placeholders := strings.TrimSuffix(strings.Repeat("(?),", len(names)), ",")
+		args := make([]any, len(names))
+		for i := range names {
+			args[i] = names[i]
 		}
-		if result.RowsAffected == 1 {
-			return user, nil
+		var inserted []model.User
+		if err := tx.Raw(`INSERT INTO users (unique_id) VALUES `+placeholders+`
+			ON CONFLICT (unique_id) DO NOTHING
+			RETURNING id, unique_id, created_at, updated_at`, args...).Scan(&inserted).Error; err != nil {
+			return nil, err
+		}
+		users = append(users, inserted...)
+	}
+	if len(users) != count {
+		return nil, errors.New("could not allocate user identifiers")
+	}
+	sort.Slice(users, func(i, j int) bool { return users[i].ID < users[j].ID })
+	return users, nil
+}
+
+func createSetupSessions(tx *gorm.DB, users []model.User, template model.SetupSession) ([]model.SetupSession, error) {
+	pending := make(map[uint]model.User, len(users))
+	for i := range users {
+		pending[users[i].ID] = users[i]
+	}
+	sessions := make([]model.SetupSession, 0, len(users))
+	generated := make(map[string]struct{}, len(users))
+	for attempt := 0; len(pending) > 0 && attempt < 5; attempt++ {
+		pendingUsers := make([]model.User, 0, len(pending))
+		for _, user := range pending {
+			pendingUsers = append(pendingUsers, user)
+		}
+		sort.Slice(pendingUsers, func(i, j int) bool { return pendingUsers[i].ID < pendingUsers[j].ID })
+		names, err := generateUniqueIDs(len(pendingUsers), generated, newVTAName)
+		if err != nil {
+			return nil, err
+		}
+		candidates := make([]model.SetupSession, len(pendingUsers))
+		userIDs := make([]uint, len(pendingUsers))
+		for i := range pendingUsers {
+			session := template
+			session.ID, session.UserID, session.Status = 0, pendingUsers[i].ID, model.StatusPoolCreating
+			session.VtaName, session.AdminDid = names[i], ""
+			session.Subdomain = template.Subdomain + names[i]
+			session.VtaDidUrl = session.DidHostingServerURL + "/" + names[i] + "-vta"
+			session.CreatedAt, session.UpdatedAt = time.Time{}, time.Time{}
+			candidates[i], userIDs[i] = session, pendingUsers[i].ID
+		}
+		created := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&candidates)
+		if created.Error != nil {
+			return nil, created.Error
+		}
+		if created.RowsAffected == int64(len(candidates)) {
+			sessions = append(sessions, candidates...)
+			for i := range pendingUsers {
+				delete(pending, pendingUsers[i].ID)
+			}
+			continue
+		}
+		var inserted []model.SetupSession
+		if err := tx.Where("user_id IN ?", userIDs).Order("id").Find(&inserted).Error; err != nil {
+			return nil, err
+		}
+		for i := range inserted {
+			if _, ok := pending[inserted[i].UserID]; !ok {
+				continue
+			}
+			sessions = append(sessions, inserted[i])
+			delete(pending, inserted[i].UserID)
 		}
 	}
-	return nil, errors.New("could not allocate user identifier")
+	if len(pending) != 0 {
+		return nil, errors.New("could not allocate VTA identifiers")
+	}
+	sort.Slice(sessions, func(i, j int) bool { return sessions[i].ID < sessions[j].ID })
+	return sessions, nil
+}
+
+func createPoolMembershipsAndResources(tx *gorm.DB, batchID uint, sessions []model.SetupSession, memoryRequest, memoryLimit string) error {
+	values := strings.TrimSuffix(strings.Repeat("(CAST(? AS bigint),CAST(? AS bigint)),", len(sessions)), ",")
+	args := make([]any, 0, len(sessions)*2+2)
+	for i := range sessions {
+		args = append(args, sessions[i].ID, batchID)
+	}
+	args = append(args, memoryRequest, memoryLimit)
+	result := tx.Exec(`WITH admitted(session_id, batch_id) AS (VALUES `+values+`),
+		memberships AS (
+			INSERT INTO pool_sessions (session_id, batch_id)
+			SELECT session_id, batch_id FROM admitted
+			RETURNING session_id
+		)
+		INSERT INTO workload_resources (setup_session_id, component, memory_request, memory_limit)
+		SELECT session_id, 'vta', ?, ? FROM memberships`, args...)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != int64(len(sessions)) {
+		return errors.New("pool membership bulk insert was incomplete")
+	}
+	return nil
+}
+
+func generateUniqueIDs(count int, generated map[string]struct{}, next func() (string, error)) ([]string, error) {
+	values := make([]string, 0, count)
+	for draws := 0; len(values) < count && draws < count*20+100; draws++ {
+		value, err := next()
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := generated[value]; exists {
+			continue
+		}
+		generated[value] = struct{}{}
+		values = append(values, value)
+	}
+	if len(values) != count {
+		return nil, errors.New("random identifier source produced too many duplicates")
+	}
+	return values, nil
 }
 
 func randomName() (string, error) {
@@ -237,14 +370,22 @@ func Reject(ctx context.Context, db *gorm.DB, requestID string) error {
 			return err
 		}
 		var candidate model.MobileConnection
-		if err := tx.Select("session_id").First(&candidate, "id = ?", requestID).Error; err != nil {
+		if err := tx.Select("session_id", "status").First(&candidate, "id = ?", requestID).Error; err != nil {
 			return err
 		}
 		if !IsSession(tx, candidate.SessionID) {
 			return ErrConflict
 		}
-		_, err := connection.Reject(ctx, tx, candidate.SessionID, requestID)
-		return err
+		switch candidate.Status {
+		case "open":
+			_, err := connection.Change(ctx, tx, candidate.SessionID, "cancel", requestID)
+			return err
+		case "claimed":
+			_, err := connection.Reject(ctx, tx, candidate.SessionID, requestID)
+			return err
+		default:
+			return ErrConflict
+		}
 	})
 }
 
@@ -295,65 +436,142 @@ func QueueCleanup(ctx context.Context, db *gorm.DB, sessionIDs []uint) error {
 	}
 	sessionIDs = append([]uint(nil), sessionIDs...)
 	sort.Slice(sessionIDs, func(i, j int) bool { return sessionIDs[i] < sessionIDs[j] })
+	for i := 1; i < len(sessionIDs); i++ {
+		if sessionIDs[i] == sessionIDs[i-1] {
+			return ErrConflict
+		}
+	}
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := lock(tx); err != nil {
 			return err
 		}
-		for _, sessionID := range sessionIDs {
-			// Wait for preparation/build to finish before changing the session to
-			// deleting, otherwise a late build status update could revive it.
-			if err := tx.Exec("SELECT pg_advisory_xact_lock(?, ?)", workerLockClass, int64(sessionID)).Error; err != nil {
-				return err
-			}
-			var membership model.PoolSession
-			if err := tx.First(&membership, "session_id = ?", sessionID).Error; err != nil {
-				return err
-			}
-			var session model.SetupSession
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&session, sessionID).Error; err != nil {
-				return err
-			}
-			if session.AdminDid != "" {
-				return ErrConflict
-			}
-			now, err := connection.Now(tx)
-			if err != nil {
-				return err
-			}
-			if err := tx.Model(&model.MobileConnection{}).
-				Where("session_id = ? AND status = 'open' AND expires_at <= ?", sessionID, now).
-				Update("status", "lapsed").Error; err != nil {
-				return err
-			}
-			if err := tx.Model(&model.MobileConnection{}).
-				Where("session_id = ? AND status = 'claimed' AND confirm_by <= ?", sessionID, now).
-				Updates(map[string]any{"status": "lapsed", "admin_did": ""}).Error; err != nil {
-				return err
-			}
-			var claims int64
-			if err := tx.Model(&model.MobileConnection{}).
-				Where("session_id = ? AND (confirmed_at IS NOT NULL OR status IN ?)", sessionID, []string{"open", "claimed", "confirmed", "provisioning", "released"}).
-				Count(&claims).Error; err != nil {
-				return err
-			}
-			if claims != 0 {
-				return ErrConflict
-			}
-			var user model.User
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&user, session.UserID).Error; err != nil {
-				return err
-			}
-			var passkeys int64
-			if err := tx.Model(&model.UserPasskey{}).Where("user_id = ?", user.ID).Count(&passkeys).Error; err != nil {
-				return err
-			}
-			if user.Email != nil || passkeys != 0 || user.FullstackAccess {
-				return ErrConflict
-			}
-			if err := connection.Stop(ctx, tx, session.ID); err != nil {
-				return err
-			}
-		}
-		return nil
+		return queueCleanupBulk(tx, sessionIDs)
 	})
+}
+
+// QueueBatchCleanup atomically protects every member from new claims and marks
+// it for durable teardown. The batch row is removed after its final member.
+func QueueBatchCleanup(ctx context.Context, db *gorm.DB, batchID uint) ([]uint, error) {
+	var sessionIDs []uint
+	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lock(tx); err != nil {
+			return err
+		}
+		var batch model.PoolBatch
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&batch, batchID).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&model.PoolSession{}).Where("batch_id = ?", batchID).
+			Order("session_id").Pluck("session_id", &sessionIDs).Error; err != nil {
+			return err
+		}
+		if batch.CleanupRequestedAt != nil {
+			return nil
+		}
+		if len(sessionIDs) == 0 {
+			return tx.Delete(&batch).Error
+		}
+		if err := queueCleanupBulk(tx, sessionIDs); err != nil {
+			return err
+		}
+		return tx.Model(&batch).Update("cleanup_requested_at", gorm.Expr("clock_timestamp()")).Error
+	})
+	return sessionIDs, err
+}
+
+func queueCleanupBulk(tx *gorm.DB, sessionIDs []uint) error {
+	var memberships int64
+	if err := tx.Model(&model.PoolSession{}).
+		Where("session_id IN ?", sessionIDs).Count(&memberships).Error; err != nil {
+		return err
+	}
+	if memberships != int64(len(sessionIDs)) {
+		return ErrConflict
+	}
+
+	var sessions []model.SetupSession
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id IN ?", sessionIDs).Order("id").Find(&sessions).Error; err != nil {
+		return err
+	}
+	if len(sessions) != len(sessionIDs) {
+		return ErrConflict
+	}
+	userIDs := make([]uint, len(sessions))
+	for i := range sessions {
+		if sessions[i].AdminDid != "" ||
+			(sessions[i].Status != model.StatusPoolWaiting && sessions[i].Status != "failed") {
+			return ErrConflict
+		}
+		userIDs[i] = sessions[i].UserID
+	}
+
+	var users []model.User
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id IN ?", userIDs).Order("id").Find(&users).Error; err != nil {
+		return err
+	}
+	if len(users) != len(userIDs) {
+		return ErrConflict
+	}
+	for i := range users {
+		if users[i].Email != nil || users[i].FullstackAccess {
+			return ErrConflict
+		}
+	}
+	var passkeys int64
+	if err := tx.Model(&model.UserPasskey{}).Where("user_id IN ?", userIDs).Count(&passkeys).Error; err != nil {
+		return err
+	}
+	if passkeys != 0 {
+		return ErrConflict
+	}
+
+	now, err := connection.Now(tx)
+	if err != nil {
+		return err
+	}
+	if err := tx.Model(&model.MobileConnection{}).
+		Where("session_id IN ? AND status = 'open' AND expires_at <= ?", sessionIDs, now).
+		Update("status", "lapsed").Error; err != nil {
+		return err
+	}
+	if err := tx.Model(&model.MobileConnection{}).
+		Where("session_id IN ? AND status = 'claimed' AND confirm_by <= ?", sessionIDs, now).
+		Updates(map[string]any{"status": "lapsed", "admin_did": ""}).Error; err != nil {
+		return err
+	}
+	var claims int64
+	if err := tx.Model(&model.MobileConnection{}).
+		Where("session_id IN ? AND (confirmed_at IS NOT NULL OR status IN ?)", sessionIDs, []string{"open", "claimed", "confirmed", "provisioning", "released"}).
+		Count(&claims).Error; err != nil {
+		return err
+	}
+	if claims != 0 {
+		return ErrConflict
+	}
+
+	updated := tx.Model(&model.SetupSession{}).Where("id IN ?", sessionIDs).Update("status", "deleting")
+	if updated.Error != nil {
+		return updated.Error
+	}
+	if updated.RowsAffected != int64(len(sessionIDs)) {
+		return ErrConflict
+	}
+	return nil
+}
+
+func FinalizeBatchCleanup(ctx context.Context, db *gorm.DB, batchID uint) error {
+	return db.WithContext(ctx).Exec(`
+		DELETE FROM pool_batches b
+		WHERE b.id = ?
+		  AND b.cleanup_requested_at IS NOT NULL
+		  AND NOT EXISTS (SELECT 1 FROM pool_sessions ps WHERE ps.batch_id = b.id)`, batchID).Error
+}
+
+func FinalizeEmptyBatchCleanups(ctx context.Context, db *gorm.DB) error {
+	return db.WithContext(ctx).Exec(`
+		DELETE FROM pool_batches b
+		WHERE b.cleanup_requested_at IS NOT NULL
+		  AND NOT EXISTS (SELECT 1 FROM pool_sessions ps WHERE ps.batch_id = b.id)`).Error
 }

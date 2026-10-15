@@ -176,25 +176,37 @@ func (h *DashboardHandler) Get(c *gin.Context) {
 	})
 }
 
-// AvailableVTAOnly returns the same strict capacity shown by the Admin
-// Dashboard. Pool admission calls this while holding its database advisory
-// lock and before inserting any batch, user, or setup-session row.
-func (h *DashboardHandler) AvailableVTAOnly(ctx context.Context) (int, error) {
+// clusterCapacitySnapshot reads the slow cluster state without holding the pool
+// mutation lock. Callers can load database-backed profiles concurrently.
+func (h *DashboardHandler) clusterCapacitySnapshot(ctx context.Context) (*k8s.ClusterStats, error) {
 	if h.k8s == nil {
-		return 0, errors.New("kubernetes is not available")
+		return nil, errors.New("kubernetes is not available")
 	}
-	stats, err := h.k8s.ClusterResourceStats(ctx)
-	if err != nil {
-		return 0, err
-	}
-	_, estimates, err := h.capacityEstimates(ctx, stats)
-	if err != nil {
-		return 0, err
-	}
-	return estimates[capacity.VtaOnly.Name].Count, nil
+	return h.k8s.ClusterResourceStats(ctx)
+}
+
+func (h *DashboardHandler) vtaOnlyCapacityFromSnapshot(stats *k8s.ClusterStats, profiles resourceprofile.Profiles) int {
+	_, estimates := h.capacityEstimatesWithProfiles(stats, profiles)
+	return estimates[capacity.VtaOnly.Name].Count
 }
 
 func (h *DashboardHandler) capacityEstimates(ctx context.Context, stats *k8s.ClusterStats) ([]capacity.Mode, map[string]capacity.Estimate, error) {
+	profiles, err := resourceprofile.Load(ctx, h.db)
+	if err != nil {
+		return nil, nil, err
+	}
+	modes, estimates := h.capacityEstimatesWithProfiles(stats, profiles)
+	reserved, err := h.nonRunningPoolSessions(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if estimate, ok := estimates[capacity.VtaOnly.Name]; ok {
+		estimates[capacity.VtaOnly.Name] = subtractReservedSessions(estimate, reserved)
+	}
+	return modes, estimates, nil
+}
+
+func (h *DashboardHandler) capacityEstimatesWithProfiles(stats *k8s.ClusterStats, profiles resourceprofile.Profiles) ([]capacity.Mode, map[string]capacity.Estimate) {
 	planningUsage := h.usage.Observe(time.Now(), stats.Nodes, stats.MetricsAvailable)
 	var freeNodes []capacity.NodeFree
 	for _, node := range stats.Nodes {
@@ -213,10 +225,6 @@ func (h *DashboardHandler) capacityEstimates(ctx context.Context, stats *k8s.Clu
 	for _, disk := range stats.StorageNodes {
 		freeDisks = append(freeDisks, capacity.DiskFree{Bytes: disk.SchedulableBytes})
 	}
-	profiles, err := resourceprofile.Load(ctx, h.db)
-	if err != nil {
-		return nil, nil, err
-	}
 	modes := capacity.Modes(profiles)
 	estimates := make(map[string]capacity.Estimate, len(modes))
 	for _, mode := range modes {
@@ -225,17 +233,10 @@ func (h *DashboardHandler) capacityEstimates(ctx context.Context, stats *k8s.Clu
 		)
 	}
 
-	reserved, err := h.nonRunningPoolSessions(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-	if estimate, ok := estimates[capacity.VtaOnly.Name]; ok {
-		estimates[capacity.VtaOnly.Name] = subtractReservedSessions(estimate, reserved)
-	}
-	return modes, estimates, nil
+	return modes, estimates
 }
 
-// A parked Deployment has zero replicas and therefore does not appear in pod
+// A prebuilt, waiting Deployment has zero replicas and therefore does not appear in pod
 // CPU or memory requests. Reserve one future VTA footprint until the pooled
 // session is running; otherwise repeated pool admissions could all consume the
 // same capacity displayed by the Dashboard.

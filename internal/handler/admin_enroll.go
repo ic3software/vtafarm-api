@@ -10,6 +10,7 @@ import (
 
 	"github.com/ic3software/vtafarm-api/internal/middleware"
 	"github.com/ic3software/vtafarm-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/publicid"
 )
 
 type AdminEnrollHandler struct {
@@ -70,7 +71,10 @@ func (h *AdminEnrollHandler) Enroll(c *gin.Context) {
 	const maxAttempts = 5
 	var createErr error
 	for range maxAttempts {
-		admin.UniqueId = generateUniqueId()
+		admin.UniqueId, createErr = publicid.NewAccount()
+		if createErr != nil {
+			break
+		}
 		createErr = h.db.Create(&admin).Error
 		if createErr == nil {
 			break

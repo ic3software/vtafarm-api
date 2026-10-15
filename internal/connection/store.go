@@ -147,7 +147,7 @@ func Change(ctx context.Context, db *gorm.DB, sessionID uint, action, expectedID
 }
 
 // ChangePool is called inside the pool allocation transaction, after the slot
-// is reserved. Public owner routes cannot allocate parked pool inventory.
+// is reserved. Public owner routes cannot allocate prebuilt pool inventory.
 func ChangePool(ctx context.Context, db *gorm.DB, sessionID uint) (*model.MobileConnection, error) {
 	return change(ctx, db, sessionID, "create", "", true)
 }
