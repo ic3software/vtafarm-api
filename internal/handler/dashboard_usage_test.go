@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ic3software/vtafarm-api/internal/capacity"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 )
 
@@ -39,6 +40,25 @@ func TestUsageHighWaterWithoutMetrics(t *testing.T) {
 	got := history.Observe(time.Now(), []k8s.NodeResourceStat{{Name: "node-1"}}, false)
 	if len(got) != 0 {
 		t.Fatalf("Observe() returned %v without a live or cached sample", got)
+	}
+}
+
+func TestSubtractReservedSessions(t *testing.T) {
+	got := subtractReservedSessions(capacity.Estimate{
+		Count: 47, ByCPU: 112, ByMemory: 47, ByStorage: 173, LimitingResource: "memory",
+	}, 7)
+	if got.Count != 40 || got.ByCPU != 105 || got.ByMemory != 40 || got.ByStorage != 166 {
+		t.Fatalf("subtractReservedSessions() = %+v", got)
+	}
+	if got.LimitingResource != "memory" {
+		t.Fatalf("limiting resource = %q, want memory", got.LimitingResource)
+	}
+
+	unknownStorage := subtractReservedSessions(capacity.Estimate{
+		Count: 2, ByCPU: 2, ByMemory: 2, ByStorage: -1,
+	}, 5)
+	if unknownStorage.Count != 0 || unknownStorage.ByStorage != -1 {
+		t.Fatalf("unknown storage estimate = %+v", unknownStorage)
 	}
 }
 

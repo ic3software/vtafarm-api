@@ -820,6 +820,17 @@ func (h *SetupHandler) Delete(c *gin.Context) {
 // user, AdminDeleteSession accepts any session. Everything after that point is
 // identical, so both funnel through here.
 func (h *SetupHandler) teardownSession(c *gin.Context, session *model.SetupSession) {
+	var poolMembership int64
+	if h.db.Migrator().HasTable(&model.PoolSession{}) {
+		if err := h.db.Model(&model.PoolSession{}).Where("session_id = ?", session.ID).Count(&poolMembership).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check pool membership"})
+			return
+		}
+	}
+	if poolMembership != 0 && session.AdminDid == "" {
+		c.JSON(http.StatusConflict, gin.H{"error": "Use pool inventory cleanup for unclaimed VTAs. Confirmed claims are protected.", "reason": "pooled_session"})
+		return
+	}
 	if h.orch != nil {
 		if err := h.orch.Cancel(session.ID); err != nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Unable to stop provisioning before deletion. Please retry."})

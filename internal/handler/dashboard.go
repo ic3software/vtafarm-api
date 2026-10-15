@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 
 	"github.com/ic3software/vtafarm-api/internal/capacity"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
+	"github.com/ic3software/vtafarm-api/internal/model"
 	"github.com/ic3software/vtafarm-api/internal/resourceprofile"
 	"gorm.io/gorm"
 )
@@ -76,10 +78,13 @@ func (h *DashboardHandler) Get(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "cluster stats: " + err.Error()})
 		return
 	}
-	planningUsage := h.usage.Observe(time.Now(), stats.Nodes, stats.MetricsAvailable)
+	modes, calculated, err := h.capacityEstimates(ctx, stats)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not calculate capacity"})
+		return
+	}
 
 	nodes := make([]dashboardNode, len(stats.Nodes))
-	var freeNodes []capacity.NodeFree
 	var totalCPU, totalCPUReq, totalCPUUsed, totalMem, totalMemReq, totalMemUsed int64
 	for i, n := range stats.Nodes {
 		nodes[i] = dashboardNode{
@@ -98,32 +103,9 @@ func (h *DashboardHandler) Get(c *gin.Context) {
 		totalMem += n.MemAllocatableBytes
 		totalMemReq += n.MemRequestedBytes
 		totalMemUsed += n.MemUsedBytes
-
-		// Estimates draw only on nodes new pods can land on.
-		if n.Schedulable {
-			usage, usageAvailable := planningUsage[n.Name]
-			var cpuFree, memFree int64
-			if usageAvailable {
-				cpuFree = capacity.PlanningHeadroom(
-					n.CPUAllocatableMillis,
-					n.CPURequestedMillis,
-					usage.CPUMillis,
-				)
-				memFree = capacity.PlanningHeadroom(
-					n.MemAllocatableBytes,
-					n.MemRequestedBytes,
-					usage.MemBytes,
-				)
-			}
-			freeNodes = append(freeNodes, capacity.NodeFree{
-				CPUMillis: cpuFree,
-				MemBytes:  memFree,
-			})
-		}
 	}
 
 	storageNodes := make([]dashboardStorageNode, len(stats.StorageNodes))
-	var freeDisks []capacity.DiskFree
 	var totalStorage, totalStorageReserved, totalStorageScheduled, totalStorageAvail, totalStorageSched int64
 	for i, s := range stats.StorageNodes {
 		storageNodes[i] = dashboardStorageNode{
@@ -140,18 +122,12 @@ func (h *DashboardHandler) Get(c *gin.Context) {
 		totalStorageScheduled += s.ScheduledBytes
 		totalStorageAvail += s.AvailableBytes
 		totalStorageSched += s.SchedulableBytes
-		freeDisks = append(freeDisks, capacity.DiskFree{Bytes: s.SchedulableBytes})
 	}
 
 	replicas := stats.StorageReplicaCount
 	estimates := gin.H{}
-	profiles, err := resourceprofile.Load(ctx, h.db)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not load resource defaults"})
-		return
-	}
-	for _, mode := range capacity.Modes(profiles) {
-		est := capacity.EstimateMode(mode, freeNodes, freeDisks, replicas, stats.StorageAvailable)
+	for _, mode := range modes {
+		est := calculated[mode.Name]
 		var cpuCost, memCost, storageCost int64
 		for _, comp := range mode.Components {
 			cpuCost += comp.CPUMillis
@@ -198,4 +174,103 @@ func (h *DashboardHandler) Get(c *gin.Context) {
 		"storage_available": stats.StorageAvailable,
 		"estimates":         estimates,
 	})
+}
+
+// AvailableVTAOnly returns the same strict capacity shown by the Admin
+// Dashboard. Pool admission calls this while holding its database advisory
+// lock and before inserting any batch, user, or setup-session row.
+func (h *DashboardHandler) AvailableVTAOnly(ctx context.Context) (int, error) {
+	if h.k8s == nil {
+		return 0, errors.New("kubernetes is not available")
+	}
+	stats, err := h.k8s.ClusterResourceStats(ctx)
+	if err != nil {
+		return 0, err
+	}
+	_, estimates, err := h.capacityEstimates(ctx, stats)
+	if err != nil {
+		return 0, err
+	}
+	return estimates[capacity.VtaOnly.Name].Count, nil
+}
+
+func (h *DashboardHandler) capacityEstimates(ctx context.Context, stats *k8s.ClusterStats) ([]capacity.Mode, map[string]capacity.Estimate, error) {
+	planningUsage := h.usage.Observe(time.Now(), stats.Nodes, stats.MetricsAvailable)
+	var freeNodes []capacity.NodeFree
+	for _, node := range stats.Nodes {
+		if !node.Schedulable {
+			continue
+		}
+		usage, ok := planningUsage[node.Name]
+		var cpuFree, memoryFree int64
+		if ok {
+			cpuFree = capacity.PlanningHeadroom(node.CPUAllocatableMillis, node.CPURequestedMillis, usage.CPUMillis)
+			memoryFree = capacity.PlanningHeadroom(node.MemAllocatableBytes, node.MemRequestedBytes, usage.MemBytes)
+		}
+		freeNodes = append(freeNodes, capacity.NodeFree{CPUMillis: cpuFree, MemBytes: memoryFree})
+	}
+	freeDisks := make([]capacity.DiskFree, 0, len(stats.StorageNodes))
+	for _, disk := range stats.StorageNodes {
+		freeDisks = append(freeDisks, capacity.DiskFree{Bytes: disk.SchedulableBytes})
+	}
+	profiles, err := resourceprofile.Load(ctx, h.db)
+	if err != nil {
+		return nil, nil, err
+	}
+	modes := capacity.Modes(profiles)
+	estimates := make(map[string]capacity.Estimate, len(modes))
+	for _, mode := range modes {
+		estimates[mode.Name] = capacity.EstimateMode(
+			mode, freeNodes, freeDisks, stats.StorageReplicaCount, stats.StorageAvailable,
+		)
+	}
+
+	reserved, err := h.nonRunningPoolSessions(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if estimate, ok := estimates[capacity.VtaOnly.Name]; ok {
+		estimates[capacity.VtaOnly.Name] = subtractReservedSessions(estimate, reserved)
+	}
+	return modes, estimates, nil
+}
+
+// A parked Deployment has zero replicas and therefore does not appear in pod
+// CPU or memory requests. Reserve one future VTA footprint until the pooled
+// session is running; otherwise repeated pool admissions could all consume the
+// same capacity displayed by the Dashboard.
+func (h *DashboardHandler) nonRunningPoolSessions(ctx context.Context) (int, error) {
+	if !h.db.Migrator().HasTable(&model.PoolSession{}) {
+		return 0, nil
+	}
+	var count int64
+	err := h.db.WithContext(ctx).Table("pool_sessions ps").
+		Joins("JOIN setup_sessions s ON s.id = ps.session_id").
+		Where("s.status <> ?", "running").Count(&count).Error
+	return int(count), err
+}
+
+func subtractReservedSessions(estimate capacity.Estimate, reserved int) capacity.Estimate {
+	if reserved <= 0 {
+		return estimate
+	}
+	subtract := func(value int) int {
+		if value < 0 {
+			return value
+		}
+		return max(value-reserved, 0)
+	}
+	estimate.Count = subtract(estimate.Count)
+	estimate.ByCPU = subtract(estimate.ByCPU)
+	estimate.ByMemory = subtract(estimate.ByMemory)
+	estimate.ByStorage = subtract(estimate.ByStorage)
+	estimate.LimitingResource = "cpu"
+	minimum := estimate.ByCPU
+	if estimate.ByMemory < minimum {
+		estimate.LimitingResource, minimum = "memory", estimate.ByMemory
+	}
+	if estimate.ByStorage >= 0 && estimate.ByStorage < minimum {
+		estimate.LimitingResource = "storage"
+	}
+	return estimate
 }
