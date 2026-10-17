@@ -58,7 +58,7 @@ func (c *Client) FullImage() string {
 // creation time — the same order GitHub shows package versions. Tags whose
 // creation time can't be resolved keep a semver-descending fallback order
 // after the dated ones. The tags that "latest", "nightly" and "main" point to
-// are marked Latest, Nightly and Main; the Latest row is moved to the front.
+// are marked Latest, Nightly and Main and moved to the front in that order.
 func (c *Client) ListTags(ctx context.Context) ([]ImageTag, error) {
 	registryToken, err := c.fetchRegistryToken(ctx)
 	if err != nil {
@@ -136,7 +136,6 @@ func (c *Client) ListTags(ctx context.Context) ([]ImageTag, error) {
 	base := c.FullImage()
 	result := make([]ImageTag, len(infos))
 	flagged := make([]bool, len(channelTags))
-	latestFound := false
 	for i, info := range infos {
 		r := ImageTag{Tag: info.tag, Image: base + ":" + info.tag}
 		if !info.created.IsZero() {
@@ -150,7 +149,6 @@ func (c *Client) ListTags(ctx context.Context) ([]ImageTag, error) {
 			switch channelTags[k] {
 			case "latest":
 				r.Latest = true
-				latestFound = true
 			case "nightly":
 				r.Nightly = true
 			case "main":
@@ -160,17 +158,32 @@ func (c *Client) ListTags(ctx context.Context) ([]ImageTag, error) {
 		result[i] = r
 	}
 
-	// Ensure the latest-marked tag is first so frontends can default to result[0].
-	if latestFound {
-		for i, r := range result {
-			if r.Latest && i != 0 {
-				result[0], result[i] = result[i], result[0]
-				break
-			}
-		}
-	}
-
+	orderChannelsFirst(result)
 	return result, nil
+}
+
+// orderChannelsFirst moves the channel rows to the front in the order latest,
+// nightly, main, so frontends can default to result[0]. The stable sort keeps
+// the remaining rows in their existing newest-first order.
+func orderChannelsFirst(tags []ImageTag) {
+	sort.SliceStable(tags, func(i, j int) bool {
+		return channelRank(tags[i]) < channelRank(tags[j])
+	})
+}
+
+// channelRank is a row's sort rank by its highest-priority channel flag;
+// rows no channel points to rank last.
+func channelRank(t ImageTag) int {
+	switch {
+	case t.Latest:
+		return 0
+	case t.Nightly:
+		return 1
+	case t.Main:
+		return 2
+	default:
+		return 3
+	}
 }
 
 // tagInfo carries what sorting and latest-matching need per tag.
