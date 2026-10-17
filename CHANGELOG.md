@@ -1,5 +1,21 @@
 # Changelog
 
+## [v0.14.1] - 2026-10-17
+
+### Added
+
+- Users and administrators can recover sessions that fail during component
+  deployment by selecting replacement images and resuming from the failed
+  stage. Recovery reconciles existing deployments while preserving PVC data
+  and completed setup jobs.
+- Full-stack recovery accepts image selections for VTA, Mediator, DID Hosting,
+  and VTC; VTA-only recovery accepts the VTA image.
+
+### Fixed
+
+- Container image responses list `latest`, `nightly`, and `main` builds ahead
+  of other available images.
+
 ## [v0.14.0] - 2026-10-15
 
 ### Added
