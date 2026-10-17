@@ -905,29 +905,42 @@ components:
 
     RecoverSetupRequest:
       type: object
-      required: [component, image]
+      required: [components]
       properties:
-        component:
-          type: string
-          enum: [vta, mediator, dids, vtc]
-          description: Must match the component implied by the failed deploy stage.
-        image:
-          type: string
-          description: Full image URL returned by the component's setup images endpoint.
-          example: "ghcr.io/ic3software/vtc:0.3.1-917881c"
+        components:
+          type: array
+          minItems: 1
+          description: |
+            The complete image set for the session mode. `full_stack` requires
+            exactly vta, mediator, dids, and vtc; `vta_only` requires exactly
+            vta. Each image must be returned by that component's setup images
+            endpoint.
+          items:
+            type: object
+            required: [component, image]
+            properties:
+              component:
+                type: string
+                enum: [vta, mediator, dids, vtc]
+              image:
+                type: string
+                example: "ghcr.io/ic3software/vtc:0.3.1-917881c"
 
     RecoverSetupResponse:
       type: object
-      required: [status, component, image]
+      required: [status, components]
       properties:
         status:
           type: string
           enum: [deploy_dids, deploy_mediator, deploy_vta, deploy_vtc]
-        component:
-          type: string
-          enum: [vta, mediator, dids, vtc]
-        image:
-          type: string
+        components:
+          type: array
+          items:
+            type: object
+            required: [component, image]
+            properties:
+              component: { type: string, enum: [vta, mediator, dids, vtc] }
+              image: { type: string }
 
     ModeAvailability:
       type: object
@@ -3099,11 +3112,12 @@ paths:
     post:
       summary: Recover a failed deployment (admin)
       description: |
-        Admin-cookie twin of `POST /setup/{id}/recover`. The session must be a
-        full-stack session whose `failed_stage` is `deploy_dids`,
-        `deploy_mediator`, `deploy_vta`, or `deploy_vtc`. The replacement image
-        is persisted, the existing Deployment is reconciled to it, and setup
-        continues from the next step without repeating completed setup jobs.
+        Admin-cookie twin of `POST /setup/{id}/recover`. A full-stack request
+        selects all four component images; a VTA-only request selects only its
+        VTA image. Existing Deployments are reconciled to the selected versions
+        through the failed stage, and later components use the persisted
+        selections when setup continues. Completed setup jobs and PVC data are
+        retained.
       tags: [Admin]
       security: [{ CookieAuthAdmin: [] }]
       parameters:
@@ -3117,7 +3131,7 @@ paths:
         "202":
           description: Recovery accepted and started
           content: { application/json: { schema: { $ref: "#/components/schemas/RecoverSetupResponse" } } }
-        "400": { description: Component does not match the failed stage or image is unavailable, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "400": { description: Component set does not match the session mode or an image is unavailable, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "401": { description: Missing or invalid token, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "403": { description: Insufficient role, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "404": { description: Session not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
@@ -5275,13 +5289,13 @@ paths:
     post:
       summary: Recover the caller's failed deployment
       description: |
-        Changes the image for the component whose full-stack deployment failed,
-        retries only that deployment, and continues from the next setup step.
-        Supported mappings are `deploy_dids` → dids, `deploy_mediator` →
-        mediator, `deploy_vta` → vta, and `deploy_vtc` → vtc. Completed setup
-        jobs and PVC data are retained. The response returns immediately; poll
-        `GET /setup/{id}` for progress. A service restart also resumes from the
-        persisted deploy stage.
+        Selects the complete image set for a failed session, reconciles existing
+        Deployments through the failed stage, and continues from the next setup
+        step. `full_stack` accepts vta, mediator, dids, and vtc; `vta_only`
+        accepts only vta and is recoverable only from `deploy_vta`. Completed
+        setup jobs and PVC data are retained. The response returns immediately;
+        poll `GET /setup/{id}` for progress. A service restart also resumes from
+        the persisted deploy stage.
       tags: [User]
       security: [{ CookieAuthUser: [] }]
       parameters:
@@ -5295,7 +5309,7 @@ paths:
         "202":
           description: Recovery accepted and started
           content: { application/json: { schema: { $ref: "#/components/schemas/RecoverSetupResponse" } } }
-        "400": { description: Component does not match the failed stage or image is unavailable, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "400": { description: Component set does not match the session mode or an image is unavailable, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "401": { description: Missing or invalid token, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "404": { description: Session not found or owned by another user, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "409": { description: Session is not at a recoverable deploy failure or has an active upgrade, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }

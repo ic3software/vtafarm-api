@@ -2,8 +2,10 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -15,31 +17,72 @@ import (
 )
 
 type recoverSetupRequest struct {
-	Component string `json:"component" binding:"required"`
-	Image     string `json:"image" binding:"required"`
+	Components []componentImage `json:"components" binding:"required,min=1,dive"`
 }
 
 type deploymentRecovery struct {
-	Stage       string
-	Component   string
-	ImageColumn string
+	Stage string
 }
 
-func recoveryForStage(stage string) (deploymentRecovery, bool) {
-	component := ""
-	switch stage {
-	case "deploy_dids":
-		component = "dids"
-	case "deploy_mediator":
-		component = "mediator"
-	case "deploy_vta":
-		component = "vta"
-	case "deploy_vtc":
-		component = "vtc"
-	default:
+func recoveryForStage(mode, stage string) (deploymentRecovery, bool) {
+	if mode == model.ModeVtaOnly {
+		if stage != "deploy_vta" {
+			return deploymentRecovery{}, false
+		}
+		return deploymentRecovery{Stage: stage}, true
+	}
+	if mode != model.ModeFullStack || !slices.Contains([]string{
+		"deploy_dids", "deploy_mediator", "deploy_vta", "deploy_vtc",
+	}, stage) {
 		return deploymentRecovery{}, false
 	}
-	return deploymentRecovery{Stage: stage, Component: component, ImageColumn: model.UpgradeImageColumn(component)}, true
+	return deploymentRecovery{Stage: stage}, true
+}
+
+func recoveryComponentsForMode(mode string) []string {
+	if mode == model.ModeVtaOnly {
+		return []string{"vta"}
+	}
+	if mode == model.ModeFullStack {
+		return []string{"vta", "mediator", "dids", "vtc"}
+	}
+	return nil
+}
+
+func validateRecoveryComponents(mode string, components []componentImage) error {
+	required := recoveryComponentsForMode(mode)
+	if len(required) == 0 {
+		return fmt.Errorf("mode %s cannot be recovered", mode)
+	}
+	seen := make(map[string]bool, len(components))
+	for _, ci := range components {
+		if seen[ci.Component] {
+			return fmt.Errorf("duplicate component %s", ci.Component)
+		}
+		seen[ci.Component] = true
+	}
+	var missing, extra []string
+	for _, component := range required {
+		if !seen[component] {
+			missing = append(missing, component)
+		}
+	}
+	for component := range seen {
+		if !slices.Contains(required, component) {
+			extra = append(extra, component)
+		}
+	}
+	if len(missing) > 0 || len(extra) > 0 {
+		parts := make([]string, 0, 2)
+		if len(missing) > 0 {
+			parts = append(parts, "missing "+strings.Join(missing, ", "))
+		}
+		if len(extra) > 0 {
+			parts = append(parts, "unsupported "+strings.Join(extra, ", "))
+		}
+		return fmt.Errorf("mode %s requires exactly its component images: %s", mode, strings.Join(parts, "; "))
+	}
+	return nil
 }
 
 func (h *SetupHandler) recoveryImageClient(component string) *ghcr.Client {
@@ -85,42 +128,50 @@ func (h *SetupHandler) recoverSession(c *gin.Context, session *model.SetupSessio
 		return
 	}
 
-	recovery, ok := recoveryForStage(session.FailureStage())
-	if session.Mode != model.ModeFullStack || !ok {
-		c.JSON(http.StatusConflict, gin.H{"error": "only full-stack sessions failed at a deploy stage can be recovered"})
+	recovery, ok := recoveryForStage(session.Mode, session.FailureStage())
+	if !ok {
+		c.JSON(http.StatusConflict, gin.H{"error": "only sessions failed at a recoverable deploy stage can be recovered"})
 		return
 	}
-	if req.Component != recovery.Component {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed stage " + recovery.Stage + " requires component " + recovery.Component})
+	if err := validateRecoveryComponents(session.Mode, req.Components); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	client := h.recoveryImageClient(recovery.Component)
-	if client == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "image source not configured for " + recovery.Component})
-		return
-	}
-	tags, err := client.ListTags(c.Request.Context())
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch images: " + err.Error()})
-		return
-	}
-	if !slices.ContainsFunc(tags, func(tag ghcr.ImageTag) bool { return tag.Image == req.Image }) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "image is not available for " + recovery.Component})
-		return
+	for _, ci := range req.Components {
+		// Keeping a component on its persisted image is valid even when that old
+		// tag has since fallen out of the registry listing. Only replacements
+		// need to prove that the registry currently serves them.
+		if session.ComponentImage(ci.Component) == ci.Image {
+			continue
+		}
+		client := h.recoveryImageClient(ci.Component)
+		if client == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "image source not configured for " + ci.Component})
+			return
+		}
+		tags, err := client.ListTags(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch " + ci.Component + " images: " + err.Error()})
+			return
+		}
+		if !slices.ContainsFunc(tags, func(tag ghcr.ImageTag) bool { return tag.Image == ci.Image }) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "image is not available for " + ci.Component})
+			return
+		}
 	}
 
 	conflictMessage := "session is no longer recoverable"
-	err = h.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+	err := h.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 		var locked model.SetupSession
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, session.ID).Error; err != nil {
 			return err
 		}
-		lockedRecovery, ok := recoveryForStage(locked.FailureStage())
-		if locked.Mode != model.ModeFullStack || !ok {
+		lockedRecovery, ok := recoveryForStage(locked.Mode, locked.FailureStage())
+		if !ok {
 			return errRecoveryConflict
 		}
-		if lockedRecovery.Component != req.Component {
+		if locked.Mode != session.Mode || lockedRecovery.Stage != recovery.Stage {
 			conflictMessage = "session failure stage changed; reload before recovering"
 			return errRecoveryConflict
 		}
@@ -137,13 +188,16 @@ func (h *SetupHandler) recoverSession(c *gin.Context, session *model.SetupSessio
 			return errRecoveryConflict
 		}
 
-		result := tx.Model(&locked).Where("status = ?", "failed").Updates(map[string]any{
-			lockedRecovery.ImageColumn: req.Image,
-			"status":                   lockedRecovery.Stage,
-			"error_msg":                "",
-			"failed_stage":             "",
-			"updated_at":               time.Now(),
-		})
+		updates := map[string]any{
+			"status":       lockedRecovery.Stage,
+			"error_msg":    "",
+			"failed_stage": "",
+			"updated_at":   time.Now(),
+		}
+		for _, ci := range req.Components {
+			updates[model.UpgradeImageColumn(ci.Component)] = ci.Image
+		}
+		result := tx.Model(&locked).Where("status = ?", "failed").Updates(updates)
 		if result.Error != nil {
 			return result.Error
 		}
@@ -164,6 +218,6 @@ func (h *SetupHandler) recoverSession(c *gin.Context, session *model.SetupSessio
 
 	h.orch.RecoverDeployment(session.ID)
 	c.JSON(http.StatusAccepted, gin.H{
-		"status": recovery.Stage, "component": recovery.Component, "image": req.Image,
+		"status": recovery.Stage, "components": req.Components,
 	})
 }

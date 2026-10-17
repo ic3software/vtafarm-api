@@ -19,8 +19,13 @@ func TestFailureStage(t *testing.T) {
 			want:    "step_dids_provision",
 		},
 		{
-			name:    "legacy vta provisioning error",
+			name:    "legacy vta deployment error",
 			session: SetupSession{Status: "failed", Mode: ModeVtaOnly, ErrorMsg: "VTA deployment did not become ready: timeout"},
+			want:    "deploy_vta",
+		},
+		{
+			name:    "legacy vta provision job error",
+			session: SetupSession{Status: "failed", Mode: ModeVtaOnly, ErrorMsg: "provision job failed: invalid config"},
 			want:    "provisioning",
 		},
 		{

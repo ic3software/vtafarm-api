@@ -470,75 +470,70 @@ func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDi
 	log.Printf("[orchestrator] session %d: provision job completed", sessionID)
 
 	log.Printf("[orchestrator] session %d: starting VTA deployment", sessionID)
+	pooled, err := o.deployVtaOnly(ctx, ns, &session)
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		o.markFailedAt(sessionID, "deploy_vta", err.Error())
+		return
+	}
 
+	o.finishVtaOnlyDeployment(ctx, &session, pooled)
+}
+
+func (o *Orchestrator) deployVtaOnly(ctx context.Context, ns string, session *model.SetupSession) (bool, error) {
 	profiles, err := resourceprofile.Load(ctx, o.db)
 	if err != nil {
-		o.markFailed(sessionID, "failed to load resource defaults: "+err.Error())
-		return
+		return false, fmt.Errorf("failed to load resource defaults: %w", err)
 	}
 	pooled, err := o.isPoolSession(ctx, session.ID)
 	if err != nil {
-		o.markFailed(sessionID, "failed to identify pool session")
-		return
+		return false, fmt.Errorf("failed to identify pool session: %w", err)
 	}
 	if pooled {
 		var saved model.WorkloadResource
 		if err := o.db.Where("setup_session_id = ? AND component = 'vta'", session.ID).First(&saved).Error; err != nil {
-			o.markFailed(sessionID, "pool resource profile is missing")
-			return
+			return false, fmt.Errorf("pool resource profile is missing: %w", err)
 		}
 		p := profiles[k8s.ComponentVTA]
 		p.MemoryRequest, p.MemoryLimit = saved.MemoryRequest, saved.MemoryLimit
 		profiles[k8s.ComponentVTA] = p
 	}
-	if err := o.k8s.CreateVtaDeployment(ctx, ns, sessionID, session.VtaImage, profiles.Requirements(k8s.ComponentVTA)); err != nil {
-		if ctx.Err() != nil {
-			return
-		}
-		o.markFailed(sessionID, "failed to create VTA deployment: "+err.Error())
-		return
+	if err := o.k8s.CreateVtaDeployment(ctx, ns, session.ID, session.VtaImage, profiles.Requirements(k8s.ComponentVTA)); err != nil {
+		return pooled, fmt.Errorf("failed to create VTA deployment: %w", err)
 	}
 	if pooled {
-		if err := o.k8s.ScaleComponentDeployment(ctx, ns, k8s.VtaDeploymentName(sessionID), 1); err != nil {
-			o.markFailed(sessionID, "failed to start prebuilt VTA deployment: "+err.Error())
-			return
+		if err := o.k8s.ScaleComponentDeployment(ctx, ns, k8s.VtaDeploymentName(session.ID), 1); err != nil {
+			return pooled, fmt.Errorf("failed to start prebuilt VTA deployment: %w", err)
 		}
 	}
-
-	if err := o.k8s.CreateVtaService(ctx, ns, sessionID); err != nil {
-		if ctx.Err() != nil {
-			return
-		}
-		o.markFailed(sessionID, "failed to create VTA service: "+err.Error())
-		return
+	if err := o.k8s.CreateVtaService(ctx, ns, session.ID); err != nil {
+		return pooled, fmt.Errorf("failed to create VTA service: %w", err)
 	}
-
-	if err := o.k8s.CreateVtaIngress(ctx, ns, sessionID, session.FQDN()); err != nil {
-		if ctx.Err() != nil {
-			return
-		}
-		o.markFailed(sessionID, "failed to create VTA ingress: "+err.Error())
-		return
+	if err := o.k8s.CreateVtaIngress(ctx, ns, session.ID, session.FQDN()); err != nil {
+		return pooled, fmt.Errorf("failed to create VTA ingress: %w", err)
 	}
 
 	// A Deployment exists before the VTA has finished initializing. Its
 	// /health readiness probe is the serving boundary: do not advertise this
 	// session as running until Kubernetes confirms at least one ready replica.
 	if err := o.k8s.WaitForComponentDeploymentReady(
-		ctx, ns, k8s.VtaDeploymentName(sessionID), 2*time.Minute,
+		ctx, ns, k8s.VtaDeploymentName(session.ID), 2*time.Minute,
 	); err != nil {
-		if ctx.Err() != nil {
-			return
-		}
-		o.markFailed(sessionID, "VTA deployment did not become ready: "+err.Error())
-		return
+		return pooled, fmt.Errorf("VTA deployment did not become ready: %w", err)
 	}
+	return pooled, nil
+}
 
-	o.db.Model(&model.SetupSession{}).Where("id = ?", sessionID).Updates(map[string]any{
-		"status":     "running",
-		"updated_at": time.Now(),
+func (o *Orchestrator) finishVtaOnlyDeployment(ctx context.Context, session *model.SetupSession, pooled bool) {
+	o.db.Model(&model.SetupSession{}).Where("id = ?", session.ID).Updates(map[string]any{
+		"status":       "running",
+		"error_msg":    "",
+		"failed_stage": "",
+		"updated_at":   time.Now(),
 	})
-	log.Printf("[orchestrator] session %d: VTA running at %s", sessionID, session.FQDN())
+	log.Printf("[orchestrator] session %d: VTA running at %s", session.ID, session.FQDN())
 	if pooled {
 		if current, err := connection.Current(o.db, session.ID); err == nil && current != nil {
 			_ = connection.MarkReleased(ctx, o.db, current.ID)

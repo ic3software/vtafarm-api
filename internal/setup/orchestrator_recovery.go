@@ -26,9 +26,6 @@ func (o *Orchestrator) recoverDeployment(ctx context.Context, sessionID uint) {
 		log.Printf("[orchestrator] deployment recovery %d: load failed: %v", sessionID, err)
 		return
 	}
-	if session.Mode != model.ModeFullStack {
-		return
-	}
 
 	s := &session
 	ns := o.k8s.UserNamespace(fmt.Sprintf("%d", s.UserID))
@@ -42,12 +39,31 @@ func (o *Orchestrator) recoverDeployment(ctx context.Context, sessionID uint) {
 		o.markFailedAt(sessionID, stage, prefix+": "+err.Error())
 		return true
 	}
+	if s.Mode == model.ModeVtaOnly {
+		if s.Status != "deploy_vta" {
+			return
+		}
+		if fail("deploy_vta", "failed to reconcile vta deployment image", o.k8s.RecoverDeploymentImage(
+			ctx, ns, k8s.VtaDeploymentName(s.ID), s.VtaImage,
+		)) {
+			return
+		}
+		pooled, err := o.deployVtaOnly(ctx, ns, s)
+		if fail("deploy_vta", "failed to deploy vta", err) {
+			return
+		}
+		o.finishVtaOnlyDeployment(ctx, s, pooled)
+		return
+	}
+	if s.Mode != model.ModeFullStack {
+		return
+	}
+	if fail(s.Status, "failed to reconcile recovery images", o.reconcileFullStackRecoveryImages(ctx, ns, s)) {
+		return
+	}
 
 	switch s.Status {
 	case "deploy_dids":
-		if fail("deploy_dids", "failed to reconcile dids deployment image", o.k8s.RecoverDeploymentImage(ctx, ns, k8s.FSDidsName(s.ID), s.DidsImage)) {
-			return
-		}
 		if fail("deploy_dids", "failed to deploy dids daemon", o.fsDeployDids(ctx, ns, s)) {
 			return
 		}
@@ -58,32 +74,61 @@ func (o *Orchestrator) recoverDeployment(ctx context.Context, sessionID uint) {
 		o.continueRecoveredPreGate(ctx, ns, s)
 
 	case "deploy_mediator":
-		if fail("deploy_mediator", "failed to reconcile mediator deployment image", o.k8s.RecoverDeploymentImage(ctx, ns, k8s.FSMediatorName(s.ID), s.MediatorImage)) {
-			return
-		}
 		if fail("deploy_mediator", "failed to deploy mediator", o.fsDeployMediator(ctx, ns, s)) {
 			return
 		}
 		o.continueRecoveredPreGate(ctx, ns, s)
 
 	case "deploy_vta":
-		if fail("deploy_vta", "failed to reconcile vta deployment image", o.k8s.RecoverDeploymentImage(ctx, ns, k8s.FSVtaName(s.ID), s.VtaImage)) {
-			return
-		}
 		if fail("deploy_vta", "failed to deploy vta", o.fsDeployVta(ctx, ns, s)) {
 			return
 		}
 		o.continueRecoveredPostGate(ctx, ns, s, fail)
 
 	case "deploy_vtc":
-		if fail("deploy_vtc", "failed to reconcile vtc deployment image", o.k8s.RecoverDeploymentImage(ctx, ns, k8s.FSVtcName(s.ID), s.VtcImage)) {
-			return
-		}
 		if fail("deploy_vtc", "failed to deploy vtc", o.fsDeployVtc(ctx, ns, s)) {
 			return
 		}
 		o.finishRecoveredSession(sessionID, s)
 	}
+}
+
+func (o *Orchestrator) reconcileFullStackRecoveryImages(ctx context.Context, ns string, s *model.SetupSession) error {
+	components := []struct {
+		stage string
+		name  string
+		image string
+	}{
+		{stage: "deploy_dids", name: k8s.FSDidsName(s.ID), image: s.DidsImage},
+		{stage: "deploy_mediator", name: k8s.FSMediatorName(s.ID), image: s.MediatorImage},
+		{stage: "deploy_vta", name: k8s.FSVtaName(s.ID), image: s.VtaImage},
+		{stage: "deploy_vtc", name: k8s.FSVtcName(s.ID), image: s.VtcImage},
+	}
+	failedIndex := -1
+	for i, component := range components {
+		if component.stage == s.Status {
+			failedIndex = i
+			break
+		}
+	}
+	if failedIndex < 0 {
+		return fmt.Errorf("unsupported recovery stage %s", s.Status)
+	}
+	for i := 0; i <= failedIndex; i++ {
+		component := components[i]
+		if err := o.k8s.RecoverDeploymentImage(ctx, ns, component.name, component.image); err != nil {
+			return fmt.Errorf("reconcile %s: %w", component.name, err)
+		}
+		// The failed component's normal deploy helper below creates any missing
+		// resources and performs its readiness wait. Components that were already
+		// running must finish their replacement rollout before setup continues.
+		if i < failedIndex {
+			if err := o.k8s.WaitForComponentDeploymentReady(ctx, ns, component.name, 2*time.Minute); err != nil {
+				return fmt.Errorf("wait for %s: %w", component.name, err)
+			}
+		}
+	}
+	return nil
 }
 
 func (o *Orchestrator) continueRecoveredPreGate(ctx context.Context, ns string, s *model.SetupSession) {
