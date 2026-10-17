@@ -903,6 +903,45 @@ components:
             dids: { type: string, example: "https://dids-myvta.example.com" }
             vtc: { type: string, example: "https://vtc-myvtc.example.com" }
 
+    RecoverSetupRequest:
+      type: object
+      required: [components]
+      properties:
+        components:
+          type: array
+          minItems: 1
+          description: |
+            The complete image set for the session mode. `full_stack` requires
+            exactly vta, mediator, dids, and vtc; `vta_only` requires exactly
+            vta. Each image must be returned by that component's setup images
+            endpoint.
+          items:
+            type: object
+            required: [component, image]
+            properties:
+              component:
+                type: string
+                enum: [vta, mediator, dids, vtc]
+              image:
+                type: string
+                example: "ghcr.io/ic3software/vtc:0.3.1-917881c"
+
+    RecoverSetupResponse:
+      type: object
+      required: [status, components]
+      properties:
+        status:
+          type: string
+          enum: [deploy_dids, deploy_mediator, deploy_vta, deploy_vtc]
+        components:
+          type: array
+          items:
+            type: object
+            required: [component, image]
+            properties:
+              component: { type: string, enum: [vta, mediator, dids, vtc] }
+              image: { type: string }
+
     ModeAvailability:
       type: object
       description: Whether one setup mode can be created right now, and if not, why.
@@ -2188,6 +2227,9 @@ paths:
                         status:
                           type: string
                           example: "running"
+                        failed_stage:
+                          type: string
+                          description: State-machine value that was active immediately before status became `failed`.
                         error_msg:
                           type: string
                           description: Present when the session failed.
@@ -3065,6 +3107,37 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  /api/v1/admin/setup-sessions/{id}/recover:
+    post:
+      summary: Recover a failed deployment (admin)
+      description: |
+        Admin-cookie twin of `POST /setup/{id}/recover`. A full-stack request
+        selects all four component images; a VTA-only request selects only its
+        VTA image. Existing Deployments are reconciled to the selected versions
+        through the failed stage, and later components use the persisted
+        selections when setup continues. Completed setup jobs and PVC data are
+        retained.
+      tags: [Admin]
+      security: [{ CookieAuthAdmin: [] }]
+      parameters:
+        - { name: id, in: path, required: true, description: The session's `vta_name`., schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RecoverSetupRequest" }
+      responses:
+        "202":
+          description: Recovery accepted and started
+          content: { application/json: { schema: { $ref: "#/components/schemas/RecoverSetupResponse" } } }
+        "400": { description: Component set does not match the session mode or an image is unavailable, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "401": { description: Missing or invalid token, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "403": { description: Insufficient role, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: Session not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: Session is not at a recoverable deploy failure or has an active upgrade, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "502": { description: Failed to fetch image tags from GHCR, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "503": { description: K8s/orchestrator or image source not configured, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
   /api/v1/admin/setup-sessions/{id}/dids/reissue-enroll:
     post:
@@ -5211,6 +5284,37 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  /api/v1/setup/{id}/recover:
+    post:
+      summary: Recover the caller's failed deployment
+      description: |
+        Selects the complete image set for a failed session, reconciles existing
+        Deployments through the failed stage, and continues from the next setup
+        step. `full_stack` accepts vta, mediator, dids, and vtc; `vta_only`
+        accepts only vta and is recoverable only from `deploy_vta`. Completed
+        setup jobs and PVC data are retained. The response returns immediately;
+        poll `GET /setup/{id}` for progress. A service restart also resumes from
+        the persisted deploy stage.
+      tags: [User]
+      security: [{ CookieAuthUser: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RecoverSetupRequest" }
+      responses:
+        "202":
+          description: Recovery accepted and started
+          content: { application/json: { schema: { $ref: "#/components/schemas/RecoverSetupResponse" } } }
+        "400": { description: Component set does not match the session mode or an image is unavailable, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "401": { description: Missing or invalid token, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: Session not found or owned by another user, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: Session is not at a recoverable deploy failure or has an active upgrade, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "502": { description: Failed to fetch image tags from GHCR, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "503": { description: K8s/orchestrator or image source not configured, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
   /api/v1/setup/{id}/upgrade:
     post:

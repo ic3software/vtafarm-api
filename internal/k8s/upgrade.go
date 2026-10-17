@@ -3,11 +3,15 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 )
+
+const recoveryRestartAnnotation = "vtafarm.ic3software.com/recovery-restarted-at"
 
 // VtaDeploymentName exposes vta_only's Deployment name (vta-<sessionID>) to
 // the upgrade runner, which patches Deployments created by CreateVtaDeployment.
@@ -32,6 +36,32 @@ func (c *Client) SetDeploymentImage(ctx context.Context, ns, name, image string)
 		for i := range deploy.Spec.Template.Spec.Containers {
 			deploy.Spec.Template.Spec.Containers[i].Image = image
 		}
+		_, err = c.kube.AppsV1().Deployments(ns).Update(ctx, deploy, metav1.UpdateOptions{})
+		return err
+	})
+}
+
+// RecoverDeploymentImage reconciles an existing failed Deployment to image
+// and changes its pod template even when image is unchanged. A deployment can
+// be absent when the original create call failed before persistence; that case
+// is left to the normal idempotent create helper used immediately afterwards.
+func (c *Client) RecoverDeploymentImage(ctx context.Context, ns, name, image string) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		deploy, err := c.kube.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
+		if k8serrors.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		deploy.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
+		for i := range deploy.Spec.Template.Spec.Containers {
+			deploy.Spec.Template.Spec.Containers[i].Image = image
+		}
+		if deploy.Spec.Template.Annotations == nil {
+			deploy.Spec.Template.Annotations = map[string]string{}
+		}
+		deploy.Spec.Template.Annotations[recoveryRestartAnnotation] = time.Now().UTC().Format(time.RFC3339Nano)
 		_, err = c.kube.AppsV1().Deployments(ns).Update(ctx, deploy, metav1.UpdateOptions{})
 		return err
 	})

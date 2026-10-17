@@ -198,15 +198,25 @@ func (s *SetupSession) FailureStage() string {
 	}
 	if s.Mode == ModeVtaOnly {
 		for _, prefix := range []string{
+			"failed to load resource defaults",
+			"failed to identify pool session",
+			"pool resource profile is missing",
+			"failed to create VTA deployment",
+			"failed to start prebuilt VTA deployment",
+			"failed to create VTA service",
+			"failed to create VTA ingress",
+			"VTA deployment did not become ready",
+		} {
+			if strings.HasPrefix(s.ErrorMsg, prefix) {
+				return "deploy_vta"
+			}
+		}
+		for _, prefix := range []string{
 			"failed to reach DID hosting control API",
 			"failed to add VTA DID to hosting ACL",
 			"failed to create provision job",
 			"provision job watch error",
 			"provision job failed",
-			"failed to create VTA deployment",
-			"failed to create VTA service",
-			"failed to create VTA ingress",
-			"VTA deployment did not become ready",
 		} {
 			if strings.HasPrefix(s.ErrorMsg, prefix) {
 				return "provisioning"

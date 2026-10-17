@@ -75,6 +75,9 @@ func TestResumeCoversEveryStatus(t *testing.T) {
 	for _, s := range fsResumePostGate {
 		classified[s] = "fsResumePostGate"
 	}
+	for _, s := range fsResumeDeployment {
+		classified[s] = "fsResumeDeployment"
+	}
 	for _, s := range fsResumeTerminal {
 		classified[s] = "fsResumeTerminal"
 	}
@@ -84,7 +87,7 @@ func TestResumeCoversEveryStatus(t *testing.T) {
 			t.Errorf("status %q is written by the pipeline but is in no resume list — "+
 				"a restart while a session holds it would strand the session with nothing "+
 				"driving it and no budget to fail it. Add it to fsResumePreGate (before the "+
-				"admin gate), fsResumePostGate (after it), or fsResumeTerminal (nothing owed).",
+				"admin gate), fsResumePostGate (after it), fsResumeDeployment, or fsResumeTerminal (nothing owed).",
 				status)
 		}
 	}
@@ -107,6 +110,7 @@ func TestResumeListsHaveNoDeadStatuses(t *testing.T) {
 	}{
 		{"fsResumePreGate", fsResumePreGate},
 		{"fsResumePostGate", fsResumePostGate},
+		{"fsResumeDeployment", fsResumeDeployment},
 		{"fsResumeTerminal", fsResumeTerminal},
 	} {
 		for _, status := range list.entries {
@@ -129,6 +133,7 @@ func TestResumeListsAreDisjoint(t *testing.T) {
 	}{
 		{"fsResumePreGate", fsResumePreGate},
 		{"fsResumePostGate", fsResumePostGate},
+		{"fsResumeDeployment", fsResumeDeployment},
 		{"fsResumeTerminal", fsResumeTerminal},
 	} {
 		for _, status := range list.entries {
@@ -153,6 +158,18 @@ func TestCustomDomainStatusesAreResumable(t *testing.T) {
 		if !inPreGate[status] {
 			t.Errorf("%q must be in fsResumePreGate: it is a custom-domain step, and a "+
 				"restart during it used to hang the session forever", status)
+		}
+	}
+}
+
+func TestDeploymentStatusesUseExactRecovery(t *testing.T) {
+	want := []string{"deploy_dids", "deploy_mediator", "deploy_vta", "deploy_vtc"}
+	if len(fsResumeDeployment) != len(want) {
+		t.Fatalf("fsResumeDeployment = %v, want %v", fsResumeDeployment, want)
+	}
+	for i := range want {
+		if fsResumeDeployment[i] != want[i] {
+			t.Fatalf("fsResumeDeployment = %v, want %v", fsResumeDeployment, want)
 		}
 	}
 }

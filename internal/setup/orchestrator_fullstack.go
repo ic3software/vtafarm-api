@@ -1200,16 +1200,19 @@ var (
 		"step_vta_setup",
 		"step_mediator_p1", "step_mediator_reprov", "step_mediator_p2",
 		"step_dids_p1", "step_dids_provision", "step_dids_p2", "step_dids_invite",
-		"step_dids_load_did", "step_dids_grant_farm", "deploy_dids", "deploy_mediator",
+		"step_dids_load_did", "step_dids_grant_farm",
 		"step_vta_register_dids",
 	}
 
 	// fsResumePostGate: past the admin DID gate, so Provision continues from
 	// there rather than rebuilding what already exists.
 	fsResumePostGate = []string{
-		"step_import_admin_did", "deploy_vta",
-		"step_vtc_setup_key", "step_vtc_acl_grant", "step_vtc_setup", "deploy_vtc",
+		"step_import_admin_did", "step_vtc_setup_key", "step_vtc_acl_grant", "step_vtc_setup",
 	}
+
+	// Deployment stages resume exactly at the failed/current deployment. Going
+	// through Start or Provision would repeat setup jobs that already succeeded.
+	fsResumeDeployment = []string{"deploy_dids", "deploy_mediator", "deploy_vta", "deploy_vtc"}
 
 	// fsResumeTerminal: nothing is owed. awaiting_admin_did is only terminal
 	// while admin_did is empty — resumeFullStack queries that case separately,
@@ -1236,6 +1239,15 @@ func (o *Orchestrator) resumeFullStack() {
 	for _, s := range finishing {
 		log.Printf("[orchestrator] resuming %s finish %d (status=%s)", s.Mode, s.ID, s.Status)
 		o.Provision(s.ID, s.AdminDid)
+	}
+
+	var deployments []model.SetupSession
+	if err := o.db.Where("mode = ? AND status IN ?", model.ModeFullStack, fsResumeDeployment).Find(&deployments).Error; err != nil {
+		log.Printf("[orchestrator] resume full_stack deployments: query failed: %v", err)
+	}
+	for _, s := range deployments {
+		log.Printf("[orchestrator] resuming %s deployment %d (status=%s)", s.Mode, s.ID, s.Status)
+		o.RecoverDeployment(s.ID)
 	}
 
 	var gatedWithAdmin []model.SetupSession
