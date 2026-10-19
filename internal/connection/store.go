@@ -459,6 +459,16 @@ func MarkReleased(ctx context.Context, db *gorm.DB, requestID string) error {
 	})
 }
 
+// MarkFailed ends an additional-administrator request whose grant did not
+// complete. The status must be final: anything else keeps the request active,
+// which blocks every new QR code for the session and has the recovery queue
+// retry the grant, restarting the VTA each time.
+func MarkFailed(ctx context.Context, db *gorm.DB, requestID, reason string) error {
+	return db.WithContext(ctx).Model(&model.MobileConnection{}).
+		Where("id = ? AND operation = ? AND status IN ?", requestID, OperationGrantACL, []string{"confirmed", "provisioning"}).
+		Updates(map[string]any{"status": "failed", "provision_error": reason}).Error
+}
+
 // Reconcile expires unconfirmed reservations and marks initial provisioning as
 // released once the existing setup pipeline reports the VTA running.
 func Reconcile(ctx context.Context, db *gorm.DB, r *model.MobileConnection, s *model.SetupSession) error {

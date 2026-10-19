@@ -94,7 +94,7 @@ components:
         request_id: {type: string, format: uuid}
         status:
           type: string
-          enum: [open, claimed, confirmed, provisioning, released, rejected, lapsed]
+          enum: [open, claimed, confirmed, provisioning, released, rejected, lapsed, failed]
         vta_did: {type: string}
         operation: {type: string, enum: [provision_vta, grant_acl]}
         expires_at: {type: string, format: date-time}
@@ -110,7 +110,9 @@ components:
         candidate_did:
           type: string
           description: Proof-bound candidate administrator DID; present only while confirmation is required.
-        error: {type: string}
+        error:
+          type: string
+          description: Why adding the administrator has not completed, or why it failed. A failed request is final; generate a new QR code to try again.
     MobileConnectionState:
       type: object
       required: [enabled, server_time, connection]
@@ -259,7 +261,7 @@ components:
           description: True only for an unclaimed session that is prebuilt and waiting or whose preparation failed
         claim_state:
           type: string
-          enum: [open, claimed, confirmed, provisioning, released, rejected, lapsed]
+          enum: [open, claimed, confirmed, provisioning, released, rejected, lapsed, failed]
       required: [session_id, user_id, vta_name, status, url, claimed, cleanable]
 
     PoolBatch:

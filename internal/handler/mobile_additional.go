@@ -122,9 +122,7 @@ func (h *SetupHandler) runAdditionalMobile(ctx context.Context, requestID string
 
 func (h *SetupHandler) failAdditionalMobile(ctx context.Context, requestID string, err error) {
 	log.Printf("[mobile-connection] additional request %s failed: %v", requestID, err)
-	if updateErr := h.db.WithContext(ctx).Model(&model.MobileConnection{}).
-		Where("id = ? AND operation = ? AND status IN ?", requestID, connection.OperationGrantACL, []string{"confirmed", "provisioning"}).
-		Update("provision_error", additionalMobileFailure).Error; updateErr != nil {
+	if updateErr := connection.MarkFailed(ctx, h.db, requestID, additionalMobileFailure); updateErr != nil {
 		log.Printf("[mobile-connection] could not record failure for request %s: %v", requestID, updateErr)
 	}
 }
