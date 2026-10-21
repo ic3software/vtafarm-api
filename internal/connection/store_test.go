@@ -3,11 +3,13 @@ package connection
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/ic3software/vtafarm-api/internal/didkey"
 	"github.com/ic3software/vtafarm-api/internal/model"
 	"github.com/ic3software/vtafarm-api/internal/testutil"
@@ -255,5 +257,100 @@ func TestTeardownRejectsClaim(t *testing.T) {
 	}
 	if _, err := Claim(ctx, db, *r.ClaimHandle, newDID(t)); !errors.Is(err, ErrExpired) {
 		t.Fatalf("claim after teardown: %v", err)
+	}
+}
+
+func TestFailedGrantFreesSession(t *testing.T) {
+	db := testutil.Postgres(t)
+	ctx := context.Background()
+	s := testutil.SetupSession(t, db, model.ModeVtaOnly)
+	if err := db.Model(&s).Update("status", "running").Error; err != nil {
+		t.Fatal(err)
+	}
+	r := mustRequest(t, db, s)
+	if _, err := Claim(ctx, db, *r.ClaimHandle, newDID(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Confirm(ctx, db, s.ID, r.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := StartProvisioning(ctx, db, r.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Change(ctx, db, s.ID, "refresh", r.ID); !errors.Is(err, ErrConflict) {
+		t.Fatalf("refresh during grant: %v", err)
+	}
+	if err := MarkFailed(ctx, db, r.ID, "grant failed"); err != nil {
+		t.Fatal(err)
+	}
+	var failed model.MobileConnection
+	db.First(&failed, "id = ?", r.ID)
+	if failed.Status != "failed" || failed.ProvisionError != "grant failed" {
+		t.Fatalf("not failed: %+v", failed)
+	}
+	if err := db.Model(&failed).Update("created_at", failed.CreatedAt.Add(-time.Minute)).Error; err != nil {
+		t.Fatal(err)
+	}
+	next, err := Change(ctx, db, s.ID, "refresh", r.ID)
+	if err != nil {
+		t.Fatalf("refresh after failure: %v", err)
+	}
+	if next.ID == r.ID || next.Status != "open" || next.Operation != OperationGrantACL {
+		t.Fatalf("no fresh reservation: %+v", next)
+	}
+}
+
+func TestLegacyReservationsSettled(t *testing.T) {
+	db := testutil.Postgres(t)
+	ctx := context.Background()
+	pending := testutil.SetupSession(t, db, model.ModeVtaOnly)
+	accepted := testutil.SetupSession(t, db, model.ModeVtaOnly)
+	connectedAt := time.Now().Add(-time.Hour).UTC().Truncate(time.Microsecond)
+	for _, row := range []struct {
+		id        string
+		session   model.SetupSession
+		status    string
+		connected *time.Time
+	}{
+		{uuid.NewString(), pending, "pending", nil},
+		{uuid.NewString(), accepted, "accepted", &connectedAt},
+	} {
+		if err := db.Model(&row.session).Update("status", "running").Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Exec(`INSERT INTO mobile_connections (id, session_id, vta_did, status, created_at, expires_at, connected_at)
+			VALUES (?, ?, ?, ?, now() - interval '2 days', now() - interval '1 day', ?)`, row.id, row.session.ID, row.session.VtaDid, row.status, row.connected).Error; err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Change(ctx, db, row.session.ID, "create", ""); !errors.Is(err, ErrConflict) {
+			t.Fatalf("%s row before migration: %v", row.status, err)
+		}
+	}
+
+	up, err := os.ReadFile("../../migrations/000044_settle_legacy_mobile_connections.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(string(up)).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	for _, want := range []struct {
+		session model.SetupSession
+		status  string
+	}{{pending, "lapsed"}, {accepted, "released"}} {
+		legacy, err := Current(db, want.session.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if legacy.Status != want.status {
+			t.Fatalf("legacy row = %s, want %s", legacy.Status, want.status)
+		}
+		if want.status == "released" && (legacy.ReleasedAt == nil || !legacy.ReleasedAt.Equal(connectedAt)) {
+			t.Fatalf("released_at = %v, want %v", legacy.ReleasedAt, connectedAt)
+		}
+		if _, err := Change(ctx, db, want.session.ID, "create", ""); err != nil {
+			t.Fatalf("%s row after migration: %v", want.status, err)
+		}
 	}
 }
