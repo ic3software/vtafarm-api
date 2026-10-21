@@ -65,6 +65,10 @@ func (h *UpgradeHandler) CreateForSession(c *gin.Context) {
 		return
 	}
 
+	if err := registryBusy(session); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
 	seen := map[string]bool{}
 	for _, ci := range req.Components {
 		if seen[ci.Component] {
@@ -72,7 +76,7 @@ func (h *UpgradeHandler) CreateForSession(c *gin.Context) {
 			return
 		}
 		seen[ci.Component] = true
-		if !slices.Contains(model.UpgradeComponentModes[ci.Component], session.Mode) {
+		if !slices.Contains(model.UpgradeComponentModes[ci.Component], session.Mode) || session.ComponentImage(ci.Component) == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "mode " + session.Mode + " has no " + ci.Component + " component"})
 			return
 		}

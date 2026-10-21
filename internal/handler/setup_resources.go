@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -68,12 +69,16 @@ func sessionWorkloadTargets(session *model.SetupSession) []workloadTarget {
 			Selector:   fmt.Sprintf("app=vta,session-id=%d", session.ID),
 		}}
 	}
-	return []workloadTarget{
+	targets := []workloadTarget{
 		{Component: k8s.ComponentVTA, Deployment: k8s.FSVtaName(session.ID), Selector: fmt.Sprintf("app=fs-vta,session-id=%d", session.ID)},
 		{Component: k8s.ComponentMediator, Deployment: k8s.FSMediatorName(session.ID), Selector: fmt.Sprintf("app=fs-mediator,session-id=%d", session.ID)},
 		{Component: k8s.ComponentDids, Deployment: k8s.FSDidsName(session.ID), Selector: fmt.Sprintf("app=fs-dids,session-id=%d", session.ID)},
 		{Component: k8s.ComponentVTC, Deployment: k8s.FSVtcName(session.ID), Selector: fmt.Sprintf("app=fs-vtc,session-id=%d", session.ID)},
 	}
+	if session.TrustRegistryEnabled && session.TrustRegistryDid != "" {
+		targets = append(targets, workloadTarget{Component: k8s.ComponentTrustRegistry, Deployment: k8s.FSTrustRegistryName(session.ID), Selector: fmt.Sprintf("app=fs-trust-registry,session-id=%d", session.ID)})
+	}
+	return targets
 }
 
 func sessionWorkloadTarget(session *model.SetupSession, component string) (workloadTarget, bool) {
@@ -199,12 +204,19 @@ func (h *SetupHandler) AdminApplySessionResources(c *gin.Context) {
 		return
 	}
 	sessionByName := make(map[string]*model.SetupSession, len(sessions))
+	sort.Slice(sessions, func(i, j int) bool { return sessions[i].ID < sessions[j].ID })
 	for i := range sessions {
 		session := &sessions[i]
 		if session.Status != "running" {
 			c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("session %s is not running", session.VtaName)})
 			return
 		}
+		release, err := h.acquireSessionMaintenance(session.ID)
+		if err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "Stack maintenance is in progress for " + session.VtaName})
+			return
+		}
+		defer release()
 		sessionByName[session.VtaName] = session
 	}
 
@@ -350,8 +362,8 @@ func validateResourceBatch(input *resourceBatchInput) error {
 	if len(input.SessionIDs) == 0 || len(input.SessionIDs) > maxResourceBatchSessions {
 		return fmt.Errorf("session_ids must contain between 1 and %d sessions", maxResourceBatchSessions)
 	}
-	if len(input.Resources) == 0 || len(input.Resources) > 4 {
-		return fmt.Errorf("resources must contain between 1 and 4 components")
+	if len(input.Resources) == 0 || len(input.Resources) > 5 {
+		return fmt.Errorf("resources must contain between 1 and 5 components")
 	}
 	seenSessions := map[string]bool{}
 	for i, id := range input.SessionIDs {

@@ -40,9 +40,10 @@ type SetupHandler struct {
 	mobileWorker *additionalMobileWorker
 
 	// full_stack mode
-	mediatorGhcr *ghcr.Client // nil when not configured
-	didsGhcr     *ghcr.Client // nil when not configured
-	vtcGhcr      *ghcr.Client // nil when not configured
+	mediatorGhcr      *ghcr.Client // nil when not configured
+	didsGhcr          *ghcr.Client // nil when not configured
+	vtcGhcr           *ghcr.Client // nil when not configured
+	trustRegistryGhcr *ghcr.Client
 }
 
 func NewSetupHandler(
@@ -120,8 +121,10 @@ func (h *SetupHandler) Images(c *gin.Context) {
 		client = h.didsGhcr
 	case "vtc":
 		client = h.vtcGhcr
+	case "trust-registry":
+		client = h.trustRegistryGhcr
 	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown component " + component + " (expected vta, mediator, dids, or vtc)"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown component " + component + " (expected vta, mediator, dids, vtc, or trust-registry)"})
 		return
 	}
 
@@ -162,10 +165,12 @@ type createSetupRequest struct {
 	// full_stack only — all three images are required for that mode. vtc_name
 	// is globally unique and DNS-safe like vta_name (becomes the vtc-<name>
 	// subdomain) and doubles as the VTA context id.
-	MediatorImage string `json:"mediator_image"`
-	DidsImage     string `json:"dids_image"`
-	VtcImage      string `json:"vtc_image"`
-	VtcName       string `json:"vtc_name"`
+	MediatorImage        string `json:"mediator_image"`
+	DidsImage            string `json:"dids_image"`
+	VtcImage             string `json:"vtc_image"`
+	VtcName              string `json:"vtc_name"`
+	TrustRegistryEnabled bool   `json:"trust_registry_enabled"`
+	TrustRegistryImage   string `json:"trust_registry_image"`
 	// VTA-only Customize / Connect to. Omit both to use the platform stack.
 	DIDHostingDid string `json:"did_hosting_did"`
 	MediatorDid   string `json:"mediator_did"`
@@ -187,6 +192,19 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		return
 	}
 
+	if req.Mode != model.ModeFullStack && (req.TrustRegistryEnabled || req.TrustRegistryImage != "") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Trust Registry requires a Full Stack"})
+		return
+	}
+	if !req.TrustRegistryEnabled {
+		req.TrustRegistryImage = ""
+	}
+	if req.TrustRegistryEnabled && (!h.orch.RegistryAvailable() || !h.validRegistryImage(c, req.TrustRegistryImage)) {
+		if !c.Writer.Written() {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Trust Registry is unavailable because Kubernetes or Vault is not configured"})
+		}
+		return
+	}
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 
 	var user model.User

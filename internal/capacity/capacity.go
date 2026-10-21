@@ -54,6 +54,13 @@ var (
 	}}
 )
 
+var TrustRegistry = Mode{Name: "trust_registry", Components: []Component{planningComponent(k8s.ComponentTrustRegistry, 200*mi)}}
+
+func FullStackWithRegistry() Mode {
+	components := slices.Clone(FullStack.Components)
+	return Mode{Name: "full_stack_registry", Components: append(components, TrustRegistry.Components...)}
+}
+
 func planningComponent(name string, storageBytes int64) Component {
 	resources := k8s.DefaultResourceRequirements(name)
 	return Component{

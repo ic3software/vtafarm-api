@@ -75,6 +75,8 @@ func New(cfg Config) (*Client, error) {
 // KVMount returns the configured KV v2 mount (e.g. "secret").
 func (c *Client) KVMount() string { return c.cfg.KVMount }
 
+func (c *Client) K8sAuthMount() string { return c.cfg.K8sAuthMount }
+
 // VtaPrefix is the KV v2 path (under the mount) containing a session's VTA
 // secrets. The farm Vault policy globs over secret/{data,metadata}/vta/user-<id>/*.
 func VtaPrefix(userID, sessionID uint) string {
@@ -140,7 +142,9 @@ func (c *Client) EnsureUserAccess(ctx context.Context, userID uint, namespace, s
 			`path "%[1]s/data/dids/user-%[2]d/*" { capabilities = ["create", "update", "read", "delete"] }`+"\n"+
 			`path "%[1]s/metadata/dids/user-%[2]d/*" { capabilities = ["read", "list", "delete"] }`+"\n"+
 			`path "%[1]s/data/vtc/user-%[2]d/*" { capabilities = ["read", "create", "update", "delete"] }`+"\n"+
-			`path "%[1]s/metadata/vtc/user-%[2]d/*" { capabilities = ["read", "delete"] }`,
+			`path "%[1]s/metadata/vtc/user-%[2]d/*" { capabilities = ["read", "delete"] }`+"\n"+
+			`path "%[1]s/data/trust-registry/user-%[2]d/*" { capabilities = ["read", "create", "update", "delete"] }`+"\n"+
+			`path "%[1]s/metadata/trust-registry/user-%[2]d/*" { capabilities = ["read", "list", "delete"] }`,
 		c.cfg.KVMount, userID,
 	)
 	if err := c.do(ctx, http.MethodPut, "/v1/sys/policies/acl/"+name, token,

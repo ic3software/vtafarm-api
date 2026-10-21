@@ -163,6 +163,13 @@ type SetupSession struct {
 	VtcName  string `gorm:"column:vtc_name;not null" json:"vtc_name,omitempty"`
 	VtcImage string `gorm:"column:vtc_image;not null;default:''" json:"vtc_image,omitempty"`
 
+	TrustRegistryEnabled bool   `gorm:"not null;default:false" json:"trust_registry_enabled"`
+	TrustRegistryImage   string `gorm:"not null;default:''" json:"trust_registry_image,omitempty"`
+	TrustRegistryDid     string `gorm:"column:trust_registry_did;not null;default:''" json:"trust_registry_did,omitempty"`
+	TrustRegistryState   string `gorm:"not null;default:disabled" json:"trust_registry_state"`
+	TrustRegistryPhase   string `gorm:"not null;default:''" json:"trust_registry_phase,omitempty"`
+	TrustRegistryError   string `gorm:"not null;default:''" json:"trust_registry_error,omitempty"`
+
 	// full_stack — collected outputs. VtcSetupKeyDid is the ephemeral
 	// did:key from step_vtc_setup_key, kept for audit/debug only — nothing
 	// reads it back from the DB. VtcAdminDid is the VTC's own pre-claim

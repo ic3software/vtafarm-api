@@ -76,6 +76,14 @@ func Setup(
 		dhFactory, k8sClient, orch, ghcrClient,
 		mediatorGhcrClient, didsGhcrClient, vtcGhcrClient,
 	)
+	var registryGhcr *ghcr.Client
+	if cfg.GHCR.Owner != "" && cfg.GHCR.TrustRegistryPackageName != "" {
+		registryGhcr = ghcr.New(cfg.GHCR.Token, cfg.GHCR.Owner, cfg.GHCR.TrustRegistryPackageName)
+	}
+	sh.ConfigureTrustRegistry(registryGhcr)
+	if k8sClient != nil && cfg.OrchestratorResume {
+		sh.StartTrustRegistryWorker(workerCtx)
+	}
 	if k8sClient != nil {
 		sh.StartAdditionalMobileWorker(workerCtx, cfg.OrchestratorResume)
 	}
@@ -133,6 +141,7 @@ func Setup(
 	// Image upgrades — shared by the admin batch routes and the user
 	// self-service routes below; background runner, DB-backed queue.
 	uph := handler.NewUpgradeHandler(db, upgradeRunner, ghcrClient, mediatorGhcrClient, didsGhcrClient, vtcGhcrClient)
+	uph.ConfigureTrustRegistry(registryGhcr)
 	mobile := handler.NewMobileConnectionHandler(db, orch, sh.KickAdditionalMobile, cfg.VTAClaim, trustTask.Enabled())
 	dashH := handler.NewDashboardHandler(db, k8sClient)
 	poolH := handler.NewPoolHandler(db, sh, dashH, mobile)
@@ -214,6 +223,8 @@ func Setup(
 		// a domains row for our own zone.
 		adminAuth.POST("/admin/platform-stack", sh.CreatePlatformStack)
 		adminAuth.GET("/admin/platform-stack", sh.GetPlatformStack)
+		adminAuth.GET("/admin/platform-stack/trust-registry", sh.AdminGetTrustRegistry)
+		adminAuth.POST("/admin/platform-stack/trust-registry", sh.AdminEnableTrustRegistry)
 		adminAuth.GET("/admin/platform-stack/config", sh.AdminGetPlatformStackConfigs)
 		adminAuth.POST("/admin/platform-stack/config/validate", sh.AdminValidatePlatformStackConfigs)
 		adminAuth.PUT("/admin/platform-stack/config", sh.AdminApplyPlatformStackConfigs)
@@ -289,6 +300,8 @@ func Setup(
 		userAuth.POST("/setup", sh.Create)
 		userAuth.POST("/setup/connection/inspect", middleware.RateLimit(20, time.Minute), sh.InspectConnection)
 		userAuth.GET("/setup/:id", sh.Get)
+		userAuth.GET("/setup/:id/trust-registry", sh.GetTrustRegistry)
+		userAuth.POST("/setup/:id/trust-registry", sh.EnableTrustRegistry)
 		userAuth.POST("/setup/:id/recover", sh.RecoverSession)
 		userAuth.DELETE("/setup/:id", sh.Delete)
 		userAuth.GET("/setup/:id/logs", sh.Logs)

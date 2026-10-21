@@ -87,10 +87,12 @@ type createPlatformStackRequest struct {
 	// until step_vta_setup has run. The only thing that differs from a user's
 	// session is who may resume it: any admin, through
 	// POST /admin/setup-sessions/:id/admin, rather than the one owning user.
-	VtaImage      string `json:"vta_image"      binding:"required"`
-	MediatorImage string `json:"mediator_image" binding:"required"`
-	DidsImage     string `json:"dids_image"     binding:"required"`
-	VtcImage      string `json:"vtc_image"      binding:"required"`
+	VtaImage             string `json:"vta_image"      binding:"required"`
+	MediatorImage        string `json:"mediator_image" binding:"required"`
+	DidsImage            string `json:"dids_image"     binding:"required"`
+	VtcImage             string `json:"vtc_image"      binding:"required"`
+	TrustRegistryEnabled bool   `json:"trust_registry_enabled"`
+	TrustRegistryImage   string `json:"trust_registry_image"`
 
 	Portable         *bool `json:"portable"`
 	PreRotationCount *int  `json:"pre_rotation_count"`
@@ -126,6 +128,17 @@ func (h *SetupHandler) CreatePlatformStack(c *gin.Context) {
 		return
 	}
 
+	if req.TrustRegistryEnabled {
+		if !h.orch.RegistryAvailable() {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Trust Registry is unavailable because Kubernetes or Vault is not configured"})
+			return
+		}
+		if !h.validRegistryImage(c, req.TrustRegistryImage) || !h.capacityAllows(c, capacity.FullStackWithRegistry()) {
+			return
+		}
+	} else {
+		req.TrustRegistryImage = ""
+	}
 	label := req.Label
 	if label == "" {
 		label = platformLabelDefault
@@ -245,10 +258,15 @@ func (h *SetupHandler) CreatePlatformStack(c *gin.Context) {
 		MediatorImage:        req.MediatorImage,
 		DidsImage:            req.DidsImage,
 		VtcImage:             req.VtcImage,
+		TrustRegistryEnabled: req.TrustRegistryEnabled,
+		TrustRegistryImage:   req.TrustRegistryImage,
 		Portable:             portable,
 		PreRotationCount:     preRotationCount,
 	}
 
+	if req.TrustRegistryEnabled {
+		session.TrustRegistryState = "enabling"
+	}
 	// A single insert: there is no random id left to collide, so the retry loop
 	// that used to wrap this went with unique_id.
 	if createErr := h.db.Create(&session).Error; createErr != nil {
@@ -336,11 +354,13 @@ func (h *SetupHandler) GetPlatformStack(c *gin.Context) {
 			"did_hosting_admin_did": session.DIDHostingAdminDid,
 			"vtc_did":               session.VtcDid,
 		},
+		"trust_registry": registryJSON(&session),
 		"images": gin.H{
-			"vta":      session.VtaImage,
-			"mediator": session.MediatorImage,
-			"dids":     session.DidsImage,
-			"vtc":      session.VtcImage,
+			"vta":            session.VtaImage,
+			"mediator":       session.MediatorImage,
+			"dids":           session.DidsImage,
+			"vtc":            session.VtcImage,
+			"trust-registry": session.TrustRegistryImage,
 		},
 		// What this stack provides to default-connected vta_only sessions, read straight off
 		// this row at create time. It is reported rather than pasted anywhere:

@@ -26,6 +26,7 @@ import (
 var pipelineSources = []string{
 	"orchestrator_fullstack.go",
 	"orchestrator_vtc.go",
+	"trust_registry.go",
 }
 
 // Both forms the pipeline uses to write the column:
@@ -163,7 +164,7 @@ func TestCustomDomainStatusesAreResumable(t *testing.T) {
 }
 
 func TestDeploymentStatusesUseExactRecovery(t *testing.T) {
-	want := []string{"deploy_dids", "deploy_mediator", "deploy_vta", "deploy_vtc"}
+	want := []string{"deploy_dids", "deploy_mediator", "deploy_vta", "deploy_vtc", "step_trust_registry"}
 	if len(fsResumeDeployment) != len(want) {
 		t.Fatalf("fsResumeDeployment = %v, want %v", fsResumeDeployment, want)
 	}

@@ -1212,7 +1212,7 @@ var (
 
 	// Deployment stages resume exactly at the failed/current deployment. Going
 	// through Start or Provision would repeat setup jobs that already succeeded.
-	fsResumeDeployment = []string{"deploy_dids", "deploy_mediator", "deploy_vta", "deploy_vtc"}
+	fsResumeDeployment = []string{"deploy_dids", "deploy_mediator", "deploy_vta", "deploy_vtc", "step_trust_registry"}
 
 	// fsResumeTerminal: nothing is owed. awaiting_admin_did is only terminal
 	// while admin_did is empty — resumeFullStack queries that case separately,

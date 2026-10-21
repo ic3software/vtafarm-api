@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
+	"github.com/ic3software/vtafarm-api/internal/capacity"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/middleware"
 	"github.com/ic3software/vtafarm-api/internal/model"
@@ -79,6 +81,9 @@ func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest, d
 		}
 	}
 
+	if req.TrustRegistryEnabled && !h.capacityAllows(c, capacity.FullStackWithRegistry()) {
+		return
+	}
 	portable := true
 	if req.Portable != nil {
 		portable = *req.Portable
@@ -181,9 +186,14 @@ func (h *SetupHandler) createFullStack(c *gin.Context, req createSetupRequest, d
 		MediatorImage:        req.MediatorImage,
 		DidsImage:            req.DidsImage,
 		VtcImage:             req.VtcImage,
+		TrustRegistryEnabled: req.TrustRegistryEnabled,
+		TrustRegistryImage:   req.TrustRegistryImage,
 		AdminDid:             req.AdminDid,
 		Portable:             portable,
 		PreRotationCount:     preRotationCount,
+	}
+	if req.TrustRegistryEnabled {
+		session.TrustRegistryState = "enabling"
 	}
 	// A single insert: there is no random id left to collide, so the retry loop
 	// that used to wrap this went with unique_id.
@@ -261,6 +271,8 @@ func (h *SetupHandler) getFullStack(c *gin.Context, session *model.SetupSession)
 		"created_at":     session.CreatedAt,
 		"updated_at":     session.UpdatedAt,
 	}
+	resp["trust_registry"] = registryJSON(session)
+	resp["trust_registry_image"] = session.TrustRegistryImage
 	resp["dids_enroll_used"] = session.DidsEnrollUsed
 	resp["vtc_install_used"] = session.VtcInstallUsed
 
@@ -303,6 +315,19 @@ func (h *SetupHandler) getFullStack(c *gin.Context, session *model.SetupSession)
 // doesn't strand the rest of the teardown.
 func (h *SetupHandler) deleteFullStack(c *gin.Context, session *model.SetupSession) {
 	ctx := c.Request.Context()
+	if h.k8s != nil && session.TrustRegistryDid != "" {
+		ns := h.k8s.UserNamespace(fmt.Sprint(session.UserID))
+		// Stop the writer before deleting its Vault cache so it cannot recreate
+		// that cache while the rest of the stack is being removed.
+		err := h.k8s.ScaleComponentDeployment(ctx, ns, k8s.FSTrustRegistryName(session.ID), 0)
+		if err == nil {
+			err = h.k8s.WaitForComponentPodsGone(ctx, ns, fmt.Sprintf("app=fs-trust-registry,session-id=%d", session.ID), 2*time.Minute)
+		}
+		if err != nil && !apierrors.IsNotFound(err) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Could not stop Trust Registry before deletion; retry after checking the workload"})
+			return
+		}
+	}
 
 	// A custom domain's records belong to the user: we never created them and
 	// have no access to their zone. Removing the four CNAMEs is theirs to do,
@@ -328,6 +353,7 @@ func (h *SetupHandler) deleteFullStack(c *gin.Context, session *model.SetupSessi
 			h.orch.TeardownMediatorVault(ctx, session.UserID, session.ID)
 			h.orch.TeardownDidsVault(ctx, session.UserID, session.ID)
 			h.orch.TeardownVtcVault(ctx, session.UserID, session.ID)
+			h.orch.TeardownTrustRegistryVault(ctx, session.UserID, session.ID)
 		}
 
 		h.k8s.DeleteAllComponentJobs(ctx, ns, session.ID)
@@ -335,6 +361,7 @@ func (h *SetupHandler) deleteFullStack(c *gin.Context, session *model.SetupSessi
 		h.k8s.DeleteComponentResources(ctx, ns, k8s.FSMediatorName(session.ID))
 		h.k8s.DeleteComponentResources(ctx, ns, k8s.FSDidsName(session.ID))
 		h.k8s.DeleteComponentResources(ctx, ns, k8s.FSVtcName(session.ID))
+		h.k8s.DeleteComponentResources(ctx, ns, k8s.FSTrustRegistryName(session.ID))
 
 		// The Certificate goes; **its Secret deliberately stays**. Recreating a
 		// session on the same domain asks for the exact same four names, which
@@ -438,6 +465,8 @@ func (h *SetupHandler) logsFullStack(c *gin.Context, session *model.SetupSession
 			source = "vtc_acl_grant"
 		case "step_vtc_setup":
 			source = "vtc_setup"
+		case "step_trust_registry":
+			source = "registry_operation"
 		case "deploy_vtc":
 			source = "vtc"
 		case "deploy_vta":
@@ -456,6 +485,15 @@ func (h *SetupHandler) logsFullStack(c *gin.Context, session *model.SetupSession
 	}
 
 	switch source {
+	case "trust-registry":
+		streamPod("trust-registry")
+	case "registry_operation":
+		jobs := map[string]string{"preflight": "preflight", "provision_identity": "identity", "publish_referral": "referral", "configure_vtc": "config"}
+		if phase := jobs[session.TrustRegistryPhase]; phase != "" {
+			streamJob(setup.RegistryJobName(sid, phase))
+		} else {
+			streamPod("trust-registry")
+		}
 	case "vta_setup":
 		streamJob(k8s.FSJobVtaSetup(sid))
 	case "mediator_p1":

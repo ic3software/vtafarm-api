@@ -12,10 +12,9 @@ https://dids-{vta_name}.{domain}       ← WebVH DID Hosting daemon (admin panel
 https://vtc-{vtc_name}.{domain}        ← VTC REST + admin SPA + public website
 ```
 
-**Planned extension:** [Optional Trust Registry](optional-trust-registry-design.md)
+**Optional extension:** [Optional Trust Registry](optional-trust-registry-design.md)
 adds an opt-in fifth component, including in-place enablement for existing running
-stacks without teardown. It is not implemented yet; the four-component baseline
-and current behavior below remain the reference for deployed sessions.
+stacks without teardown. The four-component baseline below remains the default.
 
 **The VTC is not optional.** Every `full_stack` session provisions all four components
 in one pipeline run. There is no VTC-less variant and no separate

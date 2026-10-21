@@ -108,6 +108,7 @@ type GHCRConfig struct {
 	PackageName                 string // e.g. "vta"
 	MediatorPackageName         string // e.g. "mediator"
 	DIDHostingDaemonPackageName string // e.g. "did-hosting-daemon"
+	TrustRegistryPackageName    string
 	VtcPackageName              string // e.g. "vtc"
 }
 
@@ -204,6 +205,7 @@ func Load() *Config {
 			PackageName:                 getEnv("GITHUB_PACKAGE_NAME", ""),
 			MediatorPackageName:         getEnv("GITHUB_MEDIATOR_PACKAGE_NAME", "mediator"),
 			DIDHostingDaemonPackageName: getEnv("GITHUB_DID_HOSTING_DAEMON_PACKAGE_NAME", "did-hosting-daemon"),
+			TrustRegistryPackageName:    getEnv("GITHUB_TRUST_REGISTRY_PACKAGE_NAME", "trust-registry"),
 			VtcPackageName:              getEnv("GITHUB_VTC_PACKAGE_NAME", "vtc"),
 		},
 		DidHosting: DidHostingConfig{

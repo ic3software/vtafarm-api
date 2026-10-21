@@ -21,10 +21,11 @@ type UpgradeHandler struct {
 	db     *gorm.DB
 	runner *upgrade.Runner // nil when K8s isn't configured
 
-	ghcr         *ghcr.Client // nil when not configured
-	mediatorGhcr *ghcr.Client
-	didsGhcr     *ghcr.Client
-	vtcGhcr      *ghcr.Client
+	ghcr              *ghcr.Client // nil when not configured
+	mediatorGhcr      *ghcr.Client
+	didsGhcr          *ghcr.Client
+	vtcGhcr           *ghcr.Client
+	trustRegistryGhcr *ghcr.Client
 }
 
 func NewUpgradeHandler(
@@ -42,6 +43,8 @@ func NewUpgradeHandler(
 	}
 }
 
+func (h *UpgradeHandler) ConfigureTrustRegistry(client *ghcr.Client) { h.trustRegistryGhcr = client }
+
 func (h *UpgradeHandler) ghcrFor(component string) *ghcr.Client {
 	switch component {
 	case "vta":
@@ -50,6 +53,8 @@ func (h *UpgradeHandler) ghcrFor(component string) *ghcr.Client {
 		return h.mediatorGhcr
 	case "dids":
 		return h.didsGhcr
+	case "trust-registry":
+		return h.trustRegistryGhcr
 	case "vtc":
 		return h.vtcGhcr
 	}
@@ -57,7 +62,7 @@ func (h *UpgradeHandler) ghcrFor(component string) *ghcr.Client {
 }
 
 type componentImage struct {
-	Component string `json:"component" binding:"required,oneof=vta mediator dids vtc"`
+	Component string `json:"component" binding:"required,oneof=vta mediator dids vtc trust-registry"`
 	Image     string `json:"image"     binding:"required"`
 }
 
@@ -243,6 +248,10 @@ func (h *UpgradeHandler) resolveTargets(req *createUpgradeRequest) ([]upgradeTar
 
 	targets := make([]upgradeTargetPair, 0, len(sessions)*len(req.Components))
 	for _, s := range sessions {
+		if registryBusy(&s) != nil {
+			skipped = append(skipped, skippedItem{SessionID: s.VtaName, Reason: "Trust Registry enablement is in progress"})
+			continue
+		}
 		var active int64
 		if err := h.db.Model(&model.UpgradeTask{}).Where("session_id = ? AND status IN ?", s.ID,
 			[]string{model.UpgradeTaskPending, model.UpgradeTaskRunning, model.UpgradeTaskRollingBack}).Count(&active).Error; err != nil {
@@ -254,7 +263,7 @@ func (h *UpgradeHandler) resolveTargets(req *createUpgradeRequest) ([]upgradeTar
 		}
 		for _, ci := range req.Components {
 			switch {
-			case !slices.Contains(model.UpgradeComponentModes[ci.Component], s.Mode):
+			case !slices.Contains(model.UpgradeComponentModes[ci.Component], s.Mode) || s.ComponentImage(ci.Component) == "":
 				if !req.All {
 					skipped = append(skipped, skippedItem{SessionID: s.VtaName, Component: ci.Component,
 						Reason: "mode " + s.Mode + " has no " + ci.Component + " component"})

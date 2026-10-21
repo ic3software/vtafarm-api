@@ -13,10 +13,11 @@ import (
 )
 
 const (
-	ComponentVTA      = "vta"
-	ComponentMediator = "mediator"
-	ComponentDids     = "dids"
-	ComponentVTC      = "vtc"
+	ComponentVTA           = "vta"
+	ComponentMediator      = "mediator"
+	ComponentDids          = "dids"
+	ComponentVTC           = "vtc"
+	ComponentTrustRegistry = "trust-registry"
 )
 
 // ResourceProfile is the resource shape used when a new component is created.
@@ -38,6 +39,8 @@ func DefaultResourceProfile(component string) (ResourceProfile, bool) {
 	case ComponentDids:
 		return ResourceProfile{CPURequest: "10m", MemoryRequest: "64Mi", MemoryLimit: "128Mi"}, true
 	case ComponentVTC:
+		return ResourceProfile{CPURequest: "10m", MemoryRequest: "64Mi", MemoryLimit: "256Mi"}, true
+	case ComponentTrustRegistry:
 		return ResourceProfile{CPURequest: "10m", MemoryRequest: "64Mi", MemoryLimit: "256Mi"}, true
 	default:
 		return ResourceProfile{}, false

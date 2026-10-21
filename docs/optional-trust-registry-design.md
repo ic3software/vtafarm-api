@@ -1,6 +1,7 @@
 # Optional Trust Registry for Full Stack — Design
 
-Status: **planned; not implemented**. Research checked on 2026-10-20.
+Status: **implemented in the working branch; image publication and staging acceptance pending**.
+Research checked on 2026-10-20.
 
 Add a per-session Trust Registry to `full_stack` as an opt-in component, both
 when creating a stack and when adding it to an existing running stack. Existing
@@ -35,7 +36,7 @@ describe the reviewed upstream revision, not a runtime inspection of production.
 
 ## 2. Scope and compatibility
 
-| Scenario | Planned behavior |
+| Scenario | Behavior |
 | --- | --- |
 | New `full_stack`, option omitted or false | Existing four-component flow |
 | New `full_stack`, option true | Existing components plus a dedicated registry |
@@ -150,12 +151,15 @@ when built with `secrets-vault`. Its `TR_VTA_CREDENTIAL` loader separately suppo
 file/string/AWS sources; the reviewed loader has no Vault URI implementation.
 Therefore selecting Vault for the cache does not solve credential delivery.
 
-Planned credential delivery: a pod-local init helper authenticates to Vault using
+Credential delivery: a pod-local Vault CLI init container authenticates to Vault using
 the ServiceAccount, reads the context-scoped credential, and writes a `0600` file
 to a memory-backed `emptyDir`. The registry receives a `file://` reference to that
 file. Persist the credential only in Vault; keep values out of Deployment env,
 ConfigMaps, API responses, and Job logs. This needs init-container and temporary
-volume support in the component helper, plus a pinned helper image/client.
+volume support in the component helper. The init container uses the pinned
+`hashicorp/vault:2.0.2` image, matching the Farm Vault; it does not depend on a
+published Farm API image or a separately configured helper image. It revokes its
+short-lived login token after reading the credential.
 The cache uses a different Vault location so it cannot overwrite the credential.
 
 The registry obtains and uses private keys at runtime. The setup guide's phrase
@@ -171,20 +175,21 @@ When opted in, extend the post-admin-gate flow:
 ```text
 existing bootstrap and admin gate
   -> deploy VTA (mediator and DID host already ready)
-  -> provision registry context, DID, credential, and cache configuration
-  -> VTC setup with registry_did (publish referral)
-  -> configure registry ADMIN_DIDS with the newly created VTC DID
+  -> VTC setup and deploy VTC (existing core pipeline)
+  -> provision registry context, DID and Vault credential
+  -> configure registry ADMIN_DIDS with the VTC DID
   -> deploy registry and check its messaging/write-path status
-  -> merge [registry].did into generated VTC runtime config
-  -> deploy VTC
-  -> verify registry round trips and synchronization readiness
-  -> running
+  -> append the signed VTC referral through the VTA
+  -> merge [registry].did into the VTC runtime config and restart VTC
+  -> verify the published referral and finish add-on enablement
+  -> running (Registry has its own active/failed state)
 ```
 
-Use headless provisioning Jobs or an SDK client with an explicit service grant.
+Use headless native VTA CLI Jobs under the session maintenance claim.
 Do not assume PNM is installed/configured in the API or copy a human's PNM
-credential into the Farm. Exact provisioning commands and the pinned client are
-an implementation preflight item. Preserve existing VTC output/claim handling;
+credential into the Farm. The VTA creates the context and hosted DID, and imports
+a generated, context-scoped access DID whose credential is persisted with Vault
+CAS=0. Preserve existing VTC output/claim handling;
 account for its short install-token TTL when adding steps after VTC setup.
 
 ## 6. Add to an existing stack without rebuilding
@@ -199,9 +204,9 @@ existing PVCs, or re-enroll the existing administrators.
    DID ownership/history, and any active upgrade/recovery operation.
 2. Persist the operation and chosen image/identity parameters before mutation.
    Provision only the registry resources and Vault locations.
-3. Establish a short-lived setup identity authorized for registry provisioning
-   and the required existing VTC DID update. Revoke it after completion; the
-   registry's lasting credential is scoped to its own context.
+3. Generate or reuse a context-scoped registry access credential in Vault.
+   Native VTA CLI Jobs perform provisioning and DID editing while the VTA is
+   stopped; no lasting unrestricted setup credential is introduced.
 4. Provision the registry identity through the existing VTA and publish it on
    the existing DID host. Reuse a completed result on retry.
 5. Set `ADMIN_DIDS` to the existing `session.VtcDid`, start the registry, and
@@ -214,8 +219,11 @@ existing PVCs, or re-enroll the existing administrators.
    `[registry].did`, and restart the VTC using the existing component-config
    backup/write/start/rollback pattern. Do not render a fresh setup config over
    the customized one or discard other keys already in `[registry]`.
-8. Verify the VTC's selected transport, correlated replies, write authorization,
-   and sync diagnostics; reconcile existing members (§8). Mark the add-on active.
+8. Verify the published signed referral and the restarted VTC. Mark the add-on
+   active after deployment/configuration checks. This state does not assert that
+   membership writes have succeeded: staging acceptance must verify the VTC's
+   selected transport, correlated replies, authorization, sync diagnostics, and
+   existing-member publication (§8).
 
 Upstream explicitly supports changing the referral after initial mint via
 VTA-side DID editing ([setup schema][vtc-setup]). This requires a signed DID-log
@@ -244,7 +252,7 @@ Proposed add-on routes (under `/api/v1`):
 | Method | Route | Behavior |
 | --- | --- | --- |
 | POST | `/setup/:id/trust-registry` | Enable or explicitly retry with an image; returns 202 and progress |
-| GET | `/setup/:id/trust-registry` | Desired state, phase, identity, image, health, and sanitized error |
+| GET | `/setup/:id/trust-registry` | Desired state, phase, identity, image, and sanitized error |
 | POST/GET | `/admin/platform-stack/trust-registry` | Same operations, restricted to the platform stack |
 
 Apply existing Full Stack entitlement checks on creation and session ownership
@@ -258,7 +266,15 @@ Persist desired enablement (default false), image, context/path, registry DID,
 add-on state (`disabled`, `enabling`, `active`, `failed`), resumable phase,
 timestamps, and a sanitized error. No credentials/private keys in these columns.
 For an existing stack, add-on failure must not mark the parent setup `failed`.
-For new opted-in stacks, provisioning is complete only after the add-on is ready.
+For new opted-in stacks, finish the add-on attempt before returning the baseline
+stack to running. An add-on failure stays visible and retryable without failing
+the already deployed four-component stack.
+
+After persisting an add-on failure, remove its failed Jobs and their Pods,
+ConfigMaps, and temporary input Secrets. Keep the phase and sanitized error in
+the session for the UI. Successful identity Jobs remain recovery receipts;
+active Jobs are never removed by failure cleanup. Retrying reuses the persisted
+context, credential and DID rather than relying on a failed Pod.
 
 Use a durable per-session operation claim, compatible with existing maintenance
 locking and startup resumption. A client timeout or API restart must not lose the
@@ -279,14 +295,18 @@ Check the persisted audit cursor, pending/failed jobs, current roster, and exist
 registry mirror when enabling an old stack. Upstream can replay retained audit
 history from a missing cursor, but that does not guarantee a complete historical
 backfill after retention or previous partial synchronization. Reconcile against
-the current roster and queue only eligible missing records through supported VTC
-operations. Do not replay stale removals as fresh grants or reset cursors blindly.
+the current roster during staging acceptance. The implementation retains and lets
+the VTC process its existing audit history and queue; it does not directly edit
+fjall or synthesize member events. Missing history after manual data repair needs
+operator reconciliation through supported VTC operations. Do not replay stale
+removals as fresh grants or reset cursors blindly.
 
 Honor member `registryConsent`/`publishConsent` and publication policy. Enabling
 the component cannot grant consent on a member's behalf. Report synchronization
 progress separately from service readiness; a large backlog need not block all
 community use. If the pinned VTC has no supported reconciliation operation, that
-is a delivery prerequisite to resolve, not a reason to rebuild the community.
+must be reconciled explicitly before claiming complete historical publication;
+it is not a reason to rebuild the community.
 
 HTTP `/health` can return 200 with `status: degraded`. Monitor body status and
 write-path details, plus VTC sync queue/failure information. A successful read-only
@@ -298,8 +318,10 @@ Include the component wherever deployed-component inventory is used: session
 responses, progress/logs, version selection, self-service/admin upgrades, recovery,
 resource profiles/capacity, backup/export, and full-session teardown. Capacity must
 distinguish opted-out stacks from five-component stacks and admit an add-on using
-its incremental cost. Set resource requests/limits and PVC size from measurements;
-do not invent production sizing from the explore guide.
+its incremental cost. The working branch starts with a 10m CPU request, 64Mi
+memory request, 256Mi memory limit, and 200Mi PVC. These are provisional factory
+values, not measured production sizing. Validate them against expected records
+and traffic in staging; memory defaults can be changed through the Farm UI.
 
 Back up the record PVC and account for both Vault secrets. Extend deletion to the
 registry Jobs, Deployment, Service, PVC, and session Vault prefix. Audit policies
