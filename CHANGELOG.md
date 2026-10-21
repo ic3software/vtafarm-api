@@ -1,5 +1,19 @@
 # Changelog
 
+## [v0.14.2] - 2026-10-21
+
+### Changed
+
+- Updated the Trust Tasks Go dependency.
+
+### Fixed
+
+- Legacy mobile connection reservations are settled during migration so they
+  no longer prevent users from creating or refreshing QR codes.
+- Failed Keyring administrator grants reach a final state, expose the failure
+  reason, and allow users to generate a new QR code instead of repeatedly
+  retrying the failed grant.
+
 ## [v0.14.1] - 2026-10-17
 
 ### Added
