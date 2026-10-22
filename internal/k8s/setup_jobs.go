@@ -168,7 +168,7 @@ func (c *Client) WaitForJob(ctx context.Context, ns, jobName string) (succeeded 
 	}
 }
 
-// JobLogs returns the full combined stdout/stderr of the job's pod.
+// JobLogs returns the full combined stdout/stderr of the job's latest pod.
 // Returns an error if no pod exists or logs cannot be fetched.
 func (c *Client) JobLogs(ctx context.Context, ns, jobName string) (string, error) {
 	pods, err := c.kube.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{
@@ -181,10 +181,16 @@ func (c *Client) JobLogs(ctx context.Context, ns, jobName string) (string, error
 		return "", fmt.Errorf("no pods found for job %s", jobName)
 	}
 
-	req := c.kube.CoreV1().Pods(ns).GetLogs(pods.Items[0].Name, &corev1.PodLogOptions{})
+	pod := &pods.Items[0]
+	for i := range pods.Items {
+		if pod.CreationTimestamp.Before(&pods.Items[i].CreationTimestamp) {
+			pod = &pods.Items[i]
+		}
+	}
+	req := c.kube.CoreV1().Pods(ns).GetLogs(pod.Name, &corev1.PodLogOptions{})
 	stream, err := req.Stream(ctx)
 	if err != nil {
-		return "", fmt.Errorf("get logs for pod %s: %w", pods.Items[0].Name, err)
+		return "", fmt.Errorf("get logs for pod %s: %w", pod.Name, err)
 	}
 	defer stream.Close()
 

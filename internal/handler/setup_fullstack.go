@@ -465,6 +465,9 @@ func (h *SetupHandler) logsFullStack(c *gin.Context, session *model.SetupSession
 			source = "vtc_acl_grant"
 		case "step_vtc_setup":
 			source = "vtc_setup"
+			if session.TrustRegistryEnabled && session.TrustRegistryState != "failed" && session.TrustRegistryDid == "" {
+				source = "registry_operation"
+			}
 		case "step_trust_registry":
 			source = "registry_operation"
 		case "deploy_vtc":
@@ -488,7 +491,7 @@ func (h *SetupHandler) logsFullStack(c *gin.Context, session *model.SetupSession
 	case "trust-registry":
 		streamPod("trust-registry")
 	case "registry_operation":
-		jobs := map[string]string{"preflight": "preflight", "provision_identity": "identity", "publish_referral": "referral", "configure_vtc": "config"}
+		jobs := map[string]string{"preflight": "preflight", "setup_key": "setup-key", "grant_access": "acl-grant", "provision_identity": "setup", "publish_referral": "referral", "configure_vtc": "config"}
 		if phase := jobs[session.TrustRegistryPhase]; phase != "" {
 			streamJob(setup.RegistryJobName(sid, phase))
 		} else {

@@ -9,9 +9,9 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/model"
@@ -21,22 +21,6 @@ import (
 )
 
 const RegistryPVCSize = "200Mi"
-
-// Match the Farm's Vault image; credential delivery needs only the Vault CLI.
-const registryVaultInitImage = "hashicorp/vault:2.0.2"
-
-const registryCredentialInit = `set -eu
-umask 077
-credential_file=/run/trust-registry/credential.json
-mkdir -p /run/trust-registry
-VAULT_TOKEN="$(vault write -field=token "auth/$TR_SECRETS_VAULT_K8S_MOUNT/login" \
-  "role=$TR_SECRETS_VAULT_K8S_ROLE" jwt=@/var/run/secrets/kubernetes.io/serviceaccount/token)"
-export VAULT_TOKEN
-trap 'rm -f "$credential_file.tmp"; vault token revoke -self >/dev/null 2>&1 || true' EXIT
-vault kv get -mount="$TR_SECRETS_VAULT_KV_MOUNT" -field=credential \
-  "$TR_CREDENTIAL_VAULT_PATH" > "$credential_file.tmp"
-mv "$credential_file.tmp" "$credential_file"
-`
 
 func (o *Orchestrator) RegistryAvailable() bool {
 	return o != nil && o.k8s != nil && o.vault != nil
@@ -51,7 +35,7 @@ func RegistryJobName(id uint, phase string) string { return fmt.Sprintf("fs-%d-t
 
 func registryJobNames(id uint) []string {
 	var names []string
-	for _, phase := range []string{"preflight", "identity", "referral", "config", "restore"} {
+	for _, phase := range []string{"preflight", "identity", "setup-key", "acl-grant", "setup", "referral", "config", "restore"} {
 		names = append(names, RegistryJobName(id, phase))
 	}
 	return names
@@ -63,40 +47,67 @@ func (o *Orchestrator) CleanupFailedRegistryJobs(s *model.SetupSession) error {
 	return o.k8s.CleanupFailedRegistryJobs(ctx, o.k8s.UserNamespace(fmt.Sprint(s.UserID)), registryJobNames(s.ID))
 }
 
+var (
+	jobPrivateKeyBlock = regexp.MustCompile(`(?s)-----BEGIN [^-]*PRIVATE KEY-----.*?(?:-----END [^-]*PRIVATE KEY-----|$)`)
+	jobSensitiveLine   = regexp.MustCompile(`(?i)(?:private[ _-]?key(?:multibase|hex|jwk)?(?:[ \t]*\([^\r\n)]*\))?|password|passwd|(?:client[ _-]?)?secret|secret[ _-]?id|(?:(?:access|refresh|vault|api)[ _-]?)?token|api[ _-]?key|authorization|cookie|credential)["']?[ \t]*[:=]|bearer[ \t]+[a-z0-9._~+/-]{16,}=*|://[^\s/@]+:[^\s/@]+@`)
+)
+
 func registryJobFailure(phase, reason, output string) error {
-	// Only retain known diagnostic text; arbitrary CLI output can contain keys
-	// or configuration values and must not be copied into the session response.
-	for _, diagnostic := range []string{
-		"could not sign the DID-management task with this VTA's operational key",
-		"Registry image needs the vta feature",
-		"Registry image needs Vault Kubernetes authentication",
-	} {
-		if strings.Contains(output, diagnostic) {
-			return fmt.Errorf("%s job failed: %s (%s)", phase, diagnostic, reason)
+	// Keep arbitrary diagnostics, but redact credential output before bounding
+	// the stored tail so truncation cannot split a private-key block.
+	output = jobPrivateKeyBlock.ReplaceAllString(stripANSI(output), "[redacted private key]")
+	lines := strings.Split(output, "\n")
+	for i, line := range lines {
+		if jobSensitiveLine.MatchString(line) {
+			lines[i] = "[redacted sensitive log line]"
 		}
 	}
-	return fmt.Errorf("%s job failed (%s)", phase, reason)
+	output = strings.TrimSpace(strings.Join(lines, "\n"))
+	const maxBytes = 16 * 1024
+	if len(output) > maxBytes {
+		output = output[len(output)-maxBytes:]
+		for len(output) > 0 && !utf8.RuneStart(output[0]) {
+			output = output[1:]
+		}
+		output = "[earlier job output truncated]\n" + output
+	}
+	message := fmt.Sprintf("%s job failed (%s)", phase, reason)
+	if output != "" {
+		message += "\n\n--- Job Logs ---\n" + output
+	}
+	return errors.New(message)
 }
 
-func (o *Orchestrator) registryJob(ctx context.Context, ns string, s *model.SetupSession, phase, image, dir, command string, mounts []k8s.PVCMount, inputs map[string][]byte) (string, error) {
+func (o *Orchestrator) registryJob(ctx context.Context, ns string, s *model.SetupSession, phase, image, dir string, command []string, mounts []k8s.PVCMount, inputs map[string][]byte) (string, error) {
 	name := RegistryJobName(s.ID, phase)
-	if err := o.k8s.PrepareRegistryJob(ctx, ns, name, phase == "identity"); err != nil {
+	if err := o.k8s.PrepareRegistryJob(ctx, ns, name, phase == "identity" || phase == "setup-key" || phase == "acl-grant" || phase == "setup"); err != nil {
 		return "", err
 	}
-	if err := o.k8s.CreateComponentJob(ctx, ns, k8s.ComponentJobSpec{Name: name, Image: image, Command: []string{"sh", "-c", command}, WorkingDir: dir, ServiceAccount: k8s.VtaServiceAccount, PVCMounts: mounts, SecretData: inputs, Env: fsNoColorEnv(), RetainForRecovery: true}); err != nil {
+	if err := o.k8s.CreateComponentJob(ctx, ns, k8s.ComponentJobSpec{Name: name, Image: image, Command: command, WorkingDir: dir, ServiceAccount: k8s.VtaServiceAccount, PVCMounts: mounts, SecretData: inputs, Env: fsNoColorEnv(), RetainForRecovery: true}); err != nil {
 		return "", err
 	}
 	ok, reason, err := o.k8s.WaitForJob(ctx, ns, name)
-	if err != nil {
-		cleanup, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		o.k8s.DeleteComponentJob(cleanup, ns, name)
-		stopErr := o.k8s.WaitForComponentPodsGone(cleanup, ns, "job-name="+name, time.Minute)
-		return "", errors.Join(err, stopErr)
-	}
-	if !ok {
-		output, _ := o.k8s.JobLogs(ctx, ns, name)
-		return "", registryJobFailure(phase, reason, output)
+	if err != nil || !ok {
+		// A timed-out job still has useful logs; read them before cleanup using
+		// a fresh context because the operation context may already be expired.
+		logsCtx, cancelLogs := context.WithTimeout(context.Background(), 15*time.Second)
+		output, logsErr := o.k8s.JobLogs(logsCtx, ns, name)
+		cancelLogs()
+		if err != nil {
+			reason = err.Error()
+		}
+		failure := registryJobFailure(phase, reason, output)
+		if logsErr != nil {
+			failure = errors.Join(failure, fmt.Errorf("could not read job logs: %w", logsErr))
+		}
+		if err != nil {
+			cleanup, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			o.k8s.DeleteComponentJob(cleanup, ns, name)
+			stopErr := o.k8s.WaitForComponentPodsGone(cleanup, ns, "job-name="+name, time.Minute)
+			return "", errors.Join(failure, stopErr)
+		}
+		return "", failure
 	}
 	return o.k8s.JobLogs(ctx, ns, name)
 }
@@ -176,24 +187,6 @@ func (o *Orchestrator) EnableTrustRegistry(ctx context.Context, s *model.SetupSe
 	if _, err := MergeRegistryConfig(current, placeholder); err != nil {
 		return err
 	}
-	_, err = o.registryJob(ctx, ns, s, "preflight", s.TrustRegistryImage, "/tmp", `set -eu
-binary=$(command -v trust-registry)
-grep -aq TR_VTA_CREDENTIAL "$binary" || { echo 'Registry image needs the vta feature'; exit 1; }
-grep -aq TR_SECRETS_VAULT_K8S_ROLE "$binary" || { echo 'Registry image needs Vault Kubernetes authentication'; exit 1; }
-echo 'Registry feature preflight passed'`, nil, nil)
-	if err != nil {
-		return fmt.Errorf("registry image preflight failed; use a build with vta, secrets-vault, storage-fjall and standalone: %w", err)
-	}
-	// --help never opens the live keystore. Older images fail before downtime.
-	pod, container, err := o.k8s.RunningPod(ctx, ns, fmt.Sprintf("app=fs-vta,session-id=%d", s.ID))
-	if err != nil {
-		return err
-	}
-	for _, command := range [][]string{{"vta", "did-mgmt", "dids", "create", "--help"}, {"vta", "did-mgmt", "dids", "edit", "--help"}} {
-		if _, err = o.k8s.ExecCapture(ctx, ns, pod, container, command); err != nil {
-			return errors.New("VTA image needs non-interactive DID creation/editing; upgrade VTA before enabling the registry")
-		}
-	}
 	document, err := webvh.NewResolver(webvh.DefaultTimeout).ResolveDocument(ctx, s.VtcDid)
 	if err != nil {
 		return fmt.Errorf("cannot validate existing VTC DID history: %w", err)
@@ -201,52 +194,8 @@ echo 'Registry feature preflight passed'`, nil, nil)
 	if _, _, err = RegistryReferral(document, s.VtcDid, placeholder); err != nil {
 		return err
 	}
-	if err = o.vault.EnsureUserAccess(ctx, s.UserID, ns, k8s.VtaServiceAccount); err != nil {
+	if err = o.provisionRegistry(ctx, ns, s); err != nil {
 		return err
-	}
-	credential, err := o.vault.RegistryCredential(ctx, s.UserID, s.ID, s.VtaDid, s.PublicURL())
-	if err != nil {
-		return errors.New("cannot persist registry credential in Vault; check the API registry Vault policy")
-	}
-	contextID := fmt.Sprintf("trust-registry-%d", s.ID)
-	path := s.VtcName + "-trust-registry"
-	if err = o.RegistryPhase(s, "provision_identity"); err != nil {
-		return err
-	}
-	if s.TrustRegistryDid == "" {
-		var output string
-		err = o.registryStopped(ctx, ns, s, "vta", func() error {
-			cmd := fmt.Sprintf(`set -eu
-vta contexts get %s >/dev/null 2>&1 || vta contexts create --id %s --name 'Trust Registry'
-vta acl get %s >/dev/null 2>&1 || vta import-did --did %s --role admin --context %s --label trust-registry
-existing=$(vta did-mgmt dids list --context %s 2>&1)
-if printf '%%s' "$existing" | grep -q 'DID:'; then
-  printf '%%s\n' "$existing"
-else
-  vta did-mgmt dids create --context %s --server dids --path %s --mediator-service --pre-rotation 1
-fi
-vta did-mgmt dids list --context %s`, shellQuote(contextID), shellQuote(contextID), shellQuote(credential.Did), shellQuote(credential.Did), shellQuote(contextID), shellQuote(contextID), shellQuote(contextID), shellQuote(path), shellQuote(contextID))
-			var e error
-			output, e = o.registryJob(ctx, ns, s, "identity", s.VtaImage, "/work/vta", cmd, []k8s.PVCMount{{Name: "vta-data", ClaimName: k8s.FSVtaName(s.ID), MountPath: "/work/vta"}}, nil)
-			return e
-		})
-		if err != nil {
-			return err
-		}
-		matches := regexp.MustCompile(`DID:\s+(did:webvh:\S+)`).FindAllStringSubmatch(stripANSI(output), -1)
-		identities := map[string]bool{}
-		for _, match := range matches {
-			identities[match[1]] = true
-		}
-		if len(identities) != 1 {
-			return errors.New("registry context must contain exactly one hosted DID; inspect identity job before retrying")
-		}
-		for did := range identities {
-			s.TrustRegistryDid = did
-		}
-		if err = o.db.Model(s).Update("trust_registry_did", s.TrustRegistryDid).Error; err != nil {
-			return err
-		}
 	}
 	if err = webvh.NewResolver(webvh.DefaultTimeout).ResolveDID(ctx, s.TrustRegistryDid); err != nil {
 		return fmt.Errorf("registry DID did not resolve: %w", err)
@@ -254,7 +203,7 @@ vta did-mgmt dids list --context %s`, shellQuote(contextID), shellQuote(contextI
 	if err = o.RegistryPhase(s, "deploy_registry"); err != nil {
 		return err
 	}
-	if err = o.deployTrustRegistry(ctx, ns, s, contextID); err != nil {
+	if err = o.deployTrustRegistry(ctx, ns, s); err != nil {
 		return err
 	}
 	if err = o.RegistryPhase(s, "publish_referral"); err != nil {
@@ -271,7 +220,7 @@ vta did-mgmt dids list --context %s`, shellQuote(contextID), shellQuote(contextI
 	}
 	if changed {
 		err = o.registryStopped(ctx, ns, s, "vta", func() error {
-			_, e := o.registryJob(ctx, ns, s, "referral", s.VtaImage, "/work/vta", "vta did-mgmt dids edit --did "+shellQuote(s.VtcDid)+" --document /config/document.json --no-confirm", []k8s.PVCMount{{Name: "vta-data", ClaimName: k8s.FSVtaName(s.ID), MountPath: "/work/vta"}}, map[string][]byte{"document.json": updated})
+			_, e := o.registryJob(ctx, ns, s, "referral", s.VtaImage, "/work/vta", []string{"vta", "did-mgmt", "dids", "edit", "--did", s.VtcDid, "--document", "/config/document.json", "--no-confirm"}, []k8s.PVCMount{{Name: "vta-data", ClaimName: k8s.FSVtaName(s.ID), MountPath: "/work/vta"}}, map[string][]byte{"document.json": updated})
 			return e
 		})
 		if err != nil {
@@ -291,11 +240,11 @@ vta did-mgmt dids list --context %s`, shellQuote(contextID), shellQuote(contextI
 	}
 	if current != merged {
 		err = o.registryStopped(ctx, ns, s, "vtc", func() error {
-			_, e := o.registryJob(ctx, ns, s, "config", s.VtcImage, "/work/vtc", `set -eu; umask 077
+			_, e := o.registryJob(ctx, ns, s, "config", s.VtcImage, "/work/vtc", []string{"sh", "-ec", `set -eu; umask 077
 cp -p config.toml config.toml.vtafarm-registry-backup
 cp -p config.toml config.toml.vtafarm-registry-next
 cat /config/vtc.toml > config.toml.vtafarm-registry-next
-mv config.toml.vtafarm-registry-next config.toml`, []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/work/vtc"}}, map[string][]byte{"vtc.toml": []byte(merged)})
+mv config.toml.vtafarm-registry-next config.toml`}, []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/work/vtc"}}, map[string][]byte{"vtc.toml": []byte(merged)})
 			return e
 		})
 		if err != nil {
@@ -320,12 +269,12 @@ func (o *Orchestrator) restoreRegistryVtc(ns string, s *model.SetupSession) erro
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 	return o.registryStopped(ctx, ns, s, "vtc", func() error {
-		_, err := o.registryJob(ctx, ns, s, "restore", s.VtcImage, "/work/vtc", `set -eu; test -f config.toml.vtafarm-registry-backup; cp -p config.toml.vtafarm-registry-backup config.toml`, []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/work/vtc"}}, nil)
+		_, err := o.registryJob(ctx, ns, s, "restore", s.VtcImage, "/work/vtc", []string{"sh", "-ec", `set -eu; test -f config.toml.vtafarm-registry-backup; cp -p config.toml.vtafarm-registry-backup config.toml`}, []k8s.PVCMount{{Name: "vtc-data", ClaimName: k8s.FSVtcName(s.ID), MountPath: "/work/vtc"}}, nil)
 		return err
 	})
 }
 
-func (o *Orchestrator) deployTrustRegistry(ctx context.Context, ns string, s *model.SetupSession, contextID string) error {
+func (o *Orchestrator) deployTrustRegistry(ctx context.Context, ns string, s *model.SetupSession) error {
 	name := k8s.FSTrustRegistryName(s.ID)
 	if err := o.k8s.CreateComponentPVC(ctx, ns, name, RegistryPVCSize); err != nil {
 		return err
@@ -335,17 +284,19 @@ func (o *Orchestrator) deployTrustRegistry(ctx context.Context, ns string, s *mo
 		return err
 	}
 	values := map[string]string{
+		// REST must stay on for /health. Without TR_PUBLIC_URL it adds no
+		// public DID service, matching the setup recipe's DIDComm-only DID.
+		"ENABLE_REST":                  "true",
 		"ENABLE_DIDCOMM":               "true",
 		"ENABLE_TSP":                   "false",
 		"MEDIATOR_DID":                 s.MediatorDid,
 		"ADMIN_DIDS":                   s.VtcDid,
 		"ACL_MODE":                     "ExplicitDeny",
-		"TR_VTA_CREDENTIAL":            "file:///run/trust-registry/credential.json",
-		"TR_VTA_CONTEXT_ID":            contextID,
+		"TR_VTA_CREDENTIAL":            "file://" + registryCredentialPath,
+		"TR_VTA_CONTEXT_ID":            registryContextID(s.ID),
 		"TR_STORAGE_BACKEND":           "fjall",
 		"TR_FJALL_PATH":                "/work/trust-registry/data",
 		"TR_SECRETS_VAULT_ADDR":        o.vaultAddr,
-		"VAULT_ADDR":                   o.vaultAddr,
 		"TR_SECRETS_VAULT_KV_MOUNT":    o.vault.KVMount(),
 		"TR_SECRETS_VAULT_SECRET_PATH": vault.TrustRegistryPrefix(s.UserID, s.ID) + "/identity-cache",
 		"TR_SECRETS_VAULT_SECRET_KEY":  "bundle",
@@ -353,8 +304,6 @@ func (o *Orchestrator) deployTrustRegistry(ctx context.Context, ns string, s *mo
 		"TR_SECRETS_VAULT_K8S_MOUNT":   o.vault.K8sAuthMount(),
 		"TR_SECRETS_VAULT_K8S_ROLE":    vault.UserName(s.UserID),
 		"TR_SECRETS_VAULT_SKIP_VERIFY": "true",
-		"VAULT_SKIP_VERIFY":            "true",
-		"TR_CREDENTIAL_VAULT_PATH":     vault.TrustRegistryPrefix(s.UserID, s.ID) + "/credential",
 		"LISTEN_ADDRESS":               "0.0.0.0:3232",
 		"RUST_LOG":                     "info",
 	}
@@ -366,10 +315,6 @@ func (o *Orchestrator) deployTrustRegistry(ctx context.Context, ns string, s *mo
 	if err != nil {
 		return err
 	}
-	mount := corev1.VolumeMount{Name: "registry-credential", MountPath: "/run/trust-registry", ReadOnly: true}
-	initMount := mount
-	initMount.ReadOnly = false
-	root := int64(0)
 	if err = o.k8s.CreateComponentDeployment(ctx, ns, k8s.ComponentDeploymentSpec{
 		Name: name, Image: s.TrustRegistryImage,
 		Command: []string{"trust-registry"}, WorkingDir: "/work/trust-registry",
@@ -377,21 +322,7 @@ func (o *Orchestrator) deployTrustRegistry(ctx context.Context, ns string, s *mo
 		Port: 3232, HealthCheckPath: "/health", Labels: labels,
 		Resources: profiles.Requirements(k8s.ComponentTrustRegistry),
 		PVCMounts: []k8s.PVCMount{{Name: "registry-data", ClaimName: name, MountPath: "/work/trust-registry"}},
-		ExtraVolumes: []corev1.Volume{{
-			Name: mount.Name,
-			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
-				Medium:    corev1.StorageMediumMemory,
-				SizeLimit: resource.NewQuantity(64<<10, resource.BinarySI),
-			}},
-		}},
-		ExtraMounts: []corev1.VolumeMount{mount}, Recreate: true,
-		InitContainers: []corev1.Container{{
-			Name: "vault-credential", Image: registryVaultInitImage,
-			Command: []string{"sh", "-ec", registryCredentialInit}, Env: env,
-			VolumeMounts:    []corev1.VolumeMount{initMount},
-			Resources:       k8s.ComponentResources("10m", "16Mi", "128Mi"),
-			SecurityContext: &corev1.SecurityContext{RunAsUser: &root},
-		}},
+		Recreate:  true,
 	}); err != nil {
 		return err
 	}
@@ -429,7 +360,7 @@ func (o *Orchestrator) TeardownTrustRegistryVault(ctx context.Context, userID, s
 }
 
 func (o *Orchestrator) finishRegistrySetup(ctx context.Context, s *model.SetupSession) bool {
-	if !s.TrustRegistryEnabled || s.TrustRegistryState == "active" {
+	if !s.TrustRegistryEnabled || s.TrustRegistryState == "active" || s.TrustRegistryState == "failed" {
 		return true
 	}
 	o.fsSetStatus(s.ID, "step_trust_registry")

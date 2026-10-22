@@ -32,3 +32,21 @@ func TestRenderVtcSetupTOMLEnablesSingleAdminMode(t *testing.T) {
 		t.Fatalf("single_admin_mode = false, want true\n%s", rendered)
 	}
 }
+
+func TestVtcSetupPublishesOnlyProvisionedRegistryReferral(t *testing.T) {
+	for _, did := range []string{"", "did:webvh:registry"} {
+		s := &model.SetupSession{VtcName: "community", TrustRegistryEnabled: did != "", TrustRegistryDid: did}
+		rendered, err := RenderVtcSetupTOML(s, VtcVaultSecrets{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var recipe map[string]any
+		if err := toml.Unmarshal([]byte(rendered), &recipe); err != nil {
+			t.Fatal(err)
+		}
+		value, exists := recipe["registry_did"]
+		if did == "" && exists || did != "" && value != did {
+			t.Fatalf("registry_did = %v, expected %q (omitted when empty)", value, did)
+		}
+	}
+}

@@ -94,7 +94,7 @@ func (c *Client) FinishRegistryJobs(ctx context.Context, ns string, names []stri
 }
 
 // RegistryEnvironment exports only the non-secret settings set by the Farm.
-// The credential is supplied through a memory volume, never through this list.
+// The credential stays in its PVC file, never in this list.
 func (c *Client) RegistryEnvironment(ctx context.Context, ns, selector string) (string, error) {
 	deployments, err := c.kube.AppsV1().Deployments(ns).List(ctx, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
@@ -103,7 +103,7 @@ func (c *Client) RegistryEnvironment(ctx context.Context, ns, selector string) (
 	if len(deployments.Items) != 1 || len(deployments.Items[0].Spec.Template.Spec.Containers) != 1 {
 		return "", fmt.Errorf("registry deployment is missing or ambiguous")
 	}
-	allowed := map[string]bool{"MEDIATOR_DID": true, "ADMIN_DIDS": true, "ACL_MODE": true, "LISTEN_ADDRESS": true, "ENABLE_DIDCOMM": true, "ENABLE_TSP": true, "TR_VTA_CONTEXT_ID": true, "TR_STORAGE_BACKEND": true, "TR_FJALL_PATH": true, "TR_SECRETS_VAULT_ADDR": true, "TR_SECRETS_VAULT_KV_MOUNT": true, "TR_SECRETS_VAULT_SECRET_PATH": true, "TR_SECRETS_VAULT_SECRET_KEY": true, "TR_SECRETS_VAULT_AUTH_METHOD": true, "TR_SECRETS_VAULT_K8S_ROLE": true, "TR_SECRETS_VAULT_K8S_MOUNT": true, "TR_SECRETS_VAULT_SKIP_VERIFY": true}
+	allowed := map[string]bool{"MEDIATOR_DID": true, "ADMIN_DIDS": true, "ACL_MODE": true, "LISTEN_ADDRESS": true, "ENABLE_REST": true, "ENABLE_DIDCOMM": true, "ENABLE_TSP": true, "TR_VTA_CONTEXT_ID": true, "TR_STORAGE_BACKEND": true, "TR_FJALL_PATH": true, "TR_SECRETS_VAULT_ADDR": true, "TR_SECRETS_VAULT_KV_MOUNT": true, "TR_SECRETS_VAULT_SECRET_PATH": true, "TR_SECRETS_VAULT_SECRET_KEY": true, "TR_SECRETS_VAULT_AUTH_METHOD": true, "TR_SECRETS_VAULT_K8S_ROLE": true, "TR_SECRETS_VAULT_K8S_MOUNT": true, "TR_SECRETS_VAULT_SKIP_VERIFY": true}
 	var lines []string
 	for _, env := range deployments.Items[0].Spec.Template.Spec.Containers[0].Env {
 		if env.ValueFrom != nil {

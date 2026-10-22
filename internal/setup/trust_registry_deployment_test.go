@@ -15,7 +15,6 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 
 	"github.com/ic3software/vtafarm-api/internal/config"
@@ -93,23 +92,24 @@ users:
 	}
 	o := &Orchestrator{db: db, k8s: client, vault: vaultClient, vaultAddr: server.URL}
 	session := &model.SetupSession{ID: 9, UserID: 7, VtcDid: "did:webvh:community", MediatorDid: "did:webvh:mediator", TrustRegistryImage: "registry:test-build"}
-	err = o.deployTrustRegistry(context.Background(), "test-7", session, "trust-registry-9")
+	err = o.deployTrustRegistry(context.Background(), "test-7", session)
 	if err == nil || !strings.Contains(err.Error(), "captured deployment") {
 		t.Fatalf("did not reach deployment capture: %v", err)
 	}
 	pod := deployment.Spec.Template.Spec
-	if len(pod.Containers) != 1 || len(pod.InitContainers) != 1 {
-		t.Fatal("missing registry or Vault credential init container")
+	if len(pod.Containers) != 1 || len(pod.InitContainers) != 0 {
+		t.Fatal("registry should use its setup credential without a helper init container")
 	}
 	env := map[string]string{}
 	for _, value := range pod.Containers[0].Env {
 		env[value.Name] = value.Value
 	}
 	for key, expected := range map[string]string{
-		"TR_VTA_CONTEXT_ID":          "trust-registry-9",
-		"TR_VTA_CREDENTIAL":          "file:///run/trust-registry/credential.json",
+		"TR_VTA_CONTEXT_ID":          "trust-registry-9-headless",
+		"TR_VTA_CREDENTIAL":          "file:///work/trust-registry/vta-credential.json",
 		"ADMIN_DIDS":                 "did:webvh:community",
 		"MEDIATOR_DID":               "did:webvh:mediator",
+		"ENABLE_REST":                "true",
 		"ENABLE_DIDCOMM":             "true",
 		"ENABLE_TSP":                 "false",
 		"TR_SECRETS_VAULT_K8S_MOUNT": "farm-auth",
@@ -118,13 +118,13 @@ users:
 			t.Errorf("runtime %s = %q, want %q", key, env[key], expected)
 		}
 	}
-	if pod.InitContainers[0].Image != registryVaultInitImage || deployment.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
-		t.Fatal("wrong credential init image or concurrent storage writers")
+	if deployment.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
+		t.Fatal("concurrent storage writers")
 	}
-	for _, volume := range pod.Volumes {
-		if volume.Name == "registry-credential" && volume.EmptyDir != nil && volume.EmptyDir.Medium == corev1.StorageMediumMemory {
+	for _, mount := range pod.Containers[0].VolumeMounts {
+		if mount.Name == "registry-data" && mount.MountPath == registryWorkDir {
 			return
 		}
 	}
-	t.Fatal("credential volume is not memory-backed")
+	t.Fatal("registry cannot read the credential written by its setup Job")
 }

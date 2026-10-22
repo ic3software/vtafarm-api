@@ -1,7 +1,7 @@
 # Optional Trust Registry for Full Stack — Design
 
 Status: **implemented in the working branch; image publication and staging acceptance pending**.
-Research checked on 2026-10-20.
+Headless setup integration checked on 2026-10-22; live staging acceptance remains pending.
 
 Add a per-session Trust Registry to `full_stack` as an opt-in component, both
 when creating a stack and when adding it to an existing running stack. Existing
@@ -66,6 +66,12 @@ version or automatically use a moving `nightly` tag.
 Research found a successful build publishing `0.28.0-c534746` and `nightly` on
 2026-10-20 ([build run][image-run]). This is evidence of publication, not an
 end-to-end compatibility result or a final version selection.
+
+On 2026-10-22, `0.28.0-be33b15` was pulled and checked locally: its headless
+setup flags, phase-1 key-file permissions, recipe validation, and refusal to
+overwrite an existing credential match this integration. This was not a live
+VTA provisioning test. VTA revision `4df0200f` includes the required template
+from PR #2252; no image pins are changed by this integration.
 
 The [image Dockerfile][image-dockerfile] downloads a precompiled
 `trust-registry-k8s` binary. Unlike the upstream Dockerfile, this repository does
@@ -134,33 +140,28 @@ Do not regenerate other service configurations. The mediator and DID host are
 reused through their normal account/publication operations, with existing policy
 changes only if preflight proves they are necessary.
 
-### Vault: two separate secrets
+### Credential file and Vault identity cache
 
-1. **VTA access credential**: used by the registry to authenticate to its context.
-2. **Identity bundle cache**: fetched from the VTA and used for messaging and
-   offline startup. This contains private key material.
+The headless `trust-registry setup` command now owns credential creation. It writes
+`/work/trust-registry/vta-credential.json` with mode `0600` on the Registry PVC;
+the Deployment uses that file directly through `TR_VTA_CREDENTIAL`. The temporary
+setup key lives on the same PVC. Farm neither generates private keys nor copies
+credential values through Job logs, ConfigMaps, database rows, or Deployment env.
+The PVC therefore contains sensitive state and its backups must protect both the
+record store and the VTA credential.
 
-Store both in separate keys/paths beneath a proposed
-`trust-registry/user-{uid}/session-{sid}` Vault prefix. Extend per-user Vault
-policy and the API's bootstrap cleanup permissions for this prefix. Reuse
-Kubernetes authentication; do not introduce static Vault tokens or plaintext
-credential/cache persistence on the PVC.
+The identity bundle cache remains in Vault at
+`trust-registry/user-{uid}/session-{sid}/identity-cache`, using Kubernetes auth
+and the existing per-user policy. Building with `secrets-vault` is still required.
+There is no credential-fetching init container, Vault CLI helper image, or
+Farm-minted permanent access DID in the headless flow. Legacy Vault credentials
+are left untouched until ordinary session teardown.
 
-The registry supports Vault for the cache through `TR_SECRETS_VAULT_*` settings
-when built with `secrets-vault`. Its `TR_VTA_CREDENTIAL` loader separately supports
-file/string/AWS sources; the reviewed loader has no Vault URI implementation.
-Therefore selecting Vault for the cache does not solve credential delivery.
-
-Credential delivery: a pod-local Vault CLI init container authenticates to Vault using
-the ServiceAccount, reads the context-scoped credential, and writes a `0600` file
-to a memory-backed `emptyDir`. The registry receives a `file://` reference to that
-file. Persist the credential only in Vault; keep values out of Deployment env,
-ConfigMaps, API responses, and Job logs. This needs init-container and temporary
-volume support in the component helper. The init container uses the pinned
-`hashicorp/vault:2.0.2` image, matching the Farm Vault; it does not depend on a
-published Farm API image or a separately configured helper image. It revokes its
-short-lived login token after reading the credential.
-The cache uses a different Vault location so it cannot overwrite the credential.
+Provisioning advertises only DIDComm, with the existing mediator. Farm keeps
+`ENABLE_REST=true` at runtime solely for its internal HTTP service and `/health`.
+It does not set `TR_PUBLIC_URL`, so the runtime DID builder advertises no REST
+endpoint and agrees with the provisioned DID. Loading `vta.env` verbatim would
+turn off `/health`; the Deployment supplies this deliberate internal override.
 
 The registry obtains and uses private keys at runtime. The setup guide's phrase
 "no private keys of its own" means VTA-managed identity, not remote-only signing.
@@ -175,22 +176,28 @@ When opted in, extend the post-admin-gate flow:
 ```text
 existing bootstrap and admin gate
   -> deploy VTA (mediator and DID host already ready)
-  -> VTC setup and deploy VTC (existing core pipeline)
-  -> provision registry context, DID and Vault credential
+  -> trust-registry setup --setup-key-out (Registry PVC)
+  -> stop VTA, grant setup DID with --admin-expires 1h --admin-handoff, restart VTA
+  -> trust-registry setup --from (running VTA mints/publishes DID and admin credential)
+  -> persist registry_did from the public key=value completion block
+  -> VTC setup with registry_did, then deploy VTC
   -> configure registry ADMIN_DIDS with the VTC DID
   -> deploy registry and check its messaging/write-path status
-  -> append the signed VTC referral through the VTA
   -> merge [registry].did into the VTC runtime config and restart VTC
   -> verify the published referral and finish add-on enablement
   -> running (Registry has its own active/failed state)
 ```
 
-Use headless native VTA CLI Jobs under the session maintenance claim.
-Do not assume PNM is installed/configured in the API or copy a human's PNM
-credential into the Farm. The VTA creates the context and hosted DID, and imports
-a generated, context-scoped access DID whose credential is persisted with Vault
-CAS=0. Preserve existing VTC output/claim handling;
-account for its short install-token TTL when adding steps after VTC setup.
+Follow [upstream headless setup][tr-headless], using Registry Jobs for both setup
+phases and a single offline VTA context grant. No PNM credential or offline
+`vta did-mgmt dids create` chain is needed. The Registry image must include
+headless setup plus `vta`, `secrets-vault`, `storage-fjall` and `standalone`; the VTA
+must include [the trust-registry template][vta-tr-template].
+
+A Registry setup failure is recorded independently and lets VTC setup proceed
+without a referral. It is not immediately retried at the end of that same run.
+The user can retry enablement after correcting the cause. Preserve the VTC's
+existing claim/install output; its setup now follows Registry provisioning.
 
 ## 6. Add to an existing stack without rebuilding
 
@@ -204,11 +211,11 @@ existing PVCs, or re-enroll the existing administrators.
    DID ownership/history, and any active upgrade/recovery operation.
 2. Persist the operation and chosen image/identity parameters before mutation.
    Provision only the registry resources and Vault locations.
-3. Generate or reuse a context-scoped registry access credential in Vault.
-   Native VTA CLI Jobs perform provisioning and DID editing while the VTA is
-   stopped; no lasting unrestricted setup credential is introduced.
-4. Provision the registry identity through the existing VTA and publish it on
-   the existing DID host. Reuse a completed result on retry.
+3. Run Registry phase 1 on its PVC. Stop the VTA only for the context-scoped
+   setup grant, with `--admin-expires 1h --admin-handoff`, then restart it.
+4. Run Registry phase 2 against the live VTA. It publishes the DID on the
+   registered `dids` server and writes the long-term credential locally.
+   Reuse successful Job receipts on retry.
 5. Set `ADMIN_DIDS` to the existing `session.VtcDid`, start the registry, and
    verify its advertised transport and write path.
 6. Append a signed update to the **existing** VTC DID history through the VTA,
@@ -229,6 +236,14 @@ Upstream explicitly supports changing the referral after initial mint via
 VTA-side DID editing ([setup schema][vtc-setup]). This requires a signed DID-log
 update, not a change to a locally served JSON file alone.
 
+The existing Farm referral update still uses offline `vta did-mgmt dids edit`.
+That CLI has only REST available for publishing to an external DID host. A host
+advertising only DIDComm/TSP therefore still blocks **existing-stack referral
+updates**. Headless Registry provisioning does not fix this separate path;
+it needs an authenticated online VTA edit or upstream offline transport support.
+New stacks avoid that edit by passing `registry_did` to VTC setup. Do not report
+existing-stack activation as verified until the referral publication succeeds.
+
 **Downtime:** the VTC needs a restart for the new client/syncer. Provisioning
 authorization may also need a brief VTA maintenance window: current Farm ACL
 operations use `scale to 0 -> offline Job -> restart`. Prefer compatible live
@@ -240,6 +255,22 @@ shared mediator/DID-host service for agents attached to this stack.
 The existing config handler operates on the selected component only and backs
 up/restores its config (`internal/handler/setup_config.go`). Reuse that behavior
 for the VTC; its readiness check is not by itself a registry-write acceptance test.
+
+### Headless retries and legacy attempts
+
+The new context is `trust-registry-{sid}-headless`. The earlier offline flow's
+`trust-registry-{sid}` context did not carry admin-handoff; it is never silently
+repurposed or deleted. Successful setup-key, ACL-grant, and setup Jobs have no
+TTL and remain receipts. Retrying uses the same setup key and completion output;
+it does not re-run a successful context creation or replace a credential file.
+
+Upstream phase 2 refuses an existing credential file. If provisioning was
+interrupted after creating the remote identity but before saving a complete
+receipt, keep the original output and files for reconciliation; do not delete
+the credential or context to make a retry pass. An expired/consumed one-hour grant
+also requires reconciliation rather than a permanent `import-did` fallback.
+An already-provisioned legacy registry needs a separate credential/context
+migration before converting its Deployment to the headless file layout.
 
 ## 7. Proposed API, persistence, and retries
 
@@ -272,14 +303,14 @@ the already deployed four-component stack.
 
 After persisting an add-on failure, remove its failed Jobs and their Pods,
 ConfigMaps, and temporary input Secrets. Keep the phase and sanitized error in
-the session for the UI. Successful identity Jobs remain recovery receipts;
+the session for the UI. Successful setup-key, ACL-grant, and setup Jobs remain recovery receipts;
 active Jobs are never removed by failure cleanup. Retrying reuses the persisted
 context, credential and DID rather than relying on a failed Pod.
 
 Use a durable per-session operation claim, compatible with existing maintenance
 locking and startup resumption. A client timeout or API restart must not lose the
 operation or allow another worker to execute it concurrently. Reconcile completed
-steps before retrying: the sealed bootstrap request is single-use, context creation
+steps before retrying: the temporary admin handoff is single-use, context creation
 may already have succeeded, and DID-log updates must not mint another DID.
 
 Before VTC wiring, failure leaves the original stack configuration intact.
@@ -323,7 +354,7 @@ memory request, 256Mi memory limit, and 200Mi PVC. These are provisional factory
 values, not measured production sizing. Validate them against expected records
 and traffic in staging; memory defaults can be changed through the Farm UI.
 
-Back up the record PVC and account for both Vault secrets. Extend deletion to the
+Back up the Registry PVC (records and credential) and the Vault identity cache. Extend deletion to the
 registry Jobs, Deployment, Service, PVC, and session Vault prefix. Audit policies
 and bootstrap permissions must agree on the new prefix. A Farm rollback or a
 down-migration must not silently orphan running registries or drop their data.
@@ -333,7 +364,7 @@ down-migration must not silently orphan running registries or drop their data.
 1. Verify pinned image features/entrypoint, production component compatibility,
    headless provisioning and DID editing, and the existing-member reconciliation
    mechanism. Resolve these gates before touching a live stack.
-2. Implement opt-in persistence, inventory, Vault policy/credential delivery,
+2. Implement opt-in persistence, inventory, Vault cache policy and headless credential creation,
    Kubernetes resources, capacity, and the shared resumable enablement steps.
 3. Wire the new-stack branch and existing-stack enable/retry routes, maintenance
    and upgrade exclusions, config restoration, and startup recovery.
@@ -351,7 +382,7 @@ Required acceptance coverage:
   the existing VTC can publish, query, update, and remove a consented test member.
 - Non-consenting members remain unpublished, including during initial backfill.
 - Restarts preserve trust records; populated Vault cache supports the documented
-  VTA-offline case without plaintext persistence.
+  VTA-offline case without a plaintext identity-cache copy.
 - Failures/restarts at credential handoff, DID publication, config update, and
   deployment resume without duplicate contexts/DIDs or a stuck stopped VTC/VTA.
 - Add-on failure remains visible without invalidating the existing parent stack;
@@ -375,3 +406,6 @@ passing Go checks alone cannot establish them.
 [tr-vta]: https://github.com/affinidi/affinidi-trust-registry-rs/blob/c534746480d55fc1e86b40528c5ce7d2fea48184/trust-registry/src/configs/vta.rs
 [tr-secrets]: https://github.com/affinidi/affinidi-trust-registry-rs/blob/c534746480d55fc1e86b40528c5ce7d2fea48184/trust-registry/src/configs/secret_store.rs
 [tr-loaders]: https://github.com/affinidi/affinidi-trust-registry-rs/blob/c534746480d55fc1e86b40528c5ce7d2fea48184/trust-registry/src/configs/loaders/mod.rs
+
+[tr-headless]: https://github.com/affinidi/affinidi-trust-registry-rs/blob/be33b15/VTA_SETUP.md#headless-setup-automated
+[vta-tr-template]: https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2252

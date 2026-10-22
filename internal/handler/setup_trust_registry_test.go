@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -64,5 +65,35 @@ func TestVtaOnlyRegistryEnablementIsRejectedWithoutInfrastructure(t *testing.T) 
 	h.enableTrustRegistry(c, &model.SetupSession{Mode: model.ModeVtaOnly, Status: "running"})
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d", w.Code)
+	}
+}
+
+func TestRegistryReturnsPersistedJobError(t *testing.T) {
+	db := testutil.Postgres(t)
+	session := testutil.SetupSession(t, db, model.ModeFullStack)
+	const failure = "identity job failed (Job has reached the specified backoff limit)\n\n--- Job Logs ---\nError: an unknown failure\nCaused by:\n    storage unavailable"
+	if err := db.Model(&session).Updates(map[string]any{
+		"trust_registry_enabled": true,
+		"trust_registry_state":   "failed",
+		"trust_registry_phase":   "provision_identity",
+		"trust_registry_error":   failure,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	h := &SetupHandler{db: db}
+	r := gin.New()
+	r.Use(func(c *gin.Context) { c.Set(middleware.ContextUserID, session.UserID) })
+	r.GET("/setup/:id/trust-registry", h.GetTrustRegistry)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/setup/"+session.VtaName+"/trust-registry", nil))
+	var response struct {
+		State string `json:"state"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != http.StatusOK || response.State != "failed" || response.Error != failure {
+		t.Fatalf("stored Job error was not returned intact: %s", w.Body.String())
 	}
 }
