@@ -124,7 +124,7 @@ func (h *MobileConnectionHandler) view(r *model.MobileConnection) *mobileView {
 		v.ClaimCheck = connection.ClaimCheck(r.AdminDid)
 		v.CandidateDID = r.AdminDid
 	}
-	if r.ProvisionError != "" && (r.Status == "confirmed" || r.Status == "provisioning") {
+	if r.ProvisionError != "" && (r.Status == "confirmed" || r.Status == "provisioning" || r.Status == "failed") {
 		v.Error = r.ProvisionError
 	}
 	return v
