@@ -397,14 +397,20 @@ func (h *SetupHandler) deleteLoadTest(runID uint, userID *uint) {
 	errorsSeen := make([]string, 0)
 	for i := range sessions {
 		s := &sessions[i]
-		if h.orch != nil {
-			if err := h.orch.Cancel(s.ID); err != nil {
-				errorsSeen = append(errorsSeen, fmt.Sprintf("%s: unable to stop provisioning", s.VtaName))
-				continue
-			}
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		_, err := h.teardownVtaOnlySession(ctx, s)
+		if err := h.prepareSessionTeardown(ctx, s.ID); err != nil {
+			cancel()
+			errorsSeen = append(errorsSeen, fmt.Sprintf("%s: unable to stop provisioning", s.VtaName))
+			continue
+		}
+		release, err := h.acquireTeardownMaintenance(s.ID)
+		if err != nil {
+			cancel()
+			errorsSeen = append(errorsSeen, fmt.Sprintf("%s: maintenance still in progress", s.VtaName))
+			continue
+		}
+		_, err = h.teardownVtaOnlySession(ctx, s)
+		release()
 		cancel()
 		if err != nil {
 			errorsSeen = append(errorsSeen, fmt.Sprintf("%s: %v", s.VtaName, err))
