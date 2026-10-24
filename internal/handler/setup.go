@@ -840,13 +840,11 @@ func (h *SetupHandler) teardownSession(c *gin.Context, session *model.SetupSessi
 		c.JSON(http.StatusConflict, gin.H{"error": "Use pool inventory cleanup for unclaimed VTAs. Confirmed claims are protected.", "reason": "pooled_session"})
 		return
 	}
-	if h.orch != nil {
-		if err := h.orch.Cancel(session.ID); err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Unable to stop provisioning before deletion. Please retry."})
-			return
-		}
+	if err := h.prepareSessionTeardown(c.Request.Context(), session.ID); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Unable to stop provisioning before deletion. Please retry."})
+		return
 	}
-	release, err := h.acquireSessionMaintenance(session.ID)
+	release, err := h.acquireTeardownMaintenance(session.ID)
 	if err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": "A VTA maintenance operation is still running. Retry deletion after it finishes."})
 		return
@@ -862,6 +860,18 @@ func (h *SetupHandler) teardownSession(c *gin.Context, session *model.SetupSessi
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// prepareSessionTeardown establishes the durable half of the deletion
+// protocol before any resource is removed. Orchestrator.Cancel also cancels
+// local workers and waits for a Registry worker on another replica. Without an
+// orchestrator (tests and deliberately reduced deployments), preserve the same
+// state transition directly so teardown never relies on an in-memory owner.
+func (h *SetupHandler) prepareSessionTeardown(ctx context.Context, sessionID uint) error {
+	if h.orch != nil {
+		return h.orch.Cancel(sessionID)
+	}
+	return connection.Stop(ctx, h.db, sessionID)
 }
 
 // teardownVtaOnlySession removes one VTA-only session without writing an HTTP
@@ -1012,12 +1022,10 @@ func (h *SetupHandler) cleanupPoolSession(ctx context.Context, sessionID uint) e
 	if confirmed != 0 {
 		return errors.New("confirmed pool claim cannot be cleaned as unused inventory")
 	}
-	if h.orch != nil {
-		if err := h.orch.Cancel(sessionID); err != nil {
-			return err
-		}
+	if err := h.prepareSessionTeardown(ctx, sessionID); err != nil {
+		return err
 	}
-	release, err := h.acquireSessionMaintenance(sessionID)
+	release, err := h.acquireTeardownMaintenance(sessionID)
 	if err != nil {
 		return err
 	}
