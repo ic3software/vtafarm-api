@@ -162,8 +162,22 @@ func (o *Orchestrator) Cancel(sessionID uint) error {
 	o.mu.Unlock()
 	// A worker on another replica observes the deleting state on its next
 	// heartbeat. Wait for its lock before deleting the resources it can create.
+	// Once this transaction owns the advisory lock, no Registry worker can
+	// still own the stack-maintenance lease. Clear a lease it abandoned so a
+	// resumed deletion does not have to wait for the generic stale timeout.
 	return o.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return tx.Exec("SELECT pg_advisory_xact_lock($1, $2)", 565441, int64(sessionID)).Error
+		if err := tx.Exec("SELECT pg_advisory_xact_lock($1, $2)", 565441, int64(sessionID)).Error; err != nil {
+			return err
+		}
+		var session model.SetupSession
+		if err := tx.Select("status", "trust_registry_state").First(&session, sessionID).Error; err != nil {
+			return err
+		}
+		if session.Status != "deleting" || session.TrustRegistryState != "enabling" {
+			return nil
+		}
+		return tx.Model(&model.VtaAclSnapshot{}).Where("session_id = ?", sessionID).
+			Update("maintenance_started_at", nil).Error
 	})
 }
 

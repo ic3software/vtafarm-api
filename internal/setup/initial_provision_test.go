@@ -144,3 +144,41 @@ func TestTeardownStopsWorkerOnAnotherReplica(t *testing.T) {
 		t.Error("teardown work restarted")
 	})
 }
+
+func TestTeardownClearsAbandonedRegistryMaintenanceLease(t *testing.T) {
+	db := testutil.Postgres(t)
+	s := testutil.SetupSession(t, db, model.ModeFullStack)
+	started := time.Now().Add(-time.Minute)
+	if err := db.Model(&s).Updates(map[string]any{
+		"status":                 "running",
+		"trust_registry_enabled": true,
+		"trust_registry_state":   "enabling",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.VtaAclSnapshot{
+		SessionID: s.ID, MaintenanceStartedAt: &started,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	o := &Orchestrator{db: db}
+	if err := o.Cancel(s.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var got model.SetupSession
+	if err := db.First(&got, s.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "deleting" {
+		t.Fatalf("status = %q, want deleting", got.Status)
+	}
+	var snapshot model.VtaAclSnapshot
+	if err := db.First(&snapshot, "session_id = ?", s.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.MaintenanceStartedAt != nil {
+		t.Fatalf("maintenance lease was not cleared: %v", snapshot.MaintenanceStartedAt)
+	}
+}

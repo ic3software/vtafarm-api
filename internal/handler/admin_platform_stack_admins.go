@@ -97,6 +97,50 @@ var errAclJobBusy = errors.New(
 // closes the same race across API replicas. Callers must invoke the returned
 // release function.
 func (h *SetupHandler) acquireSessionMaintenance(sessionID uint) (func(), error) {
+	var session model.SetupSession
+	if err := h.db.First(&session, sessionID).Error; err != nil {
+		return nil, err
+	}
+	if err := registryBusy(&session); err != nil {
+		return nil, fmt.Errorf("%w: %s", errAclJobBusy, err)
+	}
+	release, err := h.acquireStackMaintenance(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	// A registry request can have committed while this replica was acquiring
+	// the database lease. Recheck before any scale or configuration write.
+	if err = h.db.First(&session, sessionID).Error; err != nil {
+		release()
+		return nil, err
+	}
+	if err = registryBusy(&session); err != nil {
+		release()
+		return nil, fmt.Errorf("%w: %s", errAclJobBusy, err)
+	}
+	return release, nil
+}
+
+// acquireTeardownMaintenance is the destructive counterpart to
+// acquireSessionMaintenance. The caller must first durably move the session to
+// deleting and quiesce its workers with prepareSessionTeardown. At that point
+// an enabling Registry is work being cancelled, not a reason to block cleanup.
+//
+// Keep the order prepareSessionTeardown -> acquireTeardownMaintenance. The
+// Registry worker takes its advisory lock before this stack lease; reversing
+// that order here would let deletion and enablement deadlock each other.
+func (h *SetupHandler) acquireTeardownMaintenance(sessionID uint) (func(), error) {
+	var session model.SetupSession
+	if err := h.db.Select("status").First(&session, sessionID).Error; err != nil {
+		return nil, err
+	}
+	if session.Status != "deleting" {
+		return nil, errors.New("session must be marked deleting before teardown maintenance")
+	}
+	return h.acquireStackMaintenance(sessionID)
+}
+
+func (h *SetupHandler) acquireStackMaintenance(sessionID uint) (func(), error) {
 	if !aclJobLocks.TryLock(sessionID) {
 		return nil, errAclJobBusy
 	}

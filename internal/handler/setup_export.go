@@ -30,12 +30,16 @@ func exportComponents(s *model.SetupSession) []exportComponent {
 			{"vta", fmt.Sprintf("app=vta,session-id=%d", s.ID), "/work/vta/config.toml"},
 		}
 	}
-	return []exportComponent{
+	components := []exportComponent{
 		{"vta", fmt.Sprintf("app=fs-vta,session-id=%d", s.ID), "/work/vta/config.toml"},
 		{"mediator", fmt.Sprintf("app=fs-mediator,session-id=%d", s.ID), "/work/mediator/conf/mediator.toml"},
 		{"dids", fmt.Sprintf("app=fs-dids,session-id=%d", s.ID), "/work/dids/config.toml"},
 		{"vtc", fmt.Sprintf("app=fs-vtc,session-id=%d", s.ID), "/work/vtc/config.toml"},
 	}
+	if s.TrustRegistryEnabled && s.TrustRegistryDid != "" {
+		components = append(components, exportComponent{"trust-registry", fmt.Sprintf("app=fs-trust-registry,session-id=%d", s.ID), ""})
+	}
+	return components
 }
 
 // GET /api/v1/setup/:id/export/configs
@@ -139,6 +143,10 @@ func (h *SetupHandler) exportOne(ctx context.Context, ns string, comp exportComp
 		return comp.name + ".log", body, err
 	}
 
+	if comp.name == "trust-registry" {
+		content, err := h.k8s.RegistryEnvironment(ctx, ns, comp.selector)
+		return "trust-registry.env", content, err
+	}
 	pod, container, err := h.k8s.RunningPod(ctx, ns, comp.selector)
 	if err != nil {
 		return "", "", err

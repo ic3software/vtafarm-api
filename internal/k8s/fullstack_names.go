@@ -15,6 +15,9 @@ func FSVtaName(sessionID uint) string      { return fmt.Sprintf("fs-%d-vta", ses
 func FSMediatorName(sessionID uint) string { return fmt.Sprintf("fs-%d-mediator", sessionID) }
 func FSDidsName(sessionID uint) string     { return fmt.Sprintf("fs-%d-dids", sessionID) }
 func FSVtcName(sessionID uint) string      { return fmt.Sprintf("fs-%d-vtc", sessionID) }
+func FSTrustRegistryName(sessionID uint) string {
+	return fmt.Sprintf("fs-%d-trust-registry", sessionID)
+}
 
 // CustomTLSSecret names both the Certificate and the Secret it writes —
 // cert-manager takes the secretName from us, so keeping them identical means
@@ -105,5 +108,13 @@ func allFSJobNames(sessionID uint) []string {
 		FSJobVtcInvite(sessionID),
 		FSJobConfigUpdate(sessionID),
 		FSJobConfigRollback(sessionID),
+		fmt.Sprintf("fs-%d-tr-preflight", sessionID),
+		fmt.Sprintf("fs-%d-tr-identity", sessionID),
+		fmt.Sprintf("fs-%d-tr-setup-key", sessionID),
+		fmt.Sprintf("fs-%d-tr-acl-grant", sessionID),
+		fmt.Sprintf("fs-%d-tr-setup", sessionID),
+		fmt.Sprintf("fs-%d-tr-referral", sessionID),
+		fmt.Sprintf("fs-%d-tr-config", sessionID),
+		fmt.Sprintf("fs-%d-tr-restore", sessionID),
 	}
 }

@@ -156,6 +156,10 @@ func (r *Runner) runTask(batch *model.UpgradeBatch, taskID uint) {
 		return
 	}
 
+	if session.TrustRegistryState == "enabling" {
+		r.failTask(batch, &task, "Trust Registry enablement is in progress")
+		return
+	}
 	deployName, err := deploymentName(&session, task.Component)
 	if err != nil {
 		r.failTask(batch, &task, err.Error())
@@ -290,6 +294,8 @@ func deploymentName(s *model.SetupSession, component string) (string, error) {
 		return k8s.FSMediatorName(s.ID), nil
 	case "dids":
 		return k8s.FSDidsName(s.ID), nil
+	case "trust-registry":
+		return k8s.FSTrustRegistryName(s.ID), nil
 	case "vtc":
 		return k8s.FSVtcName(s.ID), nil
 	}

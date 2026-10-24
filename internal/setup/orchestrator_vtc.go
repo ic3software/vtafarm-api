@@ -103,6 +103,10 @@ func (o *Orchestrator) runFullStackFinish(ctx context.Context, sessionID uint, a
 		return
 	}
 
+	if !o.finishRegistrySetup(ctx, s) {
+		return
+	}
+
 	o.fsSetStatus(sessionID, "running")
 	log.Printf("[orchestrator] fs-vtc session %d: running at https://%s", sessionID, s.VtcFQDN())
 }
@@ -197,6 +201,9 @@ func (o *Orchestrator) fsStepVtcAclGrant(ctx context.Context, ns string, s *mode
 // registered "dids" server, and writes the key bundle to Vault (kubernetes
 // auth — hence SA vta). Captures the terse completion block.
 func (o *Orchestrator) fsStepVtcSetup(ctx context.Context, ns string, s *model.SetupSession) (VtcSetupOutcome, error) {
+	if err := o.prepareRegistryForVtc(ctx, ns, s); err != nil {
+		return VtcSetupOutcome{}, err
+	}
 	toml, err := RenderVtcSetupTOML(s, VtcVaultSecrets{
 		Addr:       o.vaultAddr,
 		KVMount:    o.vault.KVMount(),

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -14,11 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cyberphone/json-canonicalization/go/src/webpki.org/jsoncanonicalizer"
 	"github.com/google/uuid"
 
 	"github.com/ic3software/vtafarm-api/internal/didkey"
 	"github.com/ic3software/vtafarm-api/internal/didresolver"
+	"github.com/ic3software/vtafarm-api/internal/trusttaskclient"
 	"github.com/ic3software/vtafarm-api/internal/webvh"
 )
 
@@ -30,28 +29,21 @@ const (
 	aclGrantType    = "https://trusttasks.org/spec/acl/grant/0.1"
 	aclRevokeType   = "https://trusttasks.org/spec/acl/revoke/0.1"
 
-	maxTrustTaskResponseBytes = 1 << 20
+	maxTrustTaskResponseBytes = trusttaskclient.MaxResponseBytes
 )
 
-type trustTask struct {
-	ID        string          `json:"id"`
-	Type      string          `json:"type"`
-	ThreadID  string          `json:"threadId,omitempty"`
-	Issuer    string          `json:"issuer,omitempty"`
-	Recipient string          `json:"recipient,omitempty"`
-	IssuedAt  string          `json:"issuedAt,omitempty"`
-	Payload   json.RawMessage `json:"payload"`
-	Proof     *proof          `json:"proof,omitempty"`
-}
+// The envelope, the proof and the cryptosuite steps are the shared outbound
+// client's; the names below keep this package's own vocabulary.
+type (
+	trustTask = trusttaskclient.Document
+	proof     = trusttaskclient.Proof
+)
 
-type proof struct {
-	Type               string `json:"type"`
-	Cryptosuite        string `json:"cryptosuite"`
-	VerificationMethod string `json:"verificationMethod"`
-	Created            string `json:"created"`
-	ProofPurpose       string `json:"proofPurpose"`
-	ProofValue         string `json:"proofValue,omitempty"`
-}
+var (
+	signTrustTask    = trusttaskclient.Sign
+	proofMessage     = trusttaskclient.ProofMessage
+	decodeProofValue = trusttaskclient.DecodeProofValue
+)
 
 // Client talks to one DID Hosting control plane exclusively through signed
 // Trust Tasks. serverDid is supplied by provisioning and is both the request
@@ -222,106 +214,9 @@ func (c *Client) call(ctx context.Context, typeURI string, payload any) (json.Ra
 	return reply.Payload, nil
 }
 
-func signTrustTask(doc *trustTask, kid string, privateKey ed25519.PrivateKey, created string) error {
-	doc.Proof = nil
-	proofConfig := proof{
-		Type:               "DataIntegrityProof",
-		Cryptosuite:        "eddsa-jcs-2022",
-		VerificationMethod: kid,
-		Created:            created,
-		ProofPurpose:       "authentication",
-	}
-	message, err := proofMessage(doc, proofConfig)
-	if err != nil {
-		return err
-	}
-	proofConfig.ProofValue = "z" + didresolver.EncodeBase58BTC(ed25519.Sign(privateKey, message))
-	doc.Proof = &proofConfig
-	return nil
-}
-
 func (c *Client) verifyReply(ctx context.Context, reply, request *trustTask) error {
-	if reply.ThreadID != request.ID {
-		return errors.New("DID hosting Trust Task response is not threaded to the request")
-	}
-	if reply.Issuer != c.serverDid {
-		return errors.New("DID hosting Trust Task response issuer does not match the service DID")
-	}
-	if reply.Recipient != c.clientDid {
-		return errors.New("DID hosting Trust Task response recipient does not match DID_HOSTING_DID")
-	}
-	issuedAt, err := time.Parse(time.RFC3339, reply.IssuedAt)
-	if err != nil || issuedAt.Before(time.Now().Add(-5*time.Minute)) || issuedAt.After(time.Now().Add(didresolver.DefaultClockSkew)) {
-		return errors.New("DID hosting Trust Task response is outside the freshness window")
-	}
-	if reply.Proof == nil {
-		return errors.New("DID hosting Trust Task response has no proof")
-	}
-	p := *reply.Proof
-	if p.Type != "DataIntegrityProof" || p.Cryptosuite != "eddsa-jcs-2022" || p.ProofPurpose != "authentication" {
-		return errors.New("DID hosting Trust Task response has an unsupported proof")
-	}
-	proofDid, _, ok := strings.Cut(p.VerificationMethod, "#")
-	if !ok || proofDid != c.serverDid {
-		return errors.New("DID hosting Trust Task response proof does not belong to the service DID")
-	}
-	created, err := time.Parse(time.RFC3339, p.Created)
-	if err != nil || created.After(time.Now().Add(didresolver.DefaultClockSkew)) {
-		return errors.New("DID hosting Trust Task response proof has an invalid creation time")
-	}
-	signature, err := decodeProofValue(p.ProofValue)
-	if err != nil {
-		return err
-	}
-	publicKey, err := c.resolver.ResolveAuthenticationKey(ctx, c.serverDid, p.VerificationMethod)
-	if err != nil {
-		return fmt.Errorf("resolve DID hosting response key: %w", err)
-	}
-	reply.Proof = nil
-	message, err := proofMessage(reply, p)
-	reply.Proof = &p
-	if err != nil {
-		return fmt.Errorf("canonicalize Trust Task response: %w", err)
-	}
-	if len(signature) != ed25519.SignatureSize || !ed25519.Verify(publicKey, message, signature) {
-		return errors.New("DID hosting Trust Task response proof signature is invalid")
+	if err := trusttaskclient.VerifyReply(ctx, c.resolver, reply, request, trusttaskclient.Reply{Service: c.serverDid, Client: c.clientDid}); err != nil {
+		return fmt.Errorf("DID hosting %w", err)
 	}
 	return nil
-}
-
-func proofMessage(doc *trustTask, p proof) ([]byte, error) {
-	p.ProofValue = ""
-	proofCanonical, err := canonicalJSON(p)
-	if err != nil {
-		return nil, fmt.Errorf("canonicalize proof options: %w", err)
-	}
-	documentCanonical, err := canonicalJSON(doc)
-	if err != nil {
-		return nil, fmt.Errorf("canonicalize document: %w", err)
-	}
-	proofHash := sha256.Sum256(proofCanonical)
-	documentHash := sha256.Sum256(documentCanonical)
-	message := make([]byte, 0, len(proofHash)+len(documentHash))
-	message = append(message, proofHash[:]...)
-	message = append(message, documentHash[:]...)
-	return message, nil
-}
-
-func canonicalJSON(value any) ([]byte, error) {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return nil, err
-	}
-	return jsoncanonicalizer.Transform(encoded)
-}
-
-func decodeProofValue(value string) ([]byte, error) {
-	if !strings.HasPrefix(value, "z") {
-		return nil, errors.New("DID hosting Trust Task proofValue is not base58btc multibase")
-	}
-	decoded, err := didresolver.DecodeBase58BTC(value[1:])
-	if err != nil || didresolver.EncodeBase58BTC(decoded) != value[1:] {
-		return nil, errors.New("DID hosting Trust Task proofValue is not canonical base58btc")
-	}
-	return decoded, nil
 }

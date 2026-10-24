@@ -48,7 +48,11 @@ type ComponentDeploymentSpec struct {
 	// limit (incompressible); CPU deliberately gets requests only — a CFS quota
 	// would throttle bursts even when node CPU is idle, while the request alone
 	// gives fair-share under contention.
-	Resources corev1.ResourceRequirements
+	Resources      corev1.ResourceRequirements
+	Recreate       bool
+	InitContainers []corev1.Container
+	ExtraVolumes   []corev1.Volume
+	ExtraMounts    []corev1.VolumeMount
 }
 
 // ComponentResources builds the standard farm resource shape: CPU+memory
@@ -83,6 +87,8 @@ func (c *Client) CreateComponentDeployment(ctx context.Context, ns string, spec 
 	}
 
 	var ports []corev1.ContainerPort
+	volumes = append(volumes, spec.ExtraVolumes...)
+	mounts = append(mounts, spec.ExtraMounts...)
 	if spec.Port != 0 {
 		ports = []corev1.ContainerPort{{ContainerPort: spec.Port, Protocol: corev1.ProtocolTCP}}
 	}
@@ -103,15 +109,21 @@ func (c *Client) CreateComponentDeployment(ctx context.Context, ns string, spec 
 		}
 	}
 
+	strategy := appsv1.DeploymentStrategy{}
+	if spec.Recreate {
+		strategy.Type = appsv1.RecreateDeploymentStrategyType
+	}
 	_, err := c.kube.AppsV1().Deployments(ns).Create(ctx, &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: spec.Name, Namespace: ns, Labels: spec.Labels},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
+			Strategy: strategy,
 			Selector: &metav1.LabelSelector{MatchLabels: spec.Labels},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: spec.Labels},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: spec.ServiceAccount,
+					InitContainers:     spec.InitContainers,
 					Containers: []corev1.Container{{
 						Name:           spec.Name,
 						Image:          spec.Image,

@@ -20,7 +20,7 @@ const (
 
 // UpgradeComponents are the deployable components an admin can upgrade —
 // the same set GET /setup/images serves tags for.
-var UpgradeComponents = []string{"vta", "mediator", "dids", "vtc"}
+var UpgradeComponents = []string{"vta", "mediator", "dids", "vtc", "trust-registry"}
 
 // UpgradeBatch is one image rollout over a set of sessions. Exactly one of
 // AdminID / UserID is set (DB CHECK): an admin batch can span many sessions,
@@ -59,10 +59,11 @@ type UpgradeTask struct {
 // UpgradeComponentModes maps each component to the session modes that run it.
 // A session is only a valid upgrade target for components its mode deploys.
 var UpgradeComponentModes = map[string][]string{
-	"vta":      {ModeVtaOnly, ModeFullStack},
-	"mediator": {ModeFullStack},
-	"dids":     {ModeFullStack},
-	"vtc":      {ModeFullStack},
+	"vta":            {ModeVtaOnly, ModeFullStack},
+	"mediator":       {ModeFullStack},
+	"dids":           {ModeFullStack},
+	"vtc":            {ModeFullStack},
+	"trust-registry": {ModeFullStack},
 }
 
 // UpgradeImageColumn returns the setup_sessions column holding the given
@@ -75,6 +76,8 @@ func UpgradeImageColumn(component string) string {
 		return "mediator_image"
 	case "dids":
 		return "dids_image"
+	case "trust-registry":
+		return "trust_registry_image"
 	case "vtc":
 		return "vtc_image"
 	}
@@ -90,6 +93,11 @@ func (s *SetupSession) ComponentImage(component string) string {
 		return s.MediatorImage
 	case "dids":
 		return s.DidsImage
+	case "trust-registry":
+		if s.TrustRegistryState == "active" {
+			return s.TrustRegistryImage
+		}
+		return ""
 	case "vtc":
 		return s.VtcImage
 	}

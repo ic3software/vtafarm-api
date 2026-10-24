@@ -58,6 +58,10 @@ func (o *Orchestrator) recoverDeployment(ctx context.Context, sessionID uint) {
 	if s.Mode != model.ModeFullStack {
 		return
 	}
+	if s.Status == "step_trust_registry" {
+		o.finishRecoveredSession(ctx, sessionID, s)
+		return
+	}
 	if fail(s.Status, "failed to reconcile recovery images", o.reconcileFullStackRecoveryImages(ctx, ns, s)) {
 		return
 	}
@@ -89,7 +93,7 @@ func (o *Orchestrator) recoverDeployment(ctx context.Context, sessionID uint) {
 		if fail("deploy_vtc", "failed to deploy vtc", o.fsDeployVtc(ctx, ns, s)) {
 			return
 		}
-		o.finishRecoveredSession(sessionID, s)
+		o.finishRecoveredSession(ctx, sessionID, s)
 	}
 }
 
@@ -179,10 +183,13 @@ func (o *Orchestrator) continueRecoveredPostGate(
 	if fail("deploy_vtc", "failed to deploy vtc", o.fsDeployVtc(ctx, ns, s)) {
 		return
 	}
-	o.finishRecoveredSession(s.ID, s)
+	o.finishRecoveredSession(ctx, s.ID, s)
 }
 
-func (o *Orchestrator) finishRecoveredSession(sessionID uint, s *model.SetupSession) {
+func (o *Orchestrator) finishRecoveredSession(ctx context.Context, sessionID uint, s *model.SetupSession) {
+	if !o.finishRegistrySetup(ctx, s) {
+		return
+	}
 	o.db.Model(&model.SetupSession{}).Where("id = ?", sessionID).Updates(map[string]any{
 		"status": "running", "error_msg": "", "failed_stage": "", "updated_at": time.Now(),
 	})

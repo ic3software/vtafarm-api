@@ -14,8 +14,8 @@ import (
 type Profiles map[string]k8s.ResourceProfile
 
 func Factory() Profiles {
-	profiles := make(Profiles, 4)
-	for _, component := range []string{k8s.ComponentMediator, k8s.ComponentVTC, k8s.ComponentVTA, k8s.ComponentDids} {
+	profiles := make(Profiles, 5)
+	for _, component := range []string{k8s.ComponentMediator, k8s.ComponentVTC, k8s.ComponentVTA, k8s.ComponentDids, k8s.ComponentTrustRegistry} {
 		profiles[component], _ = k8s.DefaultResourceProfile(component)
 	}
 	return profiles

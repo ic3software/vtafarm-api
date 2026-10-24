@@ -40,9 +40,10 @@ type SetupHandler struct {
 	mobileWorker *additionalMobileWorker
 
 	// full_stack mode
-	mediatorGhcr *ghcr.Client // nil when not configured
-	didsGhcr     *ghcr.Client // nil when not configured
-	vtcGhcr      *ghcr.Client // nil when not configured
+	mediatorGhcr      *ghcr.Client // nil when not configured
+	didsGhcr          *ghcr.Client // nil when not configured
+	vtcGhcr           *ghcr.Client // nil when not configured
+	trustRegistryGhcr *ghcr.Client
 }
 
 func NewSetupHandler(
@@ -120,8 +121,10 @@ func (h *SetupHandler) Images(c *gin.Context) {
 		client = h.didsGhcr
 	case "vtc":
 		client = h.vtcGhcr
+	case "trust-registry":
+		client = h.trustRegistryGhcr
 	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown component " + component + " (expected vta, mediator, dids, or vtc)"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown component " + component + " (expected vta, mediator, dids, vtc, or trust-registry)"})
 		return
 	}
 
@@ -162,10 +165,12 @@ type createSetupRequest struct {
 	// full_stack only — all three images are required for that mode. vtc_name
 	// is globally unique and DNS-safe like vta_name (becomes the vtc-<name>
 	// subdomain) and doubles as the VTA context id.
-	MediatorImage string `json:"mediator_image"`
-	DidsImage     string `json:"dids_image"`
-	VtcImage      string `json:"vtc_image"`
-	VtcName       string `json:"vtc_name"`
+	MediatorImage        string `json:"mediator_image"`
+	DidsImage            string `json:"dids_image"`
+	VtcImage             string `json:"vtc_image"`
+	VtcName              string `json:"vtc_name"`
+	TrustRegistryEnabled bool   `json:"trust_registry_enabled"`
+	TrustRegistryImage   string `json:"trust_registry_image"`
 	// VTA-only Customize / Connect to. Omit both to use the platform stack.
 	DIDHostingDid string `json:"did_hosting_did"`
 	MediatorDid   string `json:"mediator_did"`
@@ -187,6 +192,19 @@ func (h *SetupHandler) Create(c *gin.Context) {
 		return
 	}
 
+	if req.Mode != model.ModeFullStack && (req.TrustRegistryEnabled || req.TrustRegistryImage != "") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Trust Registry requires a Full Stack"})
+		return
+	}
+	if !req.TrustRegistryEnabled {
+		req.TrustRegistryImage = ""
+	}
+	if req.TrustRegistryEnabled && (!h.orch.RegistryAvailable() || !h.validRegistryImage(c, req.TrustRegistryImage)) {
+		if !c.Writer.Written() {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Trust Registry is unavailable because Kubernetes or Vault is not configured"})
+		}
+		return
+	}
 	userID := c.MustGet(middleware.ContextUserID).(uint)
 
 	var user model.User
@@ -822,13 +840,11 @@ func (h *SetupHandler) teardownSession(c *gin.Context, session *model.SetupSessi
 		c.JSON(http.StatusConflict, gin.H{"error": "Use pool inventory cleanup for unclaimed VTAs. Confirmed claims are protected.", "reason": "pooled_session"})
 		return
 	}
-	if h.orch != nil {
-		if err := h.orch.Cancel(session.ID); err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Unable to stop provisioning before deletion. Please retry."})
-			return
-		}
+	if err := h.prepareSessionTeardown(c.Request.Context(), session.ID); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Unable to stop provisioning before deletion. Please retry."})
+		return
 	}
-	release, err := h.acquireSessionMaintenance(session.ID)
+	release, err := h.acquireTeardownMaintenance(session.ID)
 	if err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": "A VTA maintenance operation is still running. Retry deletion after it finishes."})
 		return
@@ -844,6 +860,18 @@ func (h *SetupHandler) teardownSession(c *gin.Context, session *model.SetupSessi
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// prepareSessionTeardown establishes the durable half of the deletion
+// protocol before any resource is removed. Orchestrator.Cancel also cancels
+// local workers and waits for a Registry worker on another replica. Without an
+// orchestrator (tests and deliberately reduced deployments), preserve the same
+// state transition directly so teardown never relies on an in-memory owner.
+func (h *SetupHandler) prepareSessionTeardown(ctx context.Context, sessionID uint) error {
+	if h.orch != nil {
+		return h.orch.Cancel(sessionID)
+	}
+	return connection.Stop(ctx, h.db, sessionID)
 }
 
 // teardownVtaOnlySession removes one VTA-only session without writing an HTTP
@@ -994,12 +1022,10 @@ func (h *SetupHandler) cleanupPoolSession(ctx context.Context, sessionID uint) e
 	if confirmed != 0 {
 		return errors.New("confirmed pool claim cannot be cleaned as unused inventory")
 	}
-	if h.orch != nil {
-		if err := h.orch.Cancel(sessionID); err != nil {
-			return err
-		}
+	if err := h.prepareSessionTeardown(ctx, sessionID); err != nil {
+		return err
 	}
-	release, err := h.acquireSessionMaintenance(sessionID)
+	release, err := h.acquireTeardownMaintenance(sessionID)
 	if err != nil {
 		return err
 	}

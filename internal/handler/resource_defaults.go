@@ -27,18 +27,30 @@ func (h *SetupHandler) AdminSaveResourceDefaults(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "resources are required"})
 		return
 	}
-	if len(input.Resources) != 4 {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "resources must contain all four components"})
+	if len(input.Resources) != 4 && len(input.Resources) != 5 {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "resources must contain the four core components and optionally Trust Registry"})
 		return
 	}
 	if err := validateMemoryInputs(input.Resources); err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
 		return
 	}
-	rows := make([]model.ResourceDefault, 0, 4)
+	for _, required := range []string{"vta", "mediator", "dids", "vtc"} {
+		found := false
+		for _, item := range input.Resources {
+			if item.Component == required {
+				found = true
+			}
+		}
+		if !found {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "resources must include each core component"})
+			return
+		}
+	}
+	rows := make([]model.ResourceDefault, 0, len(input.Resources))
 	profiles := resourceprofile.Factory()
 	// Fixed ordering avoids conflicting lock order when admins save concurrently.
-	for _, component := range []string{"mediator", "vtc", "vta", "dids"} {
+	for _, component := range []string{"mediator", "vtc", "vta", "dids", "trust-registry"} {
 		for _, item := range input.Resources {
 			if item.Component != component {
 				continue

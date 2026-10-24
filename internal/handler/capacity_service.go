@@ -107,11 +107,23 @@ func estimatesFrom(stats *k8s.ClusterStats, modes ...capacity.Mode) map[string]c
 // ModeFits reports whether one more session of mode still fits. determinable is
 // false when the cluster couldn't be read — callers fail open on that.
 func (s *CapacityService) ModeFits(ctx context.Context, mode capacity.Mode) (fits, determinable bool) {
-	est, _, ok := s.Estimates(ctx)
-	if !ok {
+	if s.k8s == nil {
 		return false, false
 	}
-	return est[mode.Name].Count >= 1, true
+	stats, err := s.stats(ctx)
+	if err != nil {
+		return false, false
+	}
+	profiles, err := resourceprofile.Load(ctx, s.db)
+	if err != nil {
+		return false, false
+	}
+	mode.Components = append([]capacity.Component(nil), mode.Components...)
+	for i := range mode.Components {
+		requirements := profiles.Requirements(mode.Components[i].Name)
+		mode.Components[i].MemBytes = requirements.Limits.Memory().Value()
+	}
+	return estimatesFrom(stats, mode)[mode.Name].Count >= 1, true
 }
 
 // freeResources turns cluster stats into per-node/per-disk planning headroom.

@@ -32,6 +32,8 @@ vta_did        = "{{ .VtaDid }}"
 context        = "{{ .VtcName }}"
 setup_key_file = "setup-key.json"
 single_admin_mode = true
+{{ if .RegistryDid }}registry_did = {{ printf "%q" .RegistryDid }}
+{{ end }}
 
 [webvh]
 server_id = "dids"
@@ -69,6 +71,7 @@ type vtcSetupData struct {
 	VtaDid       string
 	VtcName      string
 	VtcDidPath   string
+	RegistryDid  string
 	MediatorDid  string
 	MediatorURL  string
 	Vault        VtcVaultSecrets
@@ -86,6 +89,7 @@ func RenderVtcSetupTOML(s *model.SetupSession, vault VtcVaultSecrets) (string, e
 		VtaDid:       s.VtaDid,
 		VtcName:      s.VtcName,
 		VtcDidPath:   VtcDidPath(s.VtcName),
+		RegistryDid:  s.TrustRegistryDid,
 		MediatorDid:  s.MediatorDid,
 		MediatorURL:  "https://" + s.MediatorFQDN() + "/mediator/v1",
 		Vault:        vault,

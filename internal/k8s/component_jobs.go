@@ -3,6 +3,7 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -10,6 +11,22 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// PrepareRegistryJob keeps identity receipts and attaches to interrupted active Jobs.
+func (c *Client) PrepareRegistryJob(ctx context.Context, ns, name string, keepSuccess bool) error {
+	job, err := c.kube.BatchV1().Jobs(ns).Get(ctx, name, metav1.GetOptions{})
+	if k8serrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if (job.Status.Failed > 0 || (!keepSuccess && job.Status.Succeeded > 0)) && job.Status.Active == 0 {
+		c.DeleteComponentJob(ctx, ns, name)
+		return c.WaitForComponentPodsGone(ctx, ns, "job-name="+name, 2*time.Minute)
+	}
+	return nil
+}
 
 // PVCMount describes one PVC mounted into a full_stack Job or Deployment.
 // Cross-component steps (design §4) mount two of these at once — e.g. the

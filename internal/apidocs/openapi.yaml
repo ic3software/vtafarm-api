@@ -87,6 +87,23 @@ components:
       name: vtafarm_admin
 
   schemas:
+    TrustRegistryState:
+      type: object
+      required: [enabled, state, phase, image, did, error]
+      properties:
+        enabled: { type: boolean }
+        state: { type: string, enum: [disabled, enabling, active, failed] }
+        phase: { type: string }
+        image: { type: string }
+        did: { type: string }
+        error: { type: string }
+    EnableTrustRegistryRequest:
+      type: object
+      required: [image]
+      properties:
+        image:
+          type: string
+          description: Immutable image selected from the trust-registry component image list.
     MobileConnection:
       type: object
       required: [request_id, status, vta_did, operation, expires_at]
@@ -316,7 +333,7 @@ components:
           example: "myvta"
         component:
           type: string
-          enum: [vta, mediator, dids, vtc]
+          enum: [vta, mediator, dids, vtc, trust-registry]
         from_image:
           type: string
           description: The image the session runs before the upgrade.
@@ -361,7 +378,7 @@ components:
             properties:
               component:
                 type: string
-                enum: [vta, mediator, dids, vtc]
+                enum: [vta, mediator, dids, vtc, trust-registry]
               from_image:
                 type: string
               to_image:
@@ -590,6 +607,13 @@ components:
             Required for full_stack. Full image URL selected from
             GET /setup/images?component=vtc. Must be built with the `vault-secrets` feature.
           example: "ghcr.io/ic3software/vtc:0.3.0"
+        trust_registry_enabled:
+          type: boolean
+          default: false
+          description: Full Stack only. Create a dedicated Trust Registry; existing clients remain opted out.
+        trust_registry_image:
+          type: string
+          description: Required when enabled; select from GET /setup/images?component=trust-registry.
         vtc_name:
           type: string
           example: "myvtc"
@@ -768,6 +792,10 @@ components:
         dids_image:
           type: string
           description: full_stack only. Current dids image.
+        trust_registry:
+          $ref: '#/components/schemas/TrustRegistryState'
+        trust_registry_image:
+          type: string
         vtc_image:
           type: string
           description: full_stack only. Current VTC image.
@@ -2256,7 +2284,7 @@ paths:
                             type: object
                             required: [component, memory_request, memory_limit, customized]
                             properties:
-                              component: { type: string, enum: [vta, mediator, dids, vtc] }
+                              component: { type: string, enum: [vta, mediator, dids, vtc, trust-registry] }
                               memory_request: { type: string, example: 128Mi }
                               memory_limit: { type: string, example: 512Mi }
                               customized:
@@ -2320,7 +2348,7 @@ paths:
     put:
       summary: Save component memory defaults
       description: |
-        Atomically replaces all four components' memory defaults. Each request
+        Saves the four core components and optionally Trust Registry memory defaults. Each request
         and limit must be between 16Mi and 1Gi inclusive, with request <= limit.
         Values are Kubernetes quantities. CPU settings are unchanged.
         New deployments and subsequent capacity estimates read these settings;
@@ -2340,12 +2368,12 @@ paths:
                 resources:
                   type: array
                   minItems: 4
-                  maxItems: 4
+                  maxItems: 5
                   items:
                     type: object
                     required: [component, memory_request, memory_limit]
                     properties:
-                      component: { type: string, enum: [mediator, vtc, vta, dids] }
+                      component: { type: string, enum: [mediator, vtc, vta, dids, trust-registry] }
                       memory_request: { type: string, example: 16Mi }
                       memory_limit: { type: string, example: 64Mi }
       responses:
@@ -2391,14 +2419,14 @@ paths:
                 resources:
                   type: array
                   minItems: 1
-                  maxItems: 4
+                  maxItems: 5
                   items:
                     type: object
                     required: [component, memory_request, memory_limit]
                     properties:
                       component:
                         type: string
-                        enum: [vta, mediator, dids, vtc]
+                        enum: [vta, mediator, dids, vtc, trust-registry]
                       memory_request:
                         type: string
                         example: 128Mi
@@ -2418,7 +2446,7 @@ paths:
                       type: object
                       properties:
                         session_id: { type: string }
-                        component: { type: string, enum: [vta, mediator, dids, vtc] }
+                        component: { type: string, enum: [vta, mediator, dids, vtc, trust-registry] }
                         status: { type: string, enum: [applied, failed, skipped] }
                         error: { type: string }
         "404": { description: One or more sessions were not found }
@@ -2456,7 +2484,7 @@ paths:
                     items:
                       type: object
                       properties:
-                        component: { type: string, enum: [vta, mediator, dids, vtc] }
+                        component: { type: string, enum: [vta, mediator, dids, vtc, trust-registry] }
                         defaults: { $ref: "#/components/schemas/ResourceProfile" }
                         desired:
                           type: object
@@ -2605,6 +2633,10 @@ paths:
                 mediator_image: { type: string }
                 dids_image: { type: string }
                 vtc_image: { type: string }
+                trust_registry_enabled: { type: boolean, default: false }
+                trust_registry_image:
+                  type: string
+                  description: Required when enabled; selected from the trust-registry image list.
                 portable: { type: boolean, default: true }
                 pre_rotation_count: { type: integer, default: 1 }
       responses:
@@ -2720,6 +2752,9 @@ paths:
                       mediator: { type: string }
                       dids: { type: string }
                       vtc: { type: string }
+                      trust-registry: { type: string }
+                  trust_registry:
+                    $ref: '#/components/schemas/TrustRegistryState'
                   collected:
                     type: object
                     description: |
@@ -2987,7 +3022,7 @@ paths:
           description: Which component's image tags to list.
           schema:
             type: string
-            enum: [vta, mediator, dids, vtc]
+            enum: [vta, mediator, dids, vtc, trust-registry]
             default: vta
       responses:
         "200":
@@ -3509,7 +3544,7 @@ paths:
                     properties:
                       component:
                         type: string
-                        enum: [vta, mediator, dids, vtc]
+                        enum: [vta, mediator, dids, vtc, trust-registry]
                       image:
                         type: string
                         example: "ghcr.io/ic3software/vta:0.9.0-917881c"
@@ -3702,7 +3737,7 @@ paths:
                           type: string
                         component:
                           type: string
-                          enum: [vta, mediator, dids, vtc]
+                          enum: [vta, mediator, dids, vtc, trust-registry]
                         from_image:
                           type: string
                         to_image:
@@ -4875,7 +4910,7 @@ paths:
           description: Which component's image tags to list.
           schema:
             type: string
-            enum: [vta, mediator, dids, vtc]
+            enum: [vta, mediator, dids, vtc, trust-registry]
             default: vta
       responses:
         "200":
@@ -5212,6 +5247,86 @@ paths:
         "409": { description: Farm DID host is not ready, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "422": { description: Public DID does not resolve, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
+  /api/v1/setup/{id}/trust-registry:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [Setup]
+      summary: Read Trust Registry enablement progress
+      security: [{ CookieAuthUser: [] }]
+      responses:
+        '200':
+          description: Registry state (independent of the parent stack status).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrustRegistryState' }
+        '404': { description: Stack not found or not owned by this caller. }
+    post:
+      tags: [Setup]
+      summary: Enable or retry Trust Registry on a running Full Stack
+      description: Preserves existing identities and members; may briefly restart VTA and VTC. Active registries use the image upgrade API.
+      security: [{ CookieAuthUser: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EnableTrustRegistryRequest' }
+      responses:
+        '200':
+          description: Already enabled with this image.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrustRegistryState' }
+        '202':
+          description: Durable enablement queued; poll GET for progress and failure details.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrustRegistryState' }
+        '400': { description: Not a Full Stack or malformed request. }
+        '404': { description: Stack not found or not owned by this caller. }
+        '409': { description: Stack not running or another maintenance/upgrade operation is active. }
+        '422': { description: Image is not in the immutable registry image list. }
+        '503': { description: Capacity, Vault, image source, or init helper is unavailable. }
+
+  /api/v1/admin/platform-stack/trust-registry:
+    get:
+      tags: [Setup]
+      summary: Read Trust Registry enablement progress
+      security: [{ CookieAuthAdmin: [] }]
+      responses:
+        '200':
+          description: Registry state (independent of the parent stack status).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrustRegistryState' }
+        '404': { description: Stack not found or not owned by this caller. }
+    post:
+      tags: [Setup]
+      summary: Enable or retry Trust Registry on a running Full Stack
+      description: Preserves existing identities and members; may briefly restart VTA and VTC. Active registries use the image upgrade API.
+      security: [{ CookieAuthAdmin: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EnableTrustRegistryRequest' }
+      responses:
+        '200':
+          description: Already enabled with this image.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrustRegistryState' }
+        '202':
+          description: Durable enablement queued; poll GET for progress and failure details.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrustRegistryState' }
+        '400': { description: Not a Full Stack or malformed request. }
+        '404': { description: Stack not found or not owned by this caller. }
+        '409': { description: Stack not running or another maintenance/upgrade operation is active. }
+        '422': { description: Image is not in the immutable registry image list. }
+        '503': { description: Capacity, Vault, image source, or init helper is unavailable. }
+
   /api/v1/setup/{id}:
     get:
       summary: Get setup session
@@ -5363,7 +5478,7 @@ paths:
                     properties:
                       component:
                         type: string
-                        enum: [vta, mediator, dids, vtc]
+                        enum: [vta, mediator, dids, vtc, trust-registry]
                       image:
                         type: string
                         example: "ghcr.io/ic3software/vta:0.9.0-917881c"

@@ -3,19 +3,16 @@ package handler
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/ic3software/vtafarm-api/internal/capacity"
 	"github.com/ic3software/vtafarm-api/internal/resourceprofile"
-	"gorm.io/driver/postgres"
+	"github.com/ic3software/vtafarm-api/internal/testutil"
 	"gorm.io/gorm"
 )
 
@@ -37,46 +34,8 @@ func TestResourceDefaultsRejectInvalidInput(t *testing.T) {
 	}
 }
 
-// Use a disposable PostgreSQL database; each run owns a separate schema.
 func TestResourceDefaultsPersistence(t *testing.T) {
-	dsn := os.Getenv("VTAFARM_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("VTAFARM_TEST_DATABASE_URL is not set")
-	}
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sqlDB, err := db.DB()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sqlDB.Close()
-	schema := fmt.Sprintf("resource_defaults_test_%d", time.Now().UnixNano())
-	if err := db.Exec("CREATE SCHEMA " + schema).Error; err != nil {
-		t.Fatal(err)
-	}
-	defer db.Exec("DROP SCHEMA " + schema + " CASCADE")
-	parsed, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	query := parsed.Query()
-	query.Set("search_path", schema)
-	parsed.RawQuery = query.Encode()
-	scoped, err := gorm.Open(postgres.Open(parsed.String()), &gorm.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	scopedSQL, _ := scoped.DB()
-	defer scopedSQL.Close()
-	migration, err := os.ReadFile("../../migrations/000038_resource_defaults.up.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := scoped.Exec(string(migration)).Error; err != nil {
-		t.Fatal(err)
-	}
+	scoped := testutil.Postgres(t)
 
 	gin.SetMode(gin.TestMode)
 	h := &SetupHandler{db: scoped}
@@ -112,7 +71,7 @@ func TestResourceDefaultsPersistence(t *testing.T) {
 		requestTotal += resources.Requests.Memory().Value()
 		limitTotal += resources.Limits.Memory().Value()
 	}
-	if requestTotal != 272<<20 || limitTotal != 704<<20 {
+	if requestTotal != 336<<20 || limitTotal != 960<<20 {
 		t.Fatalf("factory totals = %d / %d", requestTotal, limitTotal)
 	}
 	inputs := []memoryResourceInput{
@@ -129,12 +88,17 @@ func TestResourceDefaultsPersistence(t *testing.T) {
 		return string(b)
 	}
 	request(http.MethodPut, encode(), http.StatusOK)
+	inputs = append(inputs, memoryResourceInput{Component: "trust-registry", MemoryRequest: "128Mi", MemoryLimit: "512Mi"})
+	request(http.MethodPut, encode(), http.StatusOK)
 	saved, err := resourceprofile.Load(context.Background(), scoped.Session(&gorm.Session{NewDB: true}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if saved["vta"].MemoryLimit != "1Gi" || read()["vta"].MemoryLimit != "1Gi" {
 		t.Fatal("saved defaults were not reloaded")
+	}
+	if saved["trust-registry"].MemoryRequest != "128Mi" || saved["trust-registry"].MemoryLimit != "512Mi" || read()["trust-registry"].MemoryLimit != "512Mi" {
+		t.Fatal("saved Trust Registry defaults were not reloaded")
 	}
 	if capacity.Modes(saved)[0].Components[0].MemBytes != 1<<30 {
 		t.Fatal("capacity did not use saved defaults")
