@@ -18,7 +18,7 @@ const (
 	referralGrantLabel = "trust-registry-referral"
 	// referralGrantTTL bounds that entry; the VTA's sweeper removes it. The
 	// key itself lives only in this process, for the length of one call.
-	referralGrantTTL = "1h"
+	referralGrantTTL = "15m"
 	// referralHostWait is how long to give the restarted VTA to bring its
 	// mediator session up before the edit, whose publish needs it.
 	referralHostWait = 3 * time.Minute
@@ -45,7 +45,7 @@ var newVtaClient = vta.NewEphemeral
 //
 // The farm has no standing credential at a user's VTA, and does not want one.
 // It mints a did:key for this call, grants it as an admin of the VTC's context
-// for an hour in the same stopped-VTA window pattern the registry context
+// for fifteen minutes in the same stopped-VTA window pattern the registry context
 // grant uses, logs in over HTTPS, and sends the update signed by that key. On
 // return the key is garbage; the entry expires on its own.
 //

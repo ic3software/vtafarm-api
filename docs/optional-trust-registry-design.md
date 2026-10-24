@@ -223,7 +223,7 @@ existing PVCs, or re-enroll the existing administrators.
    services, and history. The farm mints a did:key for this one operation, grants
    it as a context-scoped admin of the VTC's context in the same stopped-VTA
    window pattern as step 3 (`vta acl create --role admin --contexts <vtc>
-   --expires 1h`), logs in to the VTA over HTTPS as that key
+   --expires 15m`), logs in to the VTA over HTTPS as that key
    (`auth/challenge/0.1`, `auth/authenticate/0.2`), reads the VTA's head of the
    log (`vta/webvh/dids/get/1.0`), and sends `vta/webvh/dids/update/1.0` with the
    document plus `expectedVersionId`. The VTA signs the new entry and publishes
