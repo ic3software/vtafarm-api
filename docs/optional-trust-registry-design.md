@@ -218,10 +218,18 @@ existing PVCs, or re-enroll the existing administrators.
    Reuse successful Job receipts on retry.
 5. Set `ADMIN_DIDS` to the existing `session.VtcDid`, start the registry, and
    verify its advertised transport and write path.
-6. Append a signed update to the **existing** VTC DID history through the VTA,
-   adding the referral while preserving the DID, keys, other services, and
-   history. Publish the extended log through the existing DID host. A self-hosted
-   VTC log, if present, must also be updated using the supported install path.
+6. Append a signed update to the **existing** VTC DID history through the
+   **running** VTA, adding the referral while preserving the DID, keys, other
+   services, and history. The farm mints a did:key for this one operation, grants
+   it as a context-scoped admin of the VTC's context in the same stopped-VTA
+   window pattern as step 3 (`vta acl create --role admin --contexts <vtc>
+   --expires 15m`), logs in to the VTA over HTTPS as that key
+   (`auth/challenge/0.1`, `auth/authenticate/0.2`), reads the VTA's head of the
+   log (`vta/webvh/dids/get/1.0`), and sends `vta/webvh/dids/update/1.0` with the
+   document plus `expectedVersionId`. The VTA signs the new entry and publishes
+   it to the DID host itself, over TSP or DIDComm. The key is never stored; the
+   grant expires on its own. A self-hosted VTC log, if present, must also be
+   updated using the supported install path.
 7. Read the current VTC runtime config immediately before writing, merge only
    `[registry].did`, and restart the VTC using the existing component-config
    backup/write/start/rollback pattern. Do not render a fresh setup config over
@@ -236,17 +244,34 @@ Upstream explicitly supports changing the referral after initial mint via
 VTA-side DID editing ([setup schema][vtc-setup]). This requires a signed DID-log
 update, not a change to a locally served JSON file alone.
 
-The existing Farm referral update still uses offline `vta did-mgmt dids edit`.
-That CLI has only REST available for publishing to an external DID host. A host
-advertising only DIDComm/TSP therefore still blocks **existing-stack referral
-updates**. Headless Registry provisioning does not fix this separate path;
-it needs an authenticated online VTA edit or upstream offline transport support.
-New stacks avoid that edit by passing `registry_did` to VTC setup. Do not report
-existing-stack activation as verified until the referral publication succeeds.
+**Why the edit goes through the running VTA and not the offline CLI.** The
+offline `vta did-mgmt dids edit` holds no mediator session, so the only
+transport it can initiate toward a DID host is REST. A host provisioned through
+a VTA with a mediator, which is every Full Stack `dids` daemon, advertises only
+`TSPTransport` and `DIDCommMessaging`, so the offline command stops with
+`no transport in common … it advertises [tsp, didcomm] and this agent can
+initiate [rest]`, after it has already committed the new entry locally. The
+running VTA holds the mediator session and publishes over TSP or DIDComm; it
+also re-publishes an unconfirmed local head before applying the next update,
+which is how a stack left in that state by the earlier offline attempt heals.
+`internal/vta` is the client; `publishRegistryReferral` in
+`internal/setup/trust_registry_referral.go` is the step. It skips the grant and
+the edit when the published document already carries the referral, and sends an
+otherwise unchanged document when the VTA's head carries it but the host does
+not, which makes the VTA reconcile and publish. New stacks avoid the edit by
+passing `registry_did` to VTC setup. Do not report existing-stack activation as
+verified until the referral publication succeeds.
+
+A mediator-only host also blocks every other offline publish (`dids create`,
+`dids register`). The durable fix on the host side is one more online edit, of
+the daemon's own DID, adding `{"id":"<daemon did>#trust-tasks","type":"TrustTaskHTTPS","serviceEndpoint":"https://<dids host>/api"}`;
+the daemon's readiness check logs that exact entry, and its control plane reloads
+on publish. That is a separate change, not part of registry enablement.
 
 **Downtime:** the VTC needs a restart for the new client/syncer. Provisioning
-authorization may also need a brief VTA maintenance window: current Farm ACL
-operations use `scale to 0 -> offline Job -> restart`. Prefer compatible live
+authorization needs two brief VTA maintenance windows on an existing stack, the
+registry context grant and the referral grant, each `scale to 0 -> offline Job ->
+restart`; a retry that finds the referral already published takes neither. Prefer compatible live
 APIs where a suitable credential already exists, but do not promise zero VTA
 downtime or bypass the fjall lock. DID publication should use the live hosting
 interface. Always restart a temporarily stopped component on error. Preserve

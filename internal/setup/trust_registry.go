@@ -209,23 +209,10 @@ func (o *Orchestrator) EnableTrustRegistry(ctx context.Context, s *model.SetupSe
 	if err = o.RegistryPhase(s, "publish_referral"); err != nil {
 		return err
 	}
-	// Resolve again immediately before editing; never apply the preflight snapshot.
-	document, err = webvh.NewResolver(webvh.DefaultTimeout).ResolveDocument(ctx, s.VtcDid)
-	if err != nil {
+	// Through the running VTA, which reads its own head immediately before
+	// editing; the preflight snapshot above is never applied.
+	if err = o.publishRegistryReferral(ctx, ns, s); err != nil {
 		return err
-	}
-	updated, changed, err := RegistryReferral(document, s.VtcDid, s.TrustRegistryDid)
-	if err != nil {
-		return err
-	}
-	if changed {
-		err = o.registryStopped(ctx, ns, s, "vta", func() error {
-			_, e := o.registryJob(ctx, ns, s, "referral", s.VtaImage, "/work/vta", []string{"vta", "did-mgmt", "dids", "edit", "--did", s.VtcDid, "--document", "/config/document.json", "--no-confirm"}, []k8s.PVCMount{{Name: "vta-data", ClaimName: k8s.FSVtaName(s.ID), MountPath: "/work/vta"}}, map[string][]byte{"document.json": updated})
-			return e
-		})
-		if err != nil {
-			return err
-		}
 	}
 	if err = o.RegistryPhase(s, "configure_vtc"); err != nil {
 		return err
@@ -258,7 +245,7 @@ mv config.toml.vtafarm-registry-next config.toml`}, []k8s.PVCMount{{Name: "vtc-d
 	if err != nil {
 		return err
 	}
-	if _, changed, err = RegistryReferral(document, s.VtcDid, s.TrustRegistryDid); err != nil || changed {
+	if _, changed, err := RegistryReferral(document, s.VtcDid, s.TrustRegistryDid); err != nil || changed {
 		return errors.New("published VTC referral has not converged; retry after DID hosting is updated")
 	}
 	s.TrustRegistryState = "active"
