@@ -347,8 +347,16 @@ func (o *Orchestrator) TeardownTrustRegistryVault(ctx context.Context, userID, s
 }
 
 func (o *Orchestrator) finishRegistrySetup(ctx context.Context, s *model.SetupSession) bool {
-	if !s.TrustRegistryEnabled || s.TrustRegistryState == "active" || s.TrustRegistryState == "failed" {
+	if !s.TrustRegistryEnabled || s.TrustRegistryState == "active" {
 		return true
+	}
+	if s.TrustRegistryState == "failed" {
+		message := s.TrustRegistryError
+		if message == "" {
+			message = "Trust Registry setup failed"
+		}
+		o.markFailedAt(s.ID, "step_trust_registry", message)
+		return false
 	}
 	o.fsSetStatus(s.ID, "step_trust_registry")
 	if err := o.EnableTrustRegistry(ctx, s); err != nil {
@@ -357,11 +365,15 @@ func (o *Orchestrator) finishRegistrySetup(ctx context.Context, s *model.SetupSe
 		}
 		if saveErr := o.db.Model(s).Updates(map[string]any{"trust_registry_state": "failed", "trust_registry_error": err.Error()}).Error; saveErr != nil {
 			log.Printf("[orchestrator] registry failure for session %d could not be recorded; retaining Job", s.ID)
+			o.markFailedAt(s.ID, "step_trust_registry", "Trust Registry setup failed and its error could not be saved")
 			return false
 		}
+		s.TrustRegistryState, s.TrustRegistryError = "failed", err.Error()
 		if cleanupErr := o.CleanupFailedRegistryJobs(s); cleanupErr != nil {
 			log.Printf("[orchestrator] failed registry Job cleanup for session %d: %v", s.ID, cleanupErr)
 		}
+		o.markFailedAt(s.ID, "step_trust_registry", err.Error())
+		return false
 	}
 	return true
 }

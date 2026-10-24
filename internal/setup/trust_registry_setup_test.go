@@ -209,8 +209,14 @@ func TestHeadlessRegistryProvisioningAndRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			if fails {
-				if stored.TrustRegistryState != "failed" || !strings.Contains(stored.TrustRegistryError, "headless provisioning failed") || stored.Status != s.Status || !o.finishRegistrySetup(context.Background(), &s) {
-					t.Fatal("Registry failure was not isolated and persisted for the VTC to continue")
+				if stored.TrustRegistryState != "failed" || !strings.Contains(stored.TrustRegistryError, "headless provisioning failed") || stored.Status != s.Status || o.finishRegistrySetup(context.Background(), &s) {
+					t.Fatal("Registry failure was not persisted or did not stop session completion")
+				}
+				if err := db.First(&stored, s.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				if stored.Status != "failed" || stored.FailedStage != "step_trust_registry" || !strings.Contains(stored.ErrorMsg, "headless provisioning failed") {
+					t.Fatal("Registry failure did not surface as a failed Trust Registry setup step")
 				}
 				return
 			}

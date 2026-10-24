@@ -185,7 +185,7 @@ existing bootstrap and admin gate
   -> deploy registry and check its messaging/write-path status
   -> merge [registry].did into the VTC runtime config and restart VTC
   -> verify the published referral and finish add-on enablement
-  -> running (Registry has its own active/failed state)
+  -> running only after Registry activation succeeds
 ```
 
 Follow [upstream headless setup][tr-headless], using Registry Jobs for both setup
@@ -194,10 +194,11 @@ phases and a single offline VTA context grant. No PNM credential or offline
 headless setup plus `vta`, `secrets-vault`, `storage-fjall` and `standalone`; the VTA
 must include [the trust-registry template][vta-tr-template].
 
-A Registry setup failure is recorded independently and lets VTC setup proceed
-without a referral. It is not immediately retried at the end of that same run.
-The user can retry enablement after correcting the cause. Preserve the VTC's
-existing claim/install output; its setup now follows Registry provisioning.
+A Registry identity setup failure is recorded while VTC setup proceeds without
+a referral, so the baseline components can finish provisioning safely. The
+session then stops at the Trust Registry step and reports the Registry error;
+it must not be marked running. Preserve the VTC's existing claim/install output;
+its setup now follows Registry provisioning.
 
 ## 6. Add to an existing stack without rebuilding
 
@@ -323,8 +324,9 @@ add-on state (`disabled`, `enabling`, `active`, `failed`), resumable phase,
 timestamps, and a sanitized error. No credentials/private keys in these columns.
 For an existing stack, add-on failure must not mark the parent setup `failed`.
 For new opted-in stacks, finish the add-on attempt before returning the baseline
-stack to running. An add-on failure stays visible and retryable without failing
-the already deployed four-component stack.
+stack to running. An add-on failure marks the new setup failed at the Trust
+Registry step, while an in-place enablement failure stays visible and retryable
+without failing the already-running four-component stack.
 
 After persisting an add-on failure, remove its failed Jobs and their Pods,
 ConfigMaps, and temporary input Secrets. Keep the phase and sanitized error in
@@ -410,8 +412,9 @@ Required acceptance coverage:
   VTA-offline case without a plaintext identity-cache copy.
 - Failures/restarts at credential handoff, DID publication, config update, and
   deployment resume without duplicate contexts/DIDs or a stuck stopped VTC/VTA.
-- Add-on failure remains visible without invalidating the existing parent stack;
-  config restoration and incomplete-referral restoration are accurately reported.
+- New-stack add-on failure stops completion and displays the Registry error;
+  in-place failure remains visible without invalidating the existing parent
+  stack. Config restoration and incomplete-referral restoration are accurately reported.
 - Upgrades use a single writer; full teardown cleans only this session's registry
   resources/secrets. Capacity and concurrent-operation guards cover add-on work.
 
