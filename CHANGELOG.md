@@ -1,5 +1,19 @@
 # Changelog
 
+## [v0.15.0] - 2026-10-24
+
+### Added
+
+- Full Stack deployments can optionally provision a Trust Registry during
+  creation or enable one later, with resumable setup, explicit failure states,
+  and safe teardown behavior.
+- Trust Registry provisioning creates its identity, grants setup access,
+  publishes its referral through the VTA, configures the VTC, and verifies the
+  resulting connection.
+- Trust Registry images, resource defaults, capacity estimates, upgrades,
+  exports, and recovery are supported alongside the existing Full Stack
+  components.
+
 ## [v0.14.2] - 2026-10-21
 
 ### Changed
