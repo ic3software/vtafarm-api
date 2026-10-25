@@ -46,7 +46,7 @@ type Config struct {
 // MonitorConfig configures the token-gated /api/v1/monitor/* endpoints polled
 // by an external uptime service (UptimeRobot). Empty Token disables them.
 type MonitorConfig struct {
-	Token          string // shared secret, passed as ?token= by the poller
+	Token          string // shared secret, passed as an Authorization Bearer token by the poller
 	CPUPercent     int    // per-node CPU used/allocatable alarm threshold
 	MemPercent     int    // per-node memory used/allocatable alarm threshold
 	StoragePercent int    // per-node Longhorn disk usage alarm threshold

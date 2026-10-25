@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -45,18 +46,34 @@ func NewMonitorHandler(db *gorm.DB, k8sClient *k8s.Client, cfg MonitorConfig) *M
 
 // TokenRequired gates the monitor group. These endpoints expose internal
 // cluster state yet must be reachable without a login (the poller can't do
-// passkeys), so a shared secret in the URL is the gate. No MONITOR_TOKEN
-// configured → 404, indistinguishable from the routes not existing.
+// passkeys), so MONITOR_TOKEN is supplied as an Authorization Bearer token.
+// No MONITOR_TOKEN configured → 404, indistinguishable from the routes not
+// existing.
 func (h *MonitorHandler) TokenRequired(c *gin.Context) {
 	if h.cfg.Token == "" {
 		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
-	if subtle.ConstantTimeCompare([]byte(c.Query("token")), []byte(h.cfg.Token)) != 1 {
+	authorization := c.GetHeader("Authorization")
+	token, ok := monitorBearerToken(authorization)
+	if authorization == "" {
+		// Undocumented cutover bridge: existing pollers still send the exposed
+		// query token. Remove this fallback immediately after they move to Bearer.
+		token, ok = c.GetQuery("token")
+	}
+	if !ok || subtle.ConstantTimeCompare([]byte(token), []byte(h.cfg.Token)) != 1 {
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
 	c.Next()
+}
+
+func monitorBearerToken(header string) (string, bool) {
+	parts := strings.Fields(header)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return "", false
+	}
+	return parts[1], true
 }
 
 // Health — GET /api/v1/monitor/health. Dependency checks: DB, K8s API, Vault
