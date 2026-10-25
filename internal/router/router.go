@@ -91,7 +91,8 @@ func Setup(
 	v1 := r.Group("/api/v1")
 
 	// Monitor endpoints — polled by an external uptime service (UptimeRobot):
-	// healthy → 200, anything wrong → 503. Gated by MONITOR_TOKEN (?token=)
+	// healthy → 200, anything wrong → 503. Gated by MONITOR_TOKEN in the
+	// Authorization Bearer header
 	// since the poller can't log in; 404 until the token is configured.
 	mh := handler.NewMonitorHandler(db, k8sClient, handler.MonitorConfig{
 		Token:           cfg.Monitor.Token,
