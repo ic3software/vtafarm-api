@@ -15,11 +15,6 @@
   component states while collecting concurrent failures without fail-fast
   cancellation.
 
-### Changed
-
-- Consolidated the customer-facing status surface into VTA Farm Infra and VTA
-  Farm Platform monitors.
-
 ## [v0.15.1] - 2026-10-25
 
 ### Added
