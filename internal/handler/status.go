@@ -32,9 +32,62 @@ type StatusConfig struct {
 }
 
 type publicStatusChecks interface {
-	Farm(context.Context) error
-	VTA(context.Context) error
-	Platform(context.Context) error
+	Farm(context.Context) (farmComponentStatus, error)
+	Platform(context.Context) (platformComponentStatus, error)
+}
+
+type farmComponentStatus struct {
+	Database   string `json:"database"`
+	Kubernetes string `json:"kubernetes"`
+	Vault      string `json:"vault"`
+}
+
+func unknownFarmComponentStatus() farmComponentStatus {
+	return farmComponentStatus{
+		Database:   "unknown",
+		Kubernetes: "unknown",
+		Vault:      "unknown",
+	}
+}
+
+func (s *farmComponentStatus) set(component, status string) {
+	switch component {
+	case "database":
+		s.Database = status
+	case "kubernetes":
+		s.Kubernetes = status
+	case "vault":
+		s.Vault = status
+	}
+}
+
+type platformComponentStatus struct {
+	VTA      string `json:"vta"`
+	Mediator string `json:"mediator"`
+	DIDs     string `json:"dids"`
+	VTC      string `json:"vtc"`
+}
+
+func unknownPlatformComponentStatus() platformComponentStatus {
+	return platformComponentStatus{
+		VTA:      "unknown",
+		Mediator: "unknown",
+		DIDs:     "unknown",
+		VTC:      "unknown",
+	}
+}
+
+func (s *platformComponentStatus) set(component, status string) {
+	switch component {
+	case "vta":
+		s.VTA = status
+	case "mediator":
+		s.Mediator = status
+	case "dids":
+		s.DIDs = status
+	case "vtc":
+		s.VTC = status
+	}
 }
 
 // StatusHandler exposes customer-safe aggregate health. Detailed failures are
@@ -62,24 +115,25 @@ func NewStatusHandler(db *gorm.DB, k8sClient *k8s.Client, cfg StatusConfig) *Sta
 }
 
 func (h *StatusHandler) Farm(c *gin.Context) {
-	h.respond(c, "farm", h.checks.Farm)
-}
-
-func (h *StatusHandler) VTA(c *gin.Context) {
-	h.respond(c, "vta", h.checks.VTA)
-}
-
-func (h *StatusHandler) Platform(c *gin.Context) {
-	h.respond(c, "platform", h.checks.Platform)
-}
-
-func (h *StatusHandler) respond(c *gin.Context, component string, check func(context.Context) error) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), h.timeout)
 	defer cancel()
 
+	components, err := h.checks.Farm(ctx)
+	h.respond(c, "infra", components, err)
+}
+
+func (h *StatusHandler) Platform(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), h.timeout)
+	defer cancel()
+
+	components, err := h.checks.Platform(ctx)
+	h.respond(c, "platform", components, err)
+}
+
+func (h *StatusHandler) respond(c *gin.Context, component string, components any, err error) {
 	status := "operational"
 	code := http.StatusOK
-	if err := check(ctx); err != nil {
+	if err != nil {
 		log.Printf("public status %s unavailable: %v", component, err)
 		status, code = "unavailable", http.StatusServiceUnavailable
 	}
@@ -87,6 +141,7 @@ func (h *StatusHandler) respond(c *gin.Context, component string, check func(con
 	c.JSON(code, gin.H{
 		"status":     status,
 		"checked_at": h.now().UTC().Format(time.RFC3339),
+		"components": components,
 	})
 }
 
@@ -97,94 +152,136 @@ type livePublicStatusChecks struct {
 	http *http.Client
 }
 
-func (h *livePublicStatusChecks) Farm(ctx context.Context) error {
-	if h.db == nil {
-		return errors.New("database unavailable")
-	}
-	if h.k8s == nil {
-		return errors.New("kubernetes client unavailable")
-	}
-	if h.cfg.VaultAddr == "" {
-		return errors.New("vault not configured")
-	}
-
-	group, groupCtx := errgroup.WithContext(ctx)
-	group.Go(func() error {
-		componentCtx, cancel := context.WithTimeout(groupCtx, statusProbeTimeout)
-		defer cancel()
-		sqlDB, err := h.db.DB()
-		if err != nil {
-			return fmt.Errorf("database handle: %w", err)
-		}
-		if err := sqlDB.PingContext(componentCtx); err != nil {
-			return fmt.Errorf("database ping: %w", err)
-		}
-		return nil
-	})
-	group.Go(func() error {
-		componentCtx, cancel := context.WithTimeout(groupCtx, statusProbeTimeout)
-		defer cancel()
-		if err := h.k8s.Ping(componentCtx); err != nil {
-			return fmt.Errorf("kubernetes ping: %w", err)
-		}
-		return nil
-	})
-	group.Go(func() error {
-		componentCtx, cancel := context.WithTimeout(groupCtx, statusProbeTimeout)
-		defer cancel()
-		status, err := vault.Health(componentCtx, h.cfg.VaultAddr, h.cfg.VaultSkipVerify)
-		if err != nil {
-			return fmt.Errorf("vault health: %w", err)
-		}
-		if status != "ok" {
-			return fmt.Errorf("vault state: %s", status)
-		}
-		return nil
-	})
-	return group.Wait()
-}
-
-func (h *livePublicStatusChecks) VTA(ctx context.Context) error {
-	stack, err := h.platformStack(ctx)
-	if err != nil {
-		return err
-	}
-
-	target := strings.TrimRight(stack.PublicURL(), "/") + "/health"
-	if err := validateStatusProbeURL(target, h.cfg.ClusterDomain); err != nil {
-		return fmt.Errorf("platform VTA target: %w", err)
-	}
-	return h.probe(ctx, target)
-}
-
-func (h *livePublicStatusChecks) Platform(ctx context.Context) error {
-	stack, err := h.platformStack(ctx)
-	if err != nil {
-		return err
-	}
-
-	targets := map[string]string{
-		"mediator": "https://" + stack.MediatorFQDN() + "/mediator/v1/readyz",
-		"dids":     strings.TrimRight(stack.DidsURL(), "/") + "/health",
-		"vtc":      "https://" + stack.VtcFQDN() + "/health",
-	}
-	for component, target := range targets {
-		if err := validateStatusProbeURL(target, h.cfg.ClusterDomain); err != nil {
-			return fmt.Errorf("%s target: %w", component, err)
-		}
-	}
-
-	group, groupCtx := errgroup.WithContext(ctx)
-	for component, target := range targets {
-		component, target := component, target
-		group.Go(func() error {
-			if err := h.probe(groupCtx, target); err != nil {
-				return fmt.Errorf("%s: %w", component, err)
+func (h *livePublicStatusChecks) Farm(ctx context.Context) (farmComponentStatus, error) {
+	checks := []statusComponentCheck{
+		{component: "database", check: func(componentCtx context.Context) error {
+			if h.db == nil {
+				return errors.New("database unavailable")
 			}
+			sqlDB, err := h.db.DB()
+			if err != nil {
+				return fmt.Errorf("database handle: %w", err)
+			}
+			if err := sqlDB.PingContext(componentCtx); err != nil {
+				return fmt.Errorf("database ping: %w", err)
+			}
+			return nil
+		}},
+		{component: "kubernetes", check: func(componentCtx context.Context) error {
+			if h.k8s == nil {
+				return errors.New("kubernetes client unavailable")
+			}
+			if err := h.k8s.Ping(componentCtx); err != nil {
+				return fmt.Errorf("kubernetes ping: %w", err)
+			}
+			return nil
+		}},
+		{component: "vault", check: func(componentCtx context.Context) error {
+			if h.cfg.VaultAddr == "" {
+				return errors.New("vault not configured")
+			}
+			status, err := vault.Health(componentCtx, h.cfg.VaultAddr, h.cfg.VaultSkipVerify)
+			if err != nil {
+				return fmt.Errorf("vault health: %w", err)
+			}
+			if status != "ok" {
+				return fmt.Errorf("vault state: %s", status)
+			}
+			return nil
+		}},
+	}
+
+	components := unknownFarmComponentStatus()
+	results, err := runStatusChecks(ctx, checks)
+	for component, status := range results {
+		components.set(component, status)
+	}
+	return components, err
+}
+
+func (h *livePublicStatusChecks) Platform(ctx context.Context) (platformComponentStatus, error) {
+	components := unknownPlatformComponentStatus()
+	stack, err := h.platformStack(ctx)
+	if err != nil {
+		return components, err
+	}
+
+	targets := []statusProbeTarget{
+		{component: "vta", target: strings.TrimRight(stack.PublicURL(), "/") + "/health"},
+		{component: "mediator", target: "https://" + stack.MediatorFQDN() + "/mediator/v1/readyz"},
+		{component: "dids", target: strings.TrimRight(stack.DidsURL(), "/") + "/health"},
+		{component: "vtc", target: "https://" + stack.VtcFQDN() + "/health"},
+	}
+
+	validChecks := make([]statusComponentCheck, 0, len(targets))
+	failures := make([]error, 0, len(targets))
+	for _, probe := range targets {
+		if err := validateStatusProbeURL(probe.target, h.cfg.ClusterDomain); err != nil {
+			components.set(probe.component, "unavailable")
+			failures = append(failures, fmt.Errorf("%s target: %w", probe.component, err))
+			continue
+		}
+		target := probe.target
+		validChecks = append(validChecks, statusComponentCheck{
+			component: probe.component,
+			check: func(componentCtx context.Context) error {
+				return h.probe(componentCtx, target)
+			},
+		})
+	}
+
+	results, probeErr := runStatusChecks(ctx, validChecks)
+	for component, status := range results {
+		components.set(component, status)
+	}
+	if probeErr != nil {
+		failures = append(failures, probeErr)
+	}
+	return components, errors.Join(failures...)
+}
+
+type statusProbeTarget struct {
+	component string
+	target    string
+}
+
+type statusComponentCheck struct {
+	component string
+	check     func(context.Context) error
+}
+
+type statusComponentResult struct {
+	component string
+	err       error
+}
+
+func runStatusChecks(ctx context.Context, checks []statusComponentCheck) (map[string]string, error) {
+	results := make(chan statusComponentResult, len(checks))
+
+	var group errgroup.Group
+	for _, check := range checks {
+		check := check
+		group.Go(func() error {
+			componentCtx, cancel := context.WithTimeout(ctx, statusProbeTimeout)
+			defer cancel()
+			results <- statusComponentResult{component: check.component, err: check.check(componentCtx)}
 			return nil
 		})
 	}
-	return group.Wait()
+	_ = group.Wait()
+	close(results)
+
+	statuses := make(map[string]string, len(checks))
+	failures := make([]error, 0, len(checks))
+	for result := range results {
+		status := "operational"
+		if result.err != nil {
+			status = "unavailable"
+			failures = append(failures, fmt.Errorf("%s: %w", result.component, result.err))
+		}
+		statuses[result.component] = status
+	}
+	return statuses, errors.Join(failures...)
 }
 
 func (h *livePublicStatusChecks) platformStack(ctx context.Context) (*model.SetupSession, error) {
