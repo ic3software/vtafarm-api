@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,29 +15,61 @@ import (
 )
 
 type fakePublicStatusChecks struct {
-	farmErr     error
-	vtaErr      error
-	platformErr error
+	farmComponents     farmComponentStatus
+	farmErr            error
+	platformComponents platformComponentStatus
+	platformErr        error
 }
 
-func (f *fakePublicStatusChecks) Farm(context.Context) error     { return f.farmErr }
-func (f *fakePublicStatusChecks) VTA(context.Context) error      { return f.vtaErr }
-func (f *fakePublicStatusChecks) Platform(context.Context) error { return f.platformErr }
+func (f *fakePublicStatusChecks) Farm(context.Context) (farmComponentStatus, error) {
+	return f.farmComponents, f.farmErr
+}
+func (f *fakePublicStatusChecks) Platform(context.Context) (platformComponentStatus, error) {
+	return f.platformComponents, f.platformErr
+}
 
 func TestStatusHandlerResponses(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	fixed := time.Date(2026, 10, 24, 23, 0, 0, 0, time.FixedZone("test", -7*60*60))
 
 	tests := []struct {
-		name       string
-		path       string
-		configure  func(*fakePublicStatusChecks)
-		wantCode   int
-		wantStatus string
+		name           string
+		path           string
+		configure      func(*fakePublicStatusChecks)
+		wantCode       int
+		wantStatus     string
+		wantComponents map[string]string
 	}{
-		{name: "farm operational", path: "/farm", configure: func(*fakePublicStatusChecks) {}, wantCode: http.StatusOK, wantStatus: "operational"},
-		{name: "VTA unavailable", path: "/vta", configure: func(f *fakePublicStatusChecks) { f.vtaErr = errors.New("private failure detail") }, wantCode: http.StatusServiceUnavailable, wantStatus: "unavailable"},
-		{name: "platform unavailable", path: "/platform", configure: func(f *fakePublicStatusChecks) { f.platformErr = errors.New("private failure detail") }, wantCode: http.StatusServiceUnavailable, wantStatus: "unavailable"},
+		{
+			name: "farm operational", path: "/farm", wantCode: http.StatusOK, wantStatus: "operational",
+			configure: func(f *fakePublicStatusChecks) {
+				f.farmComponents = farmComponentStatus{Database: "operational", Kubernetes: "operational", Vault: "operational"}
+			},
+			wantComponents: map[string]string{"database": "operational", "kubernetes": "operational", "vault": "operational"},
+		},
+		{
+			name: "farm exposes sanitized component failures", path: "/farm", wantCode: http.StatusServiceUnavailable, wantStatus: "unavailable",
+			configure: func(f *fakePublicStatusChecks) {
+				f.farmComponents = farmComponentStatus{Database: "unavailable", Kubernetes: "operational", Vault: "unavailable"}
+				f.farmErr = errors.New("private failure detail")
+			},
+			wantComponents: map[string]string{"database": "unavailable", "kubernetes": "operational", "vault": "unavailable"},
+		},
+		{
+			name: "platform operational", path: "/platform", wantCode: http.StatusOK, wantStatus: "operational",
+			configure: func(f *fakePublicStatusChecks) {
+				f.platformComponents = platformComponentStatus{VTA: "operational", Mediator: "operational", DIDs: "operational", VTC: "operational"}
+			},
+			wantComponents: map[string]string{"vta": "operational", "mediator": "operational", "dids": "operational", "vtc": "operational"},
+		},
+		{
+			name: "platform exposes sanitized component failures", path: "/platform", wantCode: http.StatusServiceUnavailable, wantStatus: "unavailable",
+			configure: func(f *fakePublicStatusChecks) {
+				f.platformComponents = platformComponentStatus{VTA: "unavailable", Mediator: "unavailable", DIDs: "operational", VTC: "operational"}
+				f.platformErr = errors.New("private failure detail")
+			},
+			wantComponents: map[string]string{"vta": "unavailable", "mediator": "unavailable", "dids": "operational", "vtc": "operational"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -46,7 +79,6 @@ func TestStatusHandlerResponses(t *testing.T) {
 			h := &StatusHandler{checks: checks, timeout: time.Second, now: func() time.Time { return fixed }}
 			router := gin.New()
 			router.GET("/farm", h.Farm)
-			router.GET("/vta", h.VTA)
 			router.GET("/platform", h.Platform)
 
 			resp := httptest.NewRecorder()
@@ -61,7 +93,20 @@ func TestStatusHandlerResponses(t *testing.T) {
 			if body["status"] != tt.wantStatus || body["checked_at"] != "2026-10-25T06:00:00Z" {
 				t.Fatalf("body = %#v", body)
 			}
-			if len(body) != 2 {
+			wantFields := 2
+			if tt.wantComponents != nil {
+				wantFields = 3
+				components, ok := body["components"].(map[string]any)
+				if !ok {
+					t.Fatalf("components = %#v", body["components"])
+				}
+				for component, want := range tt.wantComponents {
+					if components[component] != want {
+						t.Errorf("components[%q] = %#v, want %q", component, components[component], want)
+					}
+				}
+			}
+			if len(body) != wantFields {
 				t.Fatalf("public response leaked extra fields: %#v", body)
 			}
 			if resp.Header().Get("Cache-Control") != "no-store" {
@@ -71,6 +116,44 @@ func TestStatusHandlerResponses(t *testing.T) {
 				t.Fatal("public response leaked the internal error")
 			}
 		})
+	}
+}
+
+func TestRunStatusChecksCollectsConcurrentFailures(t *testing.T) {
+	var arrived atomic.Int32
+	ready := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if arrived.Add(1) == 4 {
+			close(ready)
+		}
+		select {
+		case <-ready:
+		case <-r.Context().Done():
+			return
+		}
+		if r.URL.Path == "/vta" || r.URL.Path == "/mediator" {
+			http.Error(w, "down", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	checks := &livePublicStatusChecks{http: server.Client()}
+	components, err := runStatusChecks(t.Context(), []statusComponentCheck{
+		{component: "vta", check: func(ctx context.Context) error { return checks.probe(ctx, server.URL+"/vta") }},
+		{component: "mediator", check: func(ctx context.Context) error { return checks.probe(ctx, server.URL+"/mediator") }},
+		{component: "dids", check: func(ctx context.Context) error { return checks.probe(ctx, server.URL+"/dids") }},
+		{component: "vtc", check: func(ctx context.Context) error { return checks.probe(ctx, server.URL+"/vtc") }},
+	})
+	if err == nil || !strings.Contains(err.Error(), "vta:") || !strings.Contains(err.Error(), "mediator:") {
+		t.Fatalf("error = %v, want both VTA and mediator failures", err)
+	}
+	want := map[string]string{"vta": "unavailable", "mediator": "unavailable", "dids": "operational", "vtc": "operational"}
+	for component, wantStatus := range want {
+		if components[component] != wantStatus {
+			t.Errorf("components[%q] = %q, want %q", component, components[component], wantStatus)
+		}
 	}
 }
 

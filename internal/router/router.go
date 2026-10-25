@@ -94,13 +94,12 @@ func Setup(
 		VaultAddr:       cfg.Vault.Addr,
 		VaultSkipVerify: cfg.Vault.SkipVerify,
 	})
-	// Three one-minute UptimeRobot checks consume about three requests per
+	// Two one-minute UptimeRobot checks consume about two requests per
 	// minute. Thirty leaves room for retries and manual checks without letting
 	// one source continuously fan out into dependency probes.
 	status := v1.Group("/status", middleware.NoStore(), middleware.RateLimit(30, time.Minute))
 	{
 		status.GET("/farm", statusHandler.Farm)
-		status.GET("/vta", statusHandler.VTA)
 		status.GET("/platform", statusHandler.Platform)
 	}
 

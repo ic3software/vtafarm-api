@@ -92,10 +92,10 @@ components:
       description: Environment-scoped MONITOR_TOKEN for external uptime polling.
 
   schemas:
-    PublicServiceStatus:
+    PublicInfraStatus:
       type: object
       additionalProperties: false
-      required: [status, checked_at]
+      required: [status, checked_at, components]
       properties:
         status:
           type: string
@@ -103,6 +103,41 @@ components:
         checked_at:
           type: string
           format: date-time
+        components:
+          $ref: "#/components/schemas/PublicInfraComponents"
+
+    PublicInfraComponents:
+      type: object
+      additionalProperties: false
+      required: [database, kubernetes, vault]
+      properties:
+        database: { type: string, enum: [operational, unavailable, unknown] }
+        kubernetes: { type: string, enum: [operational, unavailable, unknown] }
+        vault: { type: string, enum: [operational, unavailable, unknown] }
+
+    PublicPlatformStatus:
+      type: object
+      additionalProperties: false
+      required: [status, checked_at, components]
+      properties:
+        status:
+          type: string
+          enum: [operational, unavailable]
+        checked_at:
+          type: string
+          format: date-time
+        components:
+          $ref: "#/components/schemas/PublicPlatformComponents"
+
+    PublicPlatformComponents:
+      type: object
+      additionalProperties: false
+      required: [vta, mediator, dids, vtc]
+      properties:
+        vta: { type: string, enum: [operational, unavailable, unknown] }
+        mediator: { type: string, enum: [operational, unavailable, unknown] }
+        dids: { type: string, enum: [operational, unavailable, unknown] }
+        vtc: { type: string, enum: [operational, unavailable, unknown] }
 
     TrustRegistryState:
       type: object
@@ -1059,37 +1094,12 @@ paths:
           description: VTA Farm is operational
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/PublicServiceStatus" }
+              schema: { $ref: "#/components/schemas/PublicInfraStatus" }
         "503":
-          description: VTA Farm is unavailable; the body remains generic
+          description: One or more required infrastructure components are unavailable
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/PublicServiceStatus" }
-        "429":
-          description: Shared public-status rate limit exceeded
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-
-  /api/v1/status/vta:
-    get:
-      summary: Public VTA connectivity
-      description: |
-        Checks the platform stack's VTA through its public HTTPS health
-        endpoint. The caller cannot select the target.
-      tags: [System]
-      security: []
-      responses:
-        "200":
-          description: The VTA data plane is operational
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/PublicServiceStatus" }
-        "503":
-          description: The platform VTA is unavailable
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/PublicServiceStatus" }
+              schema: { $ref: "#/components/schemas/PublicInfraStatus" }
         "429":
           description: Shared public-status rate limit exceeded
           content:
@@ -1098,25 +1108,24 @@ paths:
 
   /api/v1/status/platform:
     get:
-      summary: Public shared-platform connectivity
+      summary: Public VTA Farm Platform availability
       description: |
-        Checks the platform stack's mediator, DID hosting, and VTC through
-        their public HTTPS health endpoints. VTA connectivity is reported by
-        `/api/v1/status/vta`; the response does not identify the failing
-        component.
+        Concurrently checks the platform VTA, mediator, DID hosting, and VTC
+        through their public HTTPS health endpoints. The component map reports
+        every sanitized result without exposing targets or raw errors.
       tags: [System]
       security: []
       responses:
         "200":
-          description: All required shared-platform components are operational
+          description: All required VTA Farm Platform components are operational
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/PublicServiceStatus" }
+              schema: { $ref: "#/components/schemas/PublicPlatformStatus" }
         "503":
-          description: A required shared-platform component is unavailable
+          description: One or more required components are unavailable or could not be checked
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/PublicServiceStatus" }
+              schema: { $ref: "#/components/schemas/PublicPlatformStatus" }
         "429":
           description: Shared public-status rate limit exceeded
           content:

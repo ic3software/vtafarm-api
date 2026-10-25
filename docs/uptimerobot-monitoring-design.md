@@ -12,8 +12,8 @@ token-gated monitor endpoints in `vtafarm-api`
 Use two independent monitoring surfaces:
 
 1. **Customer status** answers only whether a customer can use VTA Farm. It
-   contains three production monitors: Farm control plane, VTA connectivity,
-   and shared platform connectivity.
+   contains two production monitors: VTA Farm infrastructure and the combined
+   VTA Farm platform.
 2. **Operator alerts** report dependencies, unhealthy workloads, capacity,
    Rancher, and staging. They notify the internal team and never appear on a
    public status page.
@@ -68,9 +68,8 @@ implementation symptom.
 
 | Public component | User question | Public name |
 | --- | --- | --- |
-| Farm control plane | Can I reach VTA Farm and perform core management operations? | `VTA Farm` |
-| VTA data plane | Can a VTA be reached through the public network path? | `VTA Connectivity` |
-| Shared platform | Can customers reach the shared platform services used by default-connected VTAs? | `Platform Connectivity` |
+| Farm infrastructure | Can I reach VTA Farm and perform core management operations? | `VTA Farm Infra` |
+| Platform | Can customers reach the platform VTA and all shared services required by it? | `VTA Farm Platform` |
 
 The following are operator signals and must not be public components:
 
@@ -90,31 +89,59 @@ because it is useful to operators.
 
 ### 4.1 Public status endpoints
 
-Add three unauthenticated, read-only endpoints:
+Add two unauthenticated, read-only endpoints:
 
 ```text
 GET /api/v1/status/farm
-GET /api/v1/status/vta
 GET /api/v1/status/platform
 ```
 
-All three use the same small response contract:
+The Infra endpoint reports one sanitized result for every required component:
 
 ```json
 {
   "status": "operational",
-  "checked_at": "2026-10-24T23:00:00Z"
+  "checked_at": "2026-10-24T23:00:00Z",
+  "components": {
+    "database": "operational",
+    "kubernetes": "operational",
+    "vault": "operational"
+  }
 }
 ```
 
-When a customer-important check fails, respond with HTTP `503` and only:
+When multiple Infra checks fail, return every result with HTTP `503`:
 
 ```json
 {
   "status": "unavailable",
-  "checked_at": "2026-10-24T23:00:00Z"
+  "checked_at": "2026-10-24T23:00:00Z",
+  "components": {
+    "database": "unavailable",
+    "kubernetes": "operational",
+    "vault": "unavailable"
+  }
 }
 ```
+
+The Platform endpoint adds one sanitized result for every required component:
+
+```json
+{
+  "status": "unavailable",
+  "checked_at": "2026-10-24T23:00:00Z",
+  "components": {
+    "vta": "unavailable",
+    "mediator": "unavailable",
+    "dids": "operational",
+    "vtc": "operational"
+  }
+}
+```
+
+All component values are `operational`, `unavailable`, or `unknown`. `unknown`
+means a shared prerequisite, such as resolving the DomainPlatform session,
+failed before the individual probes could run.
 
 Contract rules:
 
@@ -123,25 +150,25 @@ Contract rules:
 - Add `Cache-Control: no-store` and `Content-Type: application/json`.
 - Do not accept target URLs, hostnames, thresholds, or component selectors from
   the request. That avoids turning the probes into an SSRF or discovery API.
-- Do not return component-level failures, deployment state, database state, or
-  exception text.
+- Return only fixed Infra or Platform component names and sanitized states. Do
+  not return target URLs, deployment state, connection strings, or exception
+  text.
 - Run downstream probes concurrently with a fixed three-second per-probe
   timeout and an eight-second overall budget, below UptimeRobot's timeout.
 - Use public HTTPS hostnames for downstream connectivity checks, not cluster
   Services. The result must cover DNS, Cloudflare, TLS, Traefik, and the
   application listener.
-- Share a limit of 30 requests per minute per client IP across the three public
+- Share a limit of 30 requests per minute per client IP across the two public
   status endpoints. This leaves room for UptimeRobot retries and manual support
   checks without reusing the authenticated admin/user limits.
 
 #### Public status rate-limit policy
 
 The `/api/v1/status` route group applies one in-memory sliding-window limit to
-all three public endpoints:
+both public endpoints:
 
 ```text
 GET /api/v1/status/farm
-GET /api/v1/status/vta
 GET /api/v1/status/platform
 ```
 
@@ -153,7 +180,7 @@ The rules are:
   returns `503`;
 - request 31 returns HTTP `429 Too Many Requests` without running database,
   Kubernetes, Vault, VTA, or platform probes;
-- the three normal one-minute UptimeRobot monitors consume approximately three
+- the two normal one-minute UptimeRobot monitors consume approximately two
   requests per minute from a checking source, leaving headroom for retries and
   manual checks;
 - the limiter is per API replica and held in memory. It protects dependencies
@@ -170,40 +197,39 @@ forwarded headers.
 
 The inbound request already proves that the public API hostname, DNS, TLS,
 Cloudflare route, ingress, and API process are reachable. The handler should
-also perform cheap readiness checks for the dependencies required by core Farm
-management operations:
+also concurrently perform cheap readiness checks for the dependencies required
+by core Farm management operations:
 
 - database reachable;
 - Kubernetes API reachable;
 - Vault reachable, initialized, and unsealed.
 
-It returns only the generic public contract. The existing internal dependency
-endpoint remains the place to learn which dependency failed.
+Allow every probe to finish even when another fails, and return the fixed
+`database`, `kubernetes`, and `vault` states. Raw errors remain internal.
 
-#### `GET /api/v1/status/vta`
-
-Resolve the one `DomainPlatform` session, require it to be in `running` state,
-and probe its VTA through the public `/health` URL. The fixed platform VTA uses
-the same runtime and public ingress path as other VTAs without tying global
-status to a customer-owned session or requiring a second synthetic VTA.
-
-A single broken customer VTA does not make this global component fail; such
-failures belong to the internal workload alert and the affected customer's
-incident handling.
+Do not add a `cloudflare` component to the response. If DNS, Cloudflare, TLS,
+ingress, or the API process is unavailable, this endpoint cannot return any
+JSON at all; UptimeRobot's ability to reach the endpoint is therefore the edge
+status signal. A returned `cloudflare` field could only say `operational` and
+would be misleading.
 
 #### `GET /api/v1/status/platform`
 
 Resolve the one `DomainPlatform` session from the database, require it to be in
-`running` state, and probe the shared stack through its public hostnames:
+`running` state, and probe the platform VTA and shared stack through their
+public hostnames:
 
 | Component | Probe |
 | --- | --- |
+| VTA | `GET <platform-public-url>/health` |
 | Mediator | `GET https://mediator.<platform-domain>/mediator/v1/readyz` |
 | DID hosting | `GET https://dids.<platform-domain>/health` |
 | VTC | `GET https://vtc.<platform-domain>/health` |
 
-All required probes must pass. Internally log which component failed; publicly
-return only `operational` or `unavailable`.
+Launch all four probes concurrently and allow every probe to finish even when
+another fails. All required probes must pass. Internally log the aggregated
+errors; publicly return only the fixed component names and sanitized states.
+A single broken customer-owned VTA does not make this global component fail.
 
 If product semantics later permit the VTC to be unavailable without affecting
 the default VTA connection path, split it into its own public component rather
@@ -262,7 +288,7 @@ boundary:
 
 | Group | Monitors | Audience |
 | --- | --- | --- |
-| `VTA Farm` | the three production public status monitors | Customers and operators |
+| `VTA Farm` | the two production public status monitors | Customers and operators |
 | `VTI DevOps` | production dependencies, workloads, capacity, Rancher | Internal production on-call |
 | `VTI Staging` | staging dependencies, workloads, capacity, and staging surfaces | Internal development team |
 
@@ -270,9 +296,8 @@ Recommended monitor names and targets:
 
 | Monitor | Target | Public page | Notifications |
 | --- | --- | --- | --- |
-| `VTA Farm` | `/api/v1/status/farm` | Yes | customer-impact on-call |
-| `VTA Connectivity` | `/api/v1/status/vta` | Yes | customer-impact on-call |
-| `Platform Connectivity` | `/api/v1/status/platform` | Yes | customer-impact on-call |
+| `VTA Farm Infra` | `/api/v1/status/farm` | Yes | customer-impact on-call |
+| `VTA Farm Platform` | `/api/v1/status/platform` | Yes | customer-impact on-call |
 | `Prod Dependencies` | `/api/v1/monitor/health` + Bearer | No | internal production |
 | `Prod Workloads` | `/api/v1/monitor/workloads` + Bearer | No | internal production |
 | `Prod Capacity` | `/api/v1/monitor/capacity` + Bearer | No | internal production |
@@ -283,7 +308,7 @@ Recommended monitor names and targets:
 
 Add tags such as `audience:public`, `audience:internal`, `env:prod`, and
 `env:staging` for filtering and audits. Tags are helpful metadata, but the
-public page should still be an explicit allowlist of the three monitor IDs.
+public page should still be an explicit allowlist of the two monitor IDs.
 
 ### 5.2 `status.ic3.dev`
 
@@ -291,7 +316,7 @@ Keep the existing Murmurations selection unchanged unless that product owner
 wants a separate redesign. For VTA Farm:
 
 1. Remove the selected `VTA Farm` group from the status page.
-2. Add exactly the three new public monitor IDs.
+2. Add exactly the two public monitor IDs.
 3. Disable **Show the monitor URL** as defense in depth. UptimeRobot supports
    hiding monitored URLs; see its official
    [status page overview](https://uptimerobot.com/status-page/).
@@ -357,19 +382,19 @@ The temporary compatibility window should be measured in minutes, not releases.
 
 ### Phase 2: add customer-status probes
 
-1. Implement the three `/api/v1/status/*` endpoints with generic responses,
-   fixed targets, concurrency, and bounded timeouts.
+1. Implement the two `/api/v1/status/*` endpoints with fixed targets,
+   sanitized responses, concurrency, and bounded timeouts.
 2. Add handler, middleware, timeout, and response-redaction tests.
-3. Create the three query-free UptimeRobot monitors.
+3. Create the two query-free UptimeRobot monitors.
 4. Exercise one controlled failure for each monitor and confirm both down and
    recovery behavior.
-5. Replace the public page's group selection with the explicit three-monitor
+5. Replace the public page's group selection with the explicit two-monitor
    allowlist.
 
 ### Phase 3: reorganize internal monitors
 
 Move production diagnostics to `VTI DevOps`, staging diagnostics to
-`VTI Staging`, and keep only the three customer signals in `VTA Farm`. Prefer
+`VTI Staging`, and keep only the two customer signals in `VTA Farm`. Prefer
 moving and renaming the existing monitors over deleting them so incident
 history is retained.
 
@@ -383,17 +408,18 @@ history is retained.
 - The current token succeeds only in the `Authorization` header and fails in a
   query parameter.
 - Production and staging use different tokens.
-- Public endpoint bodies contain no infrastructure identifiers or raw errors.
+- Public endpoint bodies contain only the documented fixed component names and
+  sanitized states, with no targets, identifiers, or raw errors.
 - Both public status pages have been audited.
 
 ### Customer behavior
 
-- `status.ic3.dev` shows only `VTA Farm`, `VTA Connectivity`, and
-  `Platform Connectivity` for this product.
-- A Farm dependency failure makes only the customer-relevant Farm component
+- `status.ic3.dev` shows only `VTA Farm Infra` and `VTA Farm Platform` for this
+  product.
+- A Farm dependency failure makes only `VTA Farm Infra`
   unavailable and also triggers the detailed internal dependency alert.
-- A platform VTA ingress or health failure changes `VTA Connectivity`.
-- A required shared-stack failure changes `Platform Connectivity`.
+- A platform VTA ingress, health, or required shared-stack failure changes
+  `VTA Farm Platform`; its endpoint reports every sanitized component state.
 - A staging failure, isolated pod restart, Rancher outage, or capacity warning
   does not appear on the public page.
 
