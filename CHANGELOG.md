@@ -1,5 +1,19 @@
 # Changelog
 
+## [v0.15.1] - 2026-10-25
+
+### Added
+
+- Public, rate-limited status endpoints report VTA Farm control-plane, VTA,
+  and shared-platform availability without exposing dependency or
+  infrastructure details.
+
+### Changed
+
+- Internal monitoring endpoints accept `MONITOR_TOKEN` through Authorization
+  Bearer authentication so credentials do not need to appear in monitored
+  URLs; query-token authentication remains temporarily available for cutover.
+
 ## [v0.15.0] - 2026-10-24
 
 ### Added
