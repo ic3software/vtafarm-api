@@ -92,6 +92,18 @@ components:
       description: Environment-scoped MONITOR_TOKEN for external uptime polling.
 
   schemas:
+    PublicServiceStatus:
+      type: object
+      additionalProperties: false
+      required: [status, checked_at]
+      properties:
+        status:
+          type: string
+          enum: [operational, unavailable]
+        checked_at:
+          type: string
+          format: date-time
+
     TrustRegistryState:
       type: object
       required: [enabled, state, phase, image, did, error]
@@ -1030,6 +1042,86 @@ paths:
                   status:
                     type: string
                     example: ok
+
+  # ── Public customer status ─────────────────────────────────────────────────
+
+  /api/v1/status/farm:
+    get:
+      summary: Public VTA Farm control-plane availability
+      description: |
+        Reports whether the public API and the dependencies required for core
+        Farm management operations are available. The response deliberately
+        contains no dependency or infrastructure detail.
+      tags: [System]
+      security: []
+      responses:
+        "200":
+          description: VTA Farm is operational
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicServiceStatus" }
+        "503":
+          description: VTA Farm is unavailable; the body remains generic
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicServiceStatus" }
+        "429":
+          description: Shared public-status rate limit exceeded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/status/vta:
+    get:
+      summary: Public VTA connectivity
+      description: |
+        Checks the platform stack's VTA through its public HTTPS health
+        endpoint. The caller cannot select the target.
+      tags: [System]
+      security: []
+      responses:
+        "200":
+          description: The VTA data plane is operational
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicServiceStatus" }
+        "503":
+          description: The platform VTA is unavailable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicServiceStatus" }
+        "429":
+          description: Shared public-status rate limit exceeded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/status/platform:
+    get:
+      summary: Public shared-platform connectivity
+      description: |
+        Checks the platform stack's mediator, DID hosting, and VTC through
+        their public HTTPS health endpoints. VTA connectivity is reported by
+        `/api/v1/status/vta`; the response does not identify the failing
+        component.
+      tags: [System]
+      security: []
+      responses:
+        "200":
+          description: All required shared-platform components are operational
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicServiceStatus" }
+        "503":
+          description: A required shared-platform component is unavailable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicServiceStatus" }
+        "429":
+          description: Shared public-status rate limit exceeded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   # ── Monitor (external uptime poller) ────────────────────────────────────────
   # Polled by UptimeRobot: healthy → 200, anything wrong → 503 with the same

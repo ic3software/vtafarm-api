@@ -89,6 +89,20 @@ func Setup(
 	}
 
 	v1 := r.Group("/api/v1")
+	statusHandler := handler.NewStatusHandler(db, k8sClient, handler.StatusConfig{
+		ClusterDomain:   cfg.ClusterDomain,
+		VaultAddr:       cfg.Vault.Addr,
+		VaultSkipVerify: cfg.Vault.SkipVerify,
+	})
+	// Three one-minute UptimeRobot checks consume about three requests per
+	// minute. Thirty leaves room for retries and manual checks without letting
+	// one source continuously fan out into dependency probes.
+	status := v1.Group("/status", middleware.NoStore(), middleware.RateLimit(30, time.Minute))
+	{
+		status.GET("/farm", statusHandler.Farm)
+		status.GET("/vta", statusHandler.VTA)
+		status.GET("/platform", statusHandler.Platform)
+	}
 
 	// Monitor endpoints — polled by an external uptime service (UptimeRobot):
 	// healthy → 200, anything wrong → 503. Gated by MONITOR_TOKEN in the

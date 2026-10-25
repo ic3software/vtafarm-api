@@ -125,14 +125,46 @@ Contract rules:
   the request. That avoids turning the probes into an SSRF or discovery API.
 - Do not return component-level failures, deployment state, database state, or
   exception text.
-- Run downstream probes concurrently with a short per-probe timeout and an
-  overall budget below UptimeRobot's timeout. A three-second component timeout
-  and eight-second overall budget are suitable starting values.
+- Run downstream probes concurrently with a fixed three-second per-probe
+  timeout and an eight-second overall budget, below UptimeRobot's timeout.
 - Use public HTTPS hostnames for downstream connectivity checks, not cluster
   Services. The result must cover DNS, Cloudflare, TLS, Traefik, and the
   application listener.
-- Apply a rate limit generous enough for UptimeRobot regions and manual support
-  checks. Do not reuse the authenticated admin/user limits.
+- Share a limit of 30 requests per minute per client IP across the three public
+  status endpoints. This leaves room for UptimeRobot retries and manual support
+  checks without reusing the authenticated admin/user limits.
+
+#### Public status rate-limit policy
+
+The `/api/v1/status` route group applies one in-memory sliding-window limit to
+all three public endpoints:
+
+```text
+GET /api/v1/status/farm
+GET /api/v1/status/vta
+GET /api/v1/status/platform
+```
+
+The rules are:
+
+- one shared bucket per client IP, not 30 requests per endpoint;
+- at most 30 requests in the preceding 60 seconds;
+- every request reaching the route group counts, including a check that later
+  returns `503`;
+- request 31 returns HTTP `429 Too Many Requests` without running database,
+  Kubernetes, Vault, VTA, or platform probes;
+- the three normal one-minute UptimeRobot monitors consume approximately three
+  requests per minute from a checking source, leaving headroom for retries and
+  manual checks;
+- the limiter is per API replica and held in memory. It protects dependencies
+  from one noisy source but is not a distributed DDoS control; Cloudflare edge
+  rate limiting remains the appropriate additional control for distributed
+  traffic.
+
+Client identity comes from Gin's `ClientIP()`, so production proxy trust and
+forwarded-IP handling must preserve the real Cloudflare/visitor address rather
+than collapsing every request to the ingress address or trusting arbitrary
+forwarded headers.
 
 #### `GET /api/v1/status/farm`
 
@@ -150,23 +182,14 @@ endpoint remains the place to learn which dependency failed.
 
 #### `GET /api/v1/status/vta`
 
-Probe one dedicated production canary VTA through its public `/health` URL.
-The canary must:
+Resolve the one `DomainPlatform` session, require it to be in `running` state,
+and probe its VTA through the public `/health` URL. The fixed platform VTA uses
+the same runtime and public ingress path as other VTAs without tying global
+status to a customer-owned session or requiring a second synthetic VTA.
 
-- be owned by a system account, never a customer;
-- use the same ingress, certificate, image family, Vault integration, and
-  storage path as an ordinary production VTA;
-- have a stable hostname and lifecycle independent of load tests or the VTA
-  pool;
-- be excluded from automatic cleanup;
-- be identified by server configuration, for example
-  `STATUS_CANARY_VTA_NAME`, rather than a caller-supplied parameter.
-
-The endpoint fails when the configured canary is missing, not in `running`
-state, its public `/health` request times out, or the response does not satisfy
-the VTA health contract. A single broken customer VTA does not make this global
-component fail; such failures belong to the internal workload alert and the
-affected customer's incident handling.
+A single broken customer VTA does not make this global component fail; such
+failures belong to the internal workload alert and the affected customer's
+incident handling.
 
 #### `GET /api/v1/status/platform`
 
@@ -175,7 +198,6 @@ Resolve the one `DomainPlatform` session from the database, require it to be in
 
 | Component | Probe |
 | --- | --- |
-| Platform VTA | `GET https://vta.<platform-domain>/health` |
 | Mediator | `GET https://mediator.<platform-domain>/mediator/v1/readyz` |
 | DID hosting | `GET https://dids.<platform-domain>/health` |
 | VTC | `GET https://vtc.<platform-domain>/health` |
@@ -335,14 +357,13 @@ The temporary compatibility window should be measured in minutes, not releases.
 
 ### Phase 2: add customer-status probes
 
-1. Provision the dedicated canary VTA and protect it from cleanup.
-2. Implement the three `/api/v1/status/*` endpoints with generic responses,
+1. Implement the three `/api/v1/status/*` endpoints with generic responses,
    fixed targets, concurrency, and bounded timeouts.
-3. Add handler, middleware, timeout, and response-redaction tests.
-4. Create the three query-free UptimeRobot monitors.
-5. Exercise one controlled failure for each monitor and confirm both down and
+2. Add handler, middleware, timeout, and response-redaction tests.
+3. Create the three query-free UptimeRobot monitors.
+4. Exercise one controlled failure for each monitor and confirm both down and
    recovery behavior.
-6. Replace the public page's group selection with the explicit three-monitor
+5. Replace the public page's group selection with the explicit three-monitor
    allowlist.
 
 ### Phase 3: reorganize internal monitors
@@ -371,7 +392,7 @@ history is retained.
   `Platform Connectivity` for this product.
 - A Farm dependency failure makes only the customer-relevant Farm component
   unavailable and also triggers the detailed internal dependency alert.
-- A canary VTA ingress or health failure changes `VTA Connectivity`.
+- A platform VTA ingress or health failure changes `VTA Connectivity`.
 - A required shared-stack failure changes `Platform Connectivity`.
 - A staging failure, isolated pod restart, Rancher outage, or capacity warning
   does not appear on the public page.
