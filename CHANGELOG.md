@@ -1,5 +1,25 @@
 # Changelog
 
+## [v0.15.2] - 2026-10-25
+
+### Breaking
+
+- Removed the standalone `/api/v1/status/vta` endpoint; VTA availability is
+  now included in `/api/v1/status/platform`.
+
+### Added
+
+- Public infrastructure status reports sanitized Database, Kubernetes, and
+  Vault component states in one response.
+- Public platform status reports sanitized VTA, Mediator, DID Hosting, and VTC
+  component states while collecting concurrent failures without fail-fast
+  cancellation.
+
+### Changed
+
+- Consolidated the customer-facing status surface into VTA Farm Infra and VTA
+  Farm Platform monitors.
+
 ## [v0.15.1] - 2026-10-25
 
 ### Added
