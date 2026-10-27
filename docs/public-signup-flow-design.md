@@ -13,7 +13,7 @@ The public signup page should not generate a permanent page or assign a VTA
 when somebody merely visits the Farm. It should create a short-lived claim only
 after the visitor selects **Get my VTA**.
 
-That action atomically reserves one waiting VTA from the explicitly enabled
+That action atomically reserves one waiting VTA from the enabled
 public-signup inventory and returns its existing VTI claim trigger link. The browser keeps an
 opaque access token in `sessionStorage`; the token is not placed in the URL.
 The same `/get-started` route therefore looks personal to that browser tab
@@ -86,12 +86,13 @@ for the purpose when the administrator enters the requested count, VTA image,
 and label. The default is `admin_station` so a batch cannot become public by
 accident.
 
-Creating a `public_signup` batch does not expose it immediately. After enough
-members reach `pool_waiting`, an administrator explicitly enables it. More than
-one public-signup batch may be enabled. This makes replenishment additive: an
-administrator can create another 20 VTAs while the original batch of 60 is
-still serving visitors, then enable the new batch without changing frontend
-configuration or interrupting allocation.
+Creating a `public_signup` batch enables public allocation immediately. Members
+still cannot be allocated until they reach `pool_waiting`, so the explicit
+purpose selection is sufficient intent and no second enable click is required.
+More than one public-signup batch may be enabled. This makes replenishment
+additive: an administrator can create another 20 VTAs while the original batch
+of 60 is still serving visitors, without changing frontend configuration or
+interrupting allocation.
 
 Disabling a batch stops new reservations but does not invalidate claims already
 issued from it. Those claims can finish or lapse normally. Existing pool cleanup
@@ -219,12 +220,12 @@ explicit admin action rather than automatically creating billable resources.
    cluster cannot eventually run all 60 VTAs.
 3. Watch the batch counters while its members are prepared. A requested size of
    60 does not mean 60 are immediately available.
-4. Enable public signup after the first intended tranche is available. The
-   public allocator can use only members in **Available**.
+4. The batch starts enabled, but the public allocator can use only members in
+   **Available**; preparing members are never offered.
 5. Monitor **Available**, **Reserved**, and **Handed out**. When **Available**
    reaches the warning threshold, create and prepare a replenishment batch.
-6. Enable the replenishment batch when ready. Both batches feed the same public
-   endpoint until the older inventory drains.
+6. The replenishment batch joins the same public endpoint automatically as its
+   members become ready, while the older inventory drains first.
 7. Pause a batch to stop new allocations, or clean it only after the existing
    unused-inventory safety rules allow cleanup.
 
@@ -348,11 +349,10 @@ POST   /api/v1/admin/pool-batches/:id/public-signup
 DELETE /api/v1/admin/pool-batches/:id/public-signup
 ```
 
-The Admin Pool UI shows which batch is public, its waiting count, and an
-explicit enable/disable control. Only batches whose purpose is `public_signup`
-may be enabled through these routes. Enabling another batch adds its available
-members to the same logical public inventory; it does not replace or disable an
-existing batch.
+The Admin Pool UI shows which batch is public, its waiting count, and a
+pause/resume control. Only batches whose purpose is `public_signup` may use
+these routes. Resuming another batch adds its available members to the same
+logical public inventory; it does not replace or disable an existing batch.
 
 ## 6. Frontend Structure
 
@@ -367,18 +367,22 @@ or controller rather than in the marketing home component. Reuse:
 Do not reuse the admin `PoolClaim` response directly because it exposes fields
 that the public contract intentionally omits.
 
-Add public runtime configuration to `/config.js` and the Helm chart:
+The public claim response reads the running platform stack's `vtc_did` and VTC
+URL from `setup_sessions` and exposes them as `platform_vtc` after release.
+This is environment-specific state, not frontend configuration: development,
+staging, and production must each lead to their own platform VTC.
+
+Add only the external community-support link to public runtime configuration in
+`/config.js` and the Helm chart:
 
 ```text
-PUBLIC_SIGNUP_VTC_URL
-PUBLIC_SIGNUP_VTC_DID
 PUBLIC_SIGNUP_DISCORD_URL
 ```
 
-These values are public content, not secrets. Render the configured VTC DID as
-the QR payload in the Farm client so step 5 can stay on the same onboarding
-page. Also link to the VTC site as the authoritative fallback. Never ship a
-placeholder Discord invitation such as `discord.gg/TODO`.
+Render `platform_vtc.did` as the QR payload in the Farm client so step 5 can
+stay on the same onboarding page, and link `platform_vtc.url` as the
+authoritative fallback. The Discord URL is public content, not a secret. Never
+ship a placeholder invitation such as `discord.gg/TODO`.
 
 ## 7. Abuse, Privacy, and Failure Handling
 
@@ -429,7 +433,8 @@ and the distinction helps support diagnose an empty pool.
 2. Add reservation persistence, resume, polling, expiry, replacement, and
    terminal states.
 3. Reuse the Keyring QR/deep-link UI and add the FPDev VTC/Discord steps.
-4. Add runtime configuration and responsive/accessibility coverage.
+4. Return the running platform VTC's public DID and URL, then add Discord
+   runtime configuration and responsive/accessibility coverage.
 
 ### Phase 3: Operations and rollout
 
@@ -437,14 +442,14 @@ and the distinction helps support diagnose an empty pool.
 2. Create and enable a small canary `public_signup` batch, then complete one desktop-plus-phone and one
    phone-only claim.
 3. Verify the exact production VTC DID and Discord invitation.
-4. Enable the intended public batch, observe lapse/claim/failure rates, then
-   increase inventory.
+4. Observe lapse/claim/failure rates on the enabled canary, then increase
+   inventory.
 
 ## 9. Acceptance Criteria
 
 - Merely visiting or refreshing public pages does not reserve a VTA.
-- Creating a batch of 60 public-signup VTAs makes at most the prepared and
-  explicitly enabled members allocatable; its Admin counters reconcile every
+- Creating a batch of 60 public-signup VTAs makes at most the prepared members
+  allocatable; its Admin counters reconcile every
   member into one inventory category.
 - Enabling a replenishment batch adds inventory without changing frontend
   configuration or interrupting existing claims.

@@ -17,9 +17,10 @@ import (
 )
 
 var (
-	ErrConflict = errors.New("pool state changed or session is protected")
-	ErrEmpty    = errors.New("no waiting VTA is available in this batch")
-	ErrCapacity = errors.New("pool inventory limit reached")
+	ErrConflict       = errors.New("pool state changed or session is protected")
+	ErrEmpty          = errors.New("no waiting VTA is available in this batch")
+	ErrCapacity       = errors.New("pool inventory limit reached")
+	ErrPublicDisabled = errors.New("public signup has no enabled pool")
 )
 
 type CapacityError struct {
@@ -41,13 +42,13 @@ func lock(tx *gorm.DB) error {
 }
 
 type Admission struct {
-	AdminID            uint
-	Key, Digest, Label string
-	Count              int
-	Capacity           int
-	Session            model.SetupSession
-	MemoryRequest      string
-	MemoryLimit        string
+	AdminID                     uint
+	Key, Digest, Label, Purpose string
+	Count                       int
+	Capacity                    int
+	Session                     model.SetupSession
+	MemoryRequest               string
+	MemoryLimit                 string
 }
 
 type AdmissionResult struct {
@@ -68,8 +69,14 @@ func LookupBatch(ctx context.Context, db *gorm.DB, adminID uint, key, digest str
 // Admit creates real users and setup sessions. pool_sessions only groups those
 // sessions; it does not duplicate their ownership, infrastructure, or status.
 func Admit(ctx context.Context, db *gorm.DB, input Admission) (*AdmissionResult, error) {
+	if input.Purpose == "" {
+		input.Purpose = model.PoolPurposeAdminStation
+	}
 	if input.Count < 1 || input.Key == "" || len(input.Key) > 128 || input.Session.VtaImage == "" {
 		return nil, errors.New("invalid pool admission")
+	}
+	if input.Purpose != model.PoolPurposeAdminStation && input.Purpose != model.PoolPurposePublicSignup {
+		return nil, errors.New("invalid pool purpose")
 	}
 	result := &AdmissionResult{}
 	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -109,11 +116,15 @@ func admitBatchRow(ctx context.Context, tx *gorm.DB, input Admission) (*model.Po
 			JOIN setup_sessions s ON s.id = ps.session_id
 			WHERE s.status <> 'running'
 		)
-		INSERT INTO pool_batches (created_by, label, requested_count, idempotency_key, request_digest)
-		SELECT ?, ?, ?, ?, ? FROM reserved
+		INSERT INTO pool_batches (
+			created_by, label, purpose, requested_count, public_signup_enabled_at,
+			idempotency_key, request_digest
+		)
+		SELECT ?, ?, ?, ?, CASE WHEN ? = ? THEN clock_timestamp() END, ?, ? FROM reserved
 		WHERE ? <= GREATEST(? - reserved.count, 0)
 		ON CONFLICT (created_by, idempotency_key) DO NOTHING
-		RETURNING *`, input.AdminID, input.Label, input.Count, input.Key, input.Digest, input.Count, input.Capacity).
+		RETURNING *`, input.AdminID, input.Label, input.Purpose, input.Count,
+		input.Purpose, model.PoolPurposePublicSignup, input.Key, input.Digest, input.Count, input.Capacity).
 		Scan(&inserted).Error
 	if err != nil {
 		return nil, false, err
@@ -133,6 +144,98 @@ func admitBatchRow(ctx context.Context, tx *gorm.DB, input Admission) (*model.Po
 		return nil, false, err
 	}
 	return nil, false, &CapacityError{Available: max(input.Capacity-reserved, 0)}
+}
+
+type Addition struct {
+	AdminID       uint
+	BatchID       uint
+	Key, Digest   string
+	Count         int
+	Capacity      int
+	Session       model.SetupSession
+	MemoryRequest string
+	MemoryLimit   string
+}
+
+type AdditionResult struct {
+	Batch    *model.PoolBatch
+	Sessions []model.SetupSession
+	Created  bool
+}
+
+func lookupAddition(ctx context.Context, db *gorm.DB, adminID uint, key, digest string, batchID uint) (*model.PoolBatchAddition, error) {
+	var addition model.PoolBatchAddition
+	err := db.WithContext(ctx).Where("created_by = ? AND idempotency_key = ?", adminID, key).First(&addition).Error
+	if err == nil && (addition.RequestDigest != digest || addition.BatchID != batchID) {
+		return nil, ErrConflict
+	}
+	return &addition, err
+}
+
+// AddInventory appends real users and setup sessions to an existing batch.
+// The immutable addition row makes retries safe while requested_count remains
+// the cumulative amount requested for the operator-facing pool.
+func AddInventory(ctx context.Context, db *gorm.DB, input Addition) (*AdditionResult, error) {
+	if input.BatchID == 0 || input.Count < 1 || input.Key == "" || len(input.Key) > 128 || input.Session.VtaImage == "" {
+		return nil, errors.New("invalid pool addition")
+	}
+	result := &AdditionResult{}
+	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lock(tx); err != nil {
+			return err
+		}
+		if _, err := lookupAddition(ctx, tx, input.AdminID, input.Key, input.Digest, input.BatchID); err == nil {
+			var batch model.PoolBatch
+			if err := tx.First(&batch, input.BatchID).Error; err != nil {
+				return err
+			}
+			result.Batch = &batch
+			return nil
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+
+		var batch model.PoolBatch
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&batch, input.BatchID).Error; err != nil {
+			return err
+		}
+		if batch.CleanupRequestedAt != nil {
+			return ErrConflict
+		}
+		reserved, err := nonRunningSessionCount(tx)
+		if err != nil {
+			return err
+		}
+		if input.Count > max(input.Capacity-reserved, 0) {
+			return &CapacityError{Available: max(input.Capacity-reserved, 0)}
+		}
+
+		addition := model.PoolBatchAddition{
+			BatchID: input.BatchID, CreatedBy: input.AdminID, RequestedCount: input.Count,
+			IdempotencyKey: input.Key, RequestDigest: input.Digest,
+		}
+		if err := tx.Create(&addition).Error; err != nil {
+			return err
+		}
+		users, err := createUsers(tx, input.Count)
+		if err != nil {
+			return err
+		}
+		sessions, err := createSetupSessions(tx, users, input.Session)
+		if err != nil {
+			return err
+		}
+		if err := createPoolMembershipsAndResources(tx, batch.ID, sessions, input.MemoryRequest, input.MemoryLimit); err != nil {
+			return err
+		}
+		if err := tx.Model(&batch).Update("requested_count", gorm.Expr("requested_count + ?", input.Count)).Error; err != nil {
+			return err
+		}
+		batch.RequestedCount += input.Count
+		result.Batch, result.Sessions, result.Created = &batch, sessions, true
+		return nil
+	})
+	return result, err
 }
 
 func nonRunningSessionCount(tx *gorm.DB) (int, error) {
@@ -333,6 +436,123 @@ func Reserve(ctx context.Context, db *gorm.DB, batchID uint) (*model.MobileConne
 		return ErrEmpty
 	})
 	return result, err
+}
+
+// ReservePublic idempotently reserves one waiting VTA from the enabled public
+// signup inventory. The caller supplies only the digest of its browser
+// capability; the plaintext token never reaches persistence.
+func ReservePublic(ctx context.Context, db *gorm.DB, accessDigest []byte) (*model.MobileConnection, bool, error) {
+	if len(accessDigest) != 32 {
+		return nil, false, errors.New("invalid public claim capability digest")
+	}
+	var result *model.MobileConnection
+	created := false
+	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lock(tx); err != nil {
+			return err
+		}
+		var existing model.MobileConnection
+		lookup := tx.Where("public_access_digest = ?", accessDigest).First(&existing)
+		if lookup.Error == nil {
+			result = &existing
+			return nil
+		}
+		if !errors.Is(lookup.Error, gorm.ErrRecordNotFound) {
+			return lookup.Error
+		}
+		var enabled int64
+		if err := tx.Model(&model.PoolBatch{}).
+			Where("purpose = ? AND public_signup_enabled_at IS NOT NULL", model.PoolPurposePublicSignup).
+			Count(&enabled).Error; err != nil {
+			return err
+		}
+		if enabled == 0 {
+			return ErrPublicDisabled
+		}
+
+		var candidates []model.SetupSession
+		if err := tx.Table("setup_sessions s").
+			Select("s.*").
+			Joins("JOIN pool_sessions ps ON ps.session_id = s.id").
+			Joins("JOIN pool_batches pb ON pb.id = ps.batch_id").
+			Where("pb.purpose = ? AND pb.public_signup_enabled_at IS NOT NULL", model.PoolPurposePublicSignup).
+			Where("s.status = ? AND s.admin_did = ''", model.StatusPoolWaiting).
+			Where(`NOT EXISTS (
+				SELECT 1 FROM mobile_connections mc
+				WHERE mc.session_id = s.id
+				  AND (
+					(mc.status = 'open' AND mc.expires_at > clock_timestamp())
+					OR (mc.status = 'claimed' AND mc.confirm_by > clock_timestamp())
+					OR mc.status IN ('confirmed', 'provisioning')
+				  )
+			)`).
+			Order("pb.public_signup_enabled_at, pb.id, s.id").Find(&candidates).Error; err != nil {
+			return err
+		}
+		for i := range candidates {
+			var session model.SetupSession
+			query := tx.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).First(&session, candidates[i].ID)
+			if query.Error != nil {
+				if errors.Is(query.Error, gorm.ErrRecordNotFound) {
+					continue
+				}
+				return query.Error
+			}
+			if session.Status != model.StatusPoolWaiting || session.AdminDid != "" {
+				continue
+			}
+			mobile, err := connection.ChangePool(ctx, tx, session.ID)
+			if err != nil {
+				if errors.Is(err, connection.ErrConflict) || errors.Is(err, connection.ErrCooldown) {
+					continue
+				}
+				return err
+			}
+			if err := tx.Model(mobile).Update("public_access_digest", append([]byte(nil), accessDigest...)).Error; err != nil {
+				return err
+			}
+			mobile.PublicAccessDigest = append([]byte(nil), accessDigest...)
+			result, created = mobile, true
+			return nil
+		}
+		return ErrEmpty
+	})
+	return result, created, err
+}
+
+func SetPublicSignup(ctx context.Context, db *gorm.DB, batchID uint, enabled bool) (*model.PoolBatch, error) {
+	var batch model.PoolBatch
+	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lock(tx); err != nil {
+			return err
+		}
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&batch, batchID).Error; err != nil {
+			return err
+		}
+		if batch.Purpose != model.PoolPurposePublicSignup || batch.CleanupRequestedAt != nil {
+			return ErrConflict
+		}
+		if enabled {
+			if batch.PublicSignupEnabledAt != nil {
+				return nil
+			}
+			now, err := connection.Now(tx)
+			if err != nil {
+				return err
+			}
+			if err := tx.Model(&batch).Update("public_signup_enabled_at", now).Error; err != nil {
+				return err
+			}
+			batch.PublicSignupEnabledAt = &now
+			return nil
+		}
+		if err := tx.Model(&batch).Update("public_signup_enabled_at", nil).Error; err != nil {
+			return err
+		}
+		batch.PublicSignupEnabledAt = nil
+		return nil
+	})
+	return &batch, err
 }
 
 func Confirm(ctx context.Context, db *gorm.DB, requestID string) (*model.MobileConnection, error) {

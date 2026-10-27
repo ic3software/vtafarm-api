@@ -36,7 +36,9 @@ func RateLimit(max int, window time.Duration) gin.HandlerFunc {
 		if len(recent) >= max {
 			hits[ip] = recent
 			mu.Unlock()
-			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "too many requests — try again later"})
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+				"error": "too many requests — try again later", "reason": "rate_limited",
+			})
 			return
 		}
 		hits[ip] = append(recent, now)

@@ -115,6 +115,29 @@ func TestAdmitStoresOnlyBatchMembership(t *testing.T) {
 	}
 }
 
+func TestAdmitPublicSignupStartsEnabled(t *testing.T) {
+	db := poolDatabase(t)
+	admin := model.Admin{UniqueId: "public-auto"}
+	if err := db.Create(&admin).Error; err != nil {
+		t.Fatal(err)
+	}
+	result, err := Admit(context.Background(), db, Admission{
+		AdminID: admin.ID, Key: "public-auto", Digest: "public-auto", Label: "Public", Purpose: model.PoolPurposePublicSignup,
+		Count: 1, Capacity: 1,
+		Session: model.SetupSession{
+			Mode: model.ModeVtaOnly, Domain: "example.com", Subdomain: "vta-",
+			VtaImage: "example/vta:test", DidHostingServerURL: "https://dids.example.com",
+		},
+		MemoryRequest: "32Mi", MemoryLimit: "64Mi",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Batch.PublicSignupEnabledAt == nil {
+		t.Fatal("public signup batch was created paused")
+	}
+}
+
 func TestAdmitUsesDashboardCapacity(t *testing.T) {
 	db := poolDatabase(t)
 	if _, _, err := admission(t, db, 48, 47); !errors.Is(err, ErrCapacity) {
@@ -519,6 +542,180 @@ func TestReserveDoesNotReuseActiveClaim(t *testing.T) {
 	}
 	if first.SessionID == second.SessionID {
 		t.Fatalf("two active claims used session %d", first.SessionID)
+	}
+}
+
+func TestReservePublicIsExclusiveAndIdempotent(t *testing.T) {
+	db := poolDatabase(t)
+	batch, _, err := admission(t, db, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(batch).Update("purpose", model.PoolPurposePublicSignup).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SetPublicSignup(context.Background(), db, batch.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.SetupSession{}).
+		Where("id IN (SELECT session_id FROM pool_sessions WHERE batch_id = ?)", batch.ID).
+		Updates(map[string]any{"status": model.StatusPoolWaiting, "vta_did": "did:webvh:example.com:test"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	digestA := make([]byte, 32)
+	digestB := make([]byte, 32)
+	digestA[0], digestB[0] = 1, 2
+	type reservation struct {
+		claim   *model.MobileConnection
+		created bool
+		err     error
+	}
+	start := make(chan struct{})
+	results := make(chan reservation, 2)
+	for _, digest := range [][]byte{digestA, digestB} {
+		go func(capability []byte) {
+			<-start
+			claim, created, err := ReservePublic(context.Background(), db, capability)
+			results <- reservation{claim: claim, created: created, err: err}
+		}(digest)
+	}
+	close(start)
+	first, second := <-results, <-results
+	if first.err != nil || !first.created || second.err != nil || !second.created {
+		t.Fatalf("concurrent ReservePublic() = %+v and %+v", first, second)
+	}
+	if second.claim.SessionID == first.claim.SessionID {
+		t.Fatalf("distinct public claims used session %d", first.claim.SessionID)
+	}
+	replayed, created, err := ReservePublic(context.Background(), db, digestA)
+	if err != nil || created {
+		t.Fatalf("ReservePublic(replay) = %+v, %v, %v", replayed, created, err)
+	}
+	if string(replayed.PublicAccessDigest) != string(digestA) {
+		t.Fatalf("replayed digest = %x, want %x", replayed.PublicAccessDigest, digestA)
+	}
+	if _, err := SetPublicSignup(context.Background(), db, batch.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	replayed, created, err = ReservePublic(context.Background(), db, digestA)
+	if err != nil || created {
+		t.Fatalf("ReservePublic(replay after pause) = %+v, %v, %v", replayed, created, err)
+	}
+}
+
+func TestReservePublicRequiresEnabledPublicBatch(t *testing.T) {
+	db := poolDatabase(t)
+	batch, _, err := admission(t, db, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.SetupSession{}).
+		Where("id IN (SELECT session_id FROM pool_sessions WHERE batch_id = ?)", batch.ID).
+		Updates(map[string]any{"status": model.StatusPoolWaiting, "vta_did": "did:webvh:example.com:test"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	digest := make([]byte, 32)
+	if _, _, err := ReservePublic(context.Background(), db, digest); !errors.Is(err, ErrPublicDisabled) {
+		t.Fatalf("ReservePublic(admin batch) error = %v, want ErrPublicDisabled", err)
+	}
+	if err := db.Model(batch).Update("purpose", model.PoolPurposePublicSignup).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ReservePublic(context.Background(), db, digest); !errors.Is(err, ErrPublicDisabled) {
+		t.Fatalf("ReservePublic(paused batch) error = %v, want ErrPublicDisabled", err)
+	}
+	if _, err := SetPublicSignup(context.Background(), db, batch.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ReservePublic(context.Background(), db, digest); err != nil {
+		t.Fatalf("ReservePublic(enabled batch) error = %v", err)
+	}
+}
+
+func TestReservePublicConcurrentReplayCreatesOneClaim(t *testing.T) {
+	db := poolDatabase(t)
+	batch, _, err := admission(t, db, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(batch).Update("purpose", model.PoolPurposePublicSignup).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SetPublicSignup(context.Background(), db, batch.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.SetupSession{}).
+		Where("id IN (SELECT session_id FROM pool_sessions WHERE batch_id = ?)", batch.ID).
+		Updates(map[string]any{"status": model.StatusPoolWaiting, "vta_did": "did:webvh:example.com:test"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	digest := make([]byte, 32)
+	digest[0] = 9
+	type result struct {
+		claim   *model.MobileConnection
+		created bool
+		err     error
+	}
+	start := make(chan struct{})
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			<-start
+			claim, created, err := ReservePublic(context.Background(), db, digest)
+			results <- result{claim: claim, created: created, err: err}
+		}()
+	}
+	close(start)
+	first, second := <-results, <-results
+	if first.err != nil || second.err != nil || first.claim.ID != second.claim.ID {
+		t.Fatalf("concurrent replay = %+v and %+v", first, second)
+	}
+	if first.created == second.created {
+		t.Fatalf("created flags = %v and %v, want exactly one true", first.created, second.created)
+	}
+	var claims int64
+	if err := db.Model(&model.MobileConnection{}).Count(&claims).Error; err != nil {
+		t.Fatal(err)
+	}
+	if claims != 1 {
+		t.Fatalf("mobile connections = %d, want 1", claims)
+	}
+}
+
+func TestAddInventoryGrowsBatchIdempotently(t *testing.T) {
+	db := poolDatabase(t)
+	batch, _, err := admission(t, db, 1, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var admin model.Admin
+	if err := db.First(&admin, "unique_id = ?", "pool-admin").Error; err != nil {
+		t.Fatal(err)
+	}
+	input := Addition{
+		AdminID: admin.ID, BatchID: batch.ID, Key: "add-two", Digest: "add-two-digest",
+		Count: 2, Capacity: 3,
+		Session: model.SetupSession{
+			Mode: model.ModeVtaOnly, Domain: "example.com", Subdomain: "vta-",
+			VtaImage: "example/vta:test", DidHostingServerURL: "https://dids.example.com",
+		},
+		MemoryRequest: "32Mi", MemoryLimit: "64Mi",
+	}
+	added, err := AddInventory(context.Background(), db, input)
+	if err != nil || !added.Created || len(added.Sessions) != 2 || added.Batch.RequestedCount != 3 {
+		t.Fatalf("AddInventory() = %+v, %v", added, err)
+	}
+	replayed, err := AddInventory(context.Background(), db, input)
+	if err != nil || replayed.Created || replayed.Batch.RequestedCount != 3 {
+		t.Fatalf("AddInventory(replay) = %+v, %v", replayed, err)
+	}
+	var memberships int64
+	if err := db.Model(&model.PoolSession{}).Where("batch_id = ?", batch.ID).Count(&memberships).Error; err != nil {
+		t.Fatal(err)
+	}
+	if memberships != 3 {
+		t.Fatalf("memberships = %d, want 3", memberships)
 	}
 }
 

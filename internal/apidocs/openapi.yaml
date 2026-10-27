@@ -313,7 +313,11 @@ components:
         running: { type: integer }
         failed: { type: integer }
         deleting: { type: integer }
-      required: [total, creating, waiting, claiming, activating, running, failed, deleting]
+        available: { type: integer, description: Prepared, unclaimed VTAs with no active reservation. }
+        reserved: { type: integer, description: VTAs with an active public or admin claim. }
+        handed_out: { type: integer, description: Confirmed VTAs that are activating or running. }
+        failed_unclaimed: { type: integer, description: Failed VTAs that were never handed out. }
+      required: [total, creating, waiting, claiming, activating, running, failed, deleting, available, reserved, handed_out, failed_unclaimed]
 
     PoolSession:
       type: object
@@ -338,14 +342,19 @@ components:
       properties:
         id: { type: integer }
         label: { type: string }
+        purpose: { type: string, enum: [admin_station, public_signup] }
         requested_count: { type: integer }
         vta_image: { type: string }
+        public_signup_enabled_at:
+          type: string
+          format: date-time
+          description: Present only while a public-signup pool is accepting public reservations.
         created_at: { type: string, format: date-time }
         counts: { $ref: "#/components/schemas/PoolCounts" }
         sessions:
           type: array
           items: { $ref: "#/components/schemas/PoolSession" }
-      required: [id, label, requested_count, created_at, counts]
+      required: [id, label, purpose, requested_count, created_at, counts]
 
     PoolClaim:
       type: object
@@ -357,6 +366,42 @@ components:
         server_time: { type: string, format: date-time }
         connection: { $ref: "#/components/schemas/MobileConnection" }
       required: [batch_id, session_id, vta_name, enabled, server_time, connection]
+
+    PublicMobileConnection:
+      type: object
+      description: Public-safe claim state. Internal session, batch, user, and candidate DID fields are never exposed.
+      properties:
+        request_id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [open, claimed, confirmed, provisioning, released, rejected, lapsed, failed]
+        vta_did:
+          type: string
+          description: Present only after the VTA has been released to Keyring.
+        expires_at: { type: string, format: date-time }
+        confirm_by: { type: string, format: date-time }
+        trigger_link: { type: string, format: uri }
+        claim_check: { type: string, pattern: '^[A-Z2-7]{6}$' }
+        error: { type: string }
+      required: [request_id, status, expires_at]
+
+    PublicPoolClaim:
+      type: object
+      properties:
+        server_time: { type: string, format: date-time }
+        connection: { $ref: "#/components/schemas/PublicMobileConnection" }
+        platform_vtc:
+          $ref: "#/components/schemas/PublicVTC"
+          description: Present after release when this Farm's platform VTC is running.
+      required: [server_time, connection]
+
+    PublicVTC:
+      type: object
+      description: Public identity and landing page of this Farm environment's platform VTC.
+      properties:
+        did: { type: string }
+        url: { type: string, format: uri }
+      required: [did, url]
 
     RateLimited:
       type: object
@@ -1853,6 +1898,132 @@ paths:
         "503":
           description: Kubernetes is not configured
 
+  /api/v1/public/pool-claims:
+    post:
+      summary: Reserve one VTA from enabled public-signup inventory
+      description: |
+        Atomically assigns a different prepared VTA to each concurrent caller.
+        Repeating the request with the same browser capability returns the same
+        claim. The plaintext capability is never stored by the server.
+      tags: [Public]
+      parameters:
+        - in: header
+          name: X-VTA-Claim-Token
+          required: true
+          description: Exactly 32 random bytes encoded as unpadded base64url. Keep this capability private.
+          schema: { type: string, minLength: 43, maxLength: 43 }
+      responses:
+        "201":
+          description: A prepared VTA was reserved
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicPoolClaim" }
+        "200":
+          description: Idempotent replay of the claim created with this capability
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicPoolClaim" }
+        "409":
+          description: No VTA is currently available in an enabled public-signup pool
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: Public reservation rate limit exceeded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: No public-signup pool is enabled or VTA claim support is unavailable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/public/pool-claims/{request_id}:
+    get:
+      summary: Poll a public VTA claim
+      tags: [Public]
+      parameters:
+        - in: path
+          name: request_id
+          required: true
+          schema: { type: string, format: uuid }
+        - in: header
+          name: X-VTA-Claim-Token
+          required: true
+          schema: { type: string, minLength: 43, maxLength: 43 }
+      responses:
+        "200":
+          description: Current public-safe claim state
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicPoolClaim" }
+        "404":
+          description: Claim absent or capability does not match
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/public/pool-claims/{request_id}/confirm:
+    post:
+      summary: Confirm matching Keyring comparison codes
+      tags: [Public]
+      parameters:
+        - in: path
+          name: request_id
+          required: true
+          schema: { type: string, format: uuid }
+        - in: header
+          name: X-VTA-Claim-Token
+          required: true
+          schema: { type: string, minLength: 43, maxLength: 43 }
+      responses:
+        "200":
+          description: Claim confirmed and activation queued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicPoolClaim" }
+        "404":
+          description: Claim absent or capability does not match
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Claim is not confirmable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/public/pool-claims/{request_id}/reject:
+    post:
+      summary: Cancel an open public QR or reject a mismatched claim
+      tags: [Public]
+      parameters:
+        - in: path
+          name: request_id
+          required: true
+          schema: { type: string, format: uuid }
+        - in: header
+          name: X-VTA-Claim-Token
+          required: true
+          schema: { type: string, minLength: 43, maxLength: 43 }
+      responses:
+        "200":
+          description: Claim cancelled or rejected; an untouched VTA returns to inventory
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicPoolClaim" }
+        "404":
+          description: Claim absent or capability does not match
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Claim can no longer be rejected
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/v1/admin/pool-batches:
     get:
       summary: List pooled VTA batches
@@ -1902,6 +2073,11 @@ paths:
                 label: { type: string, minLength: 1, maxLength: 120 }
                 count: { type: integer, minimum: 1 }
                 vta_image: { type: string, minLength: 1 }
+                purpose:
+                  type: string
+                  enum: [admin_station, public_signup]
+                  default: admin_station
+                  description: Public-signup batches start enabled; only prepared members are allocatable. They can be paused after creation.
               required: [label, count, vta_image]
       responses:
         "201":
@@ -1995,6 +2171,98 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "409":
           description: At least one member is still preparing, claimed, active, or no longer cleanable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/pool-batches/{id}/inventory:
+    post:
+      summary: Add prepared VTA inventory to an existing batch
+      description: Uses the batch's existing image and infrastructure settings. Capacity is rechecked atomically and requested_count becomes the cumulative requested inventory.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, minimum: 1 }
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                count: { type: integer, minimum: 1 }
+              required: [count]
+      responses:
+        "201":
+          description: Additional inventory admitted and queued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PoolBatch" }
+        "200":
+          description: Idempotent replay of an accepted addition
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PoolBatch" }
+        "409":
+          description: Batch is being cleaned or the idempotency key conflicts
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: Requested addition exceeds current capacity
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/pool-batches/{id}/public-signup:
+    post:
+      summary: Enable a public-signup pool
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: Public allocation enabled
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PoolBatch" }
+        "409":
+          description: Batch is not an active public-signup batch
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      summary: Pause a public-signup pool
+      description: Existing claims continue; only new public allocations stop.
+      tags: [Admin]
+      security:
+        - CookieAuthAdmin: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: New public allocations paused
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PoolBatch" }
+        "409":
+          description: Batch is not an active public-signup batch
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
