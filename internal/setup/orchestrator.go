@@ -619,6 +619,10 @@ func (o *Orchestrator) publishPoolDID(ctx context.Context, sessionID uint) error
 	if o.didHosting == nil || s.VtaDid == "" || s.VtaDidLog == "" {
 		return fmt.Errorf("pool DID publication is not configured or its log is missing")
 	}
+	didLog := normalizeVtaDidLog(s.VtaDidLog)
+	if didLog == "" {
+		return fmt.Errorf("pool DID log is malformed")
+	}
 	dh, err := o.didHosting.For(s.DidHostingControlURL, s.DIDHostingDid)
 	if err != nil {
 		return err
@@ -627,14 +631,16 @@ func (o *Orchestrator) publishPoolDID(ctx context.Context, sessionID uint) error
 	// Resolving the exact self-certifying DID validates a prior successful
 	// publication. Never overwrite a different document after a conflict.
 	if err := resolver.ResolveDID(ctx, s.VtaDid); err != nil {
-		if err := dh.RegisterDid(ctx, VtaDidPath(s.VtaName), s.VtaDidLog); err != nil {
+		if err := dh.RegisterDid(ctx, VtaDidPath(s.VtaName), didLog); err != nil {
 			return err
 		}
 		if err := resolver.ResolveDID(ctx, s.VtaDid); err != nil {
 			return err
 		}
 	}
-	return o.db.WithContext(ctx).Model(&s).Where("status <> 'deleting'").Updates(map[string]any{"status": model.StatusPoolPrepared, "error_msg": "", "failed_stage": ""}).Error
+	return o.db.WithContext(ctx).Model(&s).Where("status <> 'deleting'").Updates(map[string]any{
+		"status": model.StatusPoolPrepared, "error_msg": "", "failed_stage": "", "vta_did_log": didLog,
+	}).Error
 }
 
 func (o *Orchestrator) isPoolSession(ctx context.Context, sessionID uint) (bool, error) {
