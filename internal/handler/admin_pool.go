@@ -50,8 +50,8 @@ func NewPoolHandler(
 	return h
 }
 
-func (h *PoolHandler) Start(ctx context.Context) {
-	h.runner.Start(ctx)
+func (h *PoolHandler) Start(ctx context.Context, reconcileExisting bool) {
+	h.runner.Start(ctx, reconcileExisting)
 }
 
 type createPoolBatchRequest struct {

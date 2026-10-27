@@ -89,10 +89,10 @@ func main() {
 	}
 
 	// Resuming assumes this process is the only one reading these rows — untrue
-	// against the shared dev database. Both resumes gate together; they are the
-	// same hazard.
+	// against the shared dev database. These recovery paths gate together; they
+	// are the same hazard.
 	if !cfg.OrchestratorResume {
-		log.Printf("ORCHESTRATOR_RESUME=false — interrupted sessions and upgrades will not be re-attached")
+		log.Printf("ORCHESTRATOR_RESUME=false — interrupted sessions, pools, and upgrades will not be re-attached")
 	}
 
 	workerCtx, stopWorkers := context.WithCancel(context.Background())

@@ -34,9 +34,12 @@ func NewRunner(
 	return &Runner{db: db, prepare: prepare, build: build, cleanup: cleanup, queue: make(chan uint, 256)}
 }
 
-func (r *Runner) Start(ctx context.Context) {
+func (r *Runner) Start(ctx context.Context, reconcileExisting bool) {
 	for range workerCount {
 		go r.runWorker(ctx)
+	}
+	if !reconcileExisting {
+		return
 	}
 	go func() {
 		ticker := time.NewTicker(reconcileInterval)

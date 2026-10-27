@@ -43,7 +43,7 @@ See `.env.example` for all options. Key ones:
 | `DB_HOST` | `localhost` | The `make forward-db` tunnel to the shared dev database |
 | `DB_NAME` | `vtafarm` | |
 | `JWT_SECRET` | `change-me-in-production` | HS256 signing secret — identical across the team, since they share one set of accounts |
-| `ORCHESTRATOR_RESUME` | `true` | Re-attach interrupted sessions/upgrades at startup. Crash recovery, so production keeps the default; local `.env` sets `false` so that N developers' APIs don't all resume the same rows |
+| `ORCHESTRATOR_RESUME` | `true` | Re-attach interrupted sessions/pools/upgrades at startup. Crash recovery, so production keeps the default; local `.env` sets `false` so that N developers' APIs don't all resume the same rows |
 | `KUBECONFIG` | `~/.kube/config` | Leave empty; auto-detected |
 | `K8S_NAMESPACE_PREFIX` | `vtafarm-user` | Per-user namespace prefix |
 | `DID_HOSTING_DID` / `DID_HOSTING_PRIVATE_KEY` | — | vtafarm-api's **own** keypair (`make gen-keypair`) for the DID-hosting control API, enrolled in a daemon's ACL with `role=admin`. Not anything a daemon issued, so one keypair serves every daemon it is enrolled in. There are deliberately no DID-hosting **URLs** here — see "Shared infrastructure comes from the platform stack" below |

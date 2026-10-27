@@ -25,7 +25,7 @@ type Config struct {
 	// domains' certificates. The same one in every environment — see
 	// DefaultACMEIssuer for why there is no staging variant to pick between.
 	ACMEClusterIssuer string
-	// OrchestratorResume re-attaches interrupted sessions and upgrades at startup.
+	// OrchestratorResume re-attaches interrupted sessions, pools, and upgrades at startup.
 	// Crash recovery, so it defaults to true; false only against the shared dev
 	// database, where every API would resume the same rows.
 	// See docs/shared-dev-database.md.

@@ -159,7 +159,7 @@ func Setup(
 	mobile := handler.NewMobileConnectionHandler(db, orch, sh.KickAdditionalMobile, cfg.VTAClaim, trustTask.Enabled())
 	dashH := handler.NewDashboardHandler(db, k8sClient)
 	poolH := handler.NewPoolHandler(db, sh, dashH, mobile)
-	poolH.Start(workerCtx)
+	poolH.Start(workerCtx, cfg.OrchestratorResume)
 	publicClaims := v1.Group("/public/pool-claims", middleware.NoStore())
 	publicClaims.POST("", middleware.RateLimit(50, time.Hour), poolH.CreatePublicClaim)
 	publicClaims.GET("/:request_id", middleware.RateLimit(120, time.Minute), poolH.GetPublicClaim)
