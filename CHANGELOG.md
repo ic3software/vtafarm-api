@@ -1,5 +1,27 @@
 # Changelog
 
+## [v0.16.0] - 2026-10-27
+
+### Added
+
+- Capability-token-protected public endpoints reserve, inspect, confirm, and
+  reject claims from enabled public-signup VTA pools without requiring a Farm
+  account.
+- Administrators can create and pause public-signup pools, monitor public
+  inventory states, and add capacity to an existing pool with idempotent
+  admission and preparation.
+- Startup recovery resumes interrupted pool preparation alongside sessions and
+  upgrades.
+
+### Changed
+
+- Updated Trust Tasks Go dependencies.
+
+### Fixed
+
+- VTA DID logs are validated and stripped of merged command diagnostics before
+  publication to DID Hosting.
+
 ## [v0.15.2] - 2026-10-25
 
 ### Breaking
