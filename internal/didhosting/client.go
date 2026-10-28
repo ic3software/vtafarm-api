@@ -26,8 +26,8 @@ const (
 
 	didRegisterType = "https://trusttasks.org/spec/did-management/did/register/0.1"
 	didDeleteType   = "https://trusttasks.org/spec/did-management/did/delete/0.1"
-	aclGrantType    = "https://trusttasks.org/spec/acl/grant/0.1"
-	aclRevokeType   = "https://trusttasks.org/spec/acl/revoke/0.1"
+	aclGrantType    = "https://trusttasks.org/spec/acl/grant/0.2"
+	aclRevokeType   = "https://trusttasks.org/spec/acl/revoke/0.2"
 
 	maxTrustTaskResponseBytes = trusttaskclient.MaxResponseBytes
 )
@@ -129,7 +129,13 @@ func (c *Client) RegisterDid(ctx context.Context, path, didLog string) error {
 // CreateAcl grants an ACL entry. acl/grant is idempotent when the subject
 // already has the same role, so no legacy conflict special case is required.
 func (c *Client) CreateAcl(ctx context.Context, did, role, label string) error {
-	entry := map[string]any{"subject": did, "role": role}
+	entry := map[string]any{
+		"subject":      did,
+		"role":         role,
+		"act":          map[string]string{"scope": "all"},
+		"keys":         map[string]string{"scope": "none"},
+		"capabilities": map[string]string{"scope": "ceiling"},
+	}
 	if label != "" {
 		entry["label"] = label
 	}
@@ -142,7 +148,10 @@ func (c *Client) CreateAcl(ctx context.Context, did, role, label string) error {
 
 // DeleteAcl revokes the complete ACL entry.
 func (c *Client) DeleteAcl(ctx context.Context, did string) error {
-	_, err := c.call(ctx, aclRevokeType, map[string]any{"subject": did})
+	_, err := c.call(ctx, aclRevokeType, map[string]any{
+		"subject":    did,
+		"revocation": map[string]string{"kind": "entry"},
+	})
 	if err != nil {
 		return fmt.Errorf("revoke ACL entry: %w", err)
 	}

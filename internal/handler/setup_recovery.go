@@ -32,25 +32,29 @@ func recoveryForStage(mode, stage string) (deploymentRecovery, bool) {
 		return deploymentRecovery{Stage: stage}, true
 	}
 	if mode != model.ModeFullStack || !slices.Contains([]string{
-		"deploy_dids", "deploy_mediator", "deploy_vta", "deploy_vtc",
+		"deploy_dids", "deploy_mediator", "deploy_vta", "deploy_vtc", "step_trust_registry",
 	}, stage) {
 		return deploymentRecovery{}, false
 	}
 	return deploymentRecovery{Stage: stage}, true
 }
 
-func recoveryComponentsForMode(mode string) []string {
+func recoveryComponentsForSession(mode string, trustRegistryEnabled bool) []string {
 	if mode == model.ModeVtaOnly {
 		return []string{"vta"}
 	}
 	if mode == model.ModeFullStack {
-		return []string{"vta", "mediator", "dids", "vtc"}
+		components := []string{"vta", "mediator", "dids", "vtc"}
+		if trustRegistryEnabled {
+			components = append(components, "trust-registry")
+		}
+		return components
 	}
 	return nil
 }
 
-func validateRecoveryComponents(mode string, components []componentImage) error {
-	required := recoveryComponentsForMode(mode)
+func validateRecoveryComponents(mode string, trustRegistryEnabled bool, components []componentImage) error {
+	required := recoveryComponentsForSession(mode, trustRegistryEnabled)
 	if len(required) == 0 {
 		return fmt.Errorf("mode %s cannot be recovered", mode)
 	}
@@ -95,6 +99,8 @@ func (h *SetupHandler) recoveryImageClient(component string) *ghcr.Client {
 		return h.didsGhcr
 	case "vtc":
 		return h.vtcGhcr
+	case "trust-registry":
+		return h.trustRegistryGhcr
 	default:
 		return nil
 	}
@@ -130,10 +136,10 @@ func (h *SetupHandler) recoverSession(c *gin.Context, session *model.SetupSessio
 
 	recovery, ok := recoveryForStage(session.Mode, session.FailureStage())
 	if !ok {
-		c.JSON(http.StatusConflict, gin.H{"error": "only sessions failed at a recoverable deploy stage can be recovered"})
+		c.JSON(http.StatusConflict, gin.H{"error": "session did not fail at a recoverable setup stage"})
 		return
 	}
-	if err := validateRecoveryComponents(session.Mode, req.Components); err != nil {
+	if err := validateRecoveryComponents(session.Mode, session.TrustRegistryEnabled, req.Components); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -142,7 +148,11 @@ func (h *SetupHandler) recoverSession(c *gin.Context, session *model.SetupSessio
 		// Keeping a component on its persisted image is valid even when that old
 		// tag has since fallen out of the registry listing. Only replacements
 		// need to prove that the registry currently serves them.
-		if session.ComponentImage(ci.Component) == ci.Image {
+		currentImage := session.ComponentImage(ci.Component)
+		if ci.Component == "trust-registry" {
+			currentImage = session.TrustRegistryImage
+		}
+		if currentImage == ci.Image {
 			continue
 		}
 		client := h.recoveryImageClient(ci.Component)
@@ -175,6 +185,10 @@ func (h *SetupHandler) recoverSession(c *gin.Context, session *model.SetupSessio
 			conflictMessage = "session failure stage changed; reload before recovering"
 			return errRecoveryConflict
 		}
+		if err := validateRecoveryComponents(locked.Mode, locked.TrustRegistryEnabled, req.Components); err != nil {
+			conflictMessage = "session component set changed; reload before recovering"
+			return errRecoveryConflict
+		}
 
 		var activeUpgrades int64
 		if err := tx.Model(&model.UpgradeTask{}).
@@ -193,6 +207,10 @@ func (h *SetupHandler) recoverSession(c *gin.Context, session *model.SetupSessio
 			"error_msg":    "",
 			"failed_stage": "",
 			"updated_at":   time.Now(),
+		}
+		if lockedRecovery.Stage == "step_trust_registry" {
+			updates["trust_registry_state"] = "enabling"
+			updates["trust_registry_error"] = ""
 		}
 		for _, ci := range req.Components {
 			updates[model.UpgradeImageColumn(ci.Component)] = ci.Image

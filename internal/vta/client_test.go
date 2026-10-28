@@ -47,6 +47,7 @@ type fakeVTA struct {
 	token   string
 	log     string
 	updates []map[string]json.RawMessage
+	types   []string
 	refuse  *TaskError
 	// domainsRefusals is how many domains probes to refuse before answering,
 	// the shape of a VTA whose mediator session is not up yet.
@@ -72,6 +73,7 @@ func (f *fakeVTA) handler() http.HandlerFunc {
 		if r.Header.Get("Trust-Task") != doc.Type {
 			f.t.Errorf("Trust-Task header %q does not name the document type %q", r.Header.Get("Trust-Task"), doc.Type)
 		}
+		f.types = append(f.types, doc.Type)
 		bearer := r.Header.Get("Authorization")
 		login := doc.Type == challengeType || doc.Type == authenticateType
 		if login && bearer != "" {
@@ -198,7 +200,7 @@ func (f *fakeVTA) writeRefusal(w http.ResponseWriter, request *trusttaskclient.D
 		"inResponseTo": map[string]any{"id": request.ID, "typeUri": request.Type},
 		"details":      details,
 	})
-	reply := trusttaskclient.Document{ID: "urn:uuid:err", Type: errorType, ThreadID: request.ID, Issuer: f.self.did, Recipient: f.client.did, IssuedAt: time.Now().UTC().Format(time.RFC3339), Payload: body}
+	reply := trusttaskclient.Document{ID: "urn:uuid:err", Type: "https://trusttasks.org/spec/trust-task-error/0.6", ThreadID: request.ID, Issuer: f.self.did, Recipient: f.client.did, IssuedAt: time.Now().UTC().Format(time.RFC3339), Payload: body}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(refusal.Status)
 	_ = json.NewEncoder(w).Encode(reply)
@@ -233,6 +235,9 @@ func TestLoginReadAndUpdateOverOneEndpoint(t *testing.T) {
 	}
 	if err := client.Login(ctx); err != nil {
 		t.Fatal(err)
+	}
+	if len(fake.types) != 2 || fake.types[1] != "https://trusttasks.org/spec/auth/authenticate/0.3" {
+		t.Fatalf("login task types = %v", fake.types)
 	}
 	if client.token != "jwt-for-"+fake.client.did {
 		t.Fatalf("token %q", client.token)

@@ -42,8 +42,19 @@ type Resolver struct {
 // NewResolver constructs a resolver with normal TLS verification, no
 // redirects, public-address-only dialing, and bounded response/time limits.
 func NewResolver(timeout time.Duration) *Resolver {
+	return NewResolverWithIPLookup(timeout, net.DefaultResolver.LookupIPAddr)
+}
+
+// NewResolverWithIPLookup constructs a resolver using lookup for both the
+// public-address check and the outbound connection. Callers that already use
+// propagation-aware DNS can avoid a stale host-level negative cache without
+// weakening the resolver's public-address restriction.
+func NewResolverWithIPLookup(timeout time.Duration, lookup func(context.Context, string) ([]net.IPAddr, error)) *Resolver {
 	if timeout <= 0 {
 		timeout = DefaultTimeout
+	}
+	if lookup == nil {
+		lookup = net.DefaultResolver.LookupIPAddr
 	}
 	dialer := &net.Dialer{Timeout: timeout}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
@@ -53,7 +64,7 @@ func NewResolver(timeout time.Duration) *Resolver {
 		if err != nil {
 			return nil, err
 		}
-		addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		addresses, err := lookup(ctx, host)
 		if err != nil {
 			return nil, err
 		}
@@ -74,7 +85,7 @@ func NewResolver(timeout time.Duration) *Resolver {
 				return http.ErrUseLastResponse
 			},
 		},
-		lookupIP:         net.DefaultResolver.LookupIPAddr,
+		lookupIP:         lookup,
 		maxResponseBytes: DefaultMaxResponseBytes,
 		now:              time.Now,
 		clockSkew:        didresolver.DefaultClockSkew,
@@ -120,7 +131,7 @@ func (r *Resolver) ResolveDocument(ctx context.Context, did string) ([]byte, err
 	}
 	addresses, err := r.lookupIP(ctx, host)
 	if err != nil {
-		return nil, errors.New("DID host DNS lookup failed")
+		return nil, fmt.Errorf("DID host DNS lookup failed: %w", err)
 	}
 	if len(addresses) == 0 {
 		return nil, errors.New("DID host has no addresses")

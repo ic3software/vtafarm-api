@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -63,6 +64,53 @@ func verifyTask(t *testing.T, doc *trustTask, signer testIdentity) {
 	}
 	if !ed25519.Verify(publicKey, message, signature) {
 		t.Fatal("request proof did not verify")
+	}
+}
+
+func signedTaskServer(t *testing.T, clientIdentity, serverIdentity testIdentity, received *trustTask) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != trustTaskEndpoint || r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(received); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		verifyTask(t, received, clientIdentity)
+
+		reply := trustTask{
+			ID:        "reply-id",
+			Type:      received.Type + "#response",
+			ThreadID:  received.ID,
+			Issuer:    serverIdentity.did,
+			Recipient: clientIdentity.did,
+			IssuedAt:  time.Now().UTC().Format(time.RFC3339),
+			Payload:   json.RawMessage(`{}`),
+		}
+		if err := signTrustTask(&reply, serverIdentity.kid, serverIdentity.private, reply.IssuedAt); err != nil {
+			t.Errorf("sign response: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(reply)
+	}))
+}
+
+func requireJSON(t *testing.T, got json.RawMessage, want string) {
+	t.Helper()
+	var gotValue, wantValue any
+	if err := json.Unmarshal(got, &gotValue); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if err := json.Unmarshal([]byte(want), &wantValue); err != nil {
+		t.Fatalf("decode expected payload: %v", err)
+	}
+	if !reflect.DeepEqual(gotValue, wantValue) {
+		t.Fatalf("payload = %#v, want %#v", gotValue, wantValue)
 	}
 }
 
@@ -149,4 +197,56 @@ func TestRegisterDidRejectsUnsignedResponse(t *testing.T) {
 	if err := client.RegisterDid(context.Background(), "agent-vta", "did log"); err == nil {
 		t.Fatal("unsigned response was accepted")
 	}
+}
+
+func TestCreateAclUsesGrantV02Payload(t *testing.T) {
+	clientIdentity := identity(t, 5)
+	serverIdentity := identity(t, 6)
+	var received trustTask
+	server := signedTaskServer(t, clientIdentity, serverIdentity, &received)
+	defer server.Close()
+
+	client, err := New(server.URL, clientIdentity.did, clientIdentity.seedB64, serverIdentity.did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.CreateAcl(context.Background(), "did:webvh:example:vta", "service", "VTA agent"); err != nil {
+		t.Fatalf("CreateAcl: %v", err)
+	}
+	if received.Type != "https://trusttasks.org/spec/acl/grant/0.2" {
+		t.Fatalf("grant type = %q", received.Type)
+	}
+	requireJSON(t, received.Payload, `{
+		"entry": {
+			"subject": "did:webvh:example:vta",
+			"role": "service",
+			"act": {"scope": "all"},
+			"keys": {"scope": "none"},
+			"capabilities": {"scope": "ceiling"},
+			"label": "VTA agent"
+		}
+	}`)
+}
+
+func TestDeleteAclUsesRevokeV02EntryPayload(t *testing.T) {
+	clientIdentity := identity(t, 7)
+	serverIdentity := identity(t, 8)
+	var received trustTask
+	server := signedTaskServer(t, clientIdentity, serverIdentity, &received)
+	defer server.Close()
+
+	client, err := New(server.URL, clientIdentity.did, clientIdentity.seedB64, serverIdentity.did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.DeleteAcl(context.Background(), "did:webvh:example:vta"); err != nil {
+		t.Fatalf("DeleteAcl: %v", err)
+	}
+	if received.Type != "https://trusttasks.org/spec/acl/revoke/0.2" {
+		t.Fatalf("revoke type = %q", received.Type)
+	}
+	requireJSON(t, received.Payload, `{
+		"subject": "did:webvh:example:vta",
+		"revocation": {"kind": "entry"}
+	}`)
 }

@@ -162,11 +162,13 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 		ErrorMsg    string `json:"error_msg,omitempty"`
 		Fqdn        string `json:"fqdn"`
 		// Per-component images — empty for components the mode doesn't run.
-		VtaImage      string `json:"vta_image,omitempty"`
-		MediatorImage string `json:"mediator_image,omitempty"`
-		DidsImage     string `json:"dids_image,omitempty"`
-		VtcImage      string `json:"vtc_image,omitempty"`
-		CreatedAt     string `json:"created_at"`
+		VtaImage             string `json:"vta_image,omitempty"`
+		MediatorImage        string `json:"mediator_image,omitempty"`
+		DidsImage            string `json:"dids_image,omitempty"`
+		VtcImage             string `json:"vtc_image,omitempty"`
+		TrustRegistryEnabled bool   `json:"trust_registry_enabled,omitempty"`
+		TrustRegistryImage   string `json:"trust_registry_image,omitempty"`
+		CreatedAt            string `json:"created_at"`
 		// vta_only: where its mediator and DID host came from. Provider names
 		// the stack when that is in_farm; ProviderGone says the stack was
 		// deleted, which is why no name is available rather than a lookup having
@@ -184,21 +186,23 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 	items := make([]sessionItem, len(sessions))
 	for i, s := range sessions {
 		items[i] = sessionItem{
-			ID:            s.ID,
-			UserUniqueId:  userUniqueIds[s.UserID],
-			VtaName:       s.VtaName,
-			VtcName:       s.VtcName,
-			Mode:          s.Mode,
-			DomainType:    s.DomainType,
-			Status:        s.Status,
-			FailedStage:   s.FailureStage(),
-			ErrorMsg:      s.ErrorMsg,
-			Fqdn:          s.FQDN(),
-			VtaImage:      s.VtaImage,
-			MediatorImage: s.MediatorImage,
-			DidsImage:     s.DidsImage,
-			VtcImage:      s.VtcImage,
-			CreatedAt:     s.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			ID:                   s.ID,
+			UserUniqueId:         userUniqueIds[s.UserID],
+			VtaName:              s.VtaName,
+			VtcName:              s.VtcName,
+			Mode:                 s.Mode,
+			DomainType:           s.DomainType,
+			Status:               s.Status,
+			FailedStage:          s.FailureStage(),
+			ErrorMsg:             s.ErrorMsg,
+			Fqdn:                 s.FQDN(),
+			VtaImage:             s.VtaImage,
+			MediatorImage:        s.MediatorImage,
+			DidsImage:            s.DidsImage,
+			VtcImage:             s.VtcImage,
+			TrustRegistryEnabled: s.TrustRegistryEnabled,
+			TrustRegistryImage:   s.TrustRegistryImage,
+			CreatedAt:            s.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		}
 		for _, target := range sessionWorkloadTargets(&s) {
 			defaults := profiles[target.Component]

@@ -2,6 +2,12 @@ package dnscheck
 
 import "testing"
 
+func TestLookupIPAddrRequiresPublicResolver(t *testing.T) {
+	if _, err := NewWithResolvers().LookupIPAddr(t.Context(), "example.com"); err == nil {
+		t.Fatal("LookupIPAddr succeeded without a resolver")
+	}
+}
+
 func TestAllCloudflare(t *testing.T) {
 	// A fully proxied record resolves to Cloudflare's anycast edge and never
 	// reaches us — worth naming precisely, because "resolves to 104.21.x" tells
