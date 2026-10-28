@@ -3,7 +3,7 @@
 //
 // A VTA has one authenticated surface: Trust Task documents POSTed to
 // /trust-tasks. Logging in is two of them, `auth/challenge/0.1` (unsigned)
-// and `auth/authenticate/0.2` (signed by the did:key), which yields a bearer
+// and `auth/authenticate/0.3` (signed by the did:key), which yields a bearer
 // token. Every later document carries that token and is signed by the same
 // key, because the VTA checks that the proof's signer, the document's issuer
 // and the session's subject are one DID.
@@ -41,11 +41,11 @@ const (
 	trustTasksPath = "/trust-tasks"
 
 	challengeType    = "https://trusttasks.org/spec/auth/challenge/0.1"
-	authenticateType = "https://trusttasks.org/spec/auth/authenticate/0.2"
+	authenticateType = "https://trusttasks.org/spec/auth/authenticate/0.3"
 	didGetType       = "https://trusttasks.org/spec/vta/webvh/dids/get/1.0"
 	didUpdateType    = "https://trusttasks.org/spec/vta/webvh/dids/update/1.0"
 	domainsType      = "https://trusttasks.org/spec/vta/webvh/servers/domains/0.1"
-	errorType        = "https://trusttasks.org/spec/trust-task-error/0.5"
+	errorType        = "https://trusttasks.org/spec/trust-task-error/0.6"
 
 	// ReasonConflict is `details.reason` when `expectedVersionId` no longer
 	// names the DID's local head.
@@ -316,7 +316,7 @@ func (c *Client) send(ctx context.Context, typeURI string, payload any, signed, 
 	return reply.Payload, nil
 }
 
-// refusal reads a non-2xx body: a `trust-task-error/0.5` document becomes a
+// refusal reads a non-2xx body: a `trust-task-error/0.6` document becomes a
 // TaskError; anything else (a flat `{"error":…}`, a proxy page) is quoted.
 func refusal(status int, body []byte) error {
 	var doc struct {

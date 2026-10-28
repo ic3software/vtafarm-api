@@ -243,7 +243,7 @@ HTTP 422 with a signed Trust Task error:
   "id": "urn:uuid:5a0c2d4e-7f81-4b36-9c2a-d4e5f6a7b8c9",
   "threadId": "urn:uuid:a8e6cbd9-16d7-4668-93bb-b5300a65b6ac",
   "parentThreadId": "q3Vt7mXo9LwA2bR5cJ8kNg",
-  "type": "https://trusttasks.org/spec/trust-task-error/0.5",
+  "type": "https://trusttasks.org/spec/trust-task-error/0.6",
   "issuer": "did:webvh:example-farm-did",
   "recipient": "did:key:z6MkExampleClaimantKey",
   "issuedAt": "2026-10-12T20:00:27Z",
