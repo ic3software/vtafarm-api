@@ -1,5 +1,19 @@
 # Changelog
 
+## [v0.16.1] - 2026-10-28
+
+### Changed
+
+- Updated Trust Task protocol support for VTA authentication and errors, DID
+  Hosting ACL management, and the related Go dependencies.
+
+### Fixed
+
+- Full Stack setup recovery includes an enabled Trust Registry and can resume
+  failures from its final setup step.
+- Trust Registry DID verification uses propagation-aware public DNS lookups so
+  newly created records are not blocked by stale host-level DNS caches.
+
 ## [v0.16.0] - 2026-10-27
 
 ### Added
