@@ -143,6 +143,13 @@ func (o *Orchestrator) registryVtcConfig(ctx context.Context, ns string, s *mode
 	return o.k8s.ExecCapture(ctx, ns, pod, container, []string{"cat", "/work/vtc/config.toml"})
 }
 
+func (o *Orchestrator) registryDIDResolver() *webvh.Resolver {
+	if o != nil && o.dns != nil {
+		return webvh.NewResolverWithIPLookup(webvh.DefaultTimeout, o.dns.LookupIPAddr)
+	}
+	return webvh.NewResolver(webvh.DefaultTimeout)
+}
+
 // EnableTrustRegistry is shared by initial setup and in-place enablement. Its
 // caller owns the session maintenance claim; it never re-runs VTC setup.
 func (o *Orchestrator) EnableTrustRegistry(ctx context.Context, s *model.SetupSession) error {
@@ -187,7 +194,7 @@ func (o *Orchestrator) EnableTrustRegistry(ctx context.Context, s *model.SetupSe
 	if _, err := MergeRegistryConfig(current, placeholder); err != nil {
 		return err
 	}
-	document, err := webvh.NewResolver(webvh.DefaultTimeout).ResolveDocument(ctx, s.VtcDid)
+	document, err := o.registryDIDResolver().ResolveDocument(ctx, s.VtcDid)
 	if err != nil {
 		return fmt.Errorf("cannot validate existing VTC DID history: %w", err)
 	}
@@ -197,7 +204,7 @@ func (o *Orchestrator) EnableTrustRegistry(ctx context.Context, s *model.SetupSe
 	if err = o.provisionRegistry(ctx, ns, s); err != nil {
 		return err
 	}
-	if err = webvh.NewResolver(webvh.DefaultTimeout).ResolveDID(ctx, s.TrustRegistryDid); err != nil {
+	if err = o.registryDIDResolver().ResolveDID(ctx, s.TrustRegistryDid); err != nil {
 		return fmt.Errorf("registry DID did not resolve: %w", err)
 	}
 	if err = o.RegistryPhase(s, "deploy_registry"); err != nil {
@@ -241,7 +248,7 @@ mv config.toml.vtafarm-registry-next config.toml`}, []k8s.PVCMount{{Name: "vtc-d
 	if err = o.RegistryPhase(s, "verify"); err != nil {
 		return err
 	}
-	document, err = webvh.NewResolver(webvh.DefaultTimeout).ResolveDocument(ctx, s.VtcDid)
+	document, err = o.registryDIDResolver().ResolveDocument(ctx, s.VtcDid)
 	if err != nil {
 		return err
 	}

@@ -54,6 +54,30 @@ type Checker struct {
 	timeout   time.Duration
 }
 
+// LookupIPAddr resolves a public hostname without consulting the host's DNS
+// cache. It accepts the first resolver with an address, matching CheckHosts'
+// propagation behavior for managed records.
+func (c *Checker) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
+	if c == nil || len(c.resolvers) == 0 {
+		return nil, errors.New("no public DNS resolvers are configured")
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+
+	var lookupErrors []error
+	for _, resolver := range c.resolvers {
+		addresses, err := resolver.LookupIPAddr(ctx, host)
+		if err == nil && len(addresses) > 0 {
+			return addresses, nil
+		}
+		if err == nil {
+			err = errors.New("DNS returned no addresses")
+		}
+		lookupErrors = append(lookupErrors, err)
+	}
+	return nil, errors.Join(lookupErrors...)
+}
+
 // New returns a Checker querying the public resolvers above.
 func New() *Checker {
 	return NewWithResolvers(defaultResolverAddrs...)

@@ -99,6 +99,21 @@ func TestNewResolverDisablesRedirectsAndProxy(t *testing.T) {
 	}
 }
 
+func TestNewResolverWithIPLookupUsesInjectedResolver(t *testing.T) {
+	lookups := 0
+	resolver := NewResolverWithIPLookup(time.Second, func(context.Context, string) ([]net.IPAddr, error) {
+		lookups++
+		return []net.IPAddr{{IP: net.ParseIP("10.0.0.1")}}, nil
+	})
+	did := "did:webvh:Qmetio9KXzDkPXDpSQVyXSTcPVvj5ysHgMZt7y5ffRNDzD:internal.example"
+	if err := resolver.ResolveDID(t.Context(), did); err == nil || !strings.Contains(err.Error(), "non-public") {
+		t.Fatalf("ResolveDID() error = %v, want non-public address rejection", err)
+	}
+	if lookups != 1 {
+		t.Fatalf("lookup calls = %d, want 1", lookups)
+	}
+}
+
 func TestResolveDIDValidatesPublishedLog(t *testing.T) {
 	fixture, err := os.ReadFile("testdata/rust-chain-simple.jsonl")
 	if err != nil {
