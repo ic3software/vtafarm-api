@@ -100,7 +100,7 @@ func (c *Client) CreateSetupResources(ctx context.Context, ns string, sessionID 
 						Image: vtaImage,
 						// After setup, print the marker then cat did.jsonl so the
 						// orchestrator can extract it from job logs without a reader pod.
-						Command:    []string{"sh", "-c", "vta setup --from /config/vta-setup.toml && echo '---DID_LOG_START---' && cat /work/vta/data/vta/did-logs/VTA-did.jsonl"},
+						Command:    []string{"sh", "-c", "vta setup --from /config/vta-setup.toml 2>&1 && echo '---DID_LOG_START---' && cat /work/vta/data/vta/did-logs/VTA-did.jsonl"},
 						WorkingDir: "/work/vta",
 						VolumeMounts: []corev1.VolumeMount{
 							{Name: "config", MountPath: "/config"},

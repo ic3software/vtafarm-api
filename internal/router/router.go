@@ -53,7 +53,7 @@ func Setup(
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     allowOrigins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Authorization", "Content-Type", "Idempotency-Key"},
+		AllowHeaders:     []string{"Authorization", "Content-Type", "Idempotency-Key", "X-VTA-Claim-Token"},
 		ExposeHeaders:    []string{"Content-Length", "Content-Disposition"},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
@@ -159,7 +159,12 @@ func Setup(
 	mobile := handler.NewMobileConnectionHandler(db, orch, sh.KickAdditionalMobile, cfg.VTAClaim, trustTask.Enabled())
 	dashH := handler.NewDashboardHandler(db, k8sClient)
 	poolH := handler.NewPoolHandler(db, sh, dashH, mobile)
-	poolH.Start(workerCtx)
+	poolH.Start(workerCtx, cfg.OrchestratorResume)
+	publicClaims := v1.Group("/public/pool-claims", middleware.NoStore())
+	publicClaims.POST("", middleware.RateLimit(50, time.Hour), poolH.CreatePublicClaim)
+	publicClaims.GET("/:request_id", middleware.RateLimit(120, time.Minute), poolH.GetPublicClaim)
+	publicClaims.POST("/:request_id/confirm", middleware.RateLimit(30, time.Minute), poolH.ConfirmPublicClaim)
+	publicClaims.POST("/:request_id/reject", middleware.RateLimit(30, time.Minute), poolH.RejectPublicClaim)
 
 	// Admin routes — cookie: vtafarm_admin
 	adminAuth := v1.Group("",
@@ -199,6 +204,9 @@ func Setup(
 		adminAuth.GET("/admin/pool-batches", poolH.ListBatches)
 		adminAuth.GET("/admin/pool-batches/:id", poolH.GetBatch)
 		adminAuth.DELETE("/admin/pool-batches/:id", poolH.CleanupBatch)
+		adminAuth.POST("/admin/pool-batches/:id/inventory", poolH.AddInventory)
+		adminAuth.POST("/admin/pool-batches/:id/public-signup", poolH.EnablePublicSignup)
+		adminAuth.DELETE("/admin/pool-batches/:id/public-signup", poolH.DisablePublicSignup)
 		adminAuth.POST("/admin/pool-batches/:id/claims", poolH.Reserve)
 		adminAuth.POST("/admin/pool-sessions/cleanup", poolH.Cleanup)
 		adminAuth.POST("/admin/pool-sessions/:id/retry", poolH.Retry)

@@ -85,14 +85,15 @@ the loop reconnects every 2s. Ctrl-C stops it.
 ### Startup no longer resumes interrupted work
 
 `Orchestrator.Resume` picks up every session in `vta_setup_running` or
-`provisioning` at startup, and `upgrade.Runner.Resume` does the same for image
-upgrades. That is crash recovery, and it is correct when one API owns the
-database. Against a shared one, every developer who starts their API resumes
-**everyone's** in-flight sessions: several orchestrators creating Jobs for the
-same session and writing the same status column.
+`provisioning` at startup, the pool reconciler picks up interrupted pool builds
+and cleanups, and `upgrade.Runner.Resume` does the same for image upgrades. That
+is crash recovery, and it is correct when one API owns the database. Against a
+shared one, every developer who starts their API resumes **everyone's**
+in-flight work: several workers creating Jobs for the same session and writing
+the same status column.
 
-So `ORCHESTRATOR_RESUME` gates both (they are one hazard; gating either alone
-would achieve nothing):
+So `ORCHESTRATOR_RESUME` gates all three recovery paths (they are one hazard;
+gating only some of them would achieve nothing):
 
 - **Defaults to `true`.** Production must never lose crash recovery because
   someone forgot a Helm value, so the flag is opt-out and the chart needs no
@@ -104,6 +105,10 @@ would achieve nothing):
 Creating a session through the API still runs the orchestrator in that same
 process — the flag only governs what happens at *startup*. Two people running
 `POST /setup` at once is fine; they are different sessions.
+
+Pool workers also remain available when the flag is false, so batches created
+through that local API still process their explicitly queued sessions. Only the
+periodic scan for work left by another process is disabled.
 
 ### Migrations are a shared resource
 

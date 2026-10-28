@@ -3,6 +3,8 @@ package handler
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -48,25 +50,30 @@ func NewPoolHandler(
 	return h
 }
 
-func (h *PoolHandler) Start(ctx context.Context) {
-	h.runner.Start(ctx)
+func (h *PoolHandler) Start(ctx context.Context, reconcileExisting bool) {
+	h.runner.Start(ctx, reconcileExisting)
 }
 
 type createPoolBatchRequest struct {
 	Label    string `json:"label"`
 	Count    int    `json:"count"`
 	VtaImage string `json:"vta_image"`
+	Purpose  string `json:"purpose"`
 }
 
 type poolCounts struct {
-	Total      int `json:"total"`
-	Creating   int `json:"creating"`
-	Waiting    int `json:"waiting"`
-	Claiming   int `json:"claiming"`
-	Activating int `json:"activating"`
-	Running    int `json:"running"`
-	Failed     int `json:"failed"`
-	Deleting   int `json:"deleting"`
+	Total           int `json:"total"`
+	Creating        int `json:"creating"`
+	Waiting         int `json:"waiting"`
+	Claiming        int `json:"claiming"`
+	Activating      int `json:"activating"`
+	Running         int `json:"running"`
+	Failed          int `json:"failed"`
+	Deleting        int `json:"deleting"`
+	Available       int `json:"available"`
+	Reserved        int `json:"reserved"`
+	HandedOut       int `json:"handed_out"`
+	FailedUnclaimed int `json:"failed_unclaimed"`
 }
 
 type poolSessionItem struct {
@@ -82,13 +89,15 @@ type poolSessionItem struct {
 }
 
 type poolBatchView struct {
-	ID             uint              `json:"id"`
-	Label          string            `json:"label"`
-	RequestedCount int               `json:"requested_count"`
-	VtaImage       string            `json:"vta_image,omitempty"`
-	CreatedAt      time.Time         `json:"created_at"`
-	Counts         poolCounts        `json:"counts"`
-	Sessions       []poolSessionItem `json:"sessions,omitempty"`
+	ID                    uint              `json:"id"`
+	Label                 string            `json:"label"`
+	Purpose               string            `json:"purpose"`
+	RequestedCount        int               `json:"requested_count"`
+	VtaImage              string            `json:"vta_image,omitempty"`
+	PublicSignupEnabledAt *time.Time        `json:"public_signup_enabled_at,omitempty"`
+	CreatedAt             time.Time         `json:"created_at"`
+	Counts                poolCounts        `json:"counts"`
+	Sessions              []poolSessionItem `json:"sessions,omitempty"`
 }
 
 type poolClaimView struct {
@@ -98,6 +107,28 @@ type poolClaimView struct {
 	Enabled    bool        `json:"enabled"`
 	ServerTime time.Time   `json:"server_time"`
 	Connection *mobileView `json:"connection"`
+}
+
+type publicPoolClaimView struct {
+	ServerTime  time.Time                   `json:"server_time"`
+	Connection  *publicMobileConnectionView `json:"connection"`
+	PlatformVTC *publicVTCView              `json:"platform_vtc,omitempty"`
+}
+
+type publicVTCView struct {
+	DID string `json:"did"`
+	URL string `json:"url"`
+}
+
+type publicMobileConnectionView struct {
+	RequestID   string     `json:"request_id"`
+	Status      string     `json:"status"`
+	VtaDid      string     `json:"vta_did,omitempty"`
+	ExpiresAt   time.Time  `json:"expires_at"`
+	ConfirmBy   *time.Time `json:"confirm_by,omitempty"`
+	TriggerLink string     `json:"trigger_link,omitempty"`
+	ClaimCheck  string     `json:"claim_check,omitempty"`
+	Error       string     `json:"error,omitempty"`
 }
 
 // CreateBatch — POST /api/v1/admin/pool-batches.
@@ -118,6 +149,10 @@ func (h *PoolHandler) CreateBatch(c *gin.Context) {
 	}
 	request.Label = strings.TrimSpace(request.Label)
 	request.VtaImage = strings.TrimSpace(request.VtaImage)
+	request.Purpose = strings.TrimSpace(request.Purpose)
+	if request.Purpose == "" {
+		request.Purpose = model.PoolPurposeAdminStation
+	}
 	key := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
 	if request.Label == "" || len(request.Label) > 120 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "label must be between 1 and 120 characters"})
@@ -129,6 +164,10 @@ func (h *PoolHandler) CreateBatch(c *gin.Context) {
 	}
 	if request.VtaImage == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "vta_image is required"})
+		return
+	}
+	if request.Purpose != model.PoolPurposeAdminStation && request.Purpose != model.PoolPurposePublicSignup {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "purpose must be admin_station or public_signup"})
 		return
 	}
 	if key == "" || len(key) > 128 {
@@ -197,6 +236,7 @@ func (h *PoolHandler) CreateBatch(c *gin.Context) {
 		Key:      key,
 		Digest:   digest,
 		Label:    request.Label,
+		Purpose:  request.Purpose,
 		Count:    request.Count,
 		Capacity: capacitySnapshot,
 		Session: model.SetupSession{
@@ -247,6 +287,143 @@ func (h *PoolHandler) CreateBatch(c *gin.Context) {
 		}
 	}
 	c.JSON(status, view)
+}
+
+type addPoolInventoryRequest struct {
+	Count int `json:"count"`
+}
+
+func (h *PoolHandler) AddInventory(c *gin.Context) {
+	if h.setup == nil || h.setup.cf == nil || h.setup.k8s == nil || h.setup.orch == nil ||
+		h.setup.didHosting == nil || h.dashboard == nil || h.mobile == nil || !h.mobile.enabled {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "pooled VTA creation is not fully configured"})
+		return
+	}
+	batchID, ok := positiveID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid pool batch ID"})
+		return
+	}
+	var request addPoolInventoryRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if request.Count < 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "count must be at least 1"})
+		return
+	}
+	key := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	if key == "" || len(key) > 128 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Idempotency-Key must be between 1 and 128 characters"})
+		return
+	}
+
+	var source model.SetupSession
+	if err := h.db.WithContext(c.Request.Context()).Table("setup_sessions s").
+		Select("s.*").Joins("JOIN pool_sessions ps ON ps.session_id = s.id").
+		Where("ps.batch_id = ?", batchID).Order("s.id").Limit(1).Scan(&source).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load pool batch template"})
+		return
+	}
+	if source.ID == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "pool batch not found"})
+		return
+	}
+	template := model.SetupSession{
+		Mode:                 model.ModeVtaOnly,
+		DomainType:           source.DomainType,
+		Domain:               source.Domain,
+		Subdomain:            strings.TrimSuffix(source.Subdomain, source.VtaName),
+		MediatorDid:          source.MediatorDid,
+		DidHostingServerURL:  source.DidHostingServerURL,
+		DidHostingControlURL: source.DidHostingControlURL,
+		DIDHostingDid:        source.DIDHostingDid,
+		ConnectionSource:     source.ConnectionSource,
+		VtaImage:             source.VtaImage,
+		Portable:             source.Portable,
+		PreRotationCount:     source.PreRotationCount,
+	}
+	profiles, profileErr := resourceprofile.Load(c.Request.Context(), h.db)
+	clusterStats, clusterErr := h.dashboard.clusterCapacitySnapshot(c.Request.Context())
+	if profileErr != nil || clusterErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not read cluster capacity"})
+		return
+	}
+	profile := profiles[k8s.ComponentVTA]
+	capacitySnapshot := h.dashboard.vtaOnlyCapacityFromSnapshot(clusterStats, profiles)
+	digestBody, _ := json.Marshal(request)
+	digestBytes := sha256.Sum256(append([]byte(strconv.FormatUint(uint64(batchID), 10)+":"), digestBody...))
+	result, err := poolstore.AddInventory(c.Request.Context(), h.db, poolstore.Addition{
+		AdminID: c.MustGet(middleware.ContextUserID).(uint), BatchID: batchID,
+		Key: key, Digest: hex.EncodeToString(digestBytes[:]), Count: request.Count,
+		Capacity: capacitySnapshot, Session: template,
+		MemoryRequest: profile.MemoryRequest, MemoryLimit: profile.MemoryLimit,
+	})
+	if err != nil {
+		var capacityErr *poolstore.CapacityError
+		switch {
+		case errors.As(err, &capacityErr):
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"error":  fmt.Sprintf("the cluster currently has capacity for %d additional VTA-only sessions", capacityErr.Available),
+				"reason": "insufficient_capacity", "available": capacityErr.Available,
+			})
+		case errors.Is(err, poolstore.ErrConflict):
+			c.JSON(http.StatusConflict, gin.H{"error": "pool is being cleaned or Idempotency-Key was reused"})
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "pool batch not found"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add pool inventory"})
+		}
+		return
+	}
+	for i := range result.Sessions {
+		h.runner.Kick(result.Sessions[i].ID)
+	}
+	view, viewErr := h.batchView(c.Request.Context(), result.Batch.ID, true)
+	if viewErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "inventory was added but the batch could not be loaded"})
+		return
+	}
+	status := http.StatusOK
+	if result.Created {
+		status = http.StatusCreated
+	}
+	c.JSON(status, view)
+}
+
+func (h *PoolHandler) EnablePublicSignup(c *gin.Context) {
+	h.setPublicSignup(c, true)
+}
+
+func (h *PoolHandler) DisablePublicSignup(c *gin.Context) {
+	h.setPublicSignup(c, false)
+}
+
+func (h *PoolHandler) setPublicSignup(c *gin.Context, enabled bool) {
+	batchID, ok := positiveID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid pool batch ID"})
+		return
+	}
+	batch, err := poolstore.SetPublicSignup(c.Request.Context(), h.db, batchID, enabled)
+	if err != nil {
+		switch {
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "pool batch not found"})
+		case errors.Is(err, poolstore.ErrConflict):
+			c.JSON(http.StatusConflict, gin.H{"error": "only an active public-signup batch can be enabled or paused"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update public signup"})
+		}
+		return
+	}
+	view, err := h.batchView(c.Request.Context(), batch.ID, true)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "public signup changed but the batch could not be loaded"})
+		return
+	}
+	c.JSON(http.StatusOK, view)
 }
 
 func (h *PoolHandler) ListBatches(c *gin.Context) {
@@ -314,6 +491,155 @@ func (h *PoolHandler) Reserve(c *gin.Context) {
 		return
 	}
 	h.writeClaim(c, claim.ID)
+}
+
+func publicClaimDigest(c *gin.Context) ([]byte, bool) {
+	token := strings.TrimSpace(c.GetHeader("X-VTA-Claim-Token"))
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || len(raw) != 32 {
+		return nil, false
+	}
+	digest := sha256.Sum256(raw)
+	return digest[:], true
+}
+
+func (h *PoolHandler) authorizePublicClaim(c *gin.Context) (*model.MobileConnection, bool) {
+	digest, ok := publicClaimDigest(c)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "public claim not found", "reason": "public_claim_not_found"})
+		return nil, false
+	}
+	var claim model.MobileConnection
+	if err := h.db.WithContext(c.Request.Context()).First(&claim, "id = ?", c.Param("request_id")).Error; err != nil ||
+		len(claim.PublicAccessDigest) != len(digest) || subtle.ConstantTimeCompare(claim.PublicAccessDigest, digest) != 1 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "public claim not found", "reason": "public_claim_not_found"})
+		return nil, false
+	}
+	return &claim, true
+}
+
+func (h *PoolHandler) CreatePublicClaim(c *gin.Context) {
+	if h.mobile == nil || !h.mobile.enabled {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "VTA reservation is currently unavailable. Please contact an administrator.", "reason": "public_signup_disabled"})
+		return
+	}
+	digest, ok := publicClaimDigest(c)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "X-VTA-Claim-Token must contain 32 random bytes encoded as base64url", "reason": "invalid_claim_token"})
+		return
+	}
+	claim, created, err := poolstore.ReservePublic(c.Request.Context(), h.db, digest)
+	if err != nil {
+		switch {
+		case errors.Is(err, poolstore.ErrPublicDisabled):
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "VTA reservation is currently unavailable. Please contact an administrator.", "reason": "public_signup_disabled"})
+		case errors.Is(err, poolstore.ErrEmpty):
+			c.JSON(http.StatusConflict, gin.H{"error": "No VTA is available right now. Please try again later or contact us on Discord.", "reason": "public_pool_empty"})
+		default:
+			writeConnectionError(c, err)
+		}
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	h.writePublicClaim(c, claim.ID, status)
+}
+
+func (h *PoolHandler) GetPublicClaim(c *gin.Context) {
+	claim, ok := h.authorizePublicClaim(c)
+	if !ok {
+		return
+	}
+	h.writePublicClaim(c, claim.ID, http.StatusOK)
+}
+
+func (h *PoolHandler) ConfirmPublicClaim(c *gin.Context) {
+	claim, ok := h.authorizePublicClaim(c)
+	if !ok {
+		return
+	}
+	confirmed, err := poolstore.Confirm(c.Request.Context(), h.db, claim.ID)
+	if err != nil {
+		writeConnectionError(c, err)
+		return
+	}
+	if h.setup != nil && h.setup.orch != nil {
+		h.setup.orch.KickProvision(confirmed.SessionID)
+	}
+	h.writePublicClaim(c, confirmed.ID, http.StatusOK)
+}
+
+func (h *PoolHandler) RejectPublicClaim(c *gin.Context) {
+	claim, ok := h.authorizePublicClaim(c)
+	if !ok {
+		return
+	}
+	if err := poolstore.Reject(c.Request.Context(), h.db, claim.ID); err != nil {
+		writeConnectionError(c, err)
+		return
+	}
+	h.writePublicClaim(c, claim.ID, http.StatusOK)
+}
+
+func (h *PoolHandler) writePublicClaim(c *gin.Context, requestID string, status int) {
+	var claim model.MobileConnection
+	if err := h.db.WithContext(c.Request.Context()).First(&claim, "id = ?", requestID).Error; err != nil {
+		writeConnectionError(c, err)
+		return
+	}
+	var session model.SetupSession
+	if err := h.db.WithContext(c.Request.Context()).First(&session, claim.SessionID).Error; err != nil {
+		writeConnectionError(c, err)
+		return
+	}
+	if err := connection.Reconcile(c.Request.Context(), h.db, &claim, &session); err != nil {
+		writeConnectionError(c, err)
+		return
+	}
+	now, err := connection.Now(h.db.WithContext(c.Request.Context()))
+	if err != nil {
+		writeConnectionError(c, err)
+		return
+	}
+	full := h.mobile.view(&claim)
+	view := &publicMobileConnectionView{
+		RequestID: full.RequestID, Status: full.Status, ExpiresAt: full.ExpiresAt,
+		ConfirmBy: full.ConfirmBy, TriggerLink: full.TriggerLink,
+		ClaimCheck: full.ClaimCheck, Error: full.Error,
+	}
+	var platformVTC *publicVTCView
+	if full.Status == "released" {
+		view.VtaDid = full.VtaDid
+		platformVTC, err = h.publicSignupPlatformVTC(c.Request.Context())
+		if err != nil {
+			writeConnectionError(c, err)
+			return
+		}
+	}
+	c.JSON(status, publicPoolClaimView{ServerTime: now, Connection: view, PlatformVTC: platformVTC})
+}
+
+// publicSignupPlatformVTC returns only the public identity of this Farm's
+// running platform community. The environment-specific setup row is the source
+// of truth; frontend configuration must not point dev or staging at production.
+func (h *PoolHandler) publicSignupPlatformVTC(ctx context.Context) (*publicVTCView, error) {
+	var session model.SetupSession
+	err := h.db.WithContext(ctx).
+		Joins("JOIN domains ON domains.id = setup_sessions.domain_id").
+		Where("domains.kind = ? AND setup_sessions.status = ?", model.DomainKindPlatform, "running").
+		First(&session).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(session.VtcDid) == "" || strings.TrimSpace(session.VtcSubdomain) == "" || strings.TrimSpace(session.Domain) == "" {
+		return nil, nil
+	}
+	return &publicVTCView{DID: session.VtcDid, URL: "https://" + session.VtcFQDN()}, nil
 }
 
 func (h *PoolHandler) GetClaim(c *gin.Context) {
@@ -470,8 +796,9 @@ type poolClaimSummary struct {
 
 func buildPoolBatchView(batch model.PoolBatch, sessions []model.SetupSession, latest map[uint]poolClaimSummary, includeSessions bool) *poolBatchView {
 	view := &poolBatchView{
-		ID: batch.ID, Label: batch.Label, RequestedCount: batch.RequestedCount,
-		CreatedAt: batch.CreatedAt, Sessions: []poolSessionItem{},
+		ID: batch.ID, Label: batch.Label, Purpose: batch.Purpose, RequestedCount: batch.RequestedCount,
+		PublicSignupEnabledAt: batch.PublicSignupEnabledAt,
+		CreatedAt:             batch.CreatedAt, Sessions: []poolSessionItem{},
 	}
 	if len(sessions) > 0 {
 		view.VtaImage = sessions[0].VtaImage
@@ -491,19 +818,28 @@ func buildPoolBatchView(batch model.PoolBatch, sessions []model.SetupSession, la
 		cleanupReady := session.Status == model.StatusPoolWaiting || session.Status == "failed"
 		item.Cleanable = cleanupReady && !item.Claimed && !activeClaim
 		view.Counts.Total++
+		if session.Status == "failed" {
+			view.Counts.Failed++
+		}
 		switch {
 		case session.Status == "deleting":
 			view.Counts.Deleting++
-		case session.Status == "running":
-			view.Counts.Running++
-		case session.Status == "failed":
-			view.Counts.Failed++
-		case item.Claimed || session.Status == "provisioning":
-			view.Counts.Activating++
+		case item.Claimed:
+			view.Counts.HandedOut++
+			switch {
+			case session.Status == "running":
+				view.Counts.Running++
+			case session.Status == "provisioning" || current.Status == "confirmed" || current.Status == "provisioning":
+				view.Counts.Activating++
+			}
 		case activeClaim:
 			view.Counts.Claiming++
+			view.Counts.Reserved++
+		case session.Status == "failed":
+			view.Counts.FailedUnclaimed++
 		case session.Status == model.StatusPoolWaiting:
 			view.Counts.Waiting++
+			view.Counts.Available++
 		default:
 			view.Counts.Creating++
 		}

@@ -107,7 +107,7 @@ Copy `.env.example` and adjust as needed:
 | `FARM_SIGNING_KEY` | _(empty)_ | Base64-encoded Ed25519 seed for the Farm DID's dedicated `assertionMethod` key |
 | `TRUST_TASK_BASE` | _(empty)_ | Public base URL advertised by the Farm DID's `TrustTaskHTTPS` service |
 | `LINK_HOST` | `https://link.trustoverip.org` | VTI trigger-link origin |
-| `ORCHESTRATOR_RESUME` | `true` | Re-attach interrupted sessions at startup. Set `false` locally — see [`docs/shared-dev-database.md`](docs/shared-dev-database.md) |
+| `ORCHESTRATOR_RESUME` | `true` | Re-attach interrupted sessions, pools, and upgrades at startup. Set `false` locally — see [`docs/shared-dev-database.md`](docs/shared-dev-database.md) |
 | `CLUSTER_INGRESS_IP` | _(required)_ | External IP of the cluster's Traefik LoadBalancer |
 | `CLOUDFLARE_API_TOKEN` | _(optional)_ | Required for VTA setup wizard |
 | `CLOUDFLARE_ZONE_ID` | _(optional)_ | Required for VTA setup wizard |

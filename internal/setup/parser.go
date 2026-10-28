@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -24,12 +25,42 @@ const didLogMarker = "---DID_LOG_START---"
 const MaxVtaDIDLogBytes = 1 << 20
 
 // ParseVtaDidLog extracts the did.jsonl content appended to the setup job logs.
-// The setup job command appends the marker then cats the file, so everything
-// after the marker is the raw JSONL content.
 func ParseVtaDidLog(logs string) string {
 	idx := strings.Index(logs, didLogMarker)
 	if idx < 0 {
 		return ""
 	}
-	return strings.TrimSpace(logs[idx+len(didLogMarker):])
+	return normalizeVtaDidLog(logs[idx+len(didLogMarker):])
+}
+
+// normalizeVtaDidLog discards CLI output that may arrive after the marker when
+// the container runtime merges stdout and stderr. Once a DID log entry starts,
+// every non-empty line must remain valid JSONL so diagnostics are never sent to
+// DID hosting as part of the log.
+func normalizeVtaDidLog(output string) string {
+	lines := strings.Split(output, "\n")
+	entries := make([]string, 0, len(lines))
+	started := false
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !isVtaDidLogEntry(line) {
+			if started {
+				return ""
+			}
+			continue
+		}
+		started = true
+		entries = append(entries, line)
+	}
+	return strings.Join(entries, "\n")
+}
+
+func isVtaDidLogEntry(line string) bool {
+	var entry struct {
+		VersionID string `json:"versionId"`
+	}
+	return json.Unmarshal([]byte(line), &entry) == nil && entry.VersionID != ""
 }
