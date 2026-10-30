@@ -21,8 +21,9 @@ DEV_DB       ?= vtafarm-dev-postgres
 DB_PORT      ?= 5432
 VAULT_PORT   ?= 8200
 DEV_API_BASE ?= http://localhost:8080
+DEV_WALLET_SEED_FILE ?= .dev/keyring-wallet.seed
 
-.PHONY: build test check-pg-image gen-keypair gen-farm-key dev-claim tidy dev \
+.PHONY: build test check-pg-image gen-keypair gen-farm-key dev-claim dev-keyring-sign-in tidy dev \
         migrate migrate-down migrate-new enroll enroll-prod \
         deploy-db forward-db forward-vault \
         image-build image-push \
@@ -64,7 +65,12 @@ gen-farm-key:
 dev-claim:
 	@test -n "$(HANDLE)" || (echo "usage: make dev-claim HANDLE=<QR claim ID> FARM_DID=<Farm DID>"; exit 1)
 	@test -n "$(FARM_DID)" || (echo "usage: make dev-claim HANDLE=<QR claim ID> FARM_DID=<Farm DID>"; exit 1)
-	go run ./cmd/dev-vta-claim -api-base "$(DEV_API_BASE)" -handle "$(HANDLE)" -farm-did "$(FARM_DID)"
+	go run ./cmd/dev-vta-claim -api-base "$(DEV_API_BASE)" -handle "$(HANDLE)" -farm-did "$(FARM_DID)" -wallet-seed-file "$(DEV_WALLET_SEED_FILE)"
+
+dev-keyring-sign-in:
+	@test -n "$(REQUEST_ID)" || (echo "usage: make dev-keyring-sign-in REQUEST_ID=<QR request ID> FARM_DID=<Farm DID>"; exit 1)
+	@test -n "$(FARM_DID)" || (echo "usage: make dev-keyring-sign-in REQUEST_ID=<QR request ID> FARM_DID=<Farm DID>"; exit 1)
+	go run ./cmd/dev-keyring-sign-in -api-base "$(DEV_API_BASE)" -request-id "$(REQUEST_ID)" -farm-did "$(FARM_DID)" -wallet-seed-file "$(DEV_WALLET_SEED_FILE)"
 
 tidy:
 	go mod tidy
