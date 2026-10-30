@@ -175,10 +175,13 @@ Keep the VTA state and signing key persistent. The API disables VTA Claim when
 the configured key or Trust Task endpoint does not match the public DID, and
 keeps Keyring sign-in disabled until `SignInPortal` also matches.
 
-Keyring mobile implementations and acceptance testers must follow the
-[Keyring App sign-in contract and runbook](docs/keyring-app-sign-in-contract.md).
-In frontend development mode, the claim and sign-in pages expose copyable
-commands that reuse one private local test identity.
+Keyring mobile implementations and acceptance testers must follow the separate
+[VTA acquisition](docs/mobile-connection-app-api.md) and
+[sign-in](docs/keyring-app-sign-in-contract.md) contracts. They share the Farm
+DID and Trust Task endpoint but use different trigger flows and task state
+machines. In frontend development mode, each VTA claim replaces the private
+local test identity, and the sign-in helper loads the identity from the latest
+claim.
 
 ### Generating JWT_SECRET
 
