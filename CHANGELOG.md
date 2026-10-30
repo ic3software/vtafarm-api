@@ -1,5 +1,25 @@
 # Changelog
 
+## [v0.17.0] - 2026-10-30
+
+### Added
+
+- Proof-authenticated `auth/oob` Trust Tasks let an existing Keyring identity
+  sign in through a short-lived QR or same-device request, a two-digit
+  confirmation, explicit wallet approval, and a bounded browser session.
+- Completed VTA claims and administrator grants create revocable Keyring login
+  bindings; verified legacy claims are linked on first use, and users can list
+  or revoke bindings together with their derived sessions.
+- Farm DID documents advertise a validated `SignInPortal` service, and a new
+  integration contract documents the Keyring sign-in protocol and outcomes.
+
+### Changed
+
+- The Helm chart configures the sign-in portal from the frontend host by
+  default and supports a Farm display name for Keyring approval screens.
+- The Keyring acquisition contract now covers both authenticated and public
+  VTA claims and separates acquisition from the new sign-in flow.
+
 ## [v0.16.1] - 2026-10-28
 
 ### Changed
