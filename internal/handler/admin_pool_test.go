@@ -171,7 +171,7 @@ func TestPoolBatchViewPublicInventoryCountersAreExclusive(t *testing.T) {
 
 func TestPublicPoolClaimStoresTokenDigestAndHidesInternalFields(t *testing.T) {
 	db := testutil.Postgres(t)
-	platformOwner := model.User{UniqueId: "public-platform"}
+	platformOwner := model.User{UniqueId: systemAccountUniqueID}
 	if err := db.Create(&platformOwner).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +273,8 @@ func TestPublicPoolClaimStoresTokenDigestAndHidesInternalFields(t *testing.T) {
 		t.Fatalf("mismatched token status = %d body=%s", response.Code, response.Body.String())
 	}
 
-	if err := db.Model(&stored).Update("status", "released").Error; err != nil {
+	releasedAt := time.Now().UTC()
+	if err := db.Model(&stored).Updates(map[string]any{"status": "released", "released_at": releasedAt}).Error; err != nil {
 		t.Fatal(err)
 	}
 	request = httptest.NewRequest(http.MethodGet, "/api/v1/public/pool-claims/"+body.Connection.RequestID, nil)

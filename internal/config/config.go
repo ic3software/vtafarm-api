@@ -12,6 +12,8 @@ type VTAClaimConfig struct {
 	FarmSigningKey string
 	TrustTaskBase  string
 	LinkHost       string
+	SignInPortal   string
+	FarmName       string
 }
 
 type Config struct {
@@ -173,6 +175,8 @@ func Load() *Config {
 			FarmSigningKey: getEnv("FARM_SIGNING_KEY", ""),
 			TrustTaskBase:  getEnv("TRUST_TASK_BASE", ""),
 			LinkHost:       getEnv("LINK_HOST", "https://link.trustoverip.org"),
+			SignInPortal:   getEnv("SIGN_IN_PORTAL_URL", ""),
+			FarmName:       getEnv("FARM_DISPLAY_NAME", "VTA Farm"),
 		},
 		AppPort:          getEnv("APP_PORT", "8080"),
 		AppEnv:           appEnv,

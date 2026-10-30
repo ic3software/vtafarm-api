@@ -107,6 +107,8 @@ Copy `.env.example` and adjust as needed:
 | `FARM_SIGNING_KEY` | _(empty)_ | Base64-encoded Ed25519 seed for the Farm DID's dedicated `assertionMethod` key |
 | `TRUST_TASK_BASE` | _(empty)_ | Public base URL advertised by the Farm DID's `TrustTaskHTTPS` service |
 | `LINK_HOST` | `https://link.trustoverip.org` | VTI trigger-link origin |
+| `SIGN_IN_PORTAL_URL` | _(empty)_ | Exact public login URL advertised by the Farm DID's `SignInPortal` service; Keyring sign-in stays disabled when missing or mismatched |
+| `FARM_DISPLAY_NAME` | `VTA Farm` | Name Keyring shows during wallet approval |
 | `ORCHESTRATOR_RESUME` | `true` | Re-attach interrupted sessions, pools, and upgrades at startup. Set `false` locally — see [`docs/shared-dev-database.md`](docs/shared-dev-database.md) |
 | `CLUSTER_INGRESS_IP` | _(required)_ | External IP of the cluster's Traefik LoadBalancer |
 | `CLOUDFLARE_API_TOKEN` | _(optional)_ | Required for VTA setup wizard |
@@ -136,7 +138,8 @@ VTA Farm signs Trust Task replies with a dedicated key published in its
    ```bash
    make gen-farm-key \
      FARM_DID='did:webvh:<scid>:<did-host>:vtafarm-auth' \
-     TRUST_TASK_BASE='https://<api-host>/trust-task'
+     TRUST_TASK_BASE='https://<api-host>/trust-task' \
+     SIGN_IN_PORTAL_URL='https://<frontend-host>/login'
    ```
 
    Keep `FARM_SIGNING_KEY` secret. The command validates the existing public
@@ -164,10 +167,21 @@ VTA Farm signs Trust Task replies with a dedicated key published in its
    FARM_SIGNING_KEY=<base64-encoded-32-byte-ed25519-seed>
    TRUST_TASK_BASE=https://<api-host>/trust-task
    LINK_HOST=https://link.trustoverip.org
+   SIGN_IN_PORTAL_URL=https://<frontend-host>/login
+   FARM_DISPLAY_NAME=VTA Farm
    ```
 
 Keep the VTA state and signing key persistent. The API disables VTA Claim when
-the configured key or Trust Task endpoint does not match the public DID.
+the configured key or Trust Task endpoint does not match the public DID, and
+keeps Keyring sign-in disabled until `SignInPortal` also matches.
+
+Keyring mobile implementations and acceptance testers must follow the separate
+[VTA acquisition](docs/mobile-connection-app-api.md) and
+[sign-in](docs/keyring-app-sign-in-contract.md) contracts. They share the Farm
+DID and Trust Task endpoint but use different trigger flows and task state
+machines. In frontend development mode, each VTA claim replaces the private
+local test identity, and the sign-in helper loads the identity from the latest
+claim.
 
 ### Generating JWT_SECRET
 
@@ -365,7 +379,8 @@ repository. Before deploying VTA Claim, update that stack's secret schema to
 provide `FARM_SIGNING_KEY` in `vtafarm-api-secrets`, then set a different value
 for each environment in its ignored `terraform.tfvars`. Generate each seed and
 the matching merged public DID document with `make gen-farm-key
-FARM_DID='did:webvh:...' TRUST_TASK_BASE='https://<api-host>/trust-task'`, then
+FARM_DID='did:webvh:...' TRUST_TASK_BASE='https://<api-host>/trust-task'
+SIGN_IN_PORTAL_URL='https://<frontend-host>/login'`, then
 publish it with `pnm did-mgmt dids edit` from the controlling VTA.
 
 Standalone Helm consumers must create `vtafarm-api-secrets` through their own

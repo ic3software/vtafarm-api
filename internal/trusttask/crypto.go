@@ -105,6 +105,37 @@ func ValidateFarmDIDDocument(document []byte, signer *Signer, trustTaskBase stri
 	return errors.New("Farm DID document does not advertise the configured TrustTaskHTTPS base")
 }
 
+func ValidateSignInPortal(document []byte, farmDID, portalURL string) error {
+	portal, err := url.Parse(strings.TrimSpace(portalURL))
+	if err != nil || portal.Scheme != "https" || portal.Host == "" || portal.User != nil || portal.RawQuery != "" || portal.Fragment != "" || portal.RawPath != "" {
+		return errors.New("SIGN_IN_PORTAL_URL must be an HTTPS URL without credentials, query, or fragment")
+	}
+	var parsed struct {
+		ID      string `json:"id"`
+		Service []struct {
+			Type            json.RawMessage `json:"type"`
+			ServiceEndpoint json.RawMessage `json:"serviceEndpoint"`
+		} `json:"service"`
+	}
+	if err := json.Unmarshal(document, &parsed); err != nil {
+		return fmt.Errorf("decode Farm DID document: %w", err)
+	}
+	if parsed.ID != farmDID {
+		return errors.New("Farm DID document id does not match FARM_DID")
+	}
+	wanted := portal.String()
+	for _, service := range parsed.Service {
+		if !serviceTypeContains(service.Type, "SignInPortal") {
+			continue
+		}
+		var endpoint string
+		if json.Unmarshal(service.ServiceEndpoint, &endpoint) == nil && endpoint == wanted {
+			return nil
+		}
+	}
+	return errors.New("Farm DID document does not advertise the configured SignInPortal")
+}
+
 func serviceTypeContains(raw json.RawMessage, expected string) bool {
 	var single string
 	if json.Unmarshal(raw, &single) == nil {
@@ -186,6 +217,24 @@ type WalletVerifier struct {
 	inner *prooflib.Verifier
 }
 
+func (v *WalletVerifier) VerifyDIDKey(ctx context.Context, document json.RawMessage, issuer, purpose string) error {
+	var envelope struct {
+		Issuer *string           `json:"issuer"`
+		Proof  *trusttasks.Proof `json:"proof"`
+	}
+	if err := json.Unmarshal(document, &envelope); err != nil {
+		return err
+	}
+	if envelope.Issuer == nil || *envelope.Issuer != issuer || !strings.HasPrefix(issuer, "did:key:z6Mk") || envelope.Proof == nil {
+		return errors.New("proof issuer is not the expected Ed25519 did:key")
+	}
+	multikey := strings.TrimPrefix(issuer, "did:key:")
+	if envelope.Proof.ProofPurpose != purpose || envelope.Proof.VerificationMethod != issuer+"#"+multikey {
+		return errors.New("proof is not authorized for the required DID relationship")
+	}
+	return v.inner.Verify(ctx, document)
+}
+
 func NewWalletVerifier() *WalletVerifier {
 	return &WalletVerifier{inner: prooflib.NewVerifier(prooflib.WithCryptosuites(prooflib.EddsaJcs2022))}
 }
@@ -201,7 +250,17 @@ func (v *WalletVerifier) Verify(ctx context.Context, document json.RawMessage) e
 	if envelope.Issuer == nil || !strings.HasPrefix(*envelope.Issuer, "did:key:z6Mk") || envelope.Proof == nil || envelope.Proof.ProofPurpose != "authentication" {
 		return errors.New("wallet proof must authenticate an Ed25519 did:key issuer")
 	}
-	return v.inner.Verify(ctx, document)
+	return v.VerifyDIDKey(ctx, document, *envelope.Issuer, "authentication")
+}
+
+func DigestMultibase(value any) (string, error) {
+	canonical, err := canonicalJSON(value)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(canonical)
+	multihash := append([]byte{0x12, 0x20}, digest[:]...)
+	return "z" + didresolver.EncodeBase58BTC(multihash), nil
 }
 
 type SchemaValidator struct{}

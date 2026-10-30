@@ -123,6 +123,13 @@ func TestClaimRequiresOwnerConfirmation(t *testing.T) {
 	if err := Reconcile(ctx, db, started, &after); err != nil || started.Status != "released" {
 		t.Fatalf("release: %+v %v", started, err)
 	}
+	var binding model.WalletLoginBinding
+	if err := db.First(&binding, "source_claim_id = ?", r.ID).Error; err != nil {
+		t.Fatalf("ordinary setup did not create wallet login binding: %v", err)
+	}
+	if binding.UserID != s.UserID || binding.LoginDID != claimed.AdminDid || binding.SourceSessionID != s.ID {
+		t.Fatalf("ordinary setup created the wrong wallet login binding: %+v", binding)
+	}
 }
 
 func TestRejectDiscardsCandidate(t *testing.T) {
@@ -191,7 +198,8 @@ func TestAdditionalAdministratorRelease(t *testing.T) {
 	if r.Operation != OperationGrantACL {
 		t.Fatalf("operation=%s", r.Operation)
 	}
-	if _, err := Claim(ctx, db, *r.ClaimHandle, newDID(t)); err != nil {
+	adminDID := newDID(t)
+	if _, err := Claim(ctx, db, *r.ClaimHandle, adminDID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Confirm(ctx, db, s.ID, r.ID); err != nil {
@@ -207,6 +215,13 @@ func TestAdditionalAdministratorRelease(t *testing.T) {
 	db.First(&released, "id = ?", r.ID)
 	if released.Status != "released" || released.ReleasedAt == nil {
 		t.Fatalf("not released: %+v", released)
+	}
+	var binding model.WalletLoginBinding
+	if err := db.First(&binding, "source_claim_id = ?", r.ID).Error; err != nil {
+		t.Fatalf("additional administrator did not create wallet login binding: %v", err)
+	}
+	if binding.UserID != s.UserID || binding.LoginDID != adminDID || binding.SourceSessionID != s.ID {
+		t.Fatalf("additional administrator created the wrong wallet login binding: %+v", binding)
 	}
 }
 

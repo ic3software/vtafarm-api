@@ -455,7 +455,24 @@ func MarkReleased(ctx context.Context, db *gorm.DB, requestID string) error {
 		if err != nil {
 			return err
 		}
-		return tx.Model(&r).Updates(map[string]any{"status": "released", "released_at": now}).Error
+		if err := tx.Model(&r).Updates(map[string]any{"status": "released", "released_at": now}).Error; err != nil {
+			return err
+		}
+		if (r.Operation != OperationProvisionVTA && r.Operation != OperationGrantACL) || r.AdminDid == "" || r.ClaimantDigest == nil || ClaimantDigest(r.AdminDid) != *r.ClaimantDigest {
+			return nil
+		}
+		var session model.SetupSession
+		if err := tx.First(&session, r.SessionID).Error; err != nil {
+			return err
+		}
+		binding := model.WalletLoginBinding{
+			UserID:          session.UserID,
+			LoginDID:        r.AdminDid,
+			SourceSessionID: session.ID,
+			SourceClaimID:   r.ID,
+			CreatedAt:       now,
+		}
+		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&binding).Error
 	})
 }
 

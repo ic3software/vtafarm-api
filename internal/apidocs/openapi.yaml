@@ -205,6 +205,13 @@ components:
         expiresAt: {type: string, format: date-time}
         payload: {type: object}
         proof: {type: object}
+    WalletLoginBinding:
+      type: object
+      required: [id, login_did, created_at]
+      properties:
+        id: {type: integer}
+        login_did: {type: string, pattern: '^did:key:z6Mk'}
+        created_at: {type: string, format: date-time}
     Error:
       type: object
       properties:
@@ -1447,6 +1454,31 @@ paths:
                 $ref: "#/components/schemas/Error"
 
   # ── Auth — User ─────────────────────────────────────────────────────────────
+
+  /api/v1/auth/keyring/config:
+    get:
+      summary: "(public) Get Keyring sign-in configuration"
+      description: Returns configuration only when the resolved Farm DID advertises the configured TrustTaskHTTPS and SignInPortal services.
+      tags: [Auth — User]
+      security: []
+      responses:
+        "200":
+          description: Keyring sign-in is ready
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [farm_did, link_host, flow, portal_url]
+                properties:
+                  farm_did: {type: string}
+                  link_host: {type: string, format: uri}
+                  flow: {type: string, example: /vti/flow/sign-in/0.1}
+                  portal_url: {type: string, format: uri}
+        "503":
+          description: Farm DID or wallet sign-in deployment is not ready
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
 
   /api/v1/auth/user/passkey/begin:
     post:
@@ -4847,6 +4879,39 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/user/wallet-login-bindings:
+    get:
+      summary: List active Keyring sign-in identities
+      description: Returns the authenticated account's active claim-derived wallet login bindings.
+      tags: [User]
+      security: [{CookieAuthUser: []}]
+      responses:
+        "200":
+          description: Active wallet login identities
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/WalletLoginBinding"}
+        "401": {description: Missing, invalid, expired, or revoked session}
+
+  /api/v1/user/wallet-login-bindings/{id}:
+    delete:
+      summary: Revoke a Keyring sign-in identity
+      description: Revokes the binding and every active Farm session derived from it. Claim and setup ownership records are preserved.
+      tags: [User]
+      security: [{CookieAuthUser: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer}
+      responses:
+        "204": {description: Binding and derived sessions revoked}
+        "400": {description: Invalid binding ID}
+        "401": {description: Missing, invalid, expired, or revoked session}
+        "404": {description: Binding not found for this account}
+
   /api/v1/user/passkeys/{id}:
     delete:
       summary: Delete user passkey
@@ -6709,8 +6774,8 @@ paths:
 
   /trust-task/trust-tasks:
     post:
-      summary: Consume a VTA claim or redeem Trust Task
-      description: Public Trust Task HTTPS binding 0.2 endpoint. Request authority comes from the document's Data Integrity proof, not a browser cookie. A redeem request may be held for up to 25 seconds while confirmation or provisioning changes state.
+      summary: Consume a VTA claim or Keyring sign-in Trust Task
+      description: Public Trust Task HTTPS binding 0.2 endpoint. Request authority comes from the document's Data Integrity proof, not a browser cookie. Supports provision/vta claim and redeem plus auth/oob request 0.2, claim 0.2, prove 0.3, respond 0.3, redeem 0.2, and cancel 0.1.
       tags: [Trust Tasks]
       security: []
       requestBody:
@@ -6720,7 +6785,7 @@ paths:
             schema: {$ref: '#/components/schemas/TrustTaskDocument'}
       responses:
         '200':
-          description: Signed claim next-step or terminal redeem hand-over
+          description: Signed task response; auth/oob/redeem also delivers the bounded HttpOnly user cookie to the starter browser
           content:
             application/json:
               schema: {$ref: '#/components/schemas/TrustTaskDocument'}

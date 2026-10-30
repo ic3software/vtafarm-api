@@ -39,3 +39,5 @@ data:
   FARM_DID:                 {{ .Values.vtaClaim.farmDID | quote }}
   TRUST_TASK_BASE:          {{ .Values.vtaClaim.trustTaskBase | quote }}
   LINK_HOST:                {{ .Values.vtaClaim.linkHost | quote }}
+  SIGN_IN_PORTAL_URL:       {{ .Values.vtaClaim.signInPortalURL | default (printf "%s/login" (include "app.frontendOrigin" .)) | quote }}
+  FARM_DISPLAY_NAME:        {{ .Values.vtaClaim.farmDisplayName | quote }}

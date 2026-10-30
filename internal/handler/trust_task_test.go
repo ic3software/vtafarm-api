@@ -18,6 +18,13 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/testutil"
 	farmtrusttask "github.com/ic3software/vtafarm-api/internal/trusttask"
 	prooflib "github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go/proof"
+	authoobclaimv0_2 "github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go/specs/auth/oob/claim/v0_2"
+	authoobgrantv0_3 "github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go/specs/auth/oob/grant/v0_3"
+	authoobidentifyv0_1 "github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go/specs/auth/oob/identify/v0_1"
+	authoobprovev0_3 "github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go/specs/auth/oob/prove/v0_3"
+	authoobredeemv0_2 "github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go/specs/auth/oob/redeem/v0_2"
+	authoobrequestv0_2 "github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go/specs/auth/oob/request/v0_2"
+	authoobrespondv0_3 "github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go/specs/auth/oob/respond/v0_3"
 	provisionvtaclaimv0_1 "github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go/specs/provision/vta/claim/v0_1"
 	provisionvtaredeemv0_1 "github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go/specs/provision/vta/redeem/v0_1"
 	trusttasknextstepv0_1 "github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go/specs/trust-task-next-step/v0_1"
@@ -39,15 +46,19 @@ func newTestTrustTaskHandler(t *testing.T, db *gorm.DB, cfg config.VTAClaimConfi
 	}
 	verificationMethod := signer.VerificationMethod()
 	multikey := verificationMethod[strings.LastIndex(verificationMethod, "#")+1:]
+	services := []map[string]any{{
+		"id": cfg.FarmDID + "#trust-tasks", "type": "TrustTaskHTTPS", "serviceEndpoint": cfg.TrustTaskBase,
+	}}
+	if cfg.SignInPortal != "" {
+		services = append(services, map[string]any{"id": cfg.FarmDID + "#sign-in-portal", "type": "SignInPortal", "serviceEndpoint": cfg.SignInPortal})
+	}
 	document, err := json.Marshal(map[string]any{
 		"id": cfg.FarmDID,
 		"verificationMethod": []map[string]any{{
 			"id": verificationMethod, "type": "Multikey", "controller": cfg.FarmDID, "publicKeyMultibase": multikey,
 		}},
 		"assertionMethod": []string{verificationMethod},
-		"service": []map[string]any{{
-			"id": cfg.FarmDID + "#trust-tasks", "type": "TrustTaskHTTPS", "serviceEndpoint": cfg.TrustTaskBase,
-		}},
+		"service":         services,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -58,16 +69,31 @@ func newTestTrustTaskHandler(t *testing.T, db *gorm.DB, cfg config.VTAClaimConfi
 }
 
 func signWalletDocument[P any](t *testing.T, signer *prooflib.Signer, document *trusttasks.Document[P]) []byte {
+	return signWalletDocumentAs(t, signer, document, "authentication")
+}
+
+func signWalletDocumentAs[P any](t *testing.T, signer *prooflib.Signer, document *trusttasks.Document[P], purpose string) []byte {
 	t.Helper()
 	encoded, err := json.Marshal(document)
 	if err != nil {
 		t.Fatal(err)
 	}
-	signed, err := signer.Sign(encoded, prooflib.SignOptions{ProofPurpose: "authentication"})
+	signed, err := signer.Sign(encoded, prooflib.SignOptions{ProofPurpose: purpose})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return signed
+}
+
+func postTrustTaskFrom(router http.Handler, body []byte, origin string) *httptest.ResponseRecorder {
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/trust-task/trust-tasks", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if origin != "" {
+		req.Header.Set("Origin", origin)
+	}
+	router.ServeHTTP(w, req)
+	return w
 }
 
 func postTrustTask(router http.Handler, body []byte) *httptest.ResponseRecorder {
@@ -214,6 +240,205 @@ func TestTrustTaskClaimAndRedeemFlow(t *testing.T) {
 	}
 	if handover.Type != provisionvtaredeemv0_1.ResponseTypeURI || handover.Payload.VtaDID != session.VtaDid || handover.Proof == nil {
 		t.Fatalf("unexpected hand-over: %+v", handover)
+	}
+}
+
+func TestKeyringOOBSignInIssuesRevocableBoundedSession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := testutil.Postgres(t)
+	ctx := t.Context()
+	session := testutil.SetupSession(t, db, model.ModeVtaOnly)
+	admin := model.Admin{UniqueId: "keyringadm"}
+	if err := db.Create(&admin).Error; err != nil {
+		t.Fatal(err)
+	}
+	batch := model.PoolBatch{CreatedBy: admin.ID, Label: "Keyring pool", RequestedCount: 1, IdempotencyKey: "keyring-pool", RequestDigest: "keyring-pool"}
+	if err := db.Create(&batch).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.PoolSession{SessionID: session.ID, BatchID: batch.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&session).Update("status", model.StatusPoolWaiting).Error; err != nil {
+		t.Fatal(err)
+	}
+	session.Status = model.StatusPoolWaiting
+
+	identitySeed := make([]byte, 32)
+	identitySeed[len(identitySeed)-1] = 21
+	identity, err := prooflib.SignerFromPrivateKey(prooflib.Ed25519, identitySeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation, err := connection.ChangePool(ctx, db, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connection.Claim(ctx, db, *reservation.ClaimHandle, identity.DID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connection.Confirm(ctx, db, session.ID, reservation.ID); err != nil {
+		t.Fatal(err)
+	}
+	started, err := connection.StartProvisioning(ctx, db, reservation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.SetupSession{}).Where("id = ?", session.ID).Updates(map[string]any{"status": "running"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&session, session.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.Reconcile(ctx, db, started, &session); err != nil {
+		t.Fatal(err)
+	}
+	var firstBinding model.WalletLoginBinding
+	if err := db.First(&firstBinding, "login_did = ?", identity.DID).Error; err != nil {
+		t.Fatal(err)
+	}
+	secondSession := testutil.SetupSession(t, db, model.ModeVtaOnly)
+	if err := db.Create(&model.PoolSession{SessionID: secondSession.ID, BatchID: batch.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&secondSession).Update("status", model.StatusPoolWaiting).Error; err != nil {
+		t.Fatal(err)
+	}
+	secondReservation, err := connection.ChangePool(ctx, db, secondSession.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connection.Claim(ctx, db, *secondReservation.ClaimHandle, identity.DID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connection.Confirm(ctx, db, secondSession.ID, secondReservation.ID); err != nil {
+		t.Fatal(err)
+	}
+	secondStarted, err := connection.StartProvisioning(ctx, db, secondReservation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&secondSession).Update("status", "running").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&secondSession, secondSession.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.Reconcile(ctx, db, secondStarted, &secondSession); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := validVTAClaimConfig()
+	cfg.SignInPortal = "https://farm.example.com/login"
+	cfg.FarmName = "VTA Farm"
+	handler := newTestTrustTaskHandler(t, db, cfg)
+	handler.ConfigureWalletSessions("test-secret", true)
+	handler.redeemHold = 0
+	if !handler.WalletSignInEnabled() {
+		t.Fatal("wallet sign-in was not enabled")
+	}
+	router := gin.New()
+	router.POST("/trust-task/trust-tasks", handler.Consume)
+
+	browserSeed := make([]byte, 32)
+	browserSeed[len(browserSeed)-1] = 22
+	browser, err := prooflib.SignerFromPrivateKey(prooflib.Ed25519, browserSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockSeed := make([]byte, 32)
+	lockSeed[len(lockSeed)-1] = 23
+	lock, err := prooflib.SignerFromPrivateKey(prooflib.Ed25519, lockSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	issuedAt, expiresAt := now.Format(time.RFC3339), now.Add(2*time.Minute).Format(time.RFC3339)
+	newDocument := func(typeURI string, issuer string, payload any) *trusttasks.Document[any] {
+		return &trusttasks.Document[any]{ID: uuid.NewString(), Type: typeURI, Issuer: &issuer, Recipient: &cfg.FarmDID, IssuedAt: &issuedAt, ExpiresAt: &expiresAt, Payload: payload}
+	}
+
+	open := newDocument(authoobrequestv0_2.TypeURI, browser.DID, authoobrequestv0_2.Payload{Purpose: authoobrequestv0_2.PurposeLogin, Mode: authoobrequestv0_2.ModeScan})
+	response := postTrustTaskFrom(router, signWalletDocument(t, browser, open), "https://farm.example.com")
+	if response.Code != http.StatusOK {
+		t.Fatalf("request=%d %s", response.Code, response.Body)
+	}
+	var opened trusttasks.Document[authoobrequestv0_2.Response]
+	if err := json.Unmarshal(response.Body.Bytes(), &opened); err != nil {
+		t.Fatal(err)
+	}
+
+	claim := newDocument(authoobclaimv0_2.TypeURI, lock.DID, authoobclaimv0_2.Payload{RequestID: opened.Payload.RequestID})
+	claim.ParentThreadID = &opened.Payload.RequestID
+	response = postTrustTask(router, signWalletDocument(t, lock, claim))
+	if response.Code != http.StatusOK {
+		t.Fatalf("claim=%d %s", response.Code, response.Body)
+	}
+	var login model.WalletLoginRequest
+	if err := db.First(&login, "request_id = ?", opened.Payload.RequestID).Error; err != nil || login.MatchNumber == nil {
+		t.Fatalf("claimed request: %+v %v", login, err)
+	}
+
+	identify := newDocument(authoobidentifyv0_1.TypeURI, identity.DID, authoobidentifyv0_1.Payload{RequestID: login.RequestID, ApproverKey: lock.DID, EnteredNumber: *login.MatchNumber})
+	identifyWire := signWalletDocument(t, identity, identify)
+	var identifyObject map[string]json.RawMessage
+	if err := json.Unmarshal(identifyWire, &identifyObject); err != nil {
+		t.Fatal(err)
+	}
+	prove := newDocument(authoobprovev0_3.TypeURI, lock.DID, authoobprovev0_3.Payload{Identify: identifyObject})
+	response = postTrustTask(router, signWalletDocument(t, lock, prove))
+	if response.Code != http.StatusOK {
+		t.Fatalf("prove=%d %s", response.Code, response.Body)
+	}
+	if err := db.First(&login, "request_id = ?", login.RequestID).Error; err != nil || login.Step2Digest == nil {
+		t.Fatalf("identified request: %+v %v", login, err)
+	}
+	if login.BindingID != nil {
+		t.Fatalf("multiple accounts were selected implicitly: %+v", login)
+	}
+	selection := authoobredeemv0_2.Ext{"com.ic3software.vtafarm": mustJSON(gin.H{"bindingId": firstBinding.ID})}
+	chooseAccount := newDocument(authoobredeemv0_2.TypeURI, browser.DID, authoobredeemv0_2.Payload{RequestID: login.RequestID, Ext: &selection})
+	response = postTrustTask(router, signWalletDocument(t, browser, chooseAccount))
+	if response.Code == http.StatusOK {
+		t.Fatalf("account selection completed before wallet approval: %s", response.Body)
+	}
+	if err := db.First(&login, "request_id = ?", login.RequestID).Error; err != nil || login.BindingID == nil || *login.BindingID != firstBinding.ID {
+		t.Fatalf("explicit account selection was not bound: %+v %v", login, err)
+	}
+
+	grantPayload := authoobgrantv0_3.Payload{
+		RequestID: login.RequestID, Decision: authoobgrantv0_3.PayloadDecisionApprove,
+		SessionKey: browser.DID, ApproverKey: lock.DID, Origin: "https://farm.example.com",
+		ContextDigest: *login.Step2Digest, SessionEndsAt: now.Add(2 * time.Hour).Format(time.RFC3339),
+	}
+	grant := newDocument(authoobgrantv0_3.TypeURI, identity.DID, grantPayload)
+	grantWire := signWalletDocumentAs(t, identity, grant, "assertionMethod")
+	var grantObject map[string]json.RawMessage
+	if err := json.Unmarshal(grantWire, &grantObject); err != nil {
+		t.Fatal(err)
+	}
+	respond := newDocument(authoobrespondv0_3.TypeURI, lock.DID, authoobrespondv0_3.Payload{Grant: grantObject})
+	response = postTrustTask(router, signWalletDocument(t, lock, respond))
+	if response.Code != http.StatusOK {
+		t.Fatalf("respond=%d %s", response.Code, response.Body)
+	}
+
+	redeem := newDocument(authoobredeemv0_2.TypeURI, browser.DID, authoobredeemv0_2.Payload{RequestID: login.RequestID})
+	response = postTrustTask(router, signWalletDocument(t, browser, redeem))
+	if response.Code != http.StatusOK || len(response.Result().Cookies()) != 1 {
+		t.Fatalf("redeem=%d cookies=%v %s", response.Code, response.Result().Cookies(), response.Body)
+	}
+	var walletSessions int64
+	if err := db.Model(&model.WalletLoginSession{}).Count(&walletSessions).Error; err != nil || walletSessions != 1 {
+		t.Fatalf("wallet sessions=%d err=%v", walletSessions, err)
+	}
+	if err := db.Model(&firstBinding).Update("revoked_at", time.Now().UTC()).Error; err != nil {
+		t.Fatal(err)
+	}
+	retry := newDocument(authoobredeemv0_2.TypeURI, browser.DID, authoobredeemv0_2.Payload{RequestID: login.RequestID})
+	response = postTrustTask(router, signWalletDocument(t, browser, retry))
+	if response.Code == http.StatusOK {
+		t.Fatalf("revoked binding redeemed again: %s", response.Body)
 	}
 }
 

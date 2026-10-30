@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base32"
 	"encoding/json"
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/ic3software/vtafarm-api/internal/devwallet"
 	prooflib "github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go/proof"
 	provisionvtaclaimv0_1 "github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go/specs/provision/vta/claim/v0_1"
 	"github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go/trusttasks"
@@ -26,9 +26,10 @@ import (
 var handlePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{22,43}$`)
 
 type config struct {
-	apiBase string
-	handle  string
-	farmDID string
+	apiBase        string
+	handle         string
+	farmDID        string
+	walletSeedFile string
 }
 
 func main() {
@@ -36,9 +37,16 @@ func main() {
 	flag.StringVar(&cfg.apiBase, "api-base", "http://localhost:8080", "local VTA Farm API base URL")
 	flag.StringVar(&cfg.handle, "handle", "", "claim ID from the QR trigger link")
 	flag.StringVar(&cfg.farmDID, "farm-did", "", "Farm DID from the QR trigger link")
+	flag.StringVar(&cfg.walletSeedFile, "wallet-seed-file", devwallet.DefaultSeedFile, "private local seed replaced by each development claim and loaded by the sign-in helper")
 	flag.Parse()
 
-	if err := run(cfg, time.Now, rand.Reader, &http.Client{Timeout: 15 * time.Second}, os.Stdout); err != nil {
+	seed, err := devwallet.ReplaceSeed(cfg.walletSeedFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "dev claim:", err)
+		os.Exit(1)
+	}
+	fmt.Fprintln(os.Stdout, "Generated fresh private development wallet:", cfg.walletSeedFile)
+	if err := run(cfg, time.Now, bytes.NewReader(seed), &http.Client{Timeout: 15 * time.Second}, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "dev claim:", err)
 		os.Exit(1)
 	}

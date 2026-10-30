@@ -61,8 +61,12 @@ func Setup(
 
 	r.GET("/health", handler.Health)
 	trustTask := handler.NewTrustTaskHandler(db, cfg.VTAClaim)
+	trustTask.ConfigureWalletSessions(cfg.JWTSecret, cfg.CookieSecure())
 	if !trustTask.Enabled() && cfg.VTAClaim.FarmDID != "" {
 		log.Printf("warn: VTA Claim identity validation failed — Trust Task and trigger-link endpoints disabled")
+	}
+	if trustTask.Enabled() && !trustTask.WalletSignInEnabled() && cfg.VTAClaim.SignInPortal != "" {
+		log.Printf("warn: Keyring sign-in identity validation failed — wallet sign-in remains disabled")
 	}
 	r.POST("/trust-task/trust-tasks", middleware.MobilePrivacy(), middleware.NoStore(), middleware.RateLimit(120, time.Minute), trustTask.Consume)
 
@@ -89,6 +93,7 @@ func Setup(
 	}
 
 	v1 := r.Group("/api/v1")
+	v1.GET("/auth/keyring/config", middleware.NoStore(), middleware.RateLimit(60, time.Minute), trustTask.WalletSignInConfig)
 	statusHandler := handler.NewStatusHandler(db, k8sClient, handler.StatusConfig{
 		ClusterDomain:   cfg.ClusterDomain,
 		VaultAddr:       cfg.Vault.Addr,
@@ -168,7 +173,7 @@ func Setup(
 
 	// Admin routes — cookie: vtafarm_admin
 	adminAuth := v1.Group("",
-		middleware.AuthRequired(cfg.JWTSecret, middleware.CookieAdmin),
+		middleware.AuthRequired(db, cfg.JWTSecret, middleware.CookieAdmin),
 		middleware.RequireRole(model.RoleAdmin),
 	)
 	uh := handler.NewUserHandler(db)
@@ -301,11 +306,14 @@ func Setup(
 
 	// User routes — cookie: vtafarm_user
 	userAuth := v1.Group("",
-		middleware.AuthRequired(cfg.JWTSecret, middleware.CookieUser),
+		middleware.AuthRequired(db, cfg.JWTSecret, middleware.CookieUser),
 		middleware.RequireRole(model.RoleUser),
 	)
+	walletBindings := handler.NewWalletLoginBindingHandler(db)
 	{
 		userAuth.GET("/user/me", uh.Me)
+		userAuth.GET("/user/wallet-login-bindings", walletBindings.List)
+		userAuth.DELETE("/user/wallet-login-bindings/:id", walletBindings.Revoke)
 		userAuth.POST("/user/passkeys/register/begin", pkh.RegisterBegin)
 		userAuth.POST("/user/passkeys/register/complete", pkh.RegisterComplete)
 		userAuth.GET("/user/passkeys", pkh.List)
@@ -371,7 +379,7 @@ func Setup(
 	// than a route that pretends not to exist.
 	dh := handler.NewDomainHandler(db, cfg.AppEnv, cfg.ClusterDomain, cfg.ClusterIngressIP, k8sClient)
 	domains := v1.Group("/domains",
-		middleware.AuthRequired(cfg.JWTSecret, middleware.CookieUser),
+		middleware.AuthRequired(db, cfg.JWTSecret, middleware.CookieUser),
 		middleware.RequireRole(model.RoleUser),
 	)
 	{

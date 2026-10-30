@@ -1,10 +1,23 @@
-# VTA Farm Mobile Integration
+# Keyring VTA Acquisition Contract
 
-This guide describes the API flow for linking a mobile Keyring to VTA Farm.
-The app scans a QR code, sends a signed claim, displays a six-character check,
-and polls until the Farm returns the VTA.
+This contract defines how Keyring obtains a VTA from VTA Farm. It applies to
+both places where VTA Farm offers a VTA:
+
+- creating or claiming a VTA from the authenticated Portal;
+- obtaining a VTA from the public homepage flow.
+
+Both entry points produce the same `/vti/flow/vta-claim/0.1` trigger link and
+the same `provision/vta/claim` and `provision/vta/redeem` Trust Task exchange.
+Keyring must not implement separate acquisition protocols based on which Farm
+page displayed the QR.
+
+The app scans or opens the trigger link, sends a signed claim, displays a
+six-character check, and polls until the Farm returns the VTA.
 
 This replaces the removed callback/progress-token and SIOPv2 flows.
+
+Signing in after acquisition is a separate `auth/oob` flow documented in the
+[Keyring sign-in contract](keyring-app-sign-in-contract.md).
 
 All example DIDs, UUIDs, timestamps, and signatures below are placeholders.
 
