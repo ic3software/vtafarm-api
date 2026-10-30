@@ -198,7 +198,8 @@ func TestAdditionalAdministratorRelease(t *testing.T) {
 	if r.Operation != OperationGrantACL {
 		t.Fatalf("operation=%s", r.Operation)
 	}
-	if _, err := Claim(ctx, db, *r.ClaimHandle, newDID(t)); err != nil {
+	adminDID := newDID(t)
+	if _, err := Claim(ctx, db, *r.ClaimHandle, adminDID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Confirm(ctx, db, s.ID, r.ID); err != nil {
@@ -215,9 +216,12 @@ func TestAdditionalAdministratorRelease(t *testing.T) {
 	if released.Status != "released" || released.ReleasedAt == nil {
 		t.Fatalf("not released: %+v", released)
 	}
-	var bindings int64
-	if err := db.Model(&model.WalletLoginBinding{}).Where("source_claim_id = ?", r.ID).Count(&bindings).Error; err != nil || bindings != 0 {
-		t.Fatalf("additional administrator created %d wallet login bindings: %v", bindings, err)
+	var binding model.WalletLoginBinding
+	if err := db.First(&binding, "source_claim_id = ?", r.ID).Error; err != nil {
+		t.Fatalf("additional administrator did not create wallet login binding: %v", err)
+	}
+	if binding.UserID != s.UserID || binding.LoginDID != adminDID || binding.SourceSessionID != s.ID {
+		t.Fatalf("additional administrator created the wrong wallet login binding: %+v", binding)
 	}
 }
 

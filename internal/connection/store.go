@@ -458,7 +458,7 @@ func MarkReleased(ctx context.Context, db *gorm.DB, requestID string) error {
 		if err := tx.Model(&r).Updates(map[string]any{"status": "released", "released_at": now}).Error; err != nil {
 			return err
 		}
-		if r.Operation != OperationProvisionVTA || r.AdminDid == "" || r.ClaimantDigest == nil || ClaimantDigest(r.AdminDid) != *r.ClaimantDigest {
+		if (r.Operation != OperationProvisionVTA && r.Operation != OperationGrantACL) || r.AdminDid == "" || r.ClaimantDigest == nil || ClaimantDigest(r.AdminDid) != *r.ClaimantDigest {
 			return nil
 		}
 		var session model.SetupSession

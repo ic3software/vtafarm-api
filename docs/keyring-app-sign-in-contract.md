@@ -36,9 +36,10 @@ when obtaining a VTA.
 
 ### Existing and legacy VTAs
 
-A VTA previously obtained through the Keyring acquisition flow can sign in even
-if its Farm login binding was not created at claim time; VTA Farm derives that
-binding from the verified, successfully released claim on first sign-in.
+A Keyring identity that previously completed either initial VTA acquisition
+(`provisionVta`) or an administrator grant (`grantAcl`) can sign in. If its Farm
+login binding was not created at claim time, VTA Farm derives that binding from
+the verified, successfully released claim on first sign-in.
 
 A legacy VTA that was never obtained or explicitly linked through Keyring has no
 Keyring identity that VTA Farm can verify and cannot use Keyring sign-in. The
@@ -169,8 +170,9 @@ The integration is ready when:
 - a Keyring with one VTA can sign in to its existing Farm account;
 - a Keyring with two VTAs can select either VTA in Keyring and reach the matching
   account;
-- a legacy VTA that was never claimed through Keyring cannot use Keyring
-  sign-in because it has no verified Keyring ownership claim;
+- a legacy VTA identity that never completed `provisionVta` or `grantAcl`
+  through Keyring cannot use Keyring sign-in because it has no verified Keyring
+  ownership claim;
 - QR scanning and same-device link opening both work;
 - wrong identities, wrong numbers, expired requests, altered context, and
   invalid Farm signatures fail; and
