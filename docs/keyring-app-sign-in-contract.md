@@ -8,7 +8,7 @@ Farm. Obtaining a VTA is a separate flow documented in the
 
 Keyring must:
 
-1. recognize the `/vti/flow/sign-in/0.1` trigger link;
+1. recognize the [`/vti/flow/sign-in/0.1`](https://trustoverip.github.io/dtgwg-vti-spec/#the-flow-registry) trigger link;
 2. resolve and verify the VTA Farm DID;
 3. let the person select an existing VTA identity;
 4. complete the `auth/oob` Trust Task exchange; and
@@ -179,4 +179,5 @@ The integration is ready when:
 ## References
 
 - [Keyring VTA acquisition contract](mobile-connection-app-api.md)
+- [VTI Trigger Link flow registry](https://trustoverip.github.io/dtgwg-vti-spec/#the-flow-registry)
 - Published schemas under `https://trusttasks.org/spec/auth/oob/`

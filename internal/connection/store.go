@@ -461,13 +461,6 @@ func MarkReleased(ctx context.Context, db *gorm.DB, requestID string) error {
 		if r.Operation != OperationProvisionVTA || r.AdminDid == "" || r.ClaimantDigest == nil || ClaimantDigest(r.AdminDid) != *r.ClaimantDigest {
 			return nil
 		}
-		var poolSession model.PoolSession
-		if err := tx.First(&poolSession, "session_id = ?", r.SessionID).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return nil
-			}
-			return err
-		}
 		var session model.SetupSession
 		if err := tx.First(&session, r.SessionID).Error; err != nil {
 			return err

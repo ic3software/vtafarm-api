@@ -58,7 +58,6 @@ func materializeReleasedClaims(ctx context.Context, db *gorm.DB, loginDID string
 	if err := db.WithContext(ctx).Table("mobile_connections AS mc").
 		Select("mc.id AS claim_id, ss.id AS session_id, ss.user_id, mc.admin_did, mc.claimant_digest AS digest, mc.released_at AS released").
 		Joins("JOIN setup_sessions AS ss ON ss.id = mc.session_id").
-		Joins("JOIN pool_sessions AS ps ON ps.session_id = ss.id").
 		Where("mc.status = 'released' AND mc.operation = ? AND mc.admin_did = ?", connection.OperationProvisionVTA, loginDID).
 		Find(&sources).Error; err != nil {
 		return err
