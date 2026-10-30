@@ -104,27 +104,39 @@ func (h *SetupHandler) Validate(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"cloudflare": "ok"})
 }
 
+// ghcrClientFor returns the registry client for a component, or ok=false for
+// an unknown component name. The client is nil when that source is not
+// configured.
+func (h *SetupHandler) ghcrClientFor(component string) (client *ghcr.Client, ok bool) {
+	switch component {
+	case "vta":
+		return h.ghcr, true
+	case "mediator":
+		return h.mediatorGhcr, true
+	case "dids":
+		return h.didsGhcr, true
+	case "vtc":
+		return h.vtcGhcr, true
+	case "trust-registry":
+		return h.trustRegistryGhcr, true
+	default:
+		return nil, false
+	}
+}
+
+const unknownComponentMessage = " (expected vta, mediator, dids, vtc, or trust-registry)"
+
 // GET /api/v1/setup/images?component=vta|mediator|dids|vtc
 // component defaults to "vta" (vta_only's existing behavior, unchanged).
 // mediator/dids are full_stack-only and vtc is full_stack-only —
 // same GHCR-package-tags pattern as vta. The response rows are ghcr.ImageTag
-// as-is: tag, image, the latest/nightly/main flags and the creation time.
+// as-is: tag, image, the latest/nightly/main flags and the creation time,
+// plus the default flag on the row an admin pinned (see image_defaults.go).
 func (h *SetupHandler) Images(c *gin.Context) {
 	component := c.DefaultQuery("component", "vta")
-	var client *ghcr.Client
-	switch component {
-	case "vta":
-		client = h.ghcr
-	case "mediator":
-		client = h.mediatorGhcr
-	case "dids":
-		client = h.didsGhcr
-	case "vtc":
-		client = h.vtcGhcr
-	case "trust-registry":
-		client = h.trustRegistryGhcr
-	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown component " + component + " (expected vta, mediator, dids, vtc, or trust-registry)"})
+	client, ok := h.ghcrClientFor(component)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown component " + component + unknownComponentMessage})
 		return
 	}
 
@@ -137,6 +149,17 @@ func (h *SetupHandler) Images(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch images: " + err.Error()})
 		return
+	}
+
+	// The pin is a convenience for the create form, not a gate: a lookup
+	// failure logs and still returns the list without a default flag.
+	if h.db != nil {
+		pinned, err := loadImageDefault(c.Request.Context(), h.db, component)
+		if err != nil {
+			log.Printf("[setup] warn: could not load image default for %s: %v", component, err)
+		} else {
+			markImageDefault(tags, pinned)
+		}
 	}
 
 	c.JSON(http.StatusOK, tags)
