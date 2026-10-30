@@ -37,17 +37,15 @@ func main() {
 	flag.StringVar(&cfg.apiBase, "api-base", "http://localhost:8080", "local VTA Farm API base URL")
 	flag.StringVar(&cfg.handle, "handle", "", "claim ID from the QR trigger link")
 	flag.StringVar(&cfg.farmDID, "farm-did", "", "Farm DID from the QR trigger link")
-	flag.StringVar(&cfg.walletSeedFile, "wallet-seed-file", devwallet.DefaultSeedFile, "private local seed reused by development claim and sign-in helpers")
+	flag.StringVar(&cfg.walletSeedFile, "wallet-seed-file", devwallet.DefaultSeedFile, "private local seed replaced by each development claim and loaded by the sign-in helper")
 	flag.Parse()
 
-	seed, created, err := devwallet.LoadOrCreateSeed(cfg.walletSeedFile)
+	seed, err := devwallet.ReplaceSeed(cfg.walletSeedFile)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "dev claim:", err)
 		os.Exit(1)
 	}
-	if created {
-		fmt.Fprintln(os.Stdout, "Created private development wallet:", cfg.walletSeedFile)
-	}
+	fmt.Fprintln(os.Stdout, "Generated fresh private development wallet:", cfg.walletSeedFile)
 	if err := run(cfg, time.Now, bytes.NewReader(seed), &http.Client{Timeout: 15 * time.Second}, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "dev claim:", err)
 		os.Exit(1)

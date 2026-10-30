@@ -7,14 +7,14 @@ import (
 	"testing"
 )
 
-func TestLoadOrCreateSeedPersistsPrivateSeed(t *testing.T) {
+func TestReplaceSeedReplacesPrivateSeed(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wallet", "seed")
-	first, created, err := LoadOrCreateSeed(path)
+	first, err := ReplaceSeed(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !created || len(first) != 32 {
-		t.Fatalf("created=%v seed length=%d", created, len(first))
+	if len(first) != 32 {
+		t.Fatalf("seed length=%d", len(first))
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -23,12 +23,19 @@ func TestLoadOrCreateSeedPersistsPrivateSeed(t *testing.T) {
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("seed mode=%o, want 600", got)
 	}
-	second, created, err := LoadOrCreateSeed(path)
+	second, err := ReplaceSeed(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created || !bytes.Equal(first, second) {
-		t.Fatal("existing development wallet seed was not reused")
+	if bytes.Equal(first, second) {
+		t.Fatal("existing development wallet seed was reused")
+	}
+	loaded, err := LoadSeed(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(second, loaded) {
+		t.Fatal("replacement development wallet seed was not persisted")
 	}
 }
 

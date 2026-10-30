@@ -36,37 +36,35 @@ func LoadSeed(path string) ([]byte, error) {
 	return seed, nil
 }
 
-func LoadOrCreateSeed(path string) ([]byte, bool, error) {
-	seed, err := LoadSeed(path)
-	if err == nil {
-		return seed, false, nil
+func ReplaceSeed(path string) ([]byte, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, errors.New("development wallet seed path is empty")
 	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return nil, false, err
-	}
-
-	seed = make([]byte, ed25519.SeedSize)
+	seed := make([]byte, ed25519.SeedSize)
 	if _, err := rand.Read(seed); err != nil {
-		return nil, false, fmt.Errorf("generate development wallet seed: %w", err)
+		return nil, fmt.Errorf("generate development wallet seed: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, false, fmt.Errorf("create development wallet directory: %w", err)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("create development wallet directory: %w", err)
 	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		seed, loadErr := LoadSeed(path)
-		return seed, false, loadErr
-	}
+	file, err := os.CreateTemp(dir, ".keyring-wallet-seed-*")
 	if err != nil {
-		return nil, false, fmt.Errorf("create development wallet seed: %w", err)
+		return nil, fmt.Errorf("create temporary development wallet seed: %w", err)
 	}
+	temporaryPath := file.Name()
+	defer os.Remove(temporaryPath)
 	encoded := base64.StdEncoding.EncodeToString(seed) + "\n"
 	if _, err := file.WriteString(encoded); err != nil {
 		_ = file.Close()
-		return nil, false, fmt.Errorf("write development wallet seed: %w", err)
+		return nil, fmt.Errorf("write development wallet seed: %w", err)
 	}
 	if err := file.Close(); err != nil {
-		return nil, false, fmt.Errorf("close development wallet seed: %w", err)
+		return nil, fmt.Errorf("close development wallet seed: %w", err)
 	}
-	return seed, true, nil
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return nil, fmt.Errorf("replace development wallet seed: %w", err)
+	}
+	return seed, nil
 }
