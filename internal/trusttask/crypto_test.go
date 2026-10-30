@@ -67,6 +67,19 @@ func TestValidateFarmDIDDocument(t *testing.T) {
 	}
 }
 
+func TestValidateSignInPortal(t *testing.T) {
+	did := "did:webvh:QmFarm:example.com:vtafarm-auth"
+	document := []byte(`{"id":"` + did + `","service":[{"id":"` + did + `#sign-in-portal","type":"SignInPortal","serviceEndpoint":"https://farm.example.com/login"}]}`)
+	if err := ValidateSignInPortal(document, did, "https://farm.example.com/login"); err != nil {
+		t.Fatal(err)
+	}
+	for _, portal := range []string{"http://farm.example.com/login", "https://other.example.com/login", "https://farm.example.com/login/", "https://farm.example.com/login?next=x"} {
+		if err := ValidateSignInPortal(document, did, portal); err == nil {
+			t.Errorf("accepted invalid or mismatched portal %q", portal)
+		}
+	}
+}
+
 func TestSignerProducesVerifiableEddsaJCSProof(t *testing.T) {
 	did := "did:webvh:QmFarm:example.com:vtafarm-auth"
 	signer, err := NewSigner(did, base64.StdEncoding.EncodeToString(make([]byte, 32)))

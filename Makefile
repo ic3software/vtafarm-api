@@ -56,9 +56,10 @@ gen-keypair:
 	go run ./cmd/gen-keypair
 
 gen-farm-key:
-	@test -n "$(FARM_DID)" || (echo "usage: make gen-farm-key FARM_DID=did:webvh:... TRUST_TASK_BASE=https://api.example.com/trust-task"; exit 1)
-	@test -n "$(TRUST_TASK_BASE)" || (echo "usage: make gen-farm-key FARM_DID=did:webvh:... TRUST_TASK_BASE=https://api.example.com/trust-task"; exit 1)
-	go run ./cmd/gen-farm-key "$(FARM_DID)" "$(TRUST_TASK_BASE)"
+	@test -n "$(FARM_DID)" || (echo "usage: make gen-farm-key FARM_DID=did:webvh:... TRUST_TASK_BASE=https://api.example.com/trust-task SIGN_IN_PORTAL_URL=https://farm.example.com/login"; exit 1)
+	@test -n "$(TRUST_TASK_BASE)" || (echo "usage: make gen-farm-key FARM_DID=did:webvh:... TRUST_TASK_BASE=https://api.example.com/trust-task SIGN_IN_PORTAL_URL=https://farm.example.com/login"; exit 1)
+	@test -n "$(SIGN_IN_PORTAL_URL)" || (echo "usage: make gen-farm-key FARM_DID=did:webvh:... TRUST_TASK_BASE=https://api.example.com/trust-task SIGN_IN_PORTAL_URL=https://farm.example.com/login"; exit 1)
+	go run ./cmd/gen-farm-key "$(FARM_DID)" "$(TRUST_TASK_BASE)" "$(SIGN_IN_PORTAL_URL)"
 
 dev-claim:
 	@test -n "$(HANDLE)" || (echo "usage: make dev-claim HANDLE=<QR claim ID> FARM_DID=<Farm DID>"; exit 1)

@@ -15,11 +15,12 @@ import (
 )
 
 func main() {
-	if len(os.Args) != 3 {
-		log.Fatal("usage: gen-farm-key <did:webvh Farm DID> <HTTPS Trust Task base ending in /trust-task>")
+	if len(os.Args) != 4 {
+		log.Fatal("usage: gen-farm-key <did:webvh Farm DID> <HTTPS Trust Task base ending in /trust-task> <HTTPS SignInPortal URL>")
 	}
 	farmDID := os.Args[1]
 	trustTaskBase := os.Args[2]
+	signInPortal := os.Args[3]
 	seed := make([]byte, 32)
 	if _, err := rand.Read(seed); err != nil {
 		log.Fatal(err)
@@ -35,7 +36,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("resolve current Farm DID document: %v", err)
 	}
-	document, err := buildDIDDocument(currentDocument, farmDID, trustTaskBase, signer)
+	document, err := buildDIDDocument(currentDocument, farmDID, trustTaskBase, signInPortal, signer)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -59,7 +60,7 @@ type service struct {
 	ServiceEndpoint string `json:"serviceEndpoint"`
 }
 
-func buildDIDDocument(currentDocument []byte, farmDID, trustTaskBase string, signer *trusttask.Signer) ([]byte, error) {
+func buildDIDDocument(currentDocument []byte, farmDID, trustTaskBase, signInPortal string, signer *trusttask.Signer) ([]byte, error) {
 	verificationMethodID := signer.VerificationMethod()
 	publicKeyMultibase := strings.TrimPrefix(verificationMethodID, farmDID+"#")
 	if publicKeyMultibase == verificationMethodID || publicKeyMultibase == "" {
@@ -102,6 +103,15 @@ func buildDIDDocument(currentDocument []byte, farmDID, trustTaskBase string, sig
 	if err != nil {
 		return nil, fmt.Errorf("merge service: %w", err)
 	}
+	signInService := service{
+		ID:              farmDID + "#sign-in-portal",
+		Type:            "SignInPortal",
+		ServiceEndpoint: signInPortal,
+	}
+	services, err = upsertObjectByID(services, signInService.ID, signInService)
+	if err != nil {
+		return nil, fmt.Errorf("merge SignInPortal service: %w", err)
+	}
 	document["service"] = services
 
 	encoded, err := json.MarshalIndent(document, "", "  ")
@@ -109,6 +119,9 @@ func buildDIDDocument(currentDocument []byte, farmDID, trustTaskBase string, sig
 		return nil, fmt.Errorf("encode Farm DID document: %w", err)
 	}
 	if err := trusttask.ValidateFarmDIDDocument(encoded, signer, trustTaskBase); err != nil {
+		return nil, err
+	}
+	if err := trusttask.ValidateSignInPortal(encoded, farmDID, signInPortal); err != nil {
 		return nil, err
 	}
 	return encoded, nil

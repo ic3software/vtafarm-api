@@ -11,6 +11,7 @@ import (
 func TestBuildDIDDocumentPreservesExistingDocument(t *testing.T) {
 	farmDID := "did:webvh:QmFarm:dev-dids.example.com:vtafarm-auth"
 	trustTaskBase := "https://dev-vtafarm-api.example.com/trust-task"
+	signInPortal := "https://dev-vtafarm.example.com/login"
 	signer, err := trusttask.NewSigner(farmDID, base64.StdEncoding.EncodeToString(make([]byte, 32)))
 	if err != nil {
 		t.Fatal(err)
@@ -25,12 +26,15 @@ func TestBuildDIDDocumentPreservesExistingDocument(t *testing.T) {
   "service": [{"id":"` + farmDID + `#tsp","type":"TSPTransport","serviceEndpoint":"did:webvh:mediator"}]
 }`)
 
-	document, err := buildDIDDocument(current, farmDID, trustTaskBase, signer)
+	document, err := buildDIDDocument(current, farmDID, trustTaskBase, signInPortal, signer)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := trusttask.ValidateFarmDIDDocument(document, signer, trustTaskBase); err != nil {
 		t.Fatalf("generated DID document does not validate: %v", err)
+	}
+	if err := trusttask.ValidateSignInPortal(document, farmDID, signInPortal); err != nil {
+		t.Fatalf("generated SignInPortal does not validate: %v", err)
 	}
 
 	var parsed struct {
@@ -57,7 +61,7 @@ func TestBuildDIDDocumentPreservesExistingDocument(t *testing.T) {
 	if len(parsed.Authentication) != 1 || len(parsed.KeyAgreement) != 1 {
 		t.Fatalf("DID relationships were not preserved: authentication=%#v keyAgreement=%#v", parsed.Authentication, parsed.KeyAgreement)
 	}
-	if len(parsed.Service) != 2 || parsed.Service[0].ID != farmDID+"#tsp" || parsed.Service[1].ID != farmDID+"#trust-tasks" {
+	if len(parsed.Service) != 3 || parsed.Service[0].ID != farmDID+"#tsp" || parsed.Service[1].ID != farmDID+"#trust-tasks" || parsed.Service[2].ID != farmDID+"#sign-in-portal" {
 		t.Fatalf("service = %#v", parsed.Service)
 	}
 }
@@ -65,17 +69,18 @@ func TestBuildDIDDocumentPreservesExistingDocument(t *testing.T) {
 func TestBuildDIDDocumentIsIdempotent(t *testing.T) {
 	farmDID := "did:webvh:QmFarm:dev-dids.example.com:vtafarm-auth"
 	trustTaskBase := "https://dev-vtafarm-api.example.com/trust-task"
+	signInPortal := "https://dev-vtafarm.example.com/login"
 	signer, err := trusttask.NewSigner(farmDID, base64.StdEncoding.EncodeToString(make([]byte, 32)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	current := []byte(`{"id":"` + farmDID + `"}`)
 
-	first, err := buildDIDDocument(current, farmDID, trustTaskBase, signer)
+	first, err := buildDIDDocument(current, farmDID, trustTaskBase, signInPortal, signer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := buildDIDDocument(first, farmDID, trustTaskBase, signer)
+	second, err := buildDIDDocument(first, farmDID, trustTaskBase, signInPortal, signer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,10 +97,13 @@ func TestBuildDIDDocumentRejectsInvalidInputs(t *testing.T) {
 	}
 	current := []byte(`{"id":"` + farmDID + `"}`)
 
-	if _, err := buildDIDDocument(current, farmDID, "http://localhost:8080/trust-task", signer); err == nil {
+	if _, err := buildDIDDocument(current, farmDID, "http://localhost:8080/trust-task", "https://farm.example.com/login", signer); err == nil {
 		t.Fatal("accepted an HTTP TRUST_TASK_BASE")
 	}
-	if _, err := buildDIDDocument([]byte(`{"id":"did:webvh:other"}`), farmDID, "https://api.example.com/trust-task", signer); err == nil {
+	if _, err := buildDIDDocument([]byte(`{"id":"did:webvh:other"}`), farmDID, "https://api.example.com/trust-task", "https://farm.example.com/login", signer); err == nil {
 		t.Fatal("accepted a current document with a different id")
+	}
+	if _, err := buildDIDDocument(current, farmDID, "https://api.example.com/trust-task", "http://farm.example.com/login", signer); err == nil {
+		t.Fatal("accepted an HTTP SignInPortal URL")
 	}
 }

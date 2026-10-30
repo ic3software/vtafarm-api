@@ -1,6 +1,6 @@
 # Keyring Wallet Sign-in Plan
 
-- Status: Agreed product direction; implementation and Keyring compatibility pending
+- Status: Farm implementation complete; deployment configuration and real Keyring acceptance testing pending
 - Scope: `vtafarm-api`, the `vtafarm` login page, and the existing VTA pool
 - Related designs: [Pooled VTA creation and claim](pooled-vta-claim-design.md),
   [public signup](public-signup-flow-design.md), and
@@ -206,6 +206,198 @@ following VTI's restriction against a same-domain universal-link host.
 The observed development VTC reported missing `TrustTaskHTTPS` and `SignInPortal`
 during this investigation. That deployment was not a successful end-to-end
 reference; its configuration must not be copied without validation.
+
+### 5.1 Local phone testing through Cloudflare Tunnel
+
+Use `dev-vtafarm-api.firstperson.dev` for the local API and
+`dev-vtafarm.firstperson.dev` for the local frontend during Keyring acceptance
+testing. Cloudflare terminates publicly trusted HTTPS while both services
+continue to use HTTP on the developer machine. A named tunnel is required
+because a quick tunnel changes its hostname when restarted, which would
+invalidate the service URLs published in the Farm DID document.
+
+Requests for `/api`, `/trust-task`, and `/health` on the API hostname go to port
+`8080`. The frontend hostname goes to Vite on port `5173`. This mirrors the
+deployed separation between the Portal and API while keeping both HTTPS origins
+stable across local restarts.
+
+#### Prerequisites
+
+- `firstperson.dev` is managed by the Cloudflare account used to create the
+  tunnel.
+- The local API is available at `http://127.0.0.1:8080` and the frontend is
+  available at `http://127.0.0.1:5173`.
+- The developer has permission to create a Cloudflare Tunnel and the DNS records
+  for `dev-vtafarm-api.firstperson.dev` and `dev-vtafarm.firstperson.dev`.
+- The Farm uses a development DID and development signing key. Do not expose
+  production data or production secrets through the tunnel.
+
+Install `cloudflared`, authenticate, and create a named tunnel:
+
+```sh
+brew install cloudflared
+cloudflared tunnel login
+cloudflared tunnel create vtafarm-local
+cloudflared tunnel route dns vtafarm-local dev-vtafarm-api.firstperson.dev
+cloudflared tunnel route dns vtafarm-local dev-vtafarm.firstperson.dev
+```
+
+The create command prints the tunnel UUID and the path of its credentials file.
+Put those values in a local `cloudflared` configuration file outside the
+repository; the credentials file is a secret and must never be committed:
+
+```yaml
+tunnel: <TUNNEL_UUID>
+credentials-file: <ABSOLUTE_PATH_TO_TUNNEL_CREDENTIALS_JSON>
+
+ingress:
+  - hostname: dev-vtafarm-api.firstperson.dev
+    path: "^/(api|trust-task|health)(/.*)?$"
+    service: http://127.0.0.1:8080
+
+  - hostname: dev-vtafarm.firstperson.dev
+    service: http://127.0.0.1:5173
+
+  - service: http_status:404
+```
+
+Ingress rules are evaluated from top to bottom and the path is forwarded
+unchanged. Validate the file and confirm that representative URLs select the
+intended local service before starting the tunnel:
+
+```sh
+cloudflared tunnel --config /path/to/config.yml ingress validate
+cloudflared tunnel --config /path/to/config.yml ingress rule \
+  https://dev-vtafarm-api.firstperson.dev/trust-task/trust-tasks
+cloudflared tunnel --config /path/to/config.yml ingress rule \
+  https://dev-vtafarm.firstperson.dev/login
+cloudflared tunnel --config /path/to/config.yml run vtafarm-local
+```
+
+Configure the API with the exact public URLs that will be advertised by the
+Farm DID. CORS must allow the frontend origin that the browser actually sees,
+not the local HTTP upstream behind the tunnel:
+
+```dotenv
+TRUST_TASK_BASE=https://dev-vtafarm-api.firstperson.dev/trust-task
+SIGN_IN_PORTAL_URL=https://dev-vtafarm.firstperson.dev/login
+CORS_ALLOWED_ORIGINS=https://dev-vtafarm.firstperson.dev
+```
+
+Keyring-only testing does not require changing the existing localhost WebAuthn
+configuration. The Passkey button will not work on the tunneled frontend in
+that mode. If passkey fallback is also part of the acceptance test, use the
+following values and register a separate development passkey because an
+existing `localhost` credential is scoped to the old RP ID:
+
+```dotenv
+WEBAUTHN_RP_ID=dev-vtafarm.firstperson.dev
+WEBAUTHN_RP_ORIGINS=https://dev-vtafarm.firstperson.dev
+```
+
+`WEBAUTHN_RP_ID` is a hostname without a scheme, port, or path, while
+`WEBAUTHN_RP_ORIGINS` is the exact HTTPS origin.
+
+Only `cloudflared` continues to use the local HTTP addresses:
+
+```text
+http://127.0.0.1:8080
+http://127.0.0.1:5173
+```
+
+For a production-equivalent secure-cookie test, also run the API with
+`APP_ENV=production`. Continue to use isolated development data and development
+credentials. The frontend must use the public API origin for requests:
+
+```dotenv
+VITE_API_URL=https://dev-vtafarm-api.firstperson.dev
+```
+
+Vite rejects unlisted hostnames because accepting arbitrary `Host` headers would
+allow DNS-rebinding attacks against source served by the development server.
+From the workspace root, use the dedicated tunnel mode; it binds Vite to the
+same loopback address configured in Cloudflare, adds only the controlled
+frontend hostname to Vite's allowlist, and selects the public API origin:
+
+```sh
+make dev-tunnel
+```
+
+The ordinary `make dev` command remains the localhost Passkey workflow and does
+not expose Vite through the public hostname. `cloudflared` is intentionally not
+managed by the development script because its connector token is secret; start
+the existing `vtafarm-local` connector separately and leave it running while
+using tunnel mode. When working in the frontend repository alone, the
+equivalent command is:
+
+```sh
+pnpm dev:tunnel
+```
+
+The package script supplies `https://dev-vtafarm-api.firstperson.dev` as
+`VITE_API_URL`, adds `dev-vtafarm.firstperson.dev` to Vite's host allowlist, and
+binds Vite to `127.0.0.1`. Explicit process environment values may override the
+two URL/hostname defaults when testing another tunnel.
+
+The resolved Farm DID document must contain service entries whose endpoints
+match the API configuration exactly:
+
+```json
+{
+  "type": "TrustTaskHTTPS",
+  "serviceEndpoint": "https://dev-vtafarm-api.firstperson.dev/trust-task"
+}
+```
+
+```json
+{
+  "type": "SignInPortal",
+  "serviceEndpoint": "https://dev-vtafarm.firstperson.dev/login"
+}
+```
+
+For a new development Farm identity, generate the signing key and DID document
+with the repository helper, then publish the generated DID document and set the
+printed `FARM_SIGNING_KEY` only in the local secret configuration:
+
+```sh
+make gen-farm-key \
+  FARM_DID='<DEVELOPMENT_FARM_DID>' \
+  TRUST_TASK_BASE='https://dev-vtafarm-api.firstperson.dev/trust-task' \
+  SIGN_IN_PORTAL_URL='https://dev-vtafarm.firstperson.dev/login'
+```
+
+Do not regenerate an established Farm key merely to change an endpoint. Update
+and republish its DID document using the Farm's existing authorized key instead.
+After publishing, allow for resolver or cache propagation and verify readiness:
+
+```sh
+curl --fail --show-error https://dev-vtafarm-api.firstperson.dev/health
+curl --include https://dev-vtafarm-api.firstperson.dev/api/v1/auth/keyring/config
+```
+
+The Keyring configuration request must return `200`. A `503` means the API is
+not ready for wallet sign-in; inspect its response and logs for a missing or
+mismatched DID service, an invalid Farm signing key, or an unreachable DID
+document. Do not test the Trust Task endpoint with `GET`: it accepts signed task
+documents through `POST /trust-task/trust-tasks`.
+
+For the end-to-end test, open
+`https://dev-vtafarm.firstperson.dev/login` in the desktop browser, start a
+Keyring sign-in, and scan the displayed QR code with the phone. The phone does
+not need direct LAN access to the developer machine: it reaches the public HTTPS
+origin, and `cloudflared` forwards the signed Trust Task requests to the local
+API. Do not place Cloudflare Access interactive authentication in front of
+`/trust-task/trust-tasks`, because the wallet cannot complete that separate
+browser login challenge. HTTPS reachability does not replace protocol support;
+the Keyring build must still support the documented `auth/oob` task versions and
+the sign-in trigger-link flow.
+
+Operational references: Cloudflare's
+[locally managed tunnel guide](https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/create-local-tunnel/),
+[ingress configuration reference](https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/configuration-file/),
+and Vite's
+[`server.allowedHosts` reference](https://vite.dev/config/server-options.html#server-allowedhosts).
 
 ## 6. Security Requirements
 

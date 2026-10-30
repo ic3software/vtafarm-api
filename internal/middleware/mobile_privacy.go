@@ -10,6 +10,9 @@ import (
 // must not enter that dump, even on a panic. Access logs skip these routes too.
 func MobilePrivacy() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		c.Header("Referrer-Policy", "no-referrer")
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
 		defer func() {
 			if recover() != nil {
 				log.Printf("mobile connection request failed unexpectedly")

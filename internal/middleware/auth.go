@@ -7,6 +7,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/ic3software/vtafarm-api/internal/model"
+	"gorm.io/gorm"
 )
 
 const (
@@ -18,18 +20,29 @@ const (
 )
 
 type Claims struct {
-	UserID uint   `json:"user_id"`
-	Role   string `json:"role"`
+	UserID          uint   `json:"user_id"`
+	Role            string `json:"role"`
+	WalletSessionID string `json:"wallet_session_id,omitempty"`
 	jwt.RegisteredClaims
 }
 
 func GenerateToken(userID uint, role, secret string) (string, error) {
+	return generateToken(userID, role, secret, "", time.Now().Add(24*time.Hour))
+}
+
+func GenerateWalletToken(userID uint, secret, sessionID string, expiresAt time.Time) (string, error) {
+	return generateToken(userID, model.RoleUser, secret, sessionID, expiresAt)
+}
+
+func generateToken(userID uint, role, secret, walletSessionID string, expiresAt time.Time) (string, error) {
+	now := time.Now()
 	claims := Claims{
-		UserID: userID,
-		Role:   role,
+		UserID:          userID,
+		Role:            role,
+		WalletSessionID: walletSessionID,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
+			IssuedAt:  jwt.NewNumericDate(now),
 		},
 	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
@@ -37,7 +50,7 @@ func GenerateToken(userID uint, role, secret string) (string, error) {
 
 // AuthRequired validates the JWT from the named cookie, falling back to the
 // Authorization: Bearer header for non-browser clients and testing.
-func AuthRequired(secret, cookieName string) gin.HandlerFunc {
+func AuthRequired(db *gorm.DB, secret, cookieName string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var tokenStr string
 
@@ -68,6 +81,18 @@ func AuthRequired(secret, cookieName string) gin.HandlerFunc {
 			c.Header("Cache-Control", "no-store")
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 			return
+		}
+		if claims.WalletSessionID != "" {
+			var count int64
+			err := db.WithContext(c.Request.Context()).Table("wallet_login_sessions AS ws").
+				Joins("JOIN wallet_login_bindings AS wb ON wb.id = ws.binding_id").
+				Where("ws.id = ? AND ws.user_id = ? AND ws.revoked_at IS NULL AND wb.revoked_at IS NULL AND ws.expires_at > ?", claims.WalletSessionID, claims.UserID, time.Now().UTC()).
+				Count(&count).Error
+			if err != nil || count != 1 {
+				c.Header("Cache-Control", "no-store")
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "wallet session is no longer active"})
+				return
+			}
 		}
 
 		c.Set(ContextUserID, claims.UserID)

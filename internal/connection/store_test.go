@@ -123,6 +123,10 @@ func TestClaimRequiresOwnerConfirmation(t *testing.T) {
 	if err := Reconcile(ctx, db, started, &after); err != nil || started.Status != "released" {
 		t.Fatalf("release: %+v %v", started, err)
 	}
+	var bindings int64
+	if err := db.Model(&model.WalletLoginBinding{}).Count(&bindings).Error; err != nil || bindings != 0 {
+		t.Fatalf("ordinary setup created %d wallet login bindings: %v", bindings, err)
+	}
 }
 
 func TestRejectDiscardsCandidate(t *testing.T) {

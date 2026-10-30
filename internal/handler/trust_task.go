@@ -29,14 +29,21 @@ const trustTaskBodyLimit = 64 << 10
 const defaultRedeemHold = 25 * time.Second
 
 type TrustTaskHandler struct {
-	db         *gorm.DB
-	farmDID    string
-	signer     *farmtrusttask.Signer
-	verifier   *farmtrusttask.WalletVerifier
-	validator  farmtrusttask.SchemaValidator
-	guard      *farmtrusttask.ReplayGuard
-	redeemHold time.Duration
-	enabled    bool
+	db            *gorm.DB
+	farmDID       string
+	signer        *farmtrusttask.Signer
+	verifier      *farmtrusttask.WalletVerifier
+	validator     farmtrusttask.SchemaValidator
+	guard         *farmtrusttask.ReplayGuard
+	redeemHold    time.Duration
+	enabled       bool
+	signInEnabled bool
+	portalURL     string
+	portalOrigin  string
+	linkHost      string
+	farmName      string
+	jwtSecret     string
+	cookieSecure  bool
 }
 
 type farmDocumentResolver interface {
@@ -49,7 +56,7 @@ func NewTrustTaskHandler(db *gorm.DB, cfg config.VTAClaimConfig) *TrustTaskHandl
 
 func newTrustTaskHandler(db *gorm.DB, cfg config.VTAClaimConfig, resolver farmDocumentResolver) *TrustTaskHandler {
 	farmDID := strings.TrimSpace(cfg.FarmDID)
-	h := &TrustTaskHandler{db: db, farmDID: farmDID, verifier: farmtrusttask.NewWalletVerifier(), guard: farmtrusttask.NewReplayGuard(db), redeemHold: defaultRedeemHold}
+	h := &TrustTaskHandler{db: db, farmDID: farmDID, verifier: farmtrusttask.NewWalletVerifier(), guard: farmtrusttask.NewReplayGuard(db), redeemHold: defaultRedeemHold, farmName: strings.TrimSpace(cfg.FarmName)}
 	base, baseErr := url.Parse(strings.TrimSpace(cfg.TrustTaskBase))
 	signer, signerErr := farmtrusttask.NewSigner(farmDID, cfg.FarmSigningKey)
 	if baseErr != nil || base.Scheme != "https" || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" || base.RawPath != "" || strings.TrimSuffix(base.Path, "/") != "/trust-task" || signerErr != nil || db == nil || resolver == nil {
@@ -63,10 +70,49 @@ func newTrustTaskHandler(db *gorm.DB, cfg config.VTAClaimConfig, resolver farmDo
 	}
 	h.signer = signer
 	h.enabled = true
+	portal, portalErr := url.Parse(strings.TrimSpace(cfg.SignInPortal))
+	link, linkErr := url.Parse(strings.TrimSuffix(strings.TrimSpace(cfg.LinkHost), "/"))
+	if portalErr == nil && linkErr == nil && portal.Scheme == "https" && portal.Host != "" && link.Scheme == "https" && link.Host != "" && link.User == nil && link.RawQuery == "" && link.Fragment == "" && link.RawPath == "" && link.Path == "" && !sameOrSubdomain(portal.Hostname(), link.Hostname()) && h.farmName != "" && len(h.farmName) <= 128 && farmtrusttask.ValidateSignInPortal(document, farmDID, cfg.SignInPortal) == nil {
+		h.portalURL = portal.String()
+		h.portalOrigin = portal.Scheme + "://" + portal.Host
+		h.linkHost = link.String()
+		h.signInEnabled = true
+	}
 	return h
 }
 
+func sameOrSubdomain(host, parent string) bool {
+	host, parent = strings.ToLower(host), strings.ToLower(parent)
+	return host == parent || strings.HasSuffix(host, "."+parent)
+}
+
+func (h *TrustTaskHandler) ConfigureWalletSessions(jwtSecret string, cookieSecure bool) {
+	h.jwtSecret = jwtSecret
+	h.cookieSecure = cookieSecure
+	if strings.TrimSpace(jwtSecret) == "" {
+		h.signInEnabled = false
+	}
+}
+
 func (h *TrustTaskHandler) Enabled() bool { return h != nil && h.enabled }
+
+func (h *TrustTaskHandler) WalletSignInEnabled() bool {
+	return h != nil && h.enabled && h.signInEnabled
+}
+
+func (h *TrustTaskHandler) WalletSignInConfig(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if !h.WalletSignInEnabled() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Keyring sign-in is not configured for this Farm."})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"farm_did":   h.farmDID,
+		"link_host":  h.linkHost,
+		"flow":       "/vti/flow/sign-in/0.1",
+		"portal_url": h.portalURL,
+	})
+}
 
 func (h *TrustTaskHandler) Consume(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
@@ -100,6 +146,12 @@ func (h *TrustTaskHandler) Consume(c *gin.Context) {
 	}
 
 	switch envelope.Type {
+	case oobRequestType, oobClaimType, oobProveType, oobRespondType, oobRedeemType, oobCancelType:
+		if !h.WalletSignInEnabled() {
+			h.emitUnsupported(c, raw)
+			return
+		}
+		h.consumeOOB(c, envelope.Type, envelope.Payload, raw)
 	case provisionvtaclaimv0_1.TypeURI:
 		if err := h.validator.Validate(provisionvtaclaimv0_1.PayloadSchemaJSON, envelope.Payload); err != nil {
 			h.emitMalformed(c, raw, err)

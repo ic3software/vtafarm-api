@@ -104,6 +104,8 @@ vtaClaim:
   farmDID: ""
   trustTaskBase: ""
   linkHost: "https://link.trustoverip.org"
+  signInPortalURL: ""
+  farmDisplayName: "VTA Farm"
 
 # No CPU limit: the request gives fair-share under contention; a CFS quota
 # would throttle bursts on an idle node. Memory keeps a hard limit.

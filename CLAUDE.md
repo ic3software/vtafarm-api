@@ -51,6 +51,8 @@ See `.env.example` for all options. Key ones:
 | `FARM_SIGNING_KEY` | — | Secret base64 Ed25519 seed whose public key is an `assertionMethod` of `FARM_DID` |
 | `TRUST_TASK_BASE` | — | Public HTTPS base ending in `/trust-task`; must exactly match the Farm DID's `TrustTaskHTTPS` service |
 | `LINK_HOST` | `https://link.trustoverip.org` | Origin used to build VTI trigger links |
+| `SIGN_IN_PORTAL_URL` | — | Exact public login URL; must match the Farm DID's `SignInPortal` service for Keyring sign-in |
+| `FARM_DISPLAY_NAME` | `VTA Farm` | Human-readable service name shown by Keyring during sign-in |
 | `CLOUDFLARE_API_TOKEN` | — | Cloudflare API token (`Zone:DNS:Edit` permission) |
 | `CLOUDFLARE_ZONE_ID` | — | Cloudflare Zone ID for the user's root domain |
 | `CLUSTER_INGRESS_IP` | — | External IP of the Traefik LoadBalancer |
