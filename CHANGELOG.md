@@ -1,5 +1,14 @@
 # Changelog
 
+## [v0.17.1] - 2026-10-31
+
+### Added
+
+- Administrators can pin an immutable default image for each platform
+  component through authenticated image-default endpoints.
+- Component image lists identify the pinned default so user-facing clients can
+  preselect it and fall back to the `latest` image when no valid pin exists.
+
 ## [v0.17.0] - 2026-10-30
 
 ### Added
