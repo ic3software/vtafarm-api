@@ -31,6 +31,7 @@ type ImageTag struct {
 	Latest  bool   `json:"latest,omitempty"`  // the image "latest" points to (last tagged release)
 	Nightly bool   `json:"nightly,omitempty"` // the image "nightly" points to
 	Main    bool   `json:"main,omitempty"`    // the image "main" points to
+	Default bool   `json:"default,omitempty"` // the image an admin pinned as the user-facing default; absent when none is pinned or the pinned image is no longer listed
 	Created string `json:"created,omitempty"` // image creation time, RFC 3339 UTC; "" when unknown
 }
 
