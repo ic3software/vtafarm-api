@@ -476,6 +476,15 @@ rules:
   verbs: ["get", "list", "create", "delete"]
 ```
 
+## Operations and optimization
+
+- [Kubernetes workload placement](docs/kubernetes-workload-placement.md)
+  documents Pod scheduling policy, RWO volume safety, and the bounded manual
+  rebalance runbook.
+- [VTA Farm optimization checklist](docs/vtafarm-optimization-checklist.md)
+  tracks the prioritized reliability, storage, observability, and capacity
+  improvements identified after the staging incident.
+
 ## License
 
 VTA Farm is licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for attribution.
