@@ -373,15 +373,14 @@ the same rule.
 Do not use `exec` into a running VTA, mount the PVC into concurrent writer Pods,
 or pre-import a Farm-controlled placeholder administrator.
 
-### 6.7 Confirmation-latency prewarm proposal
+### 6.7 Confirmation-latency prewarm
 
-This is a proposed follow-up to fast activation, not part of the currently
-implemented path. Removing the provision Job leaves one unavoidable Deployment
-Pod startup. A warm-image measurement on the target development cluster still
-spent about ten seconds attaching its Longhorn `ReadWriteOnce` PVC. Polling and
-database work add time around that operation. Therefore a design that begins
-Pod scheduling only after confirmation cannot reliably meet a sub-ten-second
-confirmation-to-release target.
+Prewarm is the follow-up to fast activation. Removing the provision Job leaves
+one unavoidable Deployment Pod startup. A warm-image measurement on the target
+development cluster still spent about ten seconds attaching its Longhorn
+`ReadWriteOnce` PVC. Polling and database work add time around that operation.
+Therefore a design that begins Pod scheduling only after confirmation cannot
+reliably meet a sub-ten-second confirmation-to-release target.
 
 One instrumented public claim took 30.773 seconds from clicking **Codes match**
 until the third browser step appeared. The mutually exclusive intervals were:
@@ -421,21 +420,29 @@ Codes match
   -> mark running and release the claim
 ```
 
-The confirmation signal must not recreate the Pod, because doing so would lose
-the scheduling and volume-attachment benefit. The preferred shape is a bounded
-activation-gate init process in the final Deployment Pod. It authenticates as
-the Pod's service account to an internal Farm endpoint and watches or polls for
-durable authorization derived from `mobile_connections.confirmed_at`. It must
-not trust a browser-provided flag. After authorization, the same process loads
-the confirmed public identifiers, performs the existing receipt-protected
-activation, and exits so the application container can start.
+The confirmation signal does not recreate the Pod, because doing so would lose
+the scheduling and volume-attachment benefit. The final Deployment Pod starts
+with an activation-gate init process. The gate polls a read-only HTTPS Farm
+endpoint derived from the existing `TRUST_TASK_BASE`; there is no separate
+prewarm configuration variable or additional Kubernetes RBAC grant.
 
-The internal gate protocol requires a focused implementation spike before this
-proposal is accepted. It must provide service-account authentication, bounded
-waiting, cancellation, and a way to distinguish a stale claim from the active
-claim without putting the browser capability, comparison value, or private
-material in Kubernetes objects or logs. A Kubernetes object update that takes
-longer to project into the Pod is not suitable for the latency target.
+The endpoint returns no payload and has no mutation operation. It verifies the
+activation identity against the current connection and durable
+`mobile_connections.confirmed_at` state. The provision worker creates the
+DID-hosting ACL before writing the authorization annotation to Deployment
+metadata. That metadata-only update leaves `spec.template` unchanged, so the
+running gate Pod and its PVC attachment survive confirmation. Only then does
+the endpoint return `200`; the same init process performs the existing
+receipt-protected activation and exits so the application container can start.
+Before authorization it returns `202`, and an ended or replaced claim returns
+`410`.
+
+The gate caller does not need a workload identity because reading the status
+cannot confirm a claim, write the authorization annotation, or cause another
+Pod to proceed. HTTPS authenticates the Farm endpoint to the waiting Pod; the
+durable confirmation and authorization annotation remain the security
+boundary. The browser capability, comparison value, and private material never
+enter a Kubernetes object, command line, response, or log.
 
 No new pool-level feature flag is required. Prewarm applies to Admin and public
 claims under the same conditions:
@@ -460,6 +467,9 @@ parked template. Because the gate has not mutated the VTA, that session may
 return to inventory after the ordinary claim-expiry checks. Confirmation wins
 the race through the existing database lock: after `confirmed_at` commits, the
 session is consumed and must never be reclaimed even if activation fails.
+The background reconciler lists only Deployments carrying the prewarm label,
+repairs active claimed prewarms, and removes abandoned gates after an API
+restart.
 
 Prewarm consumes a Pod slot, an attached volume, and the gate container's
 resource requests while the comparison screen is open. Capacity accounting
@@ -532,6 +542,14 @@ provision Job; one Deployment Pod activates and serves the VTA; repeated worker
 kicks, API or Pod restarts, and duplicate confirmations do not repeat completed
 mutations or release twice; no concurrent writer touches the PVC; and a failed
 confirmed activation never returns to available inventory.
+
+Prewarm additionally requires that a claimed connection starts exactly that
+Deployment behind the activation gate; confirmation changes no Pod-template
+field; rejection and expiry restore `replicas=0`; a stale or mismatched
+activation identity cannot release the gate; and a missing gate service fails
+closed without mutating the PVC. The endpoint must remain read-only and return
+no claim data. Canary validation must confirm the VTA image contains the `curl`
+client used by the gate before that image is admitted to pooled inventory.
 
 ## 7. Cleanup and Retention
 

@@ -581,6 +581,7 @@ func (h *PoolHandler) RejectPublicClaim(c *gin.Context) {
 		writeConnectionError(c, err)
 		return
 	}
+	h.kickPoolPrewarm(claim.SessionID)
 	h.writePublicClaim(c, claim.ID, http.StatusOK)
 }
 
@@ -595,9 +596,13 @@ func (h *PoolHandler) writePublicClaim(c *gin.Context, requestID string, status 
 		writeConnectionError(c, err)
 		return
 	}
+	previousStatus := claim.Status
 	if err := connection.Reconcile(c.Request.Context(), h.db, &claim, &session); err != nil {
 		writeConnectionError(c, err)
 		return
+	}
+	if previousStatus == "claimed" && claim.Status != "claimed" {
+		h.kickPoolPrewarm(claim.SessionID)
 	}
 	now, err := connection.Now(h.db.WithContext(c.Request.Context()))
 	if err != nil {
@@ -661,10 +666,16 @@ func (h *PoolHandler) ConfirmClaim(c *gin.Context) {
 
 func (h *PoolHandler) RejectClaim(c *gin.Context) {
 	requestID := c.Param("request_id")
+	var claim model.MobileConnection
+	if err := h.db.WithContext(c.Request.Context()).Select("session_id").First(&claim, "id = ?", requestID).Error; err != nil {
+		writeConnectionError(c, err)
+		return
+	}
 	if err := poolstore.Reject(c.Request.Context(), h.db, requestID); err != nil {
 		writeConnectionError(c, err)
 		return
 	}
+	h.kickPoolPrewarm(claim.SessionID)
 	h.writeClaim(c, requestID)
 }
 
@@ -882,9 +893,13 @@ func (h *PoolHandler) writeClaim(c *gin.Context, requestID string) {
 		writeConnectionError(c, err)
 		return
 	}
+	previousStatus := claim.Status
 	if err := connection.Reconcile(c.Request.Context(), h.db, &claim, &session); err != nil {
 		writeConnectionError(c, err)
 		return
+	}
+	if previousStatus == "claimed" && claim.Status != "claimed" {
+		h.kickPoolPrewarm(claim.SessionID)
 	}
 	now, err := connection.Now(h.db.WithContext(c.Request.Context()))
 	if err != nil {
@@ -896,6 +911,12 @@ func (h *PoolHandler) writeClaim(c *gin.Context, requestID string) {
 		Enabled: h.mobile != nil && h.mobile.enabled, ServerTime: now,
 		Connection: h.mobile.view(&claim),
 	})
+}
+
+func (h *PoolHandler) kickPoolPrewarm(sessionID uint) {
+	if h.setup != nil && h.setup.orch != nil {
+		h.setup.orch.KickPoolPrewarm(sessionID)
+	}
 }
 
 func (h *PoolHandler) prepareSession(ctx context.Context, sessionID uint) error {

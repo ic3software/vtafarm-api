@@ -53,3 +53,15 @@ func TestLoadPoolActivationIsStableAcrossEntryPoints(t *testing.T) {
 		})
 	}
 }
+
+func TestPoolActivationGateURLUsesTrustTaskOrigin(t *testing.T) {
+	o := &Orchestrator{poolActivationGateBase: poolActivationGateBase("https://api.example.com/trust-task")}
+	activationID := PoolActivationID(42, "claim-id")
+	want := "https://api.example.com/api/v1/internal/pool-activations/42/" + activationID
+	if got := o.poolActivationGateURL(42, activationID); got != want {
+		t.Fatalf("poolActivationGateURL() = %q, want %q", got, want)
+	}
+	if got := poolActivationGateBase("http://api.example.com/trust-task"); got != "" {
+		t.Fatalf("insecure gate base = %q, want disabled", got)
+	}
+}

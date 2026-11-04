@@ -100,10 +100,11 @@ func main() {
 	var orch *setup.Orchestrator
 	if k8sClient != nil {
 		orch = setup.NewOrchestrator(db, k8sClient, vaultClient, cfg.Vault.VTAAddr, dhFactory,
-			cfg.ClusterIngressIP, cfg.ACMEClusterIssuer)
+			cfg.ClusterIngressIP, cfg.ACMEClusterIssuer, cfg.VTAClaim.TrustTaskBase)
 		if cfg.OrchestratorResume {
 			orch.Resume(workerCtx)
 			go orch.RunProvisionQueue(workerCtx)
+			go orch.RunPoolPrewarmQueue(workerCtx)
 		}
 	}
 

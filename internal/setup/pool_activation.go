@@ -61,6 +61,7 @@ func (o *Orchestrator) runPoolActivation(
 	err = o.k8s.ActivateParkedVtaDeployment(ctx, namespace, k8s.VtaActivationSpec{
 		SessionID: session.ID, Image: session.VtaImage, AdminDID: adminDID,
 		AdminLabel: adminLabel, ControlDID: controlDID, ActivationID: activation.id,
+		GateURL: o.poolActivationGateURL(session.ID, activation.id),
 	})
 	if err != nil {
 		o.failPoolActivation(session.ID, activation.requestID, "patch_deployment", err)
@@ -93,7 +94,6 @@ func (o *Orchestrator) loadPoolActivation(ctx context.Context, sessionID uint, a
 	if err != nil {
 		return nil, fmt.Errorf("load confirmed pool claim: %w", err)
 	}
-	digest := sha256.Sum256([]byte(fmt.Sprintf("pool-activation:v1:%d:%s", sessionID, claim.ID)))
 	entryPoint := model.PoolPurposeAdminStation
 	if len(claim.PublicAccessDigest) != 0 {
 		entryPoint = model.PoolPurposePublicSignup
@@ -103,9 +103,21 @@ func (o *Orchestrator) loadPoolActivation(ctx context.Context, sessionID uint, a
 		confirmed = *claim.ConfirmedAt
 	}
 	return &poolActivation{
-		id: fmt.Sprintf("%x", digest[:16]), requestID: claim.ID,
+		id: PoolActivationID(sessionID, claim.ID), requestID: claim.ID,
 		entryPoint: entryPoint, confirmed: confirmed,
 	}, nil
+}
+
+func PoolActivationID(sessionID uint, requestID string) string {
+	digest := sha256.Sum256([]byte(fmt.Sprintf("pool-activation:v1:%d:%s", sessionID, requestID)))
+	return fmt.Sprintf("%x", digest[:16])
+}
+
+func (o *Orchestrator) poolActivationGateURL(sessionID uint, activationID string) string {
+	if o.poolActivationGateBase == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s/%d/%s", o.poolActivationGateBase, sessionID, activationID)
 }
 
 func (o *Orchestrator) failPoolActivation(sessionID uint, requestID, stage string, err error) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -117,9 +118,114 @@ func TestActivateParkedVtaDeploymentPatchesTemplateAndReplicasTogether(t *testin
 	if err := client.ActivateParkedVtaDeployment(ctx, "test", spec); err != nil {
 		t.Fatalf("repeat activation: %v", err)
 	}
+	legacyRecovery := spec
+	legacyRecovery.GateURL = "https://api.example.com/api/v1/internal/pool-activations/43/" + testActivationID
+	if err := client.ActivateParkedVtaDeployment(ctx, "test", legacyRecovery); err != nil {
+		t.Fatalf("recover already-authorized pre-gate activation: %v", err)
+	}
 	spec.ActivationID = "ffeeddccbbaa99887766554433221100"
 	if err := client.ActivateParkedVtaDeployment(ctx, "test", spec); !errors.Is(err, ErrPoolActivationConflict) {
 		t.Fatalf("different activation error = %v, want conflict", err)
+	}
+}
+
+func TestPrewarmAuthorizesWithoutRollingPodTemplate(t *testing.T) {
+	ctx := context.Background()
+	client := &Client{kube: fake.NewSimpleClientset()}
+	if err := client.CreateParkedVtaDeployment(ctx, "test", 44, "example/vta:test", ComponentResources("10m", "32Mi", "128Mi")); err != nil {
+		t.Fatal(err)
+	}
+	spec := VtaActivationSpec{
+		SessionID: 44, Image: "example/vta:test", AdminDID: "did:key:z6MkAdmin",
+		AdminLabel: "mobile integration", ControlDID: "did:webvh:example.com:control",
+		ActivationID: testActivationID,
+		GateURL:      "https://api.example.com/api/v1/internal/pool-activations/44/" + testActivationID,
+	}
+	if err := client.PrewarmParkedVtaDeployment(ctx, "test", spec); err != nil {
+		t.Fatal(err)
+	}
+	prewarmed, err := client.kube.AppsV1().Deployments("test").Get(ctx, VtaDeploymentName(44), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prewarmed.Spec.Replicas == nil || *prewarmed.Spec.Replicas != 1 {
+		t.Fatalf("replicas = %v, want 1", prewarmed.Spec.Replicas)
+	}
+	if prewarmed.Annotations[PoolPrewarmAnnotation] != testActivationID || prewarmed.Labels[PoolPrewarmLabel] != "true" {
+		t.Fatalf("missing prewarm metadata: %#v %#v", prewarmed.Annotations, prewarmed.Labels)
+	}
+	if prewarmed.Annotations[PoolActivationAnnotation] != "" {
+		t.Fatal("prewarm crossed the activation authorization boundary")
+	}
+	if len(prewarmed.Spec.Template.Spec.InitContainers) != 1 {
+		t.Fatalf("init containers = %d, want 1", len(prewarmed.Spec.Template.Spec.InitContainers))
+	}
+	init := prewarmed.Spec.Template.Spec.InitContainers[0]
+	command := strings.Join(init.Command, " ")
+	for _, required := range []string{"curl", spec.GateURL, "vta import-did"} {
+		if !strings.Contains(command, required) {
+			t.Errorf("gated activation command missing %q:\n%s", required, command)
+		}
+	}
+	if strings.Contains(command, "Authorization:") {
+		t.Fatal("read-only activation gate unexpectedly requires workload credentials")
+	}
+	templateBefore := prewarmed.Spec.Template.DeepCopy()
+
+	if err := client.ActivateParkedVtaDeployment(ctx, "test", spec); err != nil {
+		t.Fatal(err)
+	}
+	authorized, err := client.kube.AppsV1().Deployments("test").Get(ctx, VtaDeploymentName(44), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authorized.Annotations[PoolActivationAnnotation] != testActivationID {
+		t.Fatal("activation authorization annotation was not committed")
+	}
+	if _, ok := authorized.Labels[PoolPrewarmLabel]; ok {
+		t.Fatal("authorized Deployment still advertises an unconfirmed prewarm")
+	}
+	if !reflect.DeepEqual(*templateBefore, authorized.Spec.Template) {
+		t.Fatal("authorization changed the Pod template and would trigger a rollout")
+	}
+	if err := client.CancelPoolPrewarm(ctx, "test", 44, testActivationID); err != nil {
+		t.Fatal(err)
+	}
+	stillAuthorized, err := client.kube.AppsV1().Deployments("test").Get(ctx, VtaDeploymentName(44), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stillAuthorized.Spec.Replicas == nil || *stillAuthorized.Spec.Replicas != 1 {
+		t.Fatal("cancellation scaled down an authorized activation")
+	}
+}
+
+func TestCancelPoolPrewarmRestoresParkedDeployment(t *testing.T) {
+	ctx := context.Background()
+	client := &Client{kube: fake.NewSimpleClientset()}
+	if err := client.CreateParkedVtaDeployment(ctx, "test", 45, "example/vta:test", ComponentResources("10m", "32Mi", "128Mi")); err != nil {
+		t.Fatal(err)
+	}
+	spec := VtaActivationSpec{
+		SessionID: 45, Image: "example/vta:test", AdminDID: "did:key:z6MkAdmin",
+		ActivationID: testActivationID,
+		GateURL:      "https://api.example.com/api/v1/internal/pool-activations/45/" + testActivationID,
+	}
+	if err := client.PrewarmParkedVtaDeployment(ctx, "test", spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.CancelPoolPrewarm(ctx, "test", 45, testActivationID); err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := client.kube.AppsV1().Deployments("test").Get(ctx, VtaDeploymentName(45), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 0 {
+		t.Fatalf("replicas = %v, want 0", deployment.Spec.Replicas)
+	}
+	if len(deployment.Spec.Template.Spec.InitContainers) != 0 || deployment.Spec.Template.Annotations[PoolActivationAnnotation] != "" {
+		t.Fatalf("parked template retained activation state: %+v", deployment.Spec.Template)
 	}
 }
 

@@ -41,7 +41,8 @@ func Setup(
 ) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{Skip: func(c *gin.Context) bool {
-		return strings.HasPrefix(c.Request.URL.Path, "/api/v1/mobile-connections/")
+		return strings.HasPrefix(c.Request.URL.Path, "/api/v1/mobile-connections/") ||
+			strings.HasPrefix(c.Request.URL.Path, "/api/v1/internal/pool-activations/")
 	}}), gin.Recovery())
 
 	// The Vite dev ports are a local convenience no deployment would configure.
@@ -61,6 +62,9 @@ func Setup(
 
 	r.GET("/health", handler.Health)
 	trustTask := handler.NewTrustTaskHandler(db, cfg.VTAClaim)
+	if orch != nil {
+		trustTask.ConfigurePoolPrewarm(orch.KickPoolPrewarm)
+	}
 	trustTask.ConfigureWalletSessions(cfg.JWTSecret, cfg.CookieSecure())
 	if !trustTask.Enabled() && cfg.VTAClaim.FarmDID != "" {
 		log.Printf("warn: VTA Claim identity validation failed — Trust Task and trigger-link endpoints disabled")
@@ -165,6 +169,7 @@ func Setup(
 	dashH := handler.NewDashboardHandler(db, k8sClient)
 	poolH := handler.NewPoolHandler(db, sh, dashH, mobile)
 	poolH.Start(workerCtx, cfg.OrchestratorResume)
+	v1.GET("/internal/pool-activations/:session_id/:activation_id", middleware.NoStore(), poolH.PoolActivationGate)
 	publicClaims := v1.Group("/public/pool-claims", middleware.NoStore())
 	publicClaims.POST("", middleware.RateLimit(50, time.Hour), poolH.CreatePublicClaim)
 	publicClaims.GET("/:request_id", middleware.RateLimit(120, time.Minute), poolH.GetPublicClaim)

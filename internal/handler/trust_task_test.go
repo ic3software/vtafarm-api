@@ -114,6 +114,13 @@ func TestTrustTaskClaimAndRedeemFlow(t *testing.T) {
 	}
 	cfg := validVTAClaimConfig()
 	handler := newTestTrustTaskHandler(t, db, cfg)
+	prewarmKicks := 0
+	handler.ConfigurePoolPrewarm(func(sessionID uint) {
+		if sessionID != session.ID {
+			t.Fatalf("prewarm session = %d, want %d", sessionID, session.ID)
+		}
+		prewarmKicks++
+	})
 	router := gin.New()
 	router.POST("/trust-task/trust-tasks", handler.Consume)
 
@@ -153,6 +160,9 @@ func TestTrustTaskClaimAndRedeemFlow(t *testing.T) {
 	response = postTrustTask(router, claimWire)
 	if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), firstResponse) {
 		t.Fatalf("claim retry was not byte-identical: %d %s", response.Code, response.Body)
+	}
+	if prewarmKicks != 1 {
+		t.Fatalf("prewarm kicks = %d, want 1", prewarmKicks)
 	}
 	var claimed model.MobileConnection
 	db.First(&claimed, "id = ?", reservation.ID)

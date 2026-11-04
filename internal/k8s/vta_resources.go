@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +23,8 @@ import (
 
 const (
 	PoolActivationAnnotation   = "vtafarm.ic3software.com/pool-activation-id"
+	PoolPrewarmAnnotation      = "vtafarm.ic3software.com/pool-prewarm-id"
+	PoolPrewarmLabel           = "vtafarm.ic3software.com/pool-prewarm"
 	VtaActivationContainerName = "vta-activate"
 	activationRestartLimit     = int32(3)
 )
@@ -33,6 +37,13 @@ type VtaActivationSpec struct {
 	AdminDID     string
 	AdminLabel   string
 	ControlDID   string
+	ActivationID string
+	GateURL      string
+}
+
+type PoolPrewarm struct {
+	Namespace    string
+	SessionID    uint
 	ActivationID string
 }
 
@@ -76,12 +87,26 @@ func (c *Client) CreateParkedVtaDeployment(ctx context.Context, ns string, sessi
 	return c.createVtaDeployment(ctx, ns, sessionID, image, resources, 0)
 }
 
-// ActivateParkedVtaDeployment atomically installs the one-shot activation init
-// container and starts the already-prepared Deployment. Updating the template
-// and replica count together prevents a pod from starting without the claimed
-// administrator. Repeating the same activation is safe; a different activation
-// identity is refused so two claims can never write the PVC.
+// PrewarmParkedVtaDeployment starts the final Pod with activation blocked on a
+// read-only authorization gate. Scheduling and PVC attachment overlap the
+// human code comparison, but the VTA store is untouched until Activate
+// authorizes the same activation identity.
+func (c *Client) PrewarmParkedVtaDeployment(ctx context.Context, ns string, spec VtaActivationSpec) error {
+	if spec.GateURL == "" {
+		return errors.New("pool prewarm requires an activation gate URL")
+	}
+	return c.updateParkedVtaDeployment(ctx, ns, spec, false)
+}
+
+// ActivateParkedVtaDeployment installs or authorizes the one-shot activation
+// init container and starts the already-prepared Deployment. If prewarm already
+// created the Pod, this changes Deployment metadata only and does not roll the
+// Pod or remount its PVC.
 func (c *Client) ActivateParkedVtaDeployment(ctx context.Context, ns string, spec VtaActivationSpec) error {
+	return c.updateParkedVtaDeployment(ctx, ns, spec, true)
+}
+
+func (c *Client) updateParkedVtaDeployment(ctx context.Context, ns string, spec VtaActivationSpec, authorize bool) error {
 	command, err := vtaActivationCommand(spec)
 	if err != nil {
 		return err
@@ -94,6 +119,7 @@ func (c *Client) ActivateParkedVtaDeployment(ctx context.Context, ns string, spe
 		}
 
 		currentID := deployment.Spec.Template.Annotations[PoolActivationAnnotation]
+		authorizedID := deployment.Annotations[PoolActivationAnnotation]
 		if currentID != "" && currentID != spec.ActivationID {
 			return ErrPoolActivationConflict
 		}
@@ -121,6 +147,9 @@ func (c *Client) ActivateParkedVtaDeployment(ctx context.Context, ns string, spe
 			}
 			found = true
 			if currentID == "" || !activationContainersEqual(deployment.Spec.Template.Spec.InitContainers[i], activation) {
+				if currentID == spec.ActivationID && authorizedID == spec.ActivationID {
+					continue
+				}
 				return fmt.Errorf("%w: activation init container does not match", ErrPoolActivationConflict)
 			}
 		}
@@ -135,7 +164,7 @@ func (c *Client) ActivateParkedVtaDeployment(ctx context.Context, ns string, spe
 		if currentID == "" && replicas != 0 {
 			return fmt.Errorf("%w: unclaimed Deployment is already running", ErrPoolActivationConflict)
 		}
-		if currentID == spec.ActivationID && found && replicas == 1 {
+		if currentID == spec.ActivationID && found && replicas == 1 && (!authorize || authorizedID == spec.ActivationID) {
 			return nil
 		}
 
@@ -150,12 +179,25 @@ func (c *Client) ActivateParkedVtaDeployment(ctx context.Context, ns string, spe
 		if deployment.Spec.Template.Annotations == nil {
 			deployment.Spec.Template.Annotations = map[string]string{}
 		}
-		deployment.Annotations[PoolActivationAnnotation] = spec.ActivationID
 		deployment.Spec.Template.Annotations[PoolActivationAnnotation] = spec.ActivationID
 		one := int32(1)
 		deployment.Spec.Replicas = &one
+		if authorize {
+			deployment.Annotations[PoolActivationAnnotation] = spec.ActivationID
+			delete(deployment.Annotations, PoolPrewarmAnnotation)
+			delete(deployment.Labels, PoolPrewarmLabel)
+		} else {
+			if authorizedID != "" {
+				return fmt.Errorf("%w: activation is already authorized", ErrPoolActivationConflict)
+			}
+			deployment.Annotations[PoolPrewarmAnnotation] = spec.ActivationID
+			if deployment.Labels == nil {
+				deployment.Labels = map[string]string{}
+			}
+			deployment.Labels[PoolPrewarmLabel] = "true"
+		}
 		if _, err := c.kube.AppsV1().Deployments(ns).Update(ctx, deployment, metav1.UpdateOptions{}); err != nil {
-			return fmt.Errorf("activate parked deployment %s: %w", name, err)
+			return fmt.Errorf("update parked deployment %s: %w", name, err)
 		}
 		return nil
 	})
@@ -182,6 +224,12 @@ func vtaActivationCommand(spec VtaActivationSpec) (string, error) {
 	if spec.SessionID == 0 || spec.Image == "" || spec.AdminDID == "" {
 		return "", errors.New("activation requires session, image, and administrator DID")
 	}
+	if spec.GateURL != "" {
+		gate, err := url.Parse(spec.GateURL)
+		if err != nil || gate.Scheme != "https" || gate.Host == "" || gate.User != nil || gate.Fragment != "" {
+			return "", errors.New("activation gate URL must be an absolute HTTPS URL")
+		}
+	}
 
 	importCmd := "vta import-did --did " + quoteShellArg(spec.AdminDID) + " --role admin"
 	if spec.AdminLabel != "" {
@@ -189,6 +237,17 @@ func vtaActivationCommand(spec VtaActivationSpec) (string, error) {
 	}
 	var command strings.Builder
 	command.WriteString("set -eu\n")
+	if spec.GateURL != "" {
+		command.WriteString("while :; do\n")
+		command.WriteString("  gate_status=$(curl --silent --output /dev/null --write-out '%{http_code}' --connect-timeout 2 --max-time 5 " + quoteShellArg(spec.GateURL) + " || true)\n")
+		command.WriteString("  case \"$gate_status\" in\n")
+		command.WriteString("    200) break ;;\n")
+		command.WriteString("    202|000) sleep 0.25 ;;\n")
+		command.WriteString("    410) echo 'VTA activation claim ended before confirmation' >&2; exit 42 ;;\n")
+		command.WriteString("    *) sleep 1 ;;\n")
+		command.WriteString("  esac\n")
+		command.WriteString("done\n")
+	}
 	command.WriteString("receipt_dir=.vtafarm/activation/" + spec.ActivationID + "\n")
 	command.WriteString("mkdir -p \"$receipt_dir\"\n")
 	command.WriteString("admin_receipt=\"$receipt_dir/admin-imported\"\n")
@@ -210,6 +269,111 @@ func vtaActivationCommand(spec VtaActivationSpec) (string, error) {
 		command.WriteString("fi\n")
 	}
 	return command.String(), nil
+}
+
+// PoolActivationAuthorized reports whether the provision worker has crossed
+// the post-confirmation ACL boundary for this exact activation identity.
+func (c *Client) PoolActivationAuthorized(ctx context.Context, ns string, sessionID uint, activationID string) (bool, error) {
+	deployment, err := c.kube.AppsV1().Deployments(ns).Get(ctx, vtaDeploymentName(sessionID), metav1.GetOptions{})
+	if err != nil {
+		return false, err
+	}
+	return deployment.Annotations[PoolActivationAnnotation] == activationID, nil
+}
+
+// CancelPoolPrewarm returns an unconfirmed Deployment to its neutral parked
+// template. An authorized activation always wins and is never scaled down.
+func (c *Client) CancelPoolPrewarm(ctx context.Context, ns string, sessionID uint, activationID string) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		deployment, err := c.kube.AppsV1().Deployments(ns).Get(ctx, vtaDeploymentName(sessionID), metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if deployment.Annotations[PoolActivationAnnotation] != "" {
+			return nil
+		}
+		if deployment.Annotations[PoolPrewarmAnnotation] != activationID ||
+			deployment.Spec.Template.Annotations[PoolActivationAnnotation] != activationID {
+			return nil
+		}
+		filtered := deployment.Spec.Template.Spec.InitContainers[:0]
+		for i := range deployment.Spec.Template.Spec.InitContainers {
+			if deployment.Spec.Template.Spec.InitContainers[i].Name != VtaActivationContainerName {
+				filtered = append(filtered, deployment.Spec.Template.Spec.InitContainers[i])
+			}
+		}
+		deployment.Spec.Template.Spec.InitContainers = filtered
+		delete(deployment.Spec.Template.Annotations, PoolActivationAnnotation)
+		delete(deployment.Annotations, PoolPrewarmAnnotation)
+		delete(deployment.Labels, PoolPrewarmLabel)
+		zero := int32(0)
+		deployment.Spec.Replicas = &zero
+		_, err = c.kube.AppsV1().Deployments(ns).Update(ctx, deployment, metav1.UpdateOptions{})
+		return err
+	})
+}
+
+func (c *Client) ListPoolPrewarms(ctx context.Context) ([]PoolPrewarm, error) {
+	deployments, err := c.kube.AppsV1().Deployments("").List(ctx, metav1.ListOptions{
+		LabelSelector: PoolPrewarmLabel + "=true",
+	})
+	if err != nil {
+		return nil, err
+	}
+	result := make([]PoolPrewarm, 0, len(deployments.Items))
+	for i := range deployments.Items {
+		deployment := &deployments.Items[i]
+		rawSessionID := deployment.Spec.Template.Labels["session-id"]
+		sessionID, parseErr := strconv.ParseUint(rawSessionID, 10, 64)
+		activationID := deployment.Annotations[PoolPrewarmAnnotation]
+		if parseErr != nil || sessionID == 0 || activationID == "" {
+			continue
+		}
+		result = append(result, PoolPrewarm{
+			Namespace: deployment.Namespace, SessionID: uint(sessionID), ActivationID: activationID,
+		})
+	}
+	return result, nil
+}
+
+// WaitForPoolPrewarm returns when the gated init process is running in the
+// final Pod. At that point scheduling, image availability, and PVC attachment
+// are already complete and confirmation can release the gate without a rollout.
+func (c *Client) WaitForPoolPrewarm(ctx context.Context, ns string, sessionID uint, activationID string, timeout time.Duration) error {
+	selector := fmt.Sprintf("app=vta,session-id=%d", sessionID)
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		pods, err := c.kube.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: selector})
+		if err == nil {
+			for i := range pods.Items {
+				pod := &pods.Items[i]
+				if pod.Annotations[PoolActivationAnnotation] != activationID {
+					continue
+				}
+				for _, status := range pod.Status.InitContainerStatuses {
+					if status.Name != VtaActivationContainerName {
+						continue
+					}
+					if status.State.Running != nil || status.State.Terminated != nil && status.State.Terminated.ExitCode == 0 {
+						return nil
+					}
+				}
+				if err := activationPodError(pod); err != nil {
+					return err
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("timeout waiting for pooled VTA %d prewarm gate", sessionID)
+		case <-ticker.C:
+		}
+	}
 }
 
 // HasProvisionJob identifies work that already crossed the old Job boundary.
