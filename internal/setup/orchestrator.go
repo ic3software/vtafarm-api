@@ -411,6 +411,7 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 // ── Phase 2: import-did + Deployment ─────────────────────────────────────────
 
 func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDid string) {
+	started := time.Now()
 	var session model.SetupSession
 	if err := o.db.First(&session, sessionID).Error; err != nil {
 		log.Printf("[orchestrator] provision %d: load failed: %v", sessionID, err)
@@ -456,8 +457,12 @@ func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDi
 	}
 
 	provisionJobName := k8s.ProvisionJobName(sessionID)
-	log.Printf("[orchestrator] session %d: creating provision job (controlDid=%q)", sessionID, controlDid)
 	adminLabel := o.provisionAdminLabel(sessionID, adminDid, "")
+	if o.runPoolActivation(ctx, ns, &session, adminDid, adminLabel, controlDid, started) {
+		return
+	}
+
+	log.Printf("[orchestrator] session %d: creating provision job (controlDid=%q)", sessionID, controlDid)
 	if err := o.k8s.CreateProvisionJob(ctx, ns, sessionID, session.VtaImage, adminDid, adminLabel, controlDid); err != nil {
 		if ctx.Err() != nil {
 			return

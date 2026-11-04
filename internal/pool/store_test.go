@@ -521,6 +521,64 @@ func TestConfirmedFailureCannotReturnToInventory(t *testing.T) {
 	}
 }
 
+func TestRetryActivationPreservesConfirmedClaim(t *testing.T) {
+	db := poolDatabase(t)
+	batch, _, err := admission(t, db, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var membership model.PoolSession
+	if err := db.First(&membership, "batch_id = ?", batch.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.SetupSession{}).Where("id = ?", membership.SessionID).Updates(map[string]any{
+		"status": model.StatusPoolWaiting, "vta_did": "did:webvh:example.com:test",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	reservation, err := Reserve(context.Background(), db, batch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did, err := didkey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connection.Claim(context.Background(), db, *reservation.ClaimHandle, did); err != nil {
+		t.Fatal(err)
+	}
+	confirmed, err := Confirm(context.Background(), db, reservation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.SetupSession{}).Where("id = ?", membership.SessionID).
+		Updates(map[string]any{"status": "failed", "error_msg": "activation failed", "failed_stage": "pool_activation"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.MobileConnection{}).Where("id = ?", confirmed.ID).
+		Update("provision_error", "activation failed").Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RetryActivation(context.Background(), db, membership.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	var session model.SetupSession
+	if err := db.First(&session, membership.SessionID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if session.Status != "provisioning" || session.AdminDid != did || session.ErrorMsg != "" || session.FailedStage != "" {
+		t.Fatalf("retried session = %+v", session)
+	}
+	var claim model.MobileConnection
+	if err := db.First(&claim, "id = ?", confirmed.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if claim.Status != "provisioning" || claim.ProvisionError != "" || claim.AdminDid != did {
+		t.Fatalf("retried claim = %+v", claim)
+	}
+}
+
 func TestReserveDoesNotReuseActiveClaim(t *testing.T) {
 	db := poolDatabase(t)
 	batch, _, err := admission(t, db, 2, 2)

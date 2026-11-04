@@ -16,6 +16,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+const provisionWorkerLockClass = 565441
+
 var (
 	ErrConflict       = errors.New("pool state changed or session is protected")
 	ErrEmpty          = errors.New("no waiting VTA is available in this batch")
@@ -612,6 +614,46 @@ func Reject(ctx context.Context, db *gorm.DB, requestID string) error {
 func IsSession(db *gorm.DB, sessionID uint) bool {
 	var count int64
 	return db.Model(&model.PoolSession{}).Where("session_id = ?", sessionID).Count(&count).Error == nil && count == 1
+}
+
+// RetryActivation returns a confirmed failed member to the provision worker.
+// It retains the original connection and administrator so the activation
+// identity, comparison proof, and permanent handover boundary do not change.
+func RetryActivation(ctx context.Context, db *gorm.DB, sessionID uint) error {
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lock(tx); err != nil {
+			return err
+		}
+		if err := tx.Exec("SELECT pg_advisory_xact_lock(?, ?)", provisionWorkerLockClass, int64(sessionID)).Error; err != nil {
+			return err
+		}
+		if !IsSession(tx, sessionID) {
+			return ErrConflict
+		}
+		var session model.SetupSession
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&session, sessionID).Error; err != nil {
+			return err
+		}
+		if session.Status != "failed" || session.AdminDid == "" {
+			return ErrConflict
+		}
+		var claim model.MobileConnection
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("session_id = ? AND operation = ? AND admin_did = ? AND confirmed_at IS NOT NULL AND status IN ?",
+				sessionID, connection.OperationProvisionVTA, session.AdminDid, []string{"confirmed", "provisioning"}).
+			Order("created_at DESC").First(&claim).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrConflict
+			}
+			return err
+		}
+		if err := tx.Model(&session).Updates(map[string]any{
+			"status": "provisioning", "error_msg": "", "failed_stage": "",
+		}).Error; err != nil {
+			return err
+		}
+		return tx.Model(&claim).Update("provision_error", "").Error
+	})
 }
 
 // RetryBuild returns an unclaimed failed member to the durable build queue.

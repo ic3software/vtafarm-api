@@ -192,7 +192,8 @@ Pool preparation already creates the PVC, VTA configuration and DID, publishes
 the DID, and creates the Service, Ingress, and final Deployment. The Deployment
 has zero replicas while the session is `pool_waiting`.
 
-The current implementation takes this path after either UI confirms:
+Before fast activation, the implementation took this path after either UI
+confirmed:
 
 ```text
 confirm claim
@@ -214,9 +215,9 @@ costs are the separate Job Pod lifecycle and up to one `WaitForJob` polling
 interval. Image pull, volume attachment, scheduling, and VTA initialization
 determine the remaining time.
 
-Before implementation, add timestamps around the existing stages and collect
-at least 30 activations on the target cluster. Include both Admin and public
-claims, because they must converge on the same worker. Record p50, p95, and
+The fast-activation worker emits safe stage timings. During canary validation,
+collect at least 30 activations on the target cluster and include both Admin and
+public claims, because they converge on the same worker. Record p50, p95, and
 maximum for:
 
 - confirmation commit to provision Job Pod started;
@@ -303,7 +304,8 @@ reject a valid activation. This is the principal technical prerequisite.
 
 ### 6.5 State, recovery, and failure handling
 
-No schema or public API change is required. `setup_sessions`,
+No schema or claim/confirm API change is required. The existing Admin pool
+retry route also resumes failed confirmed activations. `setup_sessions`,
 `mobile_connections`, and the existing statuses remain the source of truth:
 
 | State | Fast-activation behavior |
@@ -380,11 +382,12 @@ maintenance operations keep their existing offline Job flows. This keeps the
 first implementation scoped to the pool without changing full-stack
 sequencing.
 
-During rollout, gate the new path with a server configuration flag. When the
-flag is off, or an already-waiting Deployment is not compatible, use the
-existing provision Job. Do not automatically fall back after fast activation
-has begun; two writers racing on the PVC would be unsafe. A failed started
-activation requires reconciliation or an operator retry of the same path.
+Fast activation is the only activation path for a newly confirmed pooled VTA;
+there is no per-pool or environment switch. Recovery continues the legacy Job
+path only when that Job already exists, because crossing from an in-progress
+Job to Deployment activation could create two PVC writers. Do not otherwise
+fall back after fast activation has begun. A failed activation requires
+reconciliation or an operator retry of the same path.
 
 ### 6.8 Observability
 
@@ -412,8 +415,7 @@ keeping the worker and success criteria identical.
    retain the existing advisory lock, hosting ACL step, status transitions, and
    release behavior.
 6. Add recovery and concurrency tests for both Admin and public confirmation.
-7. Run canary pools behind the feature flag and compare p50/p95 with the
-   baseline before making fast activation the default.
+7. Run canary pools and compare p50/p95 with the baseline before broad rollout.
 
 Acceptance requires that successful Admin and public pooled claims create no
 provision Job; one Deployment Pod activates and serves the VTA; repeated worker

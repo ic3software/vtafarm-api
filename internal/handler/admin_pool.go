@@ -724,9 +724,23 @@ func (h *PoolHandler) Retry(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid pool session ID"})
 		return
 	}
+	if h.setup == nil || h.setup.orch == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "VTA activation worker is unavailable"})
+		return
+	}
+	activationErr := poolstore.RetryActivation(c.Request.Context(), h.db, sessionID)
+	if activationErr == nil {
+		h.setup.orch.KickProvision(sessionID)
+		c.JSON(http.StatusAccepted, gin.H{"session_id": sessionID, "status": "provisioning"})
+		return
+	}
+	if !errors.Is(activationErr, poolstore.ErrConflict) {
+		writeConnectionError(c, activationErr)
+		return
+	}
 	if err := poolstore.RetryBuild(c.Request.Context(), h.db, sessionID); err != nil {
 		if errors.Is(err, poolstore.ErrConflict) {
-			c.JSON(http.StatusConflict, gin.H{"error": "only an unclaimed failed pool session can be retried"})
+			c.JSON(http.StatusConflict, gin.H{"error": "only a failed pool preparation or confirmed activation can be retried"})
 			return
 		}
 		writeConnectionError(c, err)

@@ -2,11 +2,20 @@ package k8s
 
 import (
 	"context"
+	"errors"
+	"os/exec"
+	"strings"
 	"testing"
+	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
+
+const testActivationID = "00112233445566778899aabbccddeeff"
 
 func TestCreateVtaDeploymentUsesHealthReadinessProbe(t *testing.T) {
 	client := &Client{kube: fake.NewSimpleClientset()}
@@ -60,5 +69,158 @@ func TestCreateParkedVtaDeploymentHasNoReplicas(t *testing.T) {
 	}
 	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 0 {
 		t.Fatalf("replicas = %v, want 0", deployment.Spec.Replicas)
+	}
+}
+
+func TestActivateParkedVtaDeploymentPatchesTemplateAndReplicasTogether(t *testing.T) {
+	ctx := context.Background()
+	client := &Client{kube: fake.NewSimpleClientset()}
+	if err := client.CreateParkedVtaDeployment(ctx, "test", 43, "example/vta:test", ComponentResources("10m", "32Mi", "128Mi")); err != nil {
+		t.Fatal(err)
+	}
+	spec := VtaActivationSpec{
+		SessionID: 43, Image: "example/vta:test", AdminDID: "did:key:z6MkAdmin",
+		AdminLabel: "mobile integration", ControlDID: "did:webvh:example.com:control", ActivationID: testActivationID,
+	}
+	if err := client.ActivateParkedVtaDeployment(ctx, "test", spec); err != nil {
+		t.Fatal(err)
+	}
+
+	deployment, err := client.kube.AppsV1().Deployments("test").Get(ctx, VtaDeploymentName(43), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 1 {
+		t.Fatalf("replicas = %v, want 1", deployment.Spec.Replicas)
+	}
+	if deployment.Annotations[PoolActivationAnnotation] != testActivationID ||
+		deployment.Spec.Template.Annotations[PoolActivationAnnotation] != testActivationID {
+		t.Fatalf("activation annotations = %#v / %#v", deployment.Annotations, deployment.Spec.Template.Annotations)
+	}
+	if len(deployment.Spec.Template.Spec.InitContainers) != 1 {
+		t.Fatalf("init container count = %d, want 1", len(deployment.Spec.Template.Spec.InitContainers))
+	}
+	init := deployment.Spec.Template.Spec.InitContainers[0]
+	if init.Name != VtaActivationContainerName || init.Image != spec.Image || init.WorkingDir != "/work/vta" {
+		t.Fatalf("unexpected activation container: %+v", init)
+	}
+	command := strings.Join(init.Command, " ")
+	for _, required := range []string{
+		"vta acl get", "vta import-did", "admin-imported", "vta did-mgmt servers add", "control-server-added",
+	} {
+		if !strings.Contains(command, required) {
+			t.Errorf("activation command missing %q:\n%s", required, command)
+		}
+	}
+
+	// Recovery of the same durable claim is a no-op; another claim is refused.
+	if err := client.ActivateParkedVtaDeployment(ctx, "test", spec); err != nil {
+		t.Fatalf("repeat activation: %v", err)
+	}
+	spec.ActivationID = "ffeeddccbbaa99887766554433221100"
+	if err := client.ActivateParkedVtaDeployment(ctx, "test", spec); !errors.Is(err, ErrPoolActivationConflict) {
+		t.Fatalf("different activation error = %v, want conflict", err)
+	}
+}
+
+func TestVtaActivationCommandIsValidShell(t *testing.T) {
+	command, err := vtaActivationCommand(VtaActivationSpec{
+		SessionID: 42, Image: "example/vta:test",
+		AdminDID: "did:key:z6MkAdmin'; still-data", AdminLabel: "owner's phone",
+		ControlDID: "did:webvh:example.com:control", ActivationID: testActivationID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := exec.Command("sh", "-n")
+	check.Stdin = strings.NewReader(command)
+	if output, err := check.CombinedOutput(); err != nil {
+		t.Fatalf("activation shell syntax: %v\n%s\n%s", err, output, command)
+	}
+}
+
+func TestHasProvisionJobProtectsLegacyRecovery(t *testing.T) {
+	ctx := context.Background()
+	client := &Client{kube: fake.NewSimpleClientset()}
+	found, err := client.HasProvisionJob(ctx, "test", 42)
+	if err != nil || found {
+		t.Fatalf("missing job = %v, %v", found, err)
+	}
+	if _, err := client.kube.BatchV1().Jobs("test").Create(ctx, &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: ProvisionJobName(42), Namespace: "test"},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	found, err = client.HasProvisionJob(ctx, "test", 42)
+	if err != nil || !found {
+		t.Fatalf("existing job = %v, %v", found, err)
+	}
+}
+
+func TestWaitForVtaActivationObservesReadyAndInitFailure(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		deployment appsv1.DeploymentStatus
+		initStatus corev1.ContainerStatus
+		want       string
+	}{
+		{
+			name:       "ready",
+			deployment: appsv1.DeploymentStatus{ObservedGeneration: 1, ReadyReplicas: 1},
+		},
+		{
+			name: "init failed",
+			initStatus: corev1.ContainerStatus{
+				Name: VtaActivationContainerName, RestartCount: activationRestartLimit,
+				State:                corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
+				LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1}},
+			},
+			want: "activation init failed",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := &Client{kube: fake.NewSimpleClientset(
+				&appsv1.Deployment{
+					ObjectMeta: metav1.ObjectMeta{Name: VtaDeploymentName(42), Namespace: "test", Generation: 1},
+					Status:     test.deployment,
+				},
+				&corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{Name: "vta-42-pod", Namespace: "test", Labels: map[string]string{"app": "vta", "session-id": "42"}},
+					Status:     corev1.PodStatus{InitContainerStatuses: []corev1.ContainerStatus{test.initStatus}},
+				},
+			)}
+			err := client.WaitForVtaActivation(context.Background(), "test", 42, 20*time.Millisecond, nil)
+			if test.want == "" && err != nil {
+				t.Fatal(err)
+			}
+			if test.want != "" && (err == nil || !strings.Contains(err.Error(), test.want)) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestWaitForVtaActivationReportsInitStages(t *testing.T) {
+	client := &Client{kube: fake.NewSimpleClientset(
+		&appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: VtaDeploymentName(42), Namespace: "test", Generation: 1},
+			Status:     appsv1.DeploymentStatus{ObservedGeneration: 1, ReadyReplicas: 1},
+		},
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "vta-42-pod", Namespace: "test", Labels: map[string]string{"app": "vta", "session-id": "42"}},
+			Status: corev1.PodStatus{InitContainerStatuses: []corev1.ContainerStatus{{
+				Name:  VtaActivationContainerName,
+				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0}},
+			}}},
+		},
+	)}
+	var stages []string
+	if err := client.WaitForVtaActivation(context.Background(), "test", 42, time.Second, func(stage string) {
+		stages = append(stages, stage)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(stages, ",") != "activation_init_started,activation_init_completed" {
+		t.Fatalf("stages = %v", stages)
 	}
 }
