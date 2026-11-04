@@ -319,30 +319,31 @@ func (h *PoolHandler) AddInventory(c *gin.Context) {
 		return
 	}
 
-	var source model.SetupSession
-	if err := h.db.WithContext(c.Request.Context()).Table("setup_sessions s").
-		Select("s.*").Joins("JOIN pool_sessions ps ON ps.session_id = s.id").
-		Where("ps.batch_id = ?", batchID).Order("s.id").Limit(1).Scan(&source).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load pool batch template"})
+	var batch model.PoolBatch
+	if err := h.db.WithContext(c.Request.Context()).First(&batch, batchID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "pool batch not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load pool batch"})
 		return
 	}
-	if source.ID == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "pool batch not found"})
+	if batch.VtaImage == "" {
+		c.JSON(http.StatusConflict, gin.H{"error": "pool batch has no retained VTA image"})
+		return
+	}
+	infra, _, reason, detail := h.setup.resolvePlatformInfra()
+	if reason != "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": detail, "reason": reason})
 		return
 	}
 	template := model.SetupSession{
-		Mode:                 model.ModeVtaOnly,
-		DomainType:           source.DomainType,
-		Domain:               source.Domain,
-		Subdomain:            strings.TrimSuffix(source.Subdomain, source.VtaName),
-		MediatorDid:          source.MediatorDid,
-		DidHostingServerURL:  source.DidHostingServerURL,
-		DidHostingControlURL: source.DidHostingControlURL,
-		DIDHostingDid:        source.DIDHostingDid,
-		ConnectionSource:     source.ConnectionSource,
-		VtaImage:             source.VtaImage,
-		Portable:             source.Portable,
-		PreRotationCount:     source.PreRotationCount,
+		Mode: model.ModeVtaOnly, DomainType: model.DomainManaged,
+		Domain: h.setup.clusterDomain, Subdomain: setup.EnvPrefix(h.setup.appEnv) + "vta-",
+		MediatorDid: infra.MediatorDid, DidHostingServerURL: strings.TrimSuffix(infra.ServerURL, "/"),
+		DidHostingControlURL: infra.ControlURL, DIDHostingDid: infra.DaemonDid,
+		ConnectionSource: model.ConnectionPlatform, VtaImage: batch.VtaImage,
+		Portable: true, PreRotationCount: 1,
 	}
 	profiles, profileErr := resourceprofile.Load(c.Request.Context(), h.db)
 	clusterStats, clusterErr := h.dashboard.clusterCapacitySnapshot(c.Request.Context())
@@ -580,6 +581,7 @@ func (h *PoolHandler) RejectPublicClaim(c *gin.Context) {
 		writeConnectionError(c, err)
 		return
 	}
+	h.kickPoolPrewarm(claim.SessionID)
 	h.writePublicClaim(c, claim.ID, http.StatusOK)
 }
 
@@ -594,9 +596,13 @@ func (h *PoolHandler) writePublicClaim(c *gin.Context, requestID string, status 
 		writeConnectionError(c, err)
 		return
 	}
+	previousStatus := claim.Status
 	if err := connection.Reconcile(c.Request.Context(), h.db, &claim, &session); err != nil {
 		writeConnectionError(c, err)
 		return
+	}
+	if previousStatus == "claimed" && claim.Status != "claimed" {
+		h.kickPoolPrewarm(claim.SessionID)
 	}
 	now, err := connection.Now(h.db.WithContext(c.Request.Context()))
 	if err != nil {
@@ -660,10 +666,16 @@ func (h *PoolHandler) ConfirmClaim(c *gin.Context) {
 
 func (h *PoolHandler) RejectClaim(c *gin.Context) {
 	requestID := c.Param("request_id")
+	var claim model.MobileConnection
+	if err := h.db.WithContext(c.Request.Context()).Select("session_id").First(&claim, "id = ?", requestID).Error; err != nil {
+		writeConnectionError(c, err)
+		return
+	}
 	if err := poolstore.Reject(c.Request.Context(), h.db, requestID); err != nil {
 		writeConnectionError(c, err)
 		return
 	}
+	h.kickPoolPrewarm(claim.SessionID)
 	h.writeClaim(c, requestID)
 }
 
@@ -724,9 +736,23 @@ func (h *PoolHandler) Retry(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid pool session ID"})
 		return
 	}
+	if h.setup == nil || h.setup.orch == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "VTA activation worker is unavailable"})
+		return
+	}
+	activationErr := poolstore.RetryActivation(c.Request.Context(), h.db, sessionID)
+	if activationErr == nil {
+		h.setup.orch.KickProvision(sessionID)
+		c.JSON(http.StatusAccepted, gin.H{"session_id": sessionID, "status": "provisioning"})
+		return
+	}
+	if !errors.Is(activationErr, poolstore.ErrConflict) {
+		writeConnectionError(c, activationErr)
+		return
+	}
 	if err := poolstore.RetryBuild(c.Request.Context(), h.db, sessionID); err != nil {
 		if errors.Is(err, poolstore.ErrConflict) {
-			c.JSON(http.StatusConflict, gin.H{"error": "only an unclaimed failed pool session can be retried"})
+			c.JSON(http.StatusConflict, gin.H{"error": "only a failed pool preparation or confirmed activation can be retried"})
 			return
 		}
 		writeConnectionError(c, err)
@@ -797,10 +823,11 @@ type poolClaimSummary struct {
 func buildPoolBatchView(batch model.PoolBatch, sessions []model.SetupSession, latest map[uint]poolClaimSummary, includeSessions bool) *poolBatchView {
 	view := &poolBatchView{
 		ID: batch.ID, Label: batch.Label, Purpose: batch.Purpose, RequestedCount: batch.RequestedCount,
+		VtaImage:              batch.VtaImage,
 		PublicSignupEnabledAt: batch.PublicSignupEnabledAt,
 		CreatedAt:             batch.CreatedAt, Sessions: []poolSessionItem{},
 	}
-	if len(sessions) > 0 {
+	if view.VtaImage == "" && len(sessions) > 0 {
 		view.VtaImage = sessions[0].VtaImage
 	}
 	for i := range sessions {
@@ -866,9 +893,13 @@ func (h *PoolHandler) writeClaim(c *gin.Context, requestID string) {
 		writeConnectionError(c, err)
 		return
 	}
+	previousStatus := claim.Status
 	if err := connection.Reconcile(c.Request.Context(), h.db, &claim, &session); err != nil {
 		writeConnectionError(c, err)
 		return
+	}
+	if previousStatus == "claimed" && claim.Status != "claimed" {
+		h.kickPoolPrewarm(claim.SessionID)
 	}
 	now, err := connection.Now(h.db.WithContext(c.Request.Context()))
 	if err != nil {
@@ -880,6 +911,12 @@ func (h *PoolHandler) writeClaim(c *gin.Context, requestID string) {
 		Enabled: h.mobile != nil && h.mobile.enabled, ServerTime: now,
 		Connection: h.mobile.view(&claim),
 	})
+}
+
+func (h *PoolHandler) kickPoolPrewarm(sessionID uint) {
+	if h.setup != nil && h.setup.orch != nil {
+		h.setup.orch.KickPoolPrewarm(sessionID)
+	}
 }
 
 func (h *PoolHandler) prepareSession(ctx context.Context, sessionID uint) error {

@@ -521,6 +521,64 @@ func TestConfirmedFailureCannotReturnToInventory(t *testing.T) {
 	}
 }
 
+func TestRetryActivationPreservesConfirmedClaim(t *testing.T) {
+	db := poolDatabase(t)
+	batch, _, err := admission(t, db, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var membership model.PoolSession
+	if err := db.First(&membership, "batch_id = ?", batch.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.SetupSession{}).Where("id = ?", membership.SessionID).Updates(map[string]any{
+		"status": model.StatusPoolWaiting, "vta_did": "did:webvh:example.com:test",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	reservation, err := Reserve(context.Background(), db, batch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	did, err := didkey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connection.Claim(context.Background(), db, *reservation.ClaimHandle, did); err != nil {
+		t.Fatal(err)
+	}
+	confirmed, err := Confirm(context.Background(), db, reservation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.SetupSession{}).Where("id = ?", membership.SessionID).
+		Updates(map[string]any{"status": "failed", "error_msg": "activation failed", "failed_stage": "pool_activation"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.MobileConnection{}).Where("id = ?", confirmed.ID).
+		Update("provision_error", "activation failed").Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RetryActivation(context.Background(), db, membership.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	var session model.SetupSession
+	if err := db.First(&session, membership.SessionID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if session.Status != "provisioning" || session.AdminDid != did || session.ErrorMsg != "" || session.FailedStage != "" {
+		t.Fatalf("retried session = %+v", session)
+	}
+	var claim model.MobileConnection
+	if err := db.First(&claim, "id = ?", confirmed.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if claim.Status != "provisioning" || claim.ProvisionError != "" || claim.AdminDid != did {
+		t.Fatalf("retried claim = %+v", claim)
+	}
+}
+
 func TestReserveDoesNotReuseActiveClaim(t *testing.T) {
 	db := poolDatabase(t)
 	batch, _, err := admission(t, db, 2, 2)
@@ -716,6 +774,46 @@ func TestAddInventoryGrowsBatchIdempotently(t *testing.T) {
 	}
 	if memberships != 3 {
 		t.Fatalf("memberships = %d, want 3", memberships)
+	}
+}
+
+func TestAddInventoryReplenishesEmptyBatchFromRetainedImage(t *testing.T) {
+	db := poolDatabase(t)
+	batch, _, err := admission(t, db, 1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.VtaImage != "example/vta:test" {
+		t.Fatalf("batch image = %q", batch.VtaImage)
+	}
+	if err := db.Where("batch_id = ?", batch.ID).Delete(&model.PoolSession{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var admin model.Admin
+	if err := db.First(&admin, "unique_id = ?", "pool-admin").Error; err != nil {
+		t.Fatal(err)
+	}
+	added, err := AddInventory(context.Background(), db, Addition{
+		AdminID: admin.ID, BatchID: batch.ID, Key: "refill-empty", Digest: "refill-empty-digest",
+		Count: 1, Capacity: 2,
+		Session: model.SetupSession{
+			Mode: model.ModeVtaOnly, Domain: "example.com", Subdomain: "vta-",
+			VtaImage: batch.VtaImage, DidHostingServerURL: "https://dids.example.com",
+		},
+		MemoryRequest: "32Mi", MemoryLimit: "64Mi",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !added.Created || len(added.Sessions) != 1 || added.Sessions[0].VtaImage != "example/vta:test" {
+		t.Fatalf("replenished batch = %+v", added)
+	}
+	var memberships int64
+	if err := db.Model(&model.PoolSession{}).Where("batch_id = ?", batch.ID).Count(&memberships).Error; err != nil {
+		t.Fatal(err)
+	}
+	if memberships != 1 {
+		t.Fatalf("memberships = %d, want 1", memberships)
 	}
 }
 

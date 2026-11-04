@@ -368,7 +368,9 @@ components:
         label: { type: string }
         purpose: { type: string, enum: [admin_station, public_signup] }
         requested_count: { type: integer }
-        vta_image: { type: string }
+        vta_image:
+          type: string
+          description: Image retained by the batch for future inventory additions.
         public_signup_enabled_at:
           type: string
           format: date-time
@@ -378,7 +380,7 @@ components:
         sessions:
           type: array
           items: { $ref: "#/components/schemas/PoolSession" }
-      required: [id, label, purpose, requested_count, created_at, counts]
+      required: [id, label, purpose, requested_count, vta_image, created_at, counts]
 
     PoolClaim:
       type: object
@@ -2458,7 +2460,7 @@ paths:
 
   /api/v1/admin/pool-sessions/{id}/retry:
     post:
-      summary: Retry preparation of an unclaimed failed pooled VTA
+      summary: Retry a failed pooled VTA preparation or confirmed activation
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
@@ -2469,17 +2471,22 @@ paths:
           schema: { type: integer, minimum: 1 }
       responses:
         "202":
-          description: Preparation requeued
+          description: Preparation or activation requeued
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   session_id: { type: integer }
-                  status: { type: string, const: pool_creating }
+                  status: { type: string, enum: [pool_creating, provisioning] }
                 required: [session_id, status]
         "409":
-          description: Session is claimed or is not a retryable failed pool member
+          description: Session is not a retryable failed preparation or confirmed activation
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: VTA activation worker is unavailable
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }

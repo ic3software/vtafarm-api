@@ -29,21 +29,22 @@ const trustTaskBodyLimit = 64 << 10
 const defaultRedeemHold = 25 * time.Second
 
 type TrustTaskHandler struct {
-	db            *gorm.DB
-	farmDID       string
-	signer        *farmtrusttask.Signer
-	verifier      *farmtrusttask.WalletVerifier
-	validator     farmtrusttask.SchemaValidator
-	guard         *farmtrusttask.ReplayGuard
-	redeemHold    time.Duration
-	enabled       bool
-	signInEnabled bool
-	portalURL     string
-	portalOrigin  string
-	linkHost      string
-	farmName      string
-	jwtSecret     string
-	cookieSecure  bool
+	db              *gorm.DB
+	farmDID         string
+	signer          *farmtrusttask.Signer
+	verifier        *farmtrusttask.WalletVerifier
+	validator       farmtrusttask.SchemaValidator
+	guard           *farmtrusttask.ReplayGuard
+	redeemHold      time.Duration
+	enabled         bool
+	signInEnabled   bool
+	portalURL       string
+	portalOrigin    string
+	linkHost        string
+	farmName        string
+	jwtSecret       string
+	cookieSecure    bool
+	kickPoolPrewarm func(uint)
 }
 
 type farmDocumentResolver interface {
@@ -95,6 +96,10 @@ func (h *TrustTaskHandler) ConfigureWalletSessions(jwtSecret string, cookieSecur
 }
 
 func (h *TrustTaskHandler) Enabled() bool { return h != nil && h.enabled }
+
+func (h *TrustTaskHandler) ConfigurePoolPrewarm(kick func(uint)) {
+	h.kickPoolPrewarm = kick
+}
 
 func (h *TrustTaskHandler) WalletSignInEnabled() bool {
 	return h != nil && h.enabled && h.signInEnabled
@@ -200,7 +205,7 @@ func (h *TrustTaskHandler) consumeClaim(c *gin.Context, raw json.RawMessage) {
 			if err != nil {
 				return nil, err
 			}
-			_, err = connection.ClaimAndRecord(ctx, h.db, request.Payload.Handle, *parties.Issuer, request.ID, responseBytes)
+			claimed, err := connection.ClaimAndRecord(ctx, h.db, request.Payload.Handle, *parties.Issuer, request.ID, responseBytes)
 			if err != nil {
 				switch {
 				case errors.Is(err, gorm.ErrRecordNotFound):
@@ -214,6 +219,9 @@ func (h *TrustTaskHandler) consumeClaim(c *gin.Context, raw json.RawMessage) {
 				default:
 					return nil, err
 				}
+			}
+			if h.kickPoolPrewarm != nil {
+				h.kickPoolPrewarm(claimed.SessionID)
 			}
 			return nextStep, nil
 		},

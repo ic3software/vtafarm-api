@@ -42,9 +42,10 @@ authoritative source for everything else:
 | Pool grouping | `pool_batches` and `pool_sessions` |
 
 Consequently, the pool does not store a second user ID, VTA name, namespace,
-Vault target, DNS zone, ingress IP, claimant DID, claim timestamps, cleanup
-cursor, or per-VTA lifecycle state. The batch keeps only a nullable timestamp
-to make whole-batch cleanup durable across API restarts.
+Vault target, DNS record, ingress IP, claimant DID, claim timestamps, cleanup
+cursor, or per-VTA lifecycle state. The batch keeps a non-secret replenishment
+image plus a nullable timestamp that makes whole-batch cleanup durable across
+API restarts.
 
 ## 3. Schema
 
@@ -54,6 +55,7 @@ CREATE TABLE pool_batches (
     created_by bigint NOT NULL REFERENCES admins(id) ON DELETE RESTRICT,
     label text NOT NULL,
     requested_count integer NOT NULL CHECK (requested_count > 0),
+    vta_image text NOT NULL CHECK (vta_image <> ''),
     idempotency_key text NOT NULL,
     request_digest text NOT NULL,
     cleanup_requested_at timestamptz,
@@ -85,6 +87,15 @@ resource identity.
 always counted from `pool_sessions`; it can become smaller after cleanup.
 The database constraint validates only that the request is positive. The
 cluster's live VTA-only estimate is the actual upper bound.
+
+`vta_image` is the only replenishment input retained on the batch. Mode,
+portability and pre-rotation are fixed for pooled VTAs; managed-domain and
+shared DID-hosting inputs come from the current platform configuration when
+inventory is added. This allows selected cleanup to remove the final member
+while keeping the empty batch usable without retaining stale infrastructure
+endpoints. Migration 49 backfills the image from the oldest member of each
+existing batch and deletes legacy batches that already have no `pool_sessions`
+members.
 
 `idempotency_key` makes a retried HTTP request return the original batch instead
 of creating another 50 users and VTAs.
@@ -139,19 +150,408 @@ state by joining `pool_sessions`, `setup_sessions`, and the latest
    empty `admin_did`.
 2. Create or return its ordinary active `mobile_connections` claim request.
 3. Keyring scans the QR and submits its DID through the existing Trust Task.
-4. The station displays the existing six-character comparison code.
-5. Administrator confirmation sets `mobile_connections.confirmed_at`, copies
-   the DID into `setup_sessions.admin_did`, and advances the session to
-   `provisioning`.
-6. The provision job imports the DID into the prepared VTA data.
-7. The existing zero-replica Deployment is scaled to one.
+4. The Admin claim station or public user page displays the existing
+   six-character comparison code.
+5. Confirmation from either entry point sets
+   `mobile_connections.confirmed_at`, copies the DID into
+   `setup_sessions.admin_did`, and advances the session to `provisioning`.
+6. The existing zero-replica Deployment starts with a one-shot activation init
+   container that imports the DID into the prepared VTA data.
+7. The same Pod starts the VTA application after activation succeeds.
 8. Readiness advances the session to `running`, and redeem returns the VTA DID.
 
 The confirmed mobile connection is the durable handover record. A confirmed
 activation that later fails remains claimed and cannot be allocated or cleaned
 as unused inventory.
 
-## 6. Cleanup and Retention
+## 6. Fast Activation for All Pool Claims
+
+Fast activation is a property of pooled VTA inventory, not of one UI. Both
+entry points use it:
+
+| Entry point | Confirmation route | Shared activation |
+| --- | --- | --- |
+| Admin claim station | `POST /api/v1/admin/pool-claims/:request_id/confirm` | Confirm the mobile connection, then kick the pooled activation worker |
+| Public user flow | `POST /api/v1/public/pool-claims/:request_id/confirm` | Authorize the browser capability, confirm the same mobile connection, then kick the same pooled activation worker |
+
+Allocation, confirmation, recovery, failure handling, and release must not fork
+by entry point. Once a pooled connection is confirmed, the worker operates only
+from durable session and connection state. It does not need to know which UI
+confirmed it.
+
+### 6.1 Decision
+
+Do not create a per-claim Kubernetes provision Job for a pooled VTA. After
+confirmation, patch the already-created zero-replica Deployment with a one-shot
+activation init container and set its replica count to one in the same
+Kubernetes update. The resulting Pod imports the claimant's administrator DID,
+adds the DID-hosting control server when required, and then starts the ordinary
+VTA container.
+
+The external claim protocol and APIs remain unchanged. A VTA is still assigned
+atomically from `pool_waiting`, Keyring still proves possession of the proposed
+administrator key, and the person at either UI still confirms the comparison
+value before the Farm mutates the VTA. The optimization changes only how a
+confirmed pooled VTA crosses `provisioning -> running`.
+
+This removes one Pod scheduling/startup cycle and the provision Job's
+five-second completion poll without keeping every unclaimed VTA running.
+
+### 6.2 Current latency and measurement
+
+Pool preparation already creates the PVC, VTA configuration and DID, publishes
+the DID, and creates the Service, Ingress, and final Deployment. The Deployment
+has zero replicas while the session is `pool_waiting`.
+
+Before fast activation, the implementation took this path after either UI
+confirmed:
+
+```text
+confirm claim
+  -> commit admin_did and provisioning state
+  -> create vta-provision-{sessionID} Job
+  -> schedule and start a Job Pod
+  -> run vta import-did
+  -> optionally run vta did-mgmt servers add
+  -> observe Job completion (polled every 5 seconds)
+  -> scale the parked Deployment to one
+  -> schedule and start a second Pod
+  -> wait for /health readiness
+  -> mark running and release the claim
+```
+
+The confirmation request does not wait synchronously for this work, but Keyring
+and the browser cannot receive the VTA until it finishes. The fixed avoidable
+costs are the separate Job Pod lifecycle and up to one `WaitForJob` polling
+interval. Image pull, volume attachment, scheduling, and VTA initialization
+determine the remaining time.
+
+The fast-activation worker emits safe stage timings. During canary validation,
+collect at least 30 activations on the target cluster and include both Admin and
+public claims, because they converge on the same worker. Record p50, p95, and
+maximum for:
+
+- confirmation commit to provision Job Pod started;
+- CLI start to provision Job completion;
+- Job completion to Deployment Pod started;
+- Deployment Pod started to readiness;
+- confirmation commit to claim release.
+
+The product target is p95 confirmation-to-release below 15 seconds with a warm
+image cache, and at least a 40 percent p95 reduction from the measured baseline.
+These are acceptance targets, not an assertion that every cluster can meet
+them; a cold image pull remains outside this change.
+
+### 6.3 Activation path
+
+Both claim entry points converge on this path:
+
+```text
+confirm pooled claim
+  -> atomically commit admin_did and provisioning state
+  -> ensure the VTA DID has its hosting ACL entry
+  -> patch the parked Deployment template and replicas=1 together
+       init: import administrator DID
+       init: add DID-hosting control server when configured
+       app:  start vta
+  -> wait for /health readiness
+  -> mark running and release the claim
+```
+
+The existing provision advisory lock remains the single cross-replica owner for
+activation. The database transaction remains the durable handover boundary;
+Kubernetes work starts only after it commits.
+
+The Deployment patch must update both `spec.template` and `spec.replicas` in one
+API call. This prevents a replica from starting with the old template between a
+separate template update and scale operation. Use optimistic concurrency or an
+idempotent server-side patch and verify the resulting template carries the
+expected activation identity.
+
+The init container uses the same pinned VTA image, service account, working
+directory, and `/work/vta` PVC as the application container. Its command is the
+current provision command:
+
+```text
+vta import-did --did <adminDid> --role admin --label "mobile integration"
+vta did-mgmt servers add --id control --did <controlDid> \
+  --label "DID Hosting Control Plane"  # managed hosting only
+```
+
+No private key is passed to Kubernetes. The administrator DID and hosting
+control DID are public identifiers and already appear in the current Job spec.
+Shell arguments must continue to use the existing quoting helper.
+
+Store an activation identity in Deployment annotations. Derive it from the
+session and confirmed connection, not from a secret, so recovery can
+distinguish the intended claim from a stale template. Never put the browser
+capability, claim handle, comparison value, or claimant private material in an
+annotation, environment variable, command line, event, or log.
+
+### 6.4 Durable step receipts
+
+An init container runs again whenever Kubernetes recreates the Pod. It cannot
+blindly repeat mutating CLI commands. Write per-step receipts on the session PVC
+under a Farm-owned directory after each command succeeds:
+
+```text
+.vtafarm/activation/<activation-id>/admin-imported
+.vtafarm/activation/<activation-id>/control-server-added
+```
+
+On restart, validate that a receipt belongs to the same activation identity and
+skip only that completed step. Write each receipt through a temporary file plus
+atomic rename. Never treat the presence of the directory alone as success.
+
+There is still a narrow crash window between a CLI mutation and receipt write.
+Before shipping, establish one of these recovery contracts:
+
+1. prove both CLI operations are idempotent for identical arguments;
+2. add a read-before-write check using supported VTA commands; or
+3. change the VTA CLI to expose an idempotent `ensure` operation.
+
+Do not ship a marker-only workaround if repeating either command can corrupt or
+reject a valid activation. This is the principal technical prerequisite.
+
+### 6.5 State, recovery, and failure handling
+
+No schema or claim/confirm API change is required. The existing Admin pool
+retry route also resumes failed confirmed activations. `setup_sessions`,
+`mobile_connections`, and the existing statuses remain the source of truth:
+
+| State | Fast-activation behavior |
+| --- | --- |
+| `pool_waiting` | Deployment exists at zero replicas with no claim-specific activation |
+| `confirmed` / `provisioning` | Existing worker lock patches or reconciles activation and waits for readiness |
+| `running` / `released` | At least one VTA replica is ready; no activation work is repeated |
+| `failed` after confirmation | VTA remains consumed; operator retry resumes the same activation identity |
+| `deleting` | Heartbeat cancellation stops reconciliation and cleanup owns the resources |
+
+Recovery is reconcile-based rather than create-once:
+
+1. Load the confirmed connection and session under the existing provision
+   worker lock.
+2. Ensure the hosting ACL operation is complete; its current API call remains
+   idempotent or must be treated as such explicitly.
+3. Read the Deployment.
+4. If its activation annotation or init container does not match, patch the
+   expected template and replica count.
+5. If it matches but replicas are zero, scale it to one.
+6. Inspect Pod init status and Deployment readiness until success or a bounded
+   failure.
+7. On readiness, perform the existing database transition to `running` and
+   mark the mobile connection `released`.
+
+Do not wait for the full two-minute readiness timeout when the activation init
+container has terminated with a non-zero exit code. Capture its bounded logs,
+record a safe error on the session, and use the existing post-confirmation
+failure behavior. Never copy command lines containing identifiers into a public
+error response.
+
+A process crash after Kubernetes becomes ready but before the database update
+is safe: recovery observes the ready Deployment and completes `running` and
+`released`. A crash before the patch is safe because the committed
+`provisioning` row is found by the existing recovery queue.
+
+### 6.6 Reservation and authorization boundary
+
+Selecting **Get my VTA** creates a temporary, reclaimable reservation. Do not
+start a Pod for this initial browser action: many reservations may be abandoned
+before Keyring participates.
+
+The later Keyring submission changes the latency trade-off. Once Keyring has
+submitted the proposed administrator DID and both sides can display the
+comparison value, the claim is active and the user normally spends several
+seconds verifying the code. A future prewarm path may use that interval to
+schedule the selected VTA Pod and attach its PVC. It must not import the
+administrator DID, add the hosting control server, start the VTA application,
+or otherwise mutate the prepared VTA before matching-code confirmation. A
+signed claim plus that explicit confirmation remains the authorization boundary
+for every claimant-controlled write. The Admin station and public flow follow
+the same rule.
+
+Do not use `exec` into a running VTA, mount the PVC into concurrent writer Pods,
+or pre-import a Farm-controlled placeholder administrator.
+
+### 6.7 Confirmation-latency prewarm
+
+Prewarm is the follow-up to fast activation. Removing the provision Job leaves
+one unavoidable Deployment Pod startup. A warm-image measurement on the target
+development cluster still spent about ten seconds attaching its Longhorn
+`ReadWriteOnce` PVC. Polling and database work add time around that operation.
+Therefore a design that begins Pod scheduling only after confirmation cannot
+reliably meet a sub-ten-second confirmation-to-release target.
+
+One instrumented public claim took 30.773 seconds from clicking **Codes match**
+until the third browser step appeared. The mutually exclusive intervals were:
+
+| Interval | Duration | Work observed |
+| --- | ---: | --- |
+| Click to durable `confirmed_at` | 3.568 s | Trust Task validation and confirmation transaction |
+| Confirmation to provision runner start | 3.494 s | Confirmation completion, worker dispatch, and runner handoff |
+| Runner start to fast-path entry | 4.961 s | Session reads and updates, DID-hosting ACL, pool detection, and confirmed-claim load |
+| Fast-path entry to Deployment patch | 0.346 s | Patch the activation template and set `replicas=1` |
+| Deployment patch to observed init start | 12.341 s | Pod scheduling, approximately 10 s of Longhorn volume attachment, kubelet container start, and readiness polling |
+| Init start to init completion | 1.001 s | Administrator activation; the one-second observer interval bounds the recorded value |
+| Init completion to Deployment ready | 1.001 s | Application start, health readiness, and observer interval |
+| Deployment ready to release log | 3.285 s | Mark the session running, release the connection, and create the wallet login binding |
+| Release log to third browser step | 0.776 s | Claim polling response and browser render |
+
+The database recorded 25.153 seconds from `confirmed_at` to `released_at`; that
+is a different measurement boundary from the browser's 30.773 seconds. Local
+database forwarding inflated individual SQL calls in this sample, so the table
+is diagnostic evidence rather than a production latency baseline. The volume
+attachment and Kubernetes intervals remain relevant to the prewarm decision.
+
+Prewarm only the VTA with an active Keyring claim; do not keep the whole pool
+running:
+
+```text
+Get my VTA
+  -> reserve one pool member; keep Deployment at replicas=0
+Keyring submits its DID and the comparison value is displayed
+  -> start the selected Deployment Pod
+  -> attach the existing PVC and wait at a non-mutating activation gate
+Codes match
+  -> durably record confirmed_at and admin_did
+  -> release the gate in the same Pod
+  -> import the administrator DID and add the hosting control server
+  -> start the VTA application and wait for readiness
+  -> mark running and release the claim
+```
+
+The confirmation signal does not recreate the Pod, because doing so would lose
+the scheduling and volume-attachment benefit. The final Deployment Pod starts
+with an activation-gate init process. The gate polls a read-only HTTPS Farm
+endpoint derived from the existing `TRUST_TASK_BASE`; there is no separate
+prewarm configuration variable or additional Kubernetes RBAC grant.
+
+The endpoint returns no payload and has no mutation operation. It verifies the
+activation identity against the current connection and durable
+`mobile_connections.confirmed_at` state. The provision worker creates the
+DID-hosting ACL before writing the authorization annotation to Deployment
+metadata. That metadata-only update leaves `spec.template` unchanged, so the
+running gate Pod and its PVC attachment survive confirmation. Only then does
+the endpoint return `200`; the same init process performs the existing
+receipt-protected activation and exits so the application container can start.
+Before authorization it returns `202`, and an ended or replaced claim returns
+`410`.
+
+The gate caller does not need a workload identity because reading the status
+cannot confirm a claim, write the authorization annotation, or cause another
+Pod to proceed. HTTPS authenticates the Farm endpoint to the waiting Pod; the
+durable confirmation and authorization annotation remain the security
+boundary. The browser capability, comparison value, and private material never
+enter a Kubernetes object, command line, response, or log.
+
+No new pool-level feature flag is required. Prewarm applies to Admin and public
+claims under the same conditions:
+
+- the session is a compatible pooled `vta_only` session with a parked
+  Deployment;
+- Keyring has submitted a DID and the claim is in the comparison stage;
+- the claim is unexpired and is the only active claim for the session;
+- cluster admission still has room for the Pod;
+- the Pod uses the final VTA image, PVC, service account, and resource requests.
+
+The claim and setup-session rows remain the source of truth; a new persistent
+pool state is not required. The activation identity binds the waiting Pod to
+the active connection. If confirmation arrives before prewarm is ready, the
+same Pod continues through the gate as soon as it starts, so the current fast
+activation behavior remains the slow-path outcome without creating a Job or a
+second PVC writer.
+
+An open or claimed request that expires, is cancelled, or is superseded must
+cancel the gate, scale the Deployment back to zero, and restore its neutral
+parked template. Because the gate has not mutated the VTA, that session may
+return to inventory after the ordinary claim-expiry checks. Confirmation wins
+the race through the existing database lock: after `confirmed_at` commits, the
+session is consumed and must never be reclaimed even if activation fails.
+The background reconciler lists only Deployments carrying the prewarm label,
+repairs active claimed prewarms, and removes abandoned gates after an API
+restart.
+
+Prewarm consumes a Pod slot, an attached volume, and the gate container's
+resource requests while the comparison screen is open. Capacity accounting
+already reserves the eventual VTA resources, but rollout must also enforce a
+bounded number of concurrent prewarm Pods so Pod-count and storage-attachment
+limits cannot be exhausted by abandoned claims.
+
+Instrument `claim_did_submitted`, `prewarm_pod_scheduled`,
+`prewarm_volume_attached`, `prewarm_gate_ready`, `claim_confirmed`,
+`activation_init_completed`, and `claim_released`. Report prewarm hit rate,
+expired-prewarm rate, confirmation-to-release p50/p95, and the percentage of
+confirmations that arrive before the gate is ready. The acceptance target is
+p95 confirmation-to-release below ten seconds for prewarm hits with a warm
+image cache. Compare at least 30 Admin and public activations using the same
+start and end events.
+
+### 6.8 Compatibility and rollout
+
+Apply the fast path whenever all of these are true:
+
+- the session belongs to `pool_sessions`, regardless of whether the claim came
+  from the Admin station or public user flow;
+- its mode is `vta_only`;
+- it was prepared with a parked Deployment compatible with activation init;
+- the confirmed connection operation is initial VTA provisioning;
+- the image has passed the activation idempotency compatibility check.
+
+Ordinary non-pool `vta_only`, `full_stack`, additional-admin ACL grants, and
+maintenance operations keep their existing offline Job flows. This keeps the
+first implementation scoped to the pool without changing full-stack
+sequencing.
+
+Fast activation is the only activation path for a newly confirmed pooled VTA;
+there is no per-pool or environment switch. Recovery continues the legacy Job
+path only when that Job already exists, because crossing from an in-progress
+Job to Deployment activation could create two PVC writers. Do not otherwise
+fall back after fast activation has begun. A failed activation requires
+reconciliation or an operator retry of the same path.
+
+### 6.9 Observability
+
+Emit structured, identifier-safe stage timings for `claim_confirmed`,
+`hosting_acl_ready`, `deployment_activation_patched`,
+`activation_init_started`, `activation_init_completed`, `deployment_ready`, and
+`claim_released`.
+
+Include the entry-point kind (`admin_station` or `public_signup`), session ID,
+activation identity, image digest when available, node, outcome, and duration.
+Do not include the claim handle, public browser token, comparison value, or
+administrator DID. Compare latency and failure rates by entry point, while
+keeping the worker and success criteria identical.
+
+### 6.10 Implementation and acceptance
+
+1. Instrument the current Job-based path and record both entry-point baselines.
+2. Verify or add idempotent VTA CLI behavior for administrator import and
+   control-server registration; add crash-window tests.
+3. Add a Kubernetes helper that atomically patches the parked Deployment with
+   the activation init container, annotations, and `replicas=1`.
+4. Add activation observation that distinguishes init failure from application
+   readiness failure and returns bounded diagnostic logs.
+5. Route every confirmed pool session through the pooled activation worker;
+   retain the existing advisory lock, hosting ACL step, status transitions, and
+   release behavior.
+6. Add recovery and concurrency tests for both Admin and public confirmation.
+7. Run canary pools and compare p50/p95 with the baseline before broad rollout.
+
+Acceptance requires that successful Admin and public pooled claims create no
+provision Job; one Deployment Pod activates and serves the VTA; repeated worker
+kicks, API or Pod restarts, and duplicate confirmations do not repeat completed
+mutations or release twice; no concurrent writer touches the PVC; and a failed
+confirmed activation never returns to available inventory.
+
+Prewarm additionally requires that a claimed connection starts exactly that
+Deployment behind the activation gate; confirmation changes no Pod-template
+field; rejection and expiry restore `replicas=0`; a stale or mismatched
+activation identity cannot release the gate; and a missing gate service fails
+closed without mutating the PVC. The endpoint must remain read-only and return
+no claim data. Canary validation must confirm the VTA image contains the `curl`
+client used by the gate before that image is admitted to pooled inventory.
+
+## 7. Cleanup and Retention
 
 Unused inventory has no expiry. An administrator may keep it for another event,
 explicitly select setup-session IDs for cleanup, or clean up an entirely unused
@@ -182,11 +582,15 @@ is the durable cleanup request for selected inventory. Whole-batch cleanup
 additionally writes `cleanup_requested_at`; after background workers remove the
 final member, that marker causes the empty `pool_batches` row to be deleted.
 
+Selected cleanup can remove every member without deleting the batch. Because
+the image lives on `pool_batches`, **Add inventory** continues to work when the
+member list and live total are both empty.
+
 Claimed sessions are not affected by unused-inventory cleanup. They remain
 ordinary running Farm sessions managed by an administrator until a separate
 Portal enrollment design is implemented.
 
-## 7. Failure and Retry Rules
+## 8. Failure and Retry Rules
 
 - Batch creation is transactional for database rows. Either all requested users,
   sessions and memberships are admitted, or none are.
@@ -198,7 +602,7 @@ Portal enrollment design is implemented.
 - Deployment creation at zero replicas is idempotent. Claim activation scales
   that existing Deployment instead of creating a second one.
 
-## 8. Capacity Admission
+## 9. Capacity Admission
 
 Batch admission uses the same strict VTA-only estimate shown by the Admin
 Dashboard. A request is rejected before any batch, user, or setup-session row
@@ -240,7 +644,7 @@ expiry updates from a GET request. The browser schedules its next poll only
 after the previous request finishes, so a slow response cannot accumulate
 overlapping requests.
 
-## 9. Migration Safety
+## 10. Migration Safety
 
 Migration 0043 contains the two pool tables and whole-batch cleanup marker
 described above. The earlier ownership design and its `users.account_kind` and

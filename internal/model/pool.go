@@ -17,14 +17,15 @@ const (
 )
 
 // PoolBatch records one administrative request to create pooled VTAs. The
-// actual users, sessions, images, infrastructure and lifecycle state remain in
-// their existing tables.
+// actual users, sessions, resources, and lifecycle state remain in their
+// existing tables. VtaImage is retained so an empty batch can be replenished.
 type PoolBatch struct {
 	ID                    uint       `gorm:"primaryKey" json:"id"`
 	CreatedBy             uint       `json:"created_by"`
 	Label                 string     `json:"label"`
 	Purpose               string     `gorm:"not null;default:'admin_station'" json:"purpose"`
 	RequestedCount        int        `json:"requested_count"`
+	VtaImage              string     `gorm:"column:vta_image;not null;default:''" json:"vta_image"`
 	IdempotencyKey        string     `json:"-"`
 	RequestDigest         string     `json:"-"`
 	PublicSignupEnabledAt *time.Time `json:"public_signup_enabled_at,omitempty"`

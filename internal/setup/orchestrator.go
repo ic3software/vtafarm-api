@@ -36,6 +36,10 @@ type Orchestrator struct {
 	// uploads to is the platform stack's, which does not exist on first boot.
 	// nil when no client keypair is configured.
 	didHosting *didhosting.Factory
+	// poolActivationGateBase is the API origin used by a prewarmed Pod to wait
+	// for durable post-confirmation authorization. It is derived from the same
+	// public HTTPS origin as the Trust Task endpoint.
+	poolActivationGateBase string
 	// ingressIP is what a custom domain's records must resolve to; acmeIssuer
 	// names the cert-manager ClusterIssuer signing its certificate. Both are
 	// used only by the custom-domain branches — dns_wait and tls_provision.
@@ -45,6 +49,7 @@ type Orchestrator struct {
 	mu         sync.Mutex
 	cancels    map[uint]context.CancelFunc
 	provisions map[uint]context.CancelFunc
+	prewarms   map[uint]*poolPrewarmRun
 }
 
 func NewOrchestrator(
@@ -53,19 +58,31 @@ func NewOrchestrator(
 	vaultClient *vault.Client,
 	vaultAddr string,
 	dhFactory *didhosting.Factory,
-	ingressIP, acmeIssuer string,
+	ingressIP, acmeIssuer, trustTaskBase string,
 ) *Orchestrator {
 	return &Orchestrator{
-		db:         db,
-		k8s:        k8sClient,
-		vault:      vaultClient,
-		vaultAddr:  vaultAddr,
-		didHosting: dhFactory,
-		ingressIP:  ingressIP,
-		acmeIssuer: acmeIssuer,
-		dns:        dnscheck.New(),
-		cancels:    make(map[uint]context.CancelFunc),
+		db:                     db,
+		k8s:                    k8sClient,
+		vault:                  vaultClient,
+		vaultAddr:              vaultAddr,
+		didHosting:             dhFactory,
+		poolActivationGateBase: poolActivationGateBase(trustTaskBase),
+		ingressIP:              ingressIP,
+		acmeIssuer:             acmeIssuer,
+		dns:                    dnscheck.New(),
+		cancels:                make(map[uint]context.CancelFunc),
+		prewarms:               make(map[uint]*poolPrewarmRun),
 	}
+}
+
+func poolActivationGateBase(trustTaskBase string) string {
+	base, err := url.Parse(strings.TrimSpace(trustTaskBase))
+	if err != nil || base.Scheme != "https" || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
+		return ""
+	}
+	base.Path = "/api/v1/internal/pool-activations"
+	base.RawPath = ""
+	return strings.TrimSuffix(base.String(), "/")
 }
 
 // Start launches Phase 1 for a session. Safe to call from an HTTP handler.
@@ -411,6 +428,7 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 // ── Phase 2: import-did + Deployment ─────────────────────────────────────────
 
 func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDid string) {
+	started := time.Now()
 	var session model.SetupSession
 	if err := o.db.First(&session, sessionID).Error; err != nil {
 		log.Printf("[orchestrator] provision %d: load failed: %v", sessionID, err)
@@ -456,8 +474,12 @@ func (o *Orchestrator) runProvision(ctx context.Context, sessionID uint, adminDi
 	}
 
 	provisionJobName := k8s.ProvisionJobName(sessionID)
-	log.Printf("[orchestrator] session %d: creating provision job (controlDid=%q)", sessionID, controlDid)
 	adminLabel := o.provisionAdminLabel(sessionID, adminDid, "")
+	if o.runPoolActivation(ctx, ns, &session, adminDid, adminLabel, controlDid, started) {
+		return
+	}
+
+	log.Printf("[orchestrator] session %d: creating provision job (controlDid=%q)", sessionID, controlDid)
 	if err := o.k8s.CreateProvisionJob(ctx, ns, sessionID, session.VtaImage, adminDid, adminLabel, controlDid); err != nil {
 		if ctx.Err() != nil {
 			return

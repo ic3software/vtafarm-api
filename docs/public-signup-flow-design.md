@@ -34,6 +34,11 @@ Tasks, comparison code, provisioning worker, and Keyring redeem flow remain the
 source of truth. The public flow adds a safe browser capability and public UI;
 it does not create a second claim protocol.
 
+Every confirmed public claim uses the same pooled fast-activation worker as the
+Admin claim station. The shared behavior is defined in
+[`pooled-vta-claim-design.md`](pooled-vta-claim-design.md#6-fast-activation-for-all-pool-claims);
+it does not change this page's API or confirmation behavior.
+
 ## 2. User Journey
 
 The home page keeps **Sign in** as a secondary action and makes **Get your VTA**
@@ -249,12 +254,18 @@ Idempotency-Key: <new key for this addition>
 {"count":10}
 ```
 
-The operation reuses the batch's VTA image and infrastructure settings, checks
-current cluster capacity, and atomically creates the additional users, setup
-sessions, pool memberships, and resource rows. Existing claimed members do not
-block replenishment. Cleanup in progress does block it. A successful addition
-increments `pool_batches.requested_count`, starts the ordinary preparation
-workers, and leaves the existing claim-station URL unchanged.
+The operation reuses the batch's VTA image with the current platform
+infrastructure settings, checks current cluster capacity, and atomically
+creates the additional users, setup sessions, pool memberships, and resource
+rows. Existing claimed members do not block replenishment. Cleanup in progress
+does block it. A successful addition increments
+`pool_batches.requested_count`, starts the ordinary preparation workers, and
+leaves the existing claim-station URL unchanged.
+
+The reusable image is stored on the batch itself, so selected cleanup may
+remove the last member without making the public-signup pool impossible to
+replenish. Migration 49 backfills batches that still have members and deletes
+legacy batches that are already empty.
 
 Record every addition in a small `pool_batch_additions` table containing batch,
 administrator, count, idempotency key, request digest, and timestamp. This keeps

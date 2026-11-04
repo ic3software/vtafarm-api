@@ -16,6 +16,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+const provisionWorkerLockClass = 565441
+
 var (
 	ErrConflict       = errors.New("pool state changed or session is protected")
 	ErrEmpty          = errors.New("no waiting VTA is available in this batch")
@@ -67,7 +69,7 @@ func LookupBatch(ctx context.Context, db *gorm.DB, adminID uint, key, digest str
 }
 
 // Admit creates real users and setup sessions. pool_sessions only groups those
-// sessions; it does not duplicate their ownership, infrastructure, or status.
+// sessions; the batch retains the image needed to replenish empty inventory.
 func Admit(ctx context.Context, db *gorm.DB, input Admission) (*AdmissionResult, error) {
 	if input.Purpose == "" {
 		input.Purpose = model.PoolPurposeAdminStation
@@ -118,13 +120,13 @@ func admitBatchRow(ctx context.Context, tx *gorm.DB, input Admission) (*model.Po
 		)
 		INSERT INTO pool_batches (
 			created_by, label, purpose, requested_count, public_signup_enabled_at,
-			idempotency_key, request_digest
+			idempotency_key, request_digest, vta_image
 		)
-		SELECT ?, ?, ?, ?, CASE WHEN ? = ? THEN clock_timestamp() END, ?, ? FROM reserved
+		SELECT ?, ?, ?, ?, CASE WHEN ? = ? THEN clock_timestamp() END, ?, ?, ? FROM reserved
 		WHERE ? <= GREATEST(? - reserved.count, 0)
 		ON CONFLICT (created_by, idempotency_key) DO NOTHING
 		RETURNING *`, input.AdminID, input.Label, input.Purpose, input.Count,
-		input.Purpose, model.PoolPurposePublicSignup, input.Key, input.Digest, input.Count, input.Capacity).
+		input.Purpose, model.PoolPurposePublicSignup, input.Key, input.Digest, input.Session.VtaImage, input.Count, input.Capacity).
 		Scan(&inserted).Error
 	if err != nil {
 		return nil, false, err
@@ -200,6 +202,9 @@ func AddInventory(ctx context.Context, db *gorm.DB, input Addition) (*AdditionRe
 			return err
 		}
 		if batch.CleanupRequestedAt != nil {
+			return ErrConflict
+		}
+		if batch.VtaImage == "" || batch.VtaImage != input.Session.VtaImage {
 			return ErrConflict
 		}
 		reserved, err := nonRunningSessionCount(tx)
@@ -612,6 +617,46 @@ func Reject(ctx context.Context, db *gorm.DB, requestID string) error {
 func IsSession(db *gorm.DB, sessionID uint) bool {
 	var count int64
 	return db.Model(&model.PoolSession{}).Where("session_id = ?", sessionID).Count(&count).Error == nil && count == 1
+}
+
+// RetryActivation returns a confirmed failed member to the provision worker.
+// It retains the original connection and administrator so the activation
+// identity, comparison proof, and permanent handover boundary do not change.
+func RetryActivation(ctx context.Context, db *gorm.DB, sessionID uint) error {
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lock(tx); err != nil {
+			return err
+		}
+		if err := tx.Exec("SELECT pg_advisory_xact_lock(?, ?)", provisionWorkerLockClass, int64(sessionID)).Error; err != nil {
+			return err
+		}
+		if !IsSession(tx, sessionID) {
+			return ErrConflict
+		}
+		var session model.SetupSession
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&session, sessionID).Error; err != nil {
+			return err
+		}
+		if session.Status != "failed" || session.AdminDid == "" {
+			return ErrConflict
+		}
+		var claim model.MobileConnection
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("session_id = ? AND operation = ? AND admin_did = ? AND confirmed_at IS NOT NULL AND status IN ?",
+				sessionID, connection.OperationProvisionVTA, session.AdminDid, []string{"confirmed", "provisioning"}).
+			Order("created_at DESC").First(&claim).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrConflict
+			}
+			return err
+		}
+		if err := tx.Model(&session).Updates(map[string]any{
+			"status": "provisioning", "error_msg": "", "failed_stage": "",
+		}).Error; err != nil {
+			return err
+		}
+		return tx.Model(&claim).Update("provision_error", "").Error
+	})
 }
 
 // RetryBuild returns an unclaimed failed member to the durable build queue.
