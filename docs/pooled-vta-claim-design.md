@@ -353,31 +353,130 @@ is safe: recovery observes the ready Deployment and completes `running` and
 `released`. A crash before the patch is safe because the committed
 `provisioning` row is found by the existing recovery queue.
 
-### 6.6 Reservation boundary and alternatives
+### 6.6 Reservation and authorization boundary
 
-Selecting **Get my VTA** creates a temporary, reclaimable reservation. Starting
-or permanently mutating the VTA at that point would spend cluster resources for
-abandoned pages and blur the security boundary: a signed claim plus
-matching-code confirmation is what authorizes the administrator write. The
-Admin station follows the same boundary even though an administrator operates
-the browser.
+Selecting **Get my VTA** creates a temporary, reclaimable reservation. Do not
+start a Pod for this initial browser action: many reservations may be abandoned
+before Keyring participates.
 
-Alternatives remain secondary:
-
-- changing `WaitForJob` from five-second polling to a watch is a safe fallback
-  improvement, but it does not remove the extra Pod lifecycle;
-- keeping activation Pods warm offers lower latency but consumes pod slots,
-  scheduled memory requests, PVC attachments, and kubelet overhead for all
-  inventory;
-- mutating the PVC through a second process while a live VTA owns the same store
-  risks concurrent database access;
-- pre-importing a placeholder administrator changes credential custody and the
-  claim security model.
+The later Keyring submission changes the latency trade-off. Once Keyring has
+submitted the proposed administrator DID and both sides can display the
+comparison value, the claim is active and the user normally spends several
+seconds verifying the code. A future prewarm path may use that interval to
+schedule the selected VTA Pod and attach its PVC. It must not import the
+administrator DID, add the hosting control server, start the VTA application,
+or otherwise mutate the prepared VTA before matching-code confirmation. A
+signed claim plus that explicit confirmation remains the authorization boundary
+for every claimant-controlled write. The Admin station and public flow follow
+the same rule.
 
 Do not use `exec` into a running VTA, mount the PVC into concurrent writer Pods,
 or pre-import a Farm-controlled placeholder administrator.
 
-### 6.7 Compatibility and rollout
+### 6.7 Confirmation-latency prewarm proposal
+
+This is a proposed follow-up to fast activation, not part of the currently
+implemented path. Removing the provision Job leaves one unavoidable Deployment
+Pod startup. A warm-image measurement on the target development cluster still
+spent about ten seconds attaching its Longhorn `ReadWriteOnce` PVC. Polling and
+database work add time around that operation. Therefore a design that begins
+Pod scheduling only after confirmation cannot reliably meet a sub-ten-second
+confirmation-to-release target.
+
+One instrumented public claim took 30.773 seconds from clicking **Codes match**
+until the third browser step appeared. The mutually exclusive intervals were:
+
+| Interval | Duration | Work observed |
+| --- | ---: | --- |
+| Click to durable `confirmed_at` | 3.568 s | Trust Task validation and confirmation transaction |
+| Confirmation to provision runner start | 3.494 s | Confirmation completion, worker dispatch, and runner handoff |
+| Runner start to fast-path entry | 4.961 s | Session reads and updates, DID-hosting ACL, pool detection, and confirmed-claim load |
+| Fast-path entry to Deployment patch | 0.346 s | Patch the activation template and set `replicas=1` |
+| Deployment patch to observed init start | 12.341 s | Pod scheduling, approximately 10 s of Longhorn volume attachment, kubelet container start, and readiness polling |
+| Init start to init completion | 1.001 s | Administrator activation; the one-second observer interval bounds the recorded value |
+| Init completion to Deployment ready | 1.001 s | Application start, health readiness, and observer interval |
+| Deployment ready to release log | 3.285 s | Mark the session running, release the connection, and create the wallet login binding |
+| Release log to third browser step | 0.776 s | Claim polling response and browser render |
+
+The database recorded 25.153 seconds from `confirmed_at` to `released_at`; that
+is a different measurement boundary from the browser's 30.773 seconds. Local
+database forwarding inflated individual SQL calls in this sample, so the table
+is diagnostic evidence rather than a production latency baseline. The volume
+attachment and Kubernetes intervals remain relevant to the prewarm decision.
+
+Prewarm only the VTA with an active Keyring claim; do not keep the whole pool
+running:
+
+```text
+Get my VTA
+  -> reserve one pool member; keep Deployment at replicas=0
+Keyring submits its DID and the comparison value is displayed
+  -> start the selected Deployment Pod
+  -> attach the existing PVC and wait at a non-mutating activation gate
+Codes match
+  -> durably record confirmed_at and admin_did
+  -> release the gate in the same Pod
+  -> import the administrator DID and add the hosting control server
+  -> start the VTA application and wait for readiness
+  -> mark running and release the claim
+```
+
+The confirmation signal must not recreate the Pod, because doing so would lose
+the scheduling and volume-attachment benefit. The preferred shape is a bounded
+activation-gate init process in the final Deployment Pod. It authenticates as
+the Pod's service account to an internal Farm endpoint and watches or polls for
+durable authorization derived from `mobile_connections.confirmed_at`. It must
+not trust a browser-provided flag. After authorization, the same process loads
+the confirmed public identifiers, performs the existing receipt-protected
+activation, and exits so the application container can start.
+
+The internal gate protocol requires a focused implementation spike before this
+proposal is accepted. It must provide service-account authentication, bounded
+waiting, cancellation, and a way to distinguish a stale claim from the active
+claim without putting the browser capability, comparison value, or private
+material in Kubernetes objects or logs. A Kubernetes object update that takes
+longer to project into the Pod is not suitable for the latency target.
+
+No new pool-level feature flag is required. Prewarm applies to Admin and public
+claims under the same conditions:
+
+- the session is a compatible pooled `vta_only` session with a parked
+  Deployment;
+- Keyring has submitted a DID and the claim is in the comparison stage;
+- the claim is unexpired and is the only active claim for the session;
+- cluster admission still has room for the Pod;
+- the Pod uses the final VTA image, PVC, service account, and resource requests.
+
+The claim and setup-session rows remain the source of truth; a new persistent
+pool state is not required. The activation identity binds the waiting Pod to
+the active connection. If confirmation arrives before prewarm is ready, the
+same Pod continues through the gate as soon as it starts, so the current fast
+activation behavior remains the slow-path outcome without creating a Job or a
+second PVC writer.
+
+An open or claimed request that expires, is cancelled, or is superseded must
+cancel the gate, scale the Deployment back to zero, and restore its neutral
+parked template. Because the gate has not mutated the VTA, that session may
+return to inventory after the ordinary claim-expiry checks. Confirmation wins
+the race through the existing database lock: after `confirmed_at` commits, the
+session is consumed and must never be reclaimed even if activation fails.
+
+Prewarm consumes a Pod slot, an attached volume, and the gate container's
+resource requests while the comparison screen is open. Capacity accounting
+already reserves the eventual VTA resources, but rollout must also enforce a
+bounded number of concurrent prewarm Pods so Pod-count and storage-attachment
+limits cannot be exhausted by abandoned claims.
+
+Instrument `claim_did_submitted`, `prewarm_pod_scheduled`,
+`prewarm_volume_attached`, `prewarm_gate_ready`, `claim_confirmed`,
+`activation_init_completed`, and `claim_released`. Report prewarm hit rate,
+expired-prewarm rate, confirmation-to-release p50/p95, and the percentage of
+confirmations that arrive before the gate is ready. The acceptance target is
+p95 confirmation-to-release below ten seconds for prewarm hits with a warm
+image cache. Compare at least 30 Admin and public activations using the same
+start and end events.
+
+### 6.8 Compatibility and rollout
 
 Apply the fast path whenever all of these are true:
 
@@ -400,7 +499,7 @@ Job to Deployment activation could create two PVC writers. Do not otherwise
 fall back after fast activation has begun. A failed activation requires
 reconciliation or an operator retry of the same path.
 
-### 6.8 Observability
+### 6.9 Observability
 
 Emit structured, identifier-safe stage timings for `claim_confirmed`,
 `hosting_acl_ready`, `deployment_activation_patched`,
@@ -413,7 +512,7 @@ Do not include the claim handle, public browser token, comparison value, or
 administrator DID. Compare latency and failure rates by entry point, while
 keeping the worker and success criteria identical.
 
-### 6.9 Implementation and acceptance
+### 6.10 Implementation and acceptance
 
 1. Instrument the current Job-based path and record both entry-point baselines.
 2. Verify or add idempotent VTA CLI behavior for administrator import and
