@@ -777,6 +777,46 @@ func TestAddInventoryGrowsBatchIdempotently(t *testing.T) {
 	}
 }
 
+func TestAddInventoryReplenishesEmptyBatchFromRetainedImage(t *testing.T) {
+	db := poolDatabase(t)
+	batch, _, err := admission(t, db, 1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.VtaImage != "example/vta:test" {
+		t.Fatalf("batch image = %q", batch.VtaImage)
+	}
+	if err := db.Where("batch_id = ?", batch.ID).Delete(&model.PoolSession{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var admin model.Admin
+	if err := db.First(&admin, "unique_id = ?", "pool-admin").Error; err != nil {
+		t.Fatal(err)
+	}
+	added, err := AddInventory(context.Background(), db, Addition{
+		AdminID: admin.ID, BatchID: batch.ID, Key: "refill-empty", Digest: "refill-empty-digest",
+		Count: 1, Capacity: 2,
+		Session: model.SetupSession{
+			Mode: model.ModeVtaOnly, Domain: "example.com", Subdomain: "vta-",
+			VtaImage: batch.VtaImage, DidHostingServerURL: "https://dids.example.com",
+		},
+		MemoryRequest: "32Mi", MemoryLimit: "64Mi",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !added.Created || len(added.Sessions) != 1 || added.Sessions[0].VtaImage != "example/vta:test" {
+		t.Fatalf("replenished batch = %+v", added)
+	}
+	var memberships int64
+	if err := db.Model(&model.PoolSession{}).Where("batch_id = ?", batch.ID).Count(&memberships).Error; err != nil {
+		t.Fatal(err)
+	}
+	if memberships != 1 {
+		t.Fatalf("memberships = %d, want 1", memberships)
+	}
+}
+
 func TestRejectCancelsOpenAndRejectsClaimedPoolRequests(t *testing.T) {
 	db := poolDatabase(t)
 	batch, _, err := admission(t, db, 2, 2)

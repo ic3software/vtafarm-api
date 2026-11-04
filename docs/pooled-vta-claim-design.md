@@ -42,9 +42,10 @@ authoritative source for everything else:
 | Pool grouping | `pool_batches` and `pool_sessions` |
 
 Consequently, the pool does not store a second user ID, VTA name, namespace,
-Vault target, DNS zone, ingress IP, claimant DID, claim timestamps, cleanup
-cursor, or per-VTA lifecycle state. The batch keeps only a nullable timestamp
-to make whole-batch cleanup durable across API restarts.
+Vault target, DNS record, ingress IP, claimant DID, claim timestamps, cleanup
+cursor, or per-VTA lifecycle state. The batch keeps a non-secret replenishment
+image plus a nullable timestamp that makes whole-batch cleanup durable across
+API restarts.
 
 ## 3. Schema
 
@@ -54,6 +55,7 @@ CREATE TABLE pool_batches (
     created_by bigint NOT NULL REFERENCES admins(id) ON DELETE RESTRICT,
     label text NOT NULL,
     requested_count integer NOT NULL CHECK (requested_count > 0),
+    vta_image text NOT NULL CHECK (vta_image <> ''),
     idempotency_key text NOT NULL,
     request_digest text NOT NULL,
     cleanup_requested_at timestamptz,
@@ -85,6 +87,15 @@ resource identity.
 always counted from `pool_sessions`; it can become smaller after cleanup.
 The database constraint validates only that the request is positive. The
 cluster's live VTA-only estimate is the actual upper bound.
+
+`vta_image` is the only replenishment input retained on the batch. Mode,
+portability and pre-rotation are fixed for pooled VTAs; managed-domain and
+shared DID-hosting inputs come from the current platform configuration when
+inventory is added. This allows selected cleanup to remove the final member
+while keeping the empty batch usable without retaining stale infrastructure
+endpoints. Migration 49 backfills the image from the oldest member of each
+existing batch and deletes legacy batches that already have no `pool_sessions`
+members.
 
 `idempotency_key` makes a retried HTTP request return the original batch instead
 of creating another 50 users and VTAs.
@@ -453,6 +464,10 @@ returns `202 Accepted` without waiting for external cleanup. That session status
 is the durable cleanup request for selected inventory. Whole-batch cleanup
 additionally writes `cleanup_requested_at`; after background workers remove the
 final member, that marker causes the empty `pool_batches` row to be deleted.
+
+Selected cleanup can remove every member without deleting the batch. Because
+the image lives on `pool_batches`, **Add inventory** continues to work when the
+member list and live total are both empty.
 
 Claimed sessions are not affected by unused-inventory cleanup. They remain
 ordinary running Farm sessions managed by an administrator until a separate

@@ -368,7 +368,9 @@ components:
         label: { type: string }
         purpose: { type: string, enum: [admin_station, public_signup] }
         requested_count: { type: integer }
-        vta_image: { type: string }
+        vta_image:
+          type: string
+          description: Image retained by the batch for future inventory additions.
         public_signup_enabled_at:
           type: string
           format: date-time
@@ -378,7 +380,7 @@ components:
         sessions:
           type: array
           items: { $ref: "#/components/schemas/PoolSession" }
-      required: [id, label, purpose, requested_count, created_at, counts]
+      required: [id, label, purpose, requested_count, vta_image, created_at, counts]
 
     PoolClaim:
       type: object

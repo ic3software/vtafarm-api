@@ -319,30 +319,31 @@ func (h *PoolHandler) AddInventory(c *gin.Context) {
 		return
 	}
 
-	var source model.SetupSession
-	if err := h.db.WithContext(c.Request.Context()).Table("setup_sessions s").
-		Select("s.*").Joins("JOIN pool_sessions ps ON ps.session_id = s.id").
-		Where("ps.batch_id = ?", batchID).Order("s.id").Limit(1).Scan(&source).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load pool batch template"})
+	var batch model.PoolBatch
+	if err := h.db.WithContext(c.Request.Context()).First(&batch, batchID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "pool batch not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load pool batch"})
 		return
 	}
-	if source.ID == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "pool batch not found"})
+	if batch.VtaImage == "" {
+		c.JSON(http.StatusConflict, gin.H{"error": "pool batch has no retained VTA image"})
+		return
+	}
+	infra, _, reason, detail := h.setup.resolvePlatformInfra()
+	if reason != "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": detail, "reason": reason})
 		return
 	}
 	template := model.SetupSession{
-		Mode:                 model.ModeVtaOnly,
-		DomainType:           source.DomainType,
-		Domain:               source.Domain,
-		Subdomain:            strings.TrimSuffix(source.Subdomain, source.VtaName),
-		MediatorDid:          source.MediatorDid,
-		DidHostingServerURL:  source.DidHostingServerURL,
-		DidHostingControlURL: source.DidHostingControlURL,
-		DIDHostingDid:        source.DIDHostingDid,
-		ConnectionSource:     source.ConnectionSource,
-		VtaImage:             source.VtaImage,
-		Portable:             source.Portable,
-		PreRotationCount:     source.PreRotationCount,
+		Mode: model.ModeVtaOnly, DomainType: model.DomainManaged,
+		Domain: h.setup.clusterDomain, Subdomain: setup.EnvPrefix(h.setup.appEnv) + "vta-",
+		MediatorDid: infra.MediatorDid, DidHostingServerURL: strings.TrimSuffix(infra.ServerURL, "/"),
+		DidHostingControlURL: infra.ControlURL, DIDHostingDid: infra.DaemonDid,
+		ConnectionSource: model.ConnectionPlatform, VtaImage: batch.VtaImage,
+		Portable: true, PreRotationCount: 1,
 	}
 	profiles, profileErr := resourceprofile.Load(c.Request.Context(), h.db)
 	clusterStats, clusterErr := h.dashboard.clusterCapacitySnapshot(c.Request.Context())
@@ -811,10 +812,11 @@ type poolClaimSummary struct {
 func buildPoolBatchView(batch model.PoolBatch, sessions []model.SetupSession, latest map[uint]poolClaimSummary, includeSessions bool) *poolBatchView {
 	view := &poolBatchView{
 		ID: batch.ID, Label: batch.Label, Purpose: batch.Purpose, RequestedCount: batch.RequestedCount,
+		VtaImage:              batch.VtaImage,
 		PublicSignupEnabledAt: batch.PublicSignupEnabledAt,
 		CreatedAt:             batch.CreatedAt, Sessions: []poolSessionItem{},
 	}
-	if len(sessions) > 0 {
+	if view.VtaImage == "" && len(sessions) > 0 {
 		view.VtaImage = sessions[0].VtaImage
 	}
 	for i := range sessions {

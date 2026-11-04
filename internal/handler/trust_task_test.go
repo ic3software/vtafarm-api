@@ -252,7 +252,10 @@ func TestKeyringOOBSignInIssuesRevocableBoundedSession(t *testing.T) {
 	if err := db.Create(&admin).Error; err != nil {
 		t.Fatal(err)
 	}
-	batch := model.PoolBatch{CreatedBy: admin.ID, Label: "Keyring pool", RequestedCount: 1, IdempotencyKey: "keyring-pool", RequestDigest: "keyring-pool"}
+	batch := model.PoolBatch{
+		CreatedBy: admin.ID, Label: "Keyring pool", RequestedCount: 1, VtaImage: "example/vta:test",
+		IdempotencyKey: "keyring-pool", RequestDigest: "keyring-pool",
+	}
 	if err := db.Create(&batch).Error; err != nil {
 		t.Fatal(err)
 	}

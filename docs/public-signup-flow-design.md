@@ -254,12 +254,18 @@ Idempotency-Key: <new key for this addition>
 {"count":10}
 ```
 
-The operation reuses the batch's VTA image and infrastructure settings, checks
-current cluster capacity, and atomically creates the additional users, setup
-sessions, pool memberships, and resource rows. Existing claimed members do not
-block replenishment. Cleanup in progress does block it. A successful addition
-increments `pool_batches.requested_count`, starts the ordinary preparation
-workers, and leaves the existing claim-station URL unchanged.
+The operation reuses the batch's VTA image with the current platform
+infrastructure settings, checks current cluster capacity, and atomically
+creates the additional users, setup sessions, pool memberships, and resource
+rows. Existing claimed members do not block replenishment. Cleanup in progress
+does block it. A successful addition increments
+`pool_batches.requested_count`, starts the ordinary preparation workers, and
+leaves the existing claim-station URL unchanged.
+
+The reusable image is stored on the batch itself, so selected cleanup may
+remove the last member without making the public-signup pool impossible to
+replenish. Migration 49 backfills batches that still have members and deletes
+legacy batches that are already empty.
 
 Record every addition in a small `pool_batch_additions` table containing batch,
 administrator, count, idempotency key, request digest, and timestamp. This keeps

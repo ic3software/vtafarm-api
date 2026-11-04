@@ -69,7 +69,7 @@ func LookupBatch(ctx context.Context, db *gorm.DB, adminID uint, key, digest str
 }
 
 // Admit creates real users and setup sessions. pool_sessions only groups those
-// sessions; it does not duplicate their ownership, infrastructure, or status.
+// sessions; the batch retains the image needed to replenish empty inventory.
 func Admit(ctx context.Context, db *gorm.DB, input Admission) (*AdmissionResult, error) {
 	if input.Purpose == "" {
 		input.Purpose = model.PoolPurposeAdminStation
@@ -120,13 +120,13 @@ func admitBatchRow(ctx context.Context, tx *gorm.DB, input Admission) (*model.Po
 		)
 		INSERT INTO pool_batches (
 			created_by, label, purpose, requested_count, public_signup_enabled_at,
-			idempotency_key, request_digest
+			idempotency_key, request_digest, vta_image
 		)
-		SELECT ?, ?, ?, ?, CASE WHEN ? = ? THEN clock_timestamp() END, ?, ? FROM reserved
+		SELECT ?, ?, ?, ?, CASE WHEN ? = ? THEN clock_timestamp() END, ?, ?, ? FROM reserved
 		WHERE ? <= GREATEST(? - reserved.count, 0)
 		ON CONFLICT (created_by, idempotency_key) DO NOTHING
 		RETURNING *`, input.AdminID, input.Label, input.Purpose, input.Count,
-		input.Purpose, model.PoolPurposePublicSignup, input.Key, input.Digest, input.Count, input.Capacity).
+		input.Purpose, model.PoolPurposePublicSignup, input.Key, input.Digest, input.Session.VtaImage, input.Count, input.Capacity).
 		Scan(&inserted).Error
 	if err != nil {
 		return nil, false, err
@@ -202,6 +202,9 @@ func AddInventory(ctx context.Context, db *gorm.DB, input Addition) (*AdditionRe
 			return err
 		}
 		if batch.CleanupRequestedAt != nil {
+			return ErrConflict
+		}
+		if batch.VtaImage == "" || batch.VtaImage != input.Session.VtaImage {
 			return ErrConflict
 		}
 		reserved, err := nonRunningSessionCount(tx)
