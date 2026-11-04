@@ -34,6 +34,11 @@ Tasks, comparison code, provisioning worker, and Keyring redeem flow remain the
 source of truth. The public flow adds a safe browser capability and public UI;
 it does not create a second claim protocol.
 
+Every confirmed public claim uses the same pooled fast-activation worker as the
+Admin claim station. The shared behavior is defined in
+[`pooled-vta-claim-design.md`](pooled-vta-claim-design.md#6-fast-activation-for-all-pool-claims);
+it does not change this page's API or confirmation behavior.
+
 ## 2. User Journey
 
 The home page keeps **Sign in** as a secondary action and makes **Get your VTA**
