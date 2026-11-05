@@ -123,6 +123,60 @@ func TestAdminListSessionsSearchAndModeFilter(t *testing.T) {
 	assertOne("q="+url.QueryEscape(alpha.UniqueId)+"&mode="+model.ModeFullStack, "full-alpha")
 }
 
+func TestAdminListSessionsPaginatesAtTwenty(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := testutil.Postgres(t)
+	user := model.User{UniqueId: "pagination-user"}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 21; i++ {
+		session := model.SetupSession{
+			UserID: user.ID, VtaName: fmt.Sprintf("pagination-%02d", i),
+			Mode: model.ModeVtaOnly, Status: "running",
+			Domain: "example.com", Subdomain: fmt.Sprintf("pagination-%02d", i),
+		}
+		if err := db.Create(&session).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	h := &SetupHandler{db: db}
+	router := gin.New()
+	router.GET("/sessions", h.AdminListSessions)
+	request := func(page int) struct {
+		Items    []json.RawMessage `json:"items"`
+		Total    int64             `json:"total"`
+		PageSize int               `json:"page_size"`
+	} {
+		t.Helper()
+		w := httptest.NewRecorder()
+		path := fmt.Sprintf("/sessions?page=%d", page)
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET %s returned %d: %s", path, w.Code, w.Body.String())
+		}
+		var response struct {
+			Items    []json.RawMessage `json:"items"`
+			Total    int64             `json:"total"`
+			PageSize int               `json:"page_size"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+
+	firstPage := request(1)
+	if firstPage.Total != 21 || firstPage.PageSize != 20 || len(firstPage.Items) != 20 {
+		t.Fatalf("first page = %+v, want total 21, page size 20, and 20 items", firstPage)
+	}
+	secondPage := request(2)
+	if secondPage.Total != 21 || secondPage.PageSize != 20 || len(secondPage.Items) != 1 {
+		t.Fatalf("second page = %+v, want total 21, page size 20, and 1 item", secondPage)
+	}
+}
+
 func TestUpgradeListRejectsInvalidActiveFilter(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &UpgradeHandler{}
