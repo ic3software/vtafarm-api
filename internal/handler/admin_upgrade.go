@@ -298,10 +298,20 @@ func taskComponents(tasks []model.UpgradeTask) []string {
 }
 
 // List — GET /api/v1/admin/upgrades (admin only). The 20 most recent batches
-// with their components and per-status task counts, newest first.
+// with their components and per-status task counts, newest first. active=true
+// returns at most the current running or paused batch for lightweight banners.
 func (h *UpgradeHandler) List(c *gin.Context) {
+	active := c.Query("active")
+	if active != "" && active != "true" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "active must be true when provided"})
+		return
+	}
 	var batches []model.UpgradeBatch
-	if err := h.db.Order("id desc").Limit(20).Find(&batches).Error; err != nil {
+	query := h.db.Order("id desc").Limit(20)
+	if active == "true" {
+		query = query.Where("status IN ?", []string{model.UpgradeBatchRunning, model.UpgradeBatchPaused}).Limit(1)
+	}
+	if err := query.Find(&batches).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not fetch upgrade batches"})
 		return
 	}

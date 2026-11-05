@@ -24,11 +24,17 @@ func Factory() Profiles {
 // Load reads a single snapshot on each call so all API replicas see saved
 // settings without a process-local cache or restart.
 func Load(ctx context.Context, db *gorm.DB) (Profiles, error) {
-	profiles := Factory()
 	var rows []model.ResourceDefault
 	if err := db.WithContext(ctx).Find(&rows).Error; err != nil {
 		return nil, err
 	}
+	return FromRows(rows)
+}
+
+// FromRows overlays persisted admin settings on the factory profiles. It is
+// also used when a larger query has already fetched resource_defaults.
+func FromRows(rows []model.ResourceDefault) (Profiles, error) {
+	profiles := Factory()
 	for _, row := range rows {
 		profile, ok := profiles[row.Component]
 		if !ok {
