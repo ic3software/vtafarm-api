@@ -52,6 +52,19 @@ func TestCleanupPoolBatchDeletesDedicatedOwnerAndBatch(t *testing.T) {
 	if err := db.Model(&session).Update("status", model.StatusPoolWaiting).Error; err != nil {
 		t.Fatal(err)
 	}
+	upgradeBatch := model.UpgradeBatch{
+		UserID: &session.UserID, Status: model.UpgradeBatchCompleted, Concurrency: 1,
+	}
+	if err := db.Create(&upgradeBatch).Error; err != nil {
+		t.Fatal(err)
+	}
+	upgradeTask := model.UpgradeTask{
+		BatchID: upgradeBatch.ID, SessionID: session.ID, Component: "vta",
+		FromImage: "example/vta:old", ToImage: "example/vta:test", Status: model.UpgradeTaskSucceeded,
+	}
+	if err := db.Create(&upgradeTask).Error; err != nil {
+		t.Fatal(err)
+	}
 	if _, err := poolstore.QueueBatchCleanup(context.Background(), db, batch.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -64,6 +77,12 @@ func TestCleanupPoolBatchDeletesDedicatedOwnerAndBatch(t *testing.T) {
 	}
 	if err := db.First(&model.User{}, session.UserID).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Fatalf("dedicated user lookup error = %v, want not found", err)
+	}
+	if err := db.First(&model.UpgradeBatch{}, upgradeBatch.ID).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("upgrade batch lookup error = %v, want not found", err)
+	}
+	if err := db.First(&model.UpgradeTask{}, upgradeTask.ID).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("upgrade task lookup error = %v, want not found", err)
 	}
 	if err := db.First(&model.PoolBatch{}, batch.ID).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Fatalf("pool batch lookup error = %v, want not found", err)
