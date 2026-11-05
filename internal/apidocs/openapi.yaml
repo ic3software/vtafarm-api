@@ -2622,8 +2622,8 @@ paths:
       summary: List all setup sessions
       description: |
         Returns ALL users' setup sessions, newest first (id DESC), paginated at
-        a fixed 20 per page. Each item includes per-component images and memory
-        desired state so the Admin UI can render both without per-row requests.
+        a fixed 20 per page. The index is database-only; live Kubernetes
+        resource state is loaded on demand by the resource-detail endpoint.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
@@ -2643,6 +2643,23 @@ paths:
           schema:
             type: string
             enum: [vta_only, full_stack]
+        - name: q
+          in: query
+          required: false
+          description: >
+            Case-insensitive substring search over VTA/VTC session names,
+            owner email, and owner public ID. Numeric input also matches the
+            numeric session ID or user ID; a leading `#` is optional.
+          schema:
+            type: string
+            maxLength: 200
+        - name: status
+          in: query
+          required: false
+          description: Only return sessions with this exact status.
+          schema:
+            type: string
+            maxLength: 50
       responses:
         "200":
           description: One page of sessions plus pagination info
@@ -2659,10 +2676,17 @@ paths:
                         id:
                           type: integer
                           description: Numeric PK — the sort key.
+                        user_id:
+                          type: integer
+                          description: Numeric ID of the owning user.
                         user_unique_id:
                           type: string
-                          description: The owning user's 8-char unique_id.
+                          description: The owning user's public unique_id.
                           example: "e5f6g7h8"
+                        user_email:
+                          type: string
+                          format: email
+                          description: The owner's self-declared email, when present.
                         vta_name:
                           type: string
                           example: "myvta"
@@ -2711,6 +2735,7 @@ paths:
                           description: Present when Trust Registry is enabled.
                         resources:
                           type: array
+                          description: Cached desired resource settings; this list endpoint never reads Kubernetes.
                           items:
                             type: object
                             required: [component, memory_request, memory_limit, customized]
@@ -2732,16 +2757,11 @@ paths:
                   page_size:
                     type: integer
                     example: 20
-                  counts:
-                    type: object
-                    description: Per-mode totals, independent of the active filter.
-                    properties:
-                      all:
-                        type: integer
-                      vta_only:
-                        type: integer
-                      full_stack:
-                        type: integer
+                  statuses:
+                    type: array
+                    description: Distinct statuses matching `q` and `mode`, independent of the active status filter.
+                    items:
+                      type: string
         "400":
           description: Invalid page parameter
           content:
@@ -4121,10 +4141,21 @@ paths:
                 $ref: "#/components/schemas/Error"
     get:
       summary: List upgrade batches
-      description: The 20 most recent upgrade batches, newest first, with their components and per-status task counts.
+      description: >
+        The 20 most recent upgrade batches, newest first, with their components
+        and per-status task counts. With `active=true`, returns at most the
+        newest running or paused batch.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
+      parameters:
+        - name: active
+          in: query
+          required: false
+          description: Return at most the newest running or paused batch.
+          schema:
+            type: boolean
+            enum: [true]
       responses:
         "200":
           description: Recent batches

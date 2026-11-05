@@ -1,12 +1,15 @@
 package handler
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 
 	"github.com/ic3software/vtafarm-api/internal/model"
 	"github.com/ic3software/vtafarm-api/internal/resourceprofile"
@@ -16,12 +19,91 @@ import (
 // returns at most 20 rows per page regardless of what the client asks for.
 const adminSessionsPageSize = 20
 
-// AdminListSessions — GET /api/v1/admin/setup-sessions?page=N&mode=M (admin only).
+type adminSessionStoredResource struct {
+	Component     string `json:"component"`
+	MemoryRequest string `json:"memory_request"`
+	MemoryLimit   string `json:"memory_limit"`
+}
+
+type adminSessionResourceDefault struct {
+	Component     string `json:"component"`
+	MemoryRequest string `json:"memory_request"`
+	MemoryLimit   string `json:"memory_limit"`
+}
+
+type adminSessionQueryItem struct {
+	ID                   uint                         `json:"id"`
+	UserID               uint                         `json:"user_id"`
+	UserUniqueID         string                       `json:"user_unique_id"`
+	UserEmail            *string                      `json:"user_email"`
+	VtaName              string                       `json:"vta_name"`
+	VtcName              string                       `json:"vtc_name"`
+	Mode                 string                       `json:"mode"`
+	DomainType           string                       `json:"domain_type"`
+	Status               string                       `json:"status"`
+	FailedStage          string                       `json:"failed_stage"`
+	ErrorMsg             string                       `json:"error_msg"`
+	FQDN                 string                       `json:"fqdn"`
+	VtaImage             string                       `json:"vta_image"`
+	MediatorImage        string                       `json:"mediator_image"`
+	DidsImage            string                       `json:"dids_image"`
+	VtcImage             string                       `json:"vtc_image"`
+	TrustRegistryEnabled bool                         `json:"trust_registry_enabled"`
+	TrustRegistryImage   string                       `json:"trust_registry_image"`
+	TrustRegistryDid     string                       `json:"trust_registry_did"`
+	CreatedAt            time.Time                    `json:"created_at"`
+	ConnectionSource     string                       `json:"connection_source"`
+	ProviderSessionID    *uint                        `json:"provider_session_id"`
+	Provider             *string                      `json:"provider"`
+	Resources            []adminSessionStoredResource `json:"resources"`
+}
+
+type adminSessionQueryResult struct {
+	Total            int64  `gorm:"column:total"`
+	Statuses         []byte `gorm:"column:statuses"`
+	ResourceDefaults []byte `gorm:"column:resource_defaults"`
+	Items            []byte `gorm:"column:items"`
+}
+
+type adminSessionResourceSummary struct {
+	Component     string `json:"component"`
+	MemoryRequest string `json:"memory_request"`
+	MemoryLimit   string `json:"memory_limit"`
+	Customized    bool   `json:"customized"`
+}
+
+type adminSessionItem struct {
+	ID                   uint                          `json:"id"`
+	UserID               uint                          `json:"user_id"`
+	UserUniqueID         string                        `json:"user_unique_id"`
+	UserEmail            *string                       `json:"user_email,omitempty"`
+	VtaName              string                        `json:"vta_name"`
+	VtcName              string                        `json:"vtc_name,omitempty"`
+	Mode                 string                        `json:"mode"`
+	DomainType           string                        `json:"domain_type"`
+	Status               string                        `json:"status"`
+	FailedStage          string                        `json:"failed_stage,omitempty"`
+	ErrorMsg             string                        `json:"error_msg,omitempty"`
+	FQDN                 string                        `json:"fqdn"`
+	VtaImage             string                        `json:"vta_image,omitempty"`
+	MediatorImage        string                        `json:"mediator_image,omitempty"`
+	DidsImage            string                        `json:"dids_image,omitempty"`
+	VtcImage             string                        `json:"vtc_image,omitempty"`
+	TrustRegistryEnabled bool                          `json:"trust_registry_enabled,omitempty"`
+	TrustRegistryImage   string                        `json:"trust_registry_image,omitempty"`
+	CreatedAt            string                        `json:"created_at"`
+	ConnectionSource     string                        `json:"connection_source,omitempty"`
+	Provider             string                        `json:"provider,omitempty"`
+	ProviderGone         bool                          `json:"provider_gone,omitempty"`
+	Resources            []adminSessionResourceSummary `json:"resources"`
+}
+
+// AdminListSessions — GET /api/v1/admin/setup-sessions?page=N&mode=M&q=Q (admin only).
 // Lists ALL users' setup sessions ordered by id DESC (newest first), paginated
 // at adminSessionsPageSize per page. An optional mode filter narrows the list
-// (and total) to one setup mode. This is the read side of the session
-// upgrade workflow: it exposes each session's per-component images so an admin
-// can see what's deployed before upgrading.
+// (and total) to one setup mode. Search matches session names and owner
+// identifiers. This endpoint is deliberately database-only: live Kubernetes
+// state belongs to the on-demand resource editor, not a paginated index.
 func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
 	if err != nil || page < 1 {
@@ -36,214 +118,187 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid mode"})
 		return
 	}
-	filtered := func(q *gorm.DB) *gorm.DB {
-		if mode != "" {
-			return q.Where("mode = ?", mode)
+	status := strings.TrimSpace(c.Query("status"))
+	if utf8.RuneCountInString(status) > 50 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "status must be 50 characters or fewer"})
+		return
+	}
+	search := strings.TrimSpace(c.Query("q"))
+	if utf8.RuneCountInString(search) > 200 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "q must be 200 characters or fewer"})
+		return
+	}
+
+	baseConditions := []string{"TRUE"}
+	queryArgs := make([]any, 0, 10)
+	if mode != "" {
+		baseConditions = append(baseConditions, "s.mode = ?")
+		queryArgs = append(queryArgs, mode)
+	}
+	if search != "" {
+		pattern := "%" + strings.NewReplacer(
+			`\`, `\\`,
+			`%`, `\%`,
+			`_`, `\_`,
+		).Replace(search) + "%"
+		condition := `(s.vta_name ILIKE ? ESCAPE '\' OR s.vtc_name ILIKE ? ESCAPE '\' OR EXISTS (` +
+			`SELECT 1 FROM users search_owner WHERE search_owner.id = s.user_id AND (` +
+			`search_owner.unique_id ILIKE ? ESCAPE '\' OR COALESCE(search_owner.email, '') ILIKE ? ESCAPE '\'))`
+		searchArgs := []any{pattern, pattern, pattern, pattern}
+		if id, err := strconv.ParseUint(strings.TrimPrefix(search, "#"), 10, 64); err == nil {
+			condition += " OR s.id = ? OR s.user_id = ?"
+			searchArgs = append(searchArgs, id, id)
 		}
-		return q
+		condition += ")"
+		baseConditions = append(baseConditions, condition)
+		queryArgs = append(queryArgs, searchArgs...)
 	}
 
-	var total int64
-	if err := filtered(h.db.Model(&model.SetupSession{})).Count(&total).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not count sessions"})
-		return
-	}
-
-	// Per-mode totals for the filter buttons, independent of the active filter.
-	var modeCounts []struct {
-		Mode  string
-		Count int64
-	}
-	if err := h.db.Model(&model.SetupSession{}).
-		Select("mode, COUNT(*) AS count").Group("mode").
-		Find(&modeCounts).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not count sessions"})
-		return
-	}
-	counts := map[string]int64{
-		"all": 0, model.ModeVtaOnly: 0, model.ModeFullStack: 0,
-	}
-	for _, mc := range modeCounts {
-		counts[mc.Mode] = mc.Count
-		counts["all"] += mc.Count
-	}
-
-	var sessions []model.SetupSession
-	if err := filtered(h.db.Order("id desc")).
-		Limit(adminSessionsPageSize).
-		Offset((page - 1) * adminSessionsPageSize).
-		Find(&sessions).Error; err != nil {
+	query := `
+WITH base AS (
+    SELECT s.* FROM setup_sessions s WHERE ` + strings.Join(baseConditions, " AND ") + `
+), filtered AS (
+    SELECT b.* FROM base b WHERE (? = '' OR b.status = ?)
+), paged AS (
+    SELECT f.* FROM filtered f ORDER BY f.id DESC LIMIT ? OFFSET ?
+), page_items AS (
+    SELECT
+        p.id, p.user_id, owner.unique_id AS user_unique_id, owner.email AS user_email,
+        p.vta_name, p.vtc_name, p.mode, p.domain_type, p.status, p.failed_stage,
+        p.error_msg, p.subdomain || '.' || p.domain AS fqdn,
+        p.vta_image, p.mediator_image, p.dids_image, p.vtc_image,
+        p.trust_registry_enabled, p.trust_registry_image, p.trust_registry_did,
+        p.created_at, p.connection_source, p.provider_session_id,
+        provider.vta_name AS provider,
+        COALESCE((
+            SELECT jsonb_agg(jsonb_build_object(
+                'component', wr.component,
+                'memory_request', wr.memory_request,
+                'memory_limit', wr.memory_limit
+            ) ORDER BY wr.component)
+            FROM workload_resources wr WHERE wr.setup_session_id = p.id
+        ), '[]'::jsonb) AS resources
+    FROM paged p
+    JOIN users owner ON owner.id = p.user_id
+    LEFT JOIN setup_sessions provider ON provider.id = p.provider_session_id
+)
+SELECT
+    (SELECT COUNT(*) FROM filtered) AS total,
+    COALESCE((
+        SELECT jsonb_agg(options.status ORDER BY options.status)
+        FROM (SELECT DISTINCT b.status FROM base b) options
+    ), '[]'::jsonb) AS statuses,
+    COALESCE((
+        SELECT jsonb_agg(jsonb_build_object(
+            'component', rd.component,
+            'memory_request', rd.memory_request,
+            'memory_limit', rd.memory_limit
+        ) ORDER BY rd.component) FROM resource_defaults rd
+    ), '[]'::jsonb) AS resource_defaults,
+    COALESCE((
+        SELECT jsonb_agg(to_jsonb(item) ORDER BY item.id DESC) FROM page_items item
+    ), '[]'::jsonb) AS items`
+	queryArgs = append(queryArgs, status, status, adminSessionsPageSize, (page-1)*adminSessionsPageSize)
+	var queryResult adminSessionQueryResult
+	if err := h.db.WithContext(c.Request.Context()).Raw(query, queryArgs...).Scan(&queryResult).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not fetch sessions"})
 		return
 	}
 
-	sessionIDs := make([]uint, 0, len(sessions))
-	for _, session := range sessions {
-		sessionIDs = append(sessionIDs, session.ID)
+	var statuses []string
+	var defaults []adminSessionResourceDefault
+	var queryItems []adminSessionQueryItem
+	if err := json.Unmarshal(queryResult.Statuses, &statuses); err != nil {
+		log.Printf("decode admin session statuses: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not decode session statuses"})
+		return
 	}
-	storedResources := make(map[uint]map[string]model.WorkloadResource, len(sessions))
-	if len(sessionIDs) > 0 {
-		var resources []model.WorkloadResource
-		if err := h.db.Where("setup_session_id IN ?", sessionIDs).Find(&resources).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not fetch session resources"})
-			return
-		}
-		for _, resource := range resources {
-			if storedResources[resource.SetupSessionID] == nil {
-				storedResources[resource.SetupSessionID] = make(map[string]model.WorkloadResource)
-			}
-			storedResources[resource.SetupSessionID][resource.Component] = resource
-		}
+	if err := json.Unmarshal(queryResult.ResourceDefaults, &defaults); err != nil {
+		log.Printf("decode admin session resource defaults: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not decode resource defaults"})
+		return
 	}
-
-	// Resolve owners' public ids for just the users on this page.
-	userIDs := make([]uint, 0, len(sessions))
-	seen := make(map[uint]bool, len(sessions))
-	for _, s := range sessions {
-		if !seen[s.UserID] {
-			seen[s.UserID] = true
-			userIDs = append(userIDs, s.UserID)
+	if err := json.Unmarshal(queryResult.Items, &queryItems); err != nil {
+		log.Printf("decode admin sessions: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not decode sessions"})
+		return
+	}
+	defaultRows := make([]model.ResourceDefault, len(defaults))
+	for i, item := range defaults {
+		defaultRows[i] = model.ResourceDefault{
+			Component: item.Component, MemoryRequest: item.MemoryRequest, MemoryLimit: item.MemoryLimit,
 		}
 	}
-	userUniqueIds := make(map[uint]string, len(userIDs))
-	if len(userIDs) > 0 {
-		var users []model.User
-		if err := h.db.Where("id IN ?", userIDs).Find(&users).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not fetch session owners"})
-			return
-		}
-		for _, u := range users {
-			userUniqueIds[u.ID] = u.UniqueId
-		}
-	}
-
-	// Which stack each vta_only row on this page connects to. Support's first
-	// question about a broken agent is whose infrastructure it is on.
-	//
-	// Batched over the page for the same reason the owner lookup above is: 20
-	// rows must not become 20 round trips.
-	providerNames := make(map[uint]string)
-	{
-		providerIDs := make([]uint, 0, len(sessions))
-		for _, s := range sessions {
-			if s.ProviderSessionID != nil {
-				providerIDs = append(providerIDs, *s.ProviderSessionID)
-			}
-		}
-		if len(providerIDs) > 0 {
-			var providers []model.SetupSession
-			if err := h.db.Select("id, vta_name").Where("id IN ?", providerIDs).Find(&providers).Error; err == nil {
-				for _, p := range providers {
-					providerNames[p.ID] = p.VtaName
-				}
-			}
-		}
-	}
-
-	type sessionResourceSummary struct {
-		Component     string `json:"component"`
-		MemoryRequest string `json:"memory_request"`
-		MemoryLimit   string `json:"memory_limit"`
-		Customized    bool   `json:"customized"`
-	}
-	type sessionItem struct {
-		// The numeric PK, for ordering only — never an address. vta_name is what
-		// the routes take, so there is no separate identifier field here.
-		ID           uint   `json:"id"`
-		UserUniqueId string `json:"user_unique_id"`
-		VtaName      string `json:"vta_name"`
-		VtcName      string `json:"vtc_name,omitempty"`
-		Mode         string `json:"mode"`
-		// managed | custom | platform — the platform row is the farm's own
-		// stack and the one deletion that needs an explicit confirm.
-		DomainType  string `json:"domain_type"`
-		Status      string `json:"status"`
-		FailedStage string `json:"failed_stage,omitempty"`
-		ErrorMsg    string `json:"error_msg,omitempty"`
-		Fqdn        string `json:"fqdn"`
-		// Per-component images — empty for components the mode doesn't run.
-		VtaImage             string `json:"vta_image,omitempty"`
-		MediatorImage        string `json:"mediator_image,omitempty"`
-		DidsImage            string `json:"dids_image,omitempty"`
-		VtcImage             string `json:"vtc_image,omitempty"`
-		TrustRegistryEnabled bool   `json:"trust_registry_enabled,omitempty"`
-		TrustRegistryImage   string `json:"trust_registry_image,omitempty"`
-		CreatedAt            string `json:"created_at"`
-		// vta_only: where its mediator and DID host came from. Provider names
-		// the stack when that is in_farm; ProviderGone says the stack was
-		// deleted, which is why no name is available rather than a lookup having
-		// failed.
-		ConnectionSource string                   `json:"connection_source,omitempty"`
-		Provider         string                   `json:"provider,omitempty"`
-		ProviderGone     bool                     `json:"provider_gone,omitempty"`
-		Resources        []sessionResourceSummary `json:"resources"`
-	}
-	profiles, err := resourceprofile.Load(c.Request.Context(), h.db)
+	profiles, err := resourceprofile.FromRows(defaultRows)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not load resource defaults"})
 		return
 	}
-	items := make([]sessionItem, len(sessions))
-	for i, s := range sessions {
-		items[i] = sessionItem{
-			ID:                   s.ID,
-			UserUniqueId:         userUniqueIds[s.UserID],
-			VtaName:              s.VtaName,
-			VtcName:              s.VtcName,
-			Mode:                 s.Mode,
-			DomainType:           s.DomainType,
-			Status:               s.Status,
-			FailedStage:          s.FailureStage(),
-			ErrorMsg:             s.ErrorMsg,
-			Fqdn:                 s.FQDN(),
-			VtaImage:             s.VtaImage,
-			MediatorImage:        s.MediatorImage,
-			DidsImage:            s.DidsImage,
-			VtcImage:             s.VtcImage,
-			TrustRegistryEnabled: s.TrustRegistryEnabled,
-			TrustRegistryImage:   s.TrustRegistryImage,
-			CreatedAt:            s.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+
+	items := make([]adminSessionItem, len(queryItems))
+	for i, row := range queryItems {
+		session := model.SetupSession{
+			ID: row.ID, UserID: row.UserID, Status: row.Status, FailedStage: row.FailedStage,
+			Mode: row.Mode, ErrorMsg: row.ErrorMsg, ConnectionSource: row.ConnectionSource,
+			ProviderSessionID: row.ProviderSessionID, TrustRegistryEnabled: row.TrustRegistryEnabled,
+			TrustRegistryDid: row.TrustRegistryDid,
 		}
-		for _, target := range sessionWorkloadTargets(&s) {
-			defaults := profiles[target.Component]
-			var memoryRequest, memoryLimit string
-			if stored, ok := storedResources[s.ID][target.Component]; ok {
-				memoryRequest, memoryLimit = stored.MemoryRequest, stored.MemoryLimit
-			} else if h.k8s != nil {
-				namespace := h.k8s.UserNamespace(strconv.FormatUint(uint64(s.UserID), 10))
-				actual, err := h.k8s.DeploymentResourceProfile(c.Request.Context(), namespace, target.Deployment)
-				if err != nil {
-					continue
-				}
-				memoryRequest, memoryLimit = actual.MemoryRequest, actual.MemoryLimit
-			} else {
+		items[i] = adminSessionItem{
+			ID:                   row.ID,
+			UserID:               row.UserID,
+			UserUniqueID:         row.UserUniqueID,
+			UserEmail:            row.UserEmail,
+			VtaName:              row.VtaName,
+			VtcName:              row.VtcName,
+			Mode:                 row.Mode,
+			DomainType:           row.DomainType,
+			Status:               row.Status,
+			FailedStage:          session.FailureStage(),
+			ErrorMsg:             row.ErrorMsg,
+			FQDN:                 row.FQDN,
+			VtaImage:             row.VtaImage,
+			MediatorImage:        row.MediatorImage,
+			DidsImage:            row.DidsImage,
+			VtcImage:             row.VtcImage,
+			TrustRegistryEnabled: row.TrustRegistryEnabled,
+			TrustRegistryImage:   row.TrustRegistryImage,
+			CreatedAt:            row.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		}
+		storedResources := make(map[string]adminSessionStoredResource, len(row.Resources))
+		for _, resource := range row.Resources {
+			storedResources[resource.Component] = resource
+		}
+		for _, target := range sessionWorkloadTargets(&session) {
+			stored, ok := storedResources[target.Component]
+			if !ok {
 				continue
 			}
-			items[i].Resources = append(items[i].Resources, sessionResourceSummary{
+			defaults := profiles[target.Component]
+			items[i].Resources = append(items[i].Resources, adminSessionResourceSummary{
 				Component:     target.Component,
-				MemoryRequest: memoryRequest,
-				MemoryLimit:   memoryLimit,
-				Customized: !sameMemory(memoryRequest, defaults.MemoryRequest) ||
-					!sameMemory(memoryLimit, defaults.MemoryLimit),
+				MemoryRequest: stored.MemoryRequest,
+				MemoryLimit:   stored.MemoryLimit,
+				Customized: !sameMemory(stored.MemoryRequest, defaults.MemoryRequest) ||
+					!sameMemory(stored.MemoryLimit, defaults.MemoryLimit),
 			})
 		}
-		if s.IsFullStack() {
+		if session.IsFullStack() {
 			continue
 		}
-		items[i].ConnectionSource = s.ConnectionSource
-		if s.ProviderSessionID != nil {
-			items[i].Provider = providerNames[*s.ProviderSessionID]
+		items[i].ConnectionSource = row.ConnectionSource
+		if row.Provider != nil {
+			items[i].Provider = *row.Provider
 		} else {
-			items[i].ProviderGone = s.IsOrphaned()
+			items[i].ProviderGone = session.IsOrphaned()
 		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"items":     items,
-		"total":     total,
+		"total":     queryResult.Total,
 		"page":      page,
 		"page_size": adminSessionsPageSize,
-		"counts":    counts,
+		"statuses":  statuses,
 	})
 }
 
