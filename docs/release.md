@@ -108,42 +108,34 @@ commit the artifacts came from.
 make release
 ```
 
-This runs:
+This first verifies that the working tree is clean and that the signed
+`v0.7.0` tag points to `HEAD`. It then runs the complete publication sequence:
 
 ```bash
 docker buildx build --platform linux/amd64 -t ghcr.io/ic3software/vtafarm-api:0.7.0 --push .
 helm package helm/vtafarm-api -d .charts
 helm push .charts/vtafarm-api-0.7.0.tgz oci://ghcr.io/ic3software/charts
+git push origin v0.7.0
+# Create the v0.7.0 GitHub release from its CHANGELOG.md section.
 ```
+
+The GitHub release receives only the `v0.7.0` section from `CHANGELOG.md`; the
+Makefile extracts it automatically. The pull request already updated `main`,
+while the final two commands publish the signed tag and its release together.
+
+If image and chart publication succeeds but the tag or GitHub release step
+fails, retry only that final stage:
+
+```bash
+make release-github
+```
+
+That target is safe to rerun. Pushing the same tag is harmless, and it exits
+successfully when the GitHub release already exists.
 
 `--platform linux/amd64` is not optional. The cluster nodes are x86; a release
 built on an arm64 machine without it produces an image that fails to start with
 `exec format error`.
-
-**5. Push the tag.**
-
-```bash
-git push origin v0.7.0
-```
-
-The pull request already updated `main`. Git does not include tags with that
-update, so the version tag needs its own push.
-
-**6. Create the GitHub release.**
-
-Pass only the new version's section, not the whole changelog:
-
-```bash
-awk '/^## \[v0\.7\.0\]/{f=1;next} f && /^## \[/{exit} f' CHANGELOG.md \
-  | gh release create v0.7.0 --notes-file -
-```
-
-Only the version in the first pattern changes between releases. `next` drops the
-heading — the release page already shows the version and the date — and the
-`f &&` guard is what stops it exiting at the newest entry when the one being
-released is further down.
-
-Omitting `--title` makes the title the tag name, which is the convention.
 
 ## Verifying
 
@@ -186,5 +178,6 @@ immutable: never re-push a version that already exists, bump instead.
 | Before the pull request is merged | Fix the release branch, commit with `-s`, push and wait for the checks again |
 | After merge, before `make release`, tag not pushed | `git tag -d v0.7.0`; fix through another pull request, then tag the new `main` commit |
 | Image pushed, chart failed | Fix and re-run `make release` — the image push is idempotent for the same content |
+| Image and chart pushed, GitHub publication failed | Run `make release-github` to retry only the tag and GitHub release |
 | Both pushed, then a bug is found | Do not overwrite. Release the fix as the next version |
 | Tag already pushed | Leave it. Moving a published tag needs a force push, which this repo does not do |

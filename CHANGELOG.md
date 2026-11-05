@@ -1,5 +1,23 @@
 # Changelog
 
+## [v0.18.0] - 2026-11-04
+
+### Added
+
+- Pooled VTA claims prewarm the selected agent while confirmation is pending
+  and activate that deployment directly after confirmation, avoiding a
+  separate provisioning pod for faster handoff in both admin and public flows.
+- Administrators can retry a claimed pooled VTA whose activation failed
+  without repeating the claim or comparison-code confirmation.
+- Pool batches retain their VTA image so inventory can be replenished after
+  every existing member has been cleaned up.
+
+### Changed
+
+- Legacy empty pool batches are removed during migration because their VTA
+  image cannot be recovered; new batches remain available for replenishment.
+- Updated Trust Tasks, Go networking, and Kubernetes dependencies.
+
 ## [v0.17.1] - 2026-10-31
 
 ### Added
