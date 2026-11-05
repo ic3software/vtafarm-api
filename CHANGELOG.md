@@ -1,5 +1,26 @@
 # Changelog
 
+## [v0.18.1] - 2026-11-05
+
+### Added
+
+- Administrator session listings support case-insensitive search by session
+  or VTC name, numeric session or user ID, owner email, or owner public ID,
+  plus exact status filtering and matching-status discovery.
+- Upgrade batch listings can return only the newest running or paused batch
+  for lightweight portal status refreshes.
+
+### Changed
+
+- Administrator session pages load from one database snapshot, include owner
+  details, and use cached desired resource settings without per-row Kubernetes
+  requests.
+
+### Fixed
+
+- Deleting a user cascades to their upgrade batches and tasks so pooled-session
+  cleanup is no longer blocked by the upgrade history foreign key.
+
 ## [v0.18.0] - 2026-11-04
 
 ### Added
