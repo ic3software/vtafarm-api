@@ -15,9 +15,8 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/resourceprofile"
 )
 
-// adminSessionsPageSize is fixed server-side — the admin sessions list always
-// returns at most 20 rows per page regardless of what the client asks for.
-const adminSessionsPageSize = 20
+// adminSessionsPageSize is fixed server-side regardless of what the client asks for.
+const adminSessionsPageSize = 1
 
 type adminSessionStoredResource struct {
 	Component     string `json:"component"`
