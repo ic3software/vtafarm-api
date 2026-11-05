@@ -16,7 +16,7 @@ import (
 )
 
 // adminSessionsPageSize is fixed server-side regardless of what the client asks for.
-const adminSessionsPageSize = 1
+const adminSessionsPageSize = 20
 
 type adminSessionStoredResource struct {
 	Component     string `json:"component"`

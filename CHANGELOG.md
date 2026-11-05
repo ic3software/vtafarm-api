@@ -1,5 +1,12 @@
 # Changelog
 
+## [v0.18.2] - 2026-11-05
+
+### Fixed
+
+- Administrator setup-session listings return up to 20 results per page again
+  instead of returning only one.
+
 ## [v0.18.1] - 2026-11-05
 
 ### Added
