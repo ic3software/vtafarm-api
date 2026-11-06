@@ -200,8 +200,8 @@ func (h *DashboardHandler) capacityEstimates(ctx context.Context, stats *k8s.Clu
 	if err != nil {
 		return nil, nil, err
 	}
-	if estimate, ok := estimates[capacity.VtaOnly.Name]; ok {
-		estimates[capacity.VtaOnly.Name] = subtractReservedSessions(estimate, reserved)
+	for name, estimate := range estimates {
+		estimates[name] = subtractReservedSessions(estimate, reserved)
 	}
 	return modes, estimates, nil
 }
@@ -238,8 +238,8 @@ func (h *DashboardHandler) capacityEstimatesWithProfiles(stats *k8s.ClusterStats
 
 // A prebuilt, waiting Deployment has zero replicas and therefore does not appear in pod
 // CPU or memory requests. Reserve one future VTA footprint until the pooled
-// session is running; otherwise repeated pool admissions could all consume the
-// same capacity displayed by the Dashboard.
+// session is running; otherwise the Dashboard would offer that same capacity
+// to both VTA-only and full-stack sessions.
 func (h *DashboardHandler) nonRunningPoolSessions(ctx context.Context) (int, error) {
 	if !h.db.Migrator().HasTable(&model.PoolSession{}) {
 		return 0, nil

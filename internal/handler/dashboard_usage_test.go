@@ -54,6 +54,13 @@ func TestSubtractReservedSessions(t *testing.T) {
 		t.Fatalf("limiting resource = %q, want memory", got.LimitingResource)
 	}
 
+	fullStack := subtractReservedSessions(capacity.Estimate{
+		Count: 1, ByCPU: 7, ByMemory: 1, ByStorage: 20, LimitingResource: "memory",
+	}, 7)
+	if fullStack.Count != 0 || fullStack.ByCPU != 0 || fullStack.ByMemory != 0 || fullStack.ByStorage != 13 {
+		t.Fatalf("full-stack estimate = %+v", fullStack)
+	}
+
 	unknownStorage := subtractReservedSessions(capacity.Estimate{
 		Count: 2, ByCPU: 2, ByMemory: 2, ByStorage: -1,
 	}, 5)
