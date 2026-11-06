@@ -167,7 +167,7 @@ To create additional admins, an authenticated admin calls `POST /api/v1/admin/ad
 | `POST` | `/api/v1/admin/users/:id/recovery-link` | admin | Issue a 1h single-use login link for a user who lost their passkey |
 | `POST` | `/api/v1/admin/invitations` | admin | Create a user invitation link |
 | `GET` | `/api/v1/admin/invitations` | admin | List invitation links |
-| `GET` | `/api/v1/admin/setup-sessions` | admin | List all users' setup sessions (paginated, 20/page) |
+| `GET` | `/api/v1/admin/setup-sessions` | admin | List users' setup sessions except the platform stack (paginated; 20, 50, 100, or 500/page) |
 | `DELETE` | `/api/v1/admin/setup-sessions/:id` | admin | Delete any user's session — same teardown as `DELETE /setup/:id`, but not scoped to the caller. Irreversible; the UI requires typing the session's `vta_name` to confirm. Deleting the **platform stack** additionally requires `{"confirm": "<label>"}` in the body — enforced by the API, not the UI |
 | `GET` | `/api/v1/admin/setup-sessions/:id/logs` | admin | Stream any session's setup logs (`full_stack` only). Exists for the platform stack: it's owned by a passkey-less system account, so nobody can hold the cookie the user-facing route requires |
 | `POST` | `/api/v1/admin/setup-sessions/:id/admin` | admin | Resume a session parked at `awaiting_admin_did`. Same reason as the logs route — and the platform stack always parks there, since the admin DID is minted from a VTA DID the pipeline hasn't produced yet |

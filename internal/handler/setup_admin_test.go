@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -36,6 +37,20 @@ func TestAdminListSessionsSearchAndModeFilter(t *testing.T) {
 		if err := db.Create(&sessions[i]).Error; err != nil {
 			t.Fatal(err)
 		}
+	}
+	verifiedAt := time.Now()
+	platformDomain := model.Domain{
+		UserID: beta.ID, Domain: "platform.example.com", Kind: model.DomainKindPlatform, VerifiedAt: &verifiedAt,
+	}
+	if err := db.Create(&platformDomain).Error; err != nil {
+		t.Fatal(err)
+	}
+	platform := model.SetupSession{
+		UserID: beta.ID, VtaName: "platform-stack", Mode: model.ModeFullStack, Status: "running",
+		Domain: platformDomain.Domain, Subdomain: "vta", DomainType: model.DomainPlatform, DomainID: &platformDomain.ID,
+	}
+	if err := db.Create(&platform).Error; err != nil {
+		t.Fatal(err)
 	}
 	if err := db.Create(&model.WorkloadResource{
 		SetupSessionID: sessions[0].ID,
@@ -121,16 +136,19 @@ func TestAdminListSessionsSearchAndModeFilter(t *testing.T) {
 		t.Fatalf("mode-aware statuses = %v", fullStack.Statuses)
 	}
 	assertOne("q="+url.QueryEscape(alpha.UniqueId)+"&mode="+model.ModeFullStack, "full-alpha")
+	if platformResult := request("q=platform-stack"); platformResult.Total != 0 || len(platformResult.Items) != 0 {
+		t.Fatalf("platform stack appeared in sessions response: %+v", platformResult)
+	}
 }
 
-func TestAdminListSessionsPaginatesAtTwenty(t *testing.T) {
+func TestAdminListSessionsSupportsAllowedPageSizes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := testutil.Postgres(t)
 	user := model.User{UniqueId: "pagination-user"}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
-	for i := 1; i <= 21; i++ {
+	for i := 1; i <= 51; i++ {
 		session := model.SetupSession{
 			UserID: user.ID, VtaName: fmt.Sprintf("pagination-%02d", i),
 			Mode: model.ModeVtaOnly, Status: "running",
@@ -144,7 +162,7 @@ func TestAdminListSessionsPaginatesAtTwenty(t *testing.T) {
 	h := &SetupHandler{db: db}
 	router := gin.New()
 	router.GET("/sessions", h.AdminListSessions)
-	request := func(page int) struct {
+	request := func(page int, pageSize string) struct {
 		Items    []json.RawMessage `json:"items"`
 		Total    int64             `json:"total"`
 		PageSize int               `json:"page_size"`
@@ -152,6 +170,9 @@ func TestAdminListSessionsPaginatesAtTwenty(t *testing.T) {
 		t.Helper()
 		w := httptest.NewRecorder()
 		path := fmt.Sprintf("/sessions?page=%d", page)
+		if pageSize != "" {
+			path += "&page_size=" + pageSize
+		}
 		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
 		if w.Code != http.StatusOK {
 			t.Fatalf("GET %s returned %d: %s", path, w.Code, w.Body.String())
@@ -167,13 +188,37 @@ func TestAdminListSessionsPaginatesAtTwenty(t *testing.T) {
 		return response
 	}
 
-	firstPage := request(1)
-	if firstPage.Total != 21 || firstPage.PageSize != 20 || len(firstPage.Items) != 20 {
-		t.Fatalf("first page = %+v, want total 21, page size 20, and 20 items", firstPage)
+	firstPage := request(1, "")
+	if firstPage.Total != 51 || firstPage.PageSize != 20 || len(firstPage.Items) != 20 {
+		t.Fatalf("first page = %+v, want total 51, page size 20, and 20 items", firstPage)
 	}
-	secondPage := request(2)
-	if secondPage.Total != 21 || secondPage.PageSize != 20 || len(secondPage.Items) != 1 {
-		t.Fatalf("second page = %+v, want total 21, page size 20, and 1 item", secondPage)
+	thirdPage := request(3, "")
+	if thirdPage.Total != 51 || thirdPage.PageSize != 20 || len(thirdPage.Items) != 11 {
+		t.Fatalf("third page = %+v, want total 51, page size 20, and 11 items", thirdPage)
+	}
+	for _, pageSize := range []string{"50", "100", "500"} {
+		response := request(1, pageSize)
+		wantItems := 51
+		if pageSize == "50" {
+			wantItems = 50
+		}
+		if response.Total != 51 || fmt.Sprint(response.PageSize) != pageSize || len(response.Items) != wantItems {
+			t.Fatalf("page_size=%s response = %+v, want total 51 and %d items", pageSize, response, wantItems)
+		}
+	}
+}
+
+func TestAdminListSessionsRejectsInvalidPageSize(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &SetupHandler{}
+	for _, pageSize := range []string{"0", "10", "twenty"} {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/?page_size="+pageSize, nil)
+		h.AdminListSessions(c)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("page_size=%s returned %d, want 400", pageSize, w.Code)
+		}
 	}
 }
 

@@ -15,8 +15,7 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/resourceprofile"
 )
 
-// adminSessionsPageSize is fixed server-side regardless of what the client asks for.
-const adminSessionsPageSize = 20
+const adminSessionsDefaultPageSize = 20
 
 type adminSessionStoredResource struct {
 	Component     string `json:"component"`
@@ -97,16 +96,22 @@ type adminSessionItem struct {
 	Resources            []adminSessionResourceSummary `json:"resources"`
 }
 
-// AdminListSessions — GET /api/v1/admin/setup-sessions?page=N&mode=M&q=Q (admin only).
-// Lists ALL users' setup sessions ordered by id DESC (newest first), paginated
-// at adminSessionsPageSize per page. An optional mode filter narrows the list
-// (and total) to one setup mode. Search matches session names and owner
-// identifiers. This endpoint is deliberately database-only: live Kubernetes
-// state belongs to the on-demand resource editor, not a paginated index.
+// AdminListSessions — GET /api/v1/admin/setup-sessions?page=N&page_size=N&mode=M&q=Q (admin only).
+// Lists users' setup sessions ordered by id DESC (newest first), excluding the
+// platform stack because it has its own admin surface. An optional mode filter
+// narrows the list (and total) to one setup mode. Search matches session names
+// and owner identifiers. This endpoint is deliberately database-only: live
+// Kubernetes state belongs to the on-demand resource editor, not a paginated
+// index.
 func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
 	if err != nil || page < 1 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "page must be a positive integer"})
+		return
+	}
+	pageSize, err := strconv.Atoi(c.DefaultQuery("page_size", strconv.Itoa(adminSessionsDefaultPageSize)))
+	if err != nil || (pageSize != 20 && pageSize != 50 && pageSize != 100 && pageSize != 500) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "page_size must be one of 20, 50, 100, or 500"})
 		return
 	}
 
@@ -128,8 +133,9 @@ func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 		return
 	}
 
-	baseConditions := []string{"TRUE"}
-	queryArgs := make([]any, 0, 10)
+	baseConditions := []string{"s.domain_type <> ?"}
+	queryArgs := make([]any, 0, 11)
+	queryArgs = append(queryArgs, model.DomainPlatform)
 	if mode != "" {
 		baseConditions = append(baseConditions, "s.mode = ?")
 		queryArgs = append(queryArgs, mode)
@@ -197,7 +203,7 @@ SELECT
     COALESCE((
         SELECT jsonb_agg(to_jsonb(item) ORDER BY item.id DESC) FROM page_items item
     ), '[]'::jsonb) AS items`
-	queryArgs = append(queryArgs, status, status, adminSessionsPageSize, (page-1)*adminSessionsPageSize)
+	queryArgs = append(queryArgs, status, status, pageSize, (page-1)*pageSize)
 	var queryResult adminSessionQueryResult
 	if err := h.db.WithContext(c.Request.Context()).Raw(query, queryArgs...).Scan(&queryResult).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not fetch sessions"})
@@ -296,7 +302,7 @@ SELECT
 		"items":     items,
 		"total":     queryResult.Total,
 		"page":      page,
-		"page_size": adminSessionsPageSize,
+		"page_size": pageSize,
 		"statuses":  statuses,
 	})
 }
