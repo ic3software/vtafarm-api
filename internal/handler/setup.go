@@ -34,6 +34,7 @@ type SetupHandler struct {
 	// authenticates with vtafarm-api's own client keypair.
 	didHosting   *didhosting.Factory // nil when no keypair configured
 	k8s          *k8s.Client
+	resources    deploymentResourceObserver
 	orch         *setup.Orchestrator
 	ghcr         *ghcr.Client // nil when not configured
 	capacity     *CapacityService
@@ -66,6 +67,7 @@ func NewSetupHandler(
 		clusterDomain: clusterDomain,
 		didHosting:    dhFactory,
 		k8s:           k8sClient,
+		resources:     k8sClient,
 		orch:          orch,
 		ghcr:          ghcrClient,
 		capacity:      NewCapacityService(db, k8sClient),

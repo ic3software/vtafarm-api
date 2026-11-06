@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,9 +13,38 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/model"
 	"github.com/ic3software/vtafarm-api/internal/testutil"
 )
+
+type adminResourceObserverStub struct {
+	profiles  map[string]k8s.ResourceProfile
+	calls     int
+	namespace string
+	err       error
+}
+
+func (s *adminResourceObserverStub) UserNamespace(userID string) string {
+	return "test-user-" + userID
+}
+
+func (s *adminResourceObserverStub) DeploymentResourceProfile(
+	_ context.Context,
+	namespace string,
+	name string,
+) (k8s.ResourceProfile, error) {
+	s.calls++
+	s.namespace = namespace
+	if s.err != nil {
+		return k8s.ResourceProfile{}, s.err
+	}
+	profile, ok := s.profiles[name]
+	if !ok {
+		return k8s.ResourceProfile{}, fmt.Errorf("unexpected deployment %s", name)
+	}
+	return profile, nil
+}
 
 func TestAdminListSessionsSearchAndModeFilter(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -138,6 +168,77 @@ func TestAdminListSessionsSearchAndModeFilter(t *testing.T) {
 	assertOne("q="+url.QueryEscape(alpha.UniqueId)+"&mode="+model.ModeFullStack, "full-alpha")
 	if platformResult := request("q=platform-stack"); platformResult.Total != 0 || len(platformResult.Items) != 0 {
 		t.Fatalf("platform stack appeared in sessions response: %+v", platformResult)
+	}
+}
+
+func TestAdminListSessionsHydratesMissingResourceCacheOnce(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := testutil.Postgres(t)
+	user := model.User{UniqueId: "resource-cache-user"}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	session := model.SetupSession{
+		UserID: user.ID, VtaName: "resource-cache-session", Mode: model.ModeVtaOnly,
+		Status: "running", Domain: "example.com", Subdomain: "resource-cache",
+	}
+	if err := db.Create(&session).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	observer := &adminResourceObserverStub{profiles: map[string]k8s.ResourceProfile{
+		k8s.VtaDeploymentName(session.ID): {MemoryRequest: "24Mi", MemoryLimit: "96Mi"},
+	}}
+	h := &SetupHandler{db: db, resources: observer}
+	router := gin.New()
+	router.GET("/sessions", h.AdminListSessions)
+
+	request := func() struct {
+		Items []struct {
+			Resources []adminSessionResourceSummary `json:"resources"`
+		} `json:"items"`
+	} {
+		t.Helper()
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/sessions", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET returned %d: %s", w.Code, w.Body.String())
+		}
+		var response struct {
+			Items []struct {
+				Resources []adminSessionResourceSummary `json:"resources"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+
+	first := request()
+	if len(first.Items) != 1 || len(first.Items[0].Resources) != 1 {
+		t.Fatalf("first response = %+v", first)
+	}
+	resource := first.Items[0].Resources[0]
+	if resource.Component != k8s.ComponentVTA || resource.MemoryRequest != "24Mi" || resource.MemoryLimit != "96Mi" {
+		t.Fatalf("hydrated resource = %+v", resource)
+	}
+	if observer.calls != 1 || observer.namespace != fmt.Sprintf("test-user-%d", user.ID) {
+		t.Fatalf("observer calls = %d, namespace = %q", observer.calls, observer.namespace)
+	}
+	var cached model.WorkloadResource
+	if err := db.Where("setup_session_id = ? AND component = ?", session.ID, k8s.ComponentVTA).
+		First(&cached).Error; err != nil {
+		t.Fatal(err)
+	}
+	if cached.MemoryRequest != "24Mi" || cached.MemoryLimit != "96Mi" {
+		t.Fatalf("cached resource = %+v", cached)
+	}
+
+	observer.err = fmt.Errorf("Kubernetes should not be called after the cache is populated")
+	second := request()
+	if len(second.Items) != 1 || len(second.Items[0].Resources) != 1 || observer.calls != 1 {
+		t.Fatalf("second response = %+v, observer calls = %d", second, observer.calls)
 	}
 }
 

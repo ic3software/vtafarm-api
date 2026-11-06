@@ -100,9 +100,9 @@ type adminSessionItem struct {
 // Lists users' setup sessions ordered by id DESC (newest first), excluding the
 // platform stack because it has its own admin surface. An optional mode filter
 // narrows the list (and total) to one setup mode. Search matches session names
-// and owner identifiers. This endpoint is deliberately database-only: live
-// Kubernetes state belongs to the on-demand resource editor, not a paginated
-// index.
+// and owner identifiers. Resource settings normally come from the database; a
+// running session with an incomplete cache is read once from Kubernetes and
+// persisted.
 func (h *SetupHandler) AdminListSessions(c *gin.Context) {
 	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
 	if err != nil || page < 1 {
@@ -241,6 +241,7 @@ SELECT
 	}
 
 	items := make([]adminSessionItem, len(queryItems))
+	observer := h.resourceObserver()
 	for i, row := range queryItems {
 		session := model.SetupSession{
 			ID: row.ID, UserID: row.UserID, Status: row.Status, FailedStage: row.FailedStage,
@@ -272,6 +273,29 @@ SELECT
 		storedResources := make(map[string]adminSessionStoredResource, len(row.Resources))
 		for _, resource := range row.Resources {
 			storedResources[resource.Component] = resource
+		}
+		if observer != nil && (session.Status == "running" || session.Status == model.StatusPoolWaiting) {
+			namespace := observer.UserNamespace(strconv.FormatUint(uint64(session.UserID), 10))
+			for _, target := range sessionWorkloadTargets(&session) {
+				if _, cached := storedResources[target.Component]; cached {
+					continue
+				}
+				observed, err := observer.DeploymentResourceProfile(c.Request.Context(), namespace, target.Deployment)
+				if err != nil {
+					c.JSON(http.StatusBadGateway, gin.H{"error": "could not read current resource settings: " + err.Error()})
+					return
+				}
+				cached, err := h.cacheObservedResource(c.Request.Context(), session.ID, target.Component, observed)
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "could not cache current resource settings"})
+					return
+				}
+				storedResources[target.Component] = adminSessionStoredResource{
+					Component:     cached.Component,
+					MemoryRequest: cached.MemoryRequest,
+					MemoryLimit:   cached.MemoryLimit,
+				}
+			}
 		}
 		for _, target := range sessionWorkloadTargets(&session) {
 			stored, ok := storedResources[target.Component]

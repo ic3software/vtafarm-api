@@ -28,6 +28,11 @@ type workloadTarget struct {
 	Selector   string
 }
 
+type deploymentResourceObserver interface {
+	UserNamespace(userID string) string
+	DeploymentResourceProfile(ctx context.Context, namespace, name string) (k8s.ResourceProfile, error)
+}
+
 type memoryResourceInput struct {
 	Component     string `json:"component" binding:"required"`
 	MemoryRequest string `json:"memory_request" binding:"required"`
@@ -94,7 +99,8 @@ func sessionWorkloadTarget(session *model.SetupSession, component string) (workl
 // template. The first read imports existing Deployments so legacy sessions are
 // not silently replaced with today's defaults.
 func (h *SetupHandler) AdminSessionResources(c *gin.Context) {
-	if h.k8s == nil {
+	observer := h.resourceObserver()
+	if observer == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "k8s not configured"})
 		return
 	}
@@ -103,7 +109,7 @@ func (h *SetupHandler) AdminSessionResources(c *gin.Context) {
 	if !ok {
 		return
 	}
-	namespace := h.k8s.UserNamespace(strconv.FormatUint(uint64(session.UserID), 10))
+	namespace := observer.UserNamespace(strconv.FormatUint(uint64(session.UserID), 10))
 
 	var stored []model.WorkloadResource
 	if err := h.db.Where("setup_session_id = ?", session.ID).Find(&stored).Error; err != nil {
@@ -122,26 +128,16 @@ func (h *SetupHandler) AdminSessionResources(c *gin.Context) {
 	}
 	views := make([]workloadResourceView, 0, len(sessionWorkloadTargets(session)))
 	for _, target := range sessionWorkloadTargets(session) {
-		actual, err := h.k8s.DeploymentResourceProfile(c.Request.Context(), namespace, target.Deployment)
+		actual, err := observer.DeploymentResourceProfile(c.Request.Context(), namespace, target.Deployment)
 		if err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 			return
 		}
 		storedResource, exists := byComponent[target.Component]
 		if !exists {
-			storedResource = model.WorkloadResource{
-				SetupSessionID: session.ID,
-				Component:      target.Component,
-				MemoryRequest:  actual.MemoryRequest,
-				MemoryLimit:    actual.MemoryLimit,
-			}
-			if err := h.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&storedResource).Error; err != nil {
+			storedResource, err = h.cacheObservedResource(c.Request.Context(), session.ID, target.Component, actual)
+			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "could not import resource settings"})
-				return
-			}
-			if err := h.db.Where("setup_session_id = ? AND component = ?", session.ID, target.Component).
-				First(&storedResource).Error; err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "could not read imported resource settings"})
 				return
 			}
 		}
@@ -173,6 +169,39 @@ func (h *SetupHandler) AdminSessionResources(c *gin.Context) {
 		"mode":       session.Mode,
 		"resources":  views,
 	})
+}
+
+func (h *SetupHandler) resourceObserver() deploymentResourceObserver {
+	if h.resources != nil {
+		return h.resources
+	}
+	if h.k8s != nil {
+		return h.k8s
+	}
+	return nil
+}
+
+func (h *SetupHandler) cacheObservedResource(
+	ctx context.Context,
+	sessionID uint,
+	component string,
+	observed k8s.ResourceProfile,
+) (model.WorkloadResource, error) {
+	item := model.WorkloadResource{
+		SetupSessionID: sessionID,
+		Component:      component,
+		MemoryRequest:  observed.MemoryRequest,
+		MemoryLimit:    observed.MemoryLimit,
+	}
+	db := h.db.WithContext(ctx)
+	if err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&item).Error; err != nil {
+		return model.WorkloadResource{}, err
+	}
+	if err := db.Where("setup_session_id = ? AND component = ?", sessionID, component).
+		First(&item).Error; err != nil {
+		return model.WorkloadResource{}, err
+	}
+	return item, nil
 }
 
 // AdminApplySessionResources validates every requested change first, including
