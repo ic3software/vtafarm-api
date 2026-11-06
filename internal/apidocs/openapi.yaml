@@ -244,8 +244,8 @@ components:
         images:
           type: object
           description: |
-            Admin-pinned image references keyed by component. Components without
-            a pin are omitted and follow the image tagged `latest`.
+            Configured image references keyed by component. Components without
+            a default are omitted and follow the image tagged `latest`.
           additionalProperties: false
           properties:
             mediator: { type: string, example: "ghcr.io/ic3software/mediator:0.15.5-abc1234" }
@@ -2841,10 +2841,10 @@ paths:
 
   /api/v1/admin/image-defaults:
     get:
-      summary: Read admin-pinned component image defaults
+      summary: Read component image defaults
       description: |
-        Returns the immutable image pinned for each configured component.
-        Components without a pin are omitted and follow the image tagged
+        Returns the immutable default image for each configured component.
+        Components without a default are omitted and follow the image tagged
         `latest` on the user-facing create form.
       tags: [Admin]
       security:
@@ -3554,7 +3554,7 @@ paths:
                       example: true
                     default:
                       type: boolean
-                      description: True on the image pinned by an administrator as the user-facing default. Omitted on other images, when no pin is configured, or when the pinned image is no longer listed.
+                      description: True on the configured user-facing default image. Omitted on other images, when no default is configured, or when the configured image is no longer listed.
                       example: true
         "400":
           description: Unknown component value
@@ -4036,7 +4036,10 @@ paths:
         session whose mode runs the component and isn't already on the
         image). Every image must exist in its component's GHCR tag list.
         `dry_run=true` resolves and returns `targets`/`skipped` without
-        creating anything.
+        creating anything. After a platform stack VTA rollout succeeds, its
+        target image becomes the VTA image default for new sessions, replacing
+        any prior manual default. Other components and sessions do not change
+        image defaults.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
@@ -5492,7 +5495,7 @@ paths:
                       example: true
                     default:
                       type: boolean
-                      description: True on the image pinned by an administrator as the user-facing default. Omitted on other images, when no pin is configured, or when the pinned image is no longer listed.
+                      description: True on the configured user-facing default image. Omitted on other images, when no default is configured, or when the configured image is no longer listed.
                       example: true
         "400":
           description: Unknown component value

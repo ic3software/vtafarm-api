@@ -15,6 +15,7 @@ import (
 
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/publicid"
 	"github.com/ic3software/vtafarm-api/internal/testutil"
 )
 
@@ -23,6 +24,15 @@ type adminResourceObserverStub struct {
 	calls     int
 	namespace string
 	err       error
+}
+
+func newAdminTestUser(t *testing.T) model.User {
+	t.Helper()
+	uniqueID, err := publicid.NewAccount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return model.User{UniqueId: uniqueID}
 }
 
 func (s *adminResourceObserverStub) UserNamespace(userID string) string {
@@ -174,7 +184,7 @@ func TestAdminListSessionsSearchAndModeFilter(t *testing.T) {
 func TestAdminListSessionsHydratesMissingResourceCacheOnce(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := testutil.Postgres(t)
-	user := model.User{UniqueId: "resource-cache-user"}
+	user := newAdminTestUser(t)
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +255,7 @@ func TestAdminListSessionsHydratesMissingResourceCacheOnce(t *testing.T) {
 func TestAdminListSessionsSupportsAllowedPageSizes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := testutil.Postgres(t)
-	user := model.User{UniqueId: "pagination-user"}
+	user := newAdminTestUser(t)
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}

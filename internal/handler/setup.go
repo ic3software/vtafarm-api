@@ -133,7 +133,7 @@ const unknownComponentMessage = " (expected vta, mediator, dids, vtc, or trust-r
 // mediator/dids are full_stack-only and vtc is full_stack-only —
 // same GHCR-package-tags pattern as vta. The response rows are ghcr.ImageTag
 // as-is: tag, image, the latest/nightly/main flags and the creation time,
-// plus the default flag on the row an admin pinned (see image_defaults.go).
+// plus the default flag on the configured row (see image_defaults.go).
 func (h *SetupHandler) Images(c *gin.Context) {
 	component := c.DefaultQuery("component", "vta")
 	client, ok := h.ghcrClientFor(component)
