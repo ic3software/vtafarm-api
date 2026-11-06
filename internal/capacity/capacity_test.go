@@ -145,6 +145,30 @@ func TestEstimateModeStorageUnknown(t *testing.T) {
 	}
 }
 
+func TestReserveModeChargesReservedResourceFootprint(t *testing.T) {
+	nodes := []NodeFree{{CPUMillis: 600, MemBytes: 1280 * mi}}
+	disks := []DiskFree{{Bytes: 32800 * mi}}
+
+	reservedNodes, reservedDisks, ok := ReserveMode(VtaOnly, 7, nodes, disks, 1, true)
+	if !ok {
+		t.Fatal("ReserveMode() could not place seven VTA reservations")
+	}
+	if reservedNodes[0].CPUMillis != 530 || reservedNodes[0].MemBytes != 832*mi {
+		t.Fatalf("reserved node headroom = %+v", reservedNodes[0])
+	}
+	if reservedDisks[0].Bytes != 31400*mi {
+		t.Fatalf("reserved disk headroom = %d, want %d", reservedDisks[0].Bytes, 31400*mi)
+	}
+
+	est := EstimateMode(FullStack, reservedNodes, reservedDisks, 1, true)
+	if est.Count != 1 || est.ByCPU != 6 || est.ByMemory != 1 || est.ByStorage != 19 {
+		t.Fatalf("full-stack estimate after VTA reservations = %+v", est)
+	}
+	if est.LimitingResource != "memory" {
+		t.Fatalf("LimitingResource = %q, want memory", est.LimitingResource)
+	}
+}
+
 func TestModesUseCurrentProfiles(t *testing.T) {
 	profiles := resourceprofile.Factory()
 	before := Modes(profiles)

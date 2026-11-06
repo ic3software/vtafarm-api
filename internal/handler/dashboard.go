@@ -195,18 +195,19 @@ func (h *DashboardHandler) capacityEstimates(ctx context.Context, stats *k8s.Clu
 	if err != nil {
 		return nil, nil, err
 	}
-	modes, estimates := h.capacityEstimatesWithProfiles(stats, profiles)
 	reserved, err := h.nonRunningPoolSessions(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	if estimate, ok := estimates[capacity.VtaOnly.Name]; ok {
-		estimates[capacity.VtaOnly.Name] = subtractReservedSessions(estimate, reserved)
-	}
+	modes, estimates := h.capacityEstimatesWithProfilesAndReservations(stats, profiles, reserved)
 	return modes, estimates, nil
 }
 
 func (h *DashboardHandler) capacityEstimatesWithProfiles(stats *k8s.ClusterStats, profiles resourceprofile.Profiles) ([]capacity.Mode, map[string]capacity.Estimate) {
+	return h.capacityEstimatesWithProfilesAndReservations(stats, profiles, 0)
+}
+
+func (h *DashboardHandler) capacityEstimatesWithProfilesAndReservations(stats *k8s.ClusterStats, profiles resourceprofile.Profiles, reserved int) ([]capacity.Mode, map[string]capacity.Estimate) {
 	planningUsage := h.usage.Observe(time.Now(), stats.Nodes, stats.MetricsAvailable)
 	var freeNodes []capacity.NodeFree
 	for _, node := range stats.Nodes {
@@ -226,6 +227,23 @@ func (h *DashboardHandler) capacityEstimatesWithProfiles(stats *k8s.ClusterStats
 		freeDisks = append(freeDisks, capacity.DiskFree{Bytes: disk.SchedulableBytes})
 	}
 	modes := capacity.Modes(profiles)
+	if reserved > 0 {
+		reservationMode := capacity.VtaOnly
+		for _, mode := range modes {
+			if mode.Name == capacity.VtaOnly.Name {
+				reservationMode = mode
+				break
+			}
+		}
+		var ok bool
+		freeNodes, freeDisks, ok = capacity.ReserveMode(
+			reservationMode, reserved, freeNodes, freeDisks,
+			stats.StorageReplicaCount, stats.StorageAvailable,
+		)
+		if !ok {
+			freeNodes, freeDisks = nil, nil
+		}
+	}
 	estimates := make(map[string]capacity.Estimate, len(modes))
 	for _, mode := range modes {
 		estimates[mode.Name] = capacity.EstimateMode(
@@ -238,8 +256,8 @@ func (h *DashboardHandler) capacityEstimatesWithProfiles(stats *k8s.ClusterStats
 
 // A prebuilt, waiting Deployment has zero replicas and therefore does not appear in pod
 // CPU or memory requests. Reserve one future VTA footprint until the pooled
-// session is running; otherwise repeated pool admissions could all consume the
-// same capacity displayed by the Dashboard.
+// session is running; otherwise the Dashboard would offer that same capacity
+// to both VTA-only and full-stack sessions.
 func (h *DashboardHandler) nonRunningPoolSessions(ctx context.Context) (int, error) {
 	if !h.db.Migrator().HasTable(&model.PoolSession{}) {
 		return 0, nil
@@ -249,29 +267,4 @@ func (h *DashboardHandler) nonRunningPoolSessions(ctx context.Context) (int, err
 		Joins("JOIN setup_sessions s ON s.id = ps.session_id").
 		Where("s.status <> ?", "running").Count(&count).Error
 	return int(count), err
-}
-
-func subtractReservedSessions(estimate capacity.Estimate, reserved int) capacity.Estimate {
-	if reserved <= 0 {
-		return estimate
-	}
-	subtract := func(value int) int {
-		if value < 0 {
-			return value
-		}
-		return max(value-reserved, 0)
-	}
-	estimate.Count = subtract(estimate.Count)
-	estimate.ByCPU = subtract(estimate.ByCPU)
-	estimate.ByMemory = subtract(estimate.ByMemory)
-	estimate.ByStorage = subtract(estimate.ByStorage)
-	estimate.LimitingResource = "cpu"
-	minimum := estimate.ByCPU
-	if estimate.ByMemory < minimum {
-		estimate.LimitingResource, minimum = "memory", estimate.ByMemory
-	}
-	if estimate.ByStorage >= 0 && estimate.ByStorage < minimum {
-		estimate.LimitingResource = "storage"
-	}
-	return estimate
 }
