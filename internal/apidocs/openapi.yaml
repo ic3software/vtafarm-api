@@ -2735,7 +2735,7 @@ paths:
                           description: Present when Trust Registry is enabled.
                         resources:
                           type: array
-                          description: Cached desired resource settings; this list endpoint never reads Kubernetes.
+                          description: Cached desired resource settings. Missing cache entries for running sessions are imported from Kubernetes on first read.
                           items:
                             type: object
                             required: [component, memory_request, memory_limit, customized]
