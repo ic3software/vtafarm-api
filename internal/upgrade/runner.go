@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/model"
@@ -189,13 +190,34 @@ func (r *Runner) runTask(batch *model.UpgradeBatch, taskID uint) {
 		r.rollbackTask(batch, &task, ns, deployName, err.Error())
 		return
 	}
-	if err := r.db.Model(&model.SetupSession{}).Where("id = ?", session.ID).
-		Update(model.UpgradeImageColumn(task.Component), task.ToImage).Error; err != nil {
+	if err := recordSuccessfulUpgrade(r.db, &session, &task); err != nil {
 		r.rollbackTask(batch, &task, ns, deployName, "record new image: "+err.Error())
 		return
 	}
 	r.setTask(&task, model.UpgradeTaskSucceeded, "")
 	log.Printf("[upgrade] batch %d: session %d %s → %s ready", batch.ID, session.ID, task.Component, task.ToImage)
+}
+
+// recordSuccessfulUpgrade persists the image that is already confirmed ready.
+// A platform VTA is also the release users should get by default. Keep those
+// writes atomic so a failed default update restores the Deployment instead of
+// leaving the platform and the advertised default out of sync.
+func recordSuccessfulUpgrade(db *gorm.DB, session *model.SetupSession, task *model.UpgradeTask) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&model.SetupSession{}).Where("id = ?", session.ID).
+			Update(model.UpgradeImageColumn(task.Component), task.ToImage).Error; err != nil {
+			return err
+		}
+		if session.DomainType != model.DomainPlatform || task.Component != "vta" {
+			return nil
+		}
+
+		row := model.ImageDefault{Component: "vta", Image: task.ToImage}
+		return tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "component"}},
+			DoUpdates: clause.AssignmentColumns([]string{"image", "updated_at"}),
+		}).Create(&row).Error
+	})
 }
 
 func (r *Runner) waitForRollout(ctx context.Context, ns, deployName, image string) error {

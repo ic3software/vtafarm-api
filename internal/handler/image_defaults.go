@@ -15,8 +15,8 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/model"
 )
 
-// loadImageDefault returns the admin-pinned image for a component, or "" when
-// none is pinned. Like resource defaults, it reads the DB on every call so all
+// loadImageDefault returns the configured image for a component, or "" when
+// none is set. Like resource defaults, it reads the DB on every call so all
 // API replicas agree without a process-local cache.
 func loadImageDefault(ctx context.Context, db *gorm.DB, component string) (string, error) {
 	var row model.ImageDefault
@@ -56,7 +56,7 @@ func imageDefaultsResponse(ctx context.Context, db *gorm.DB) (gin.H, error) {
 
 // GET /api/v1/admin/image-defaults
 // Returns {"images": {"<component>": "<image>"}} for the components that have
-// a pinned default. Components without a pin are omitted.
+// a configured default. Components without one are omitted.
 func (h *SetupHandler) AdminImageDefaults(c *gin.Context) {
 	response, err := imageDefaultsResponse(c.Request.Context(), h.db)
 	if err != nil {
