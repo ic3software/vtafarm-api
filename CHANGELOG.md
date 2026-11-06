@@ -1,5 +1,21 @@
 # Changelog
 
+## [v0.18.3] - 2026-11-05
+
+### Changed
+
+- Administrator session listings accept page sizes of 20, 50, 100, or 500
+  and omit the platform stack, which has its own administration surface.
+- A successful platform VTA upgrade also makes that image the user-facing VTA
+  default.
+
+### Fixed
+
+- Running sessions with missing resource settings import and cache their live
+  deployment values so administrator listings report customizations correctly.
+- Capacity estimates reserve the resource footprint of non-running pooled VTAs
+  before calculating availability for either VTA-only or Full Stack sessions.
+
 ## [v0.18.2] - 2026-11-05
 
 ### Fixed
