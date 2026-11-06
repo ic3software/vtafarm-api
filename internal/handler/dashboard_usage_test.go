@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ic3software/vtafarm-api/internal/capacity"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
+	"github.com/ic3software/vtafarm-api/internal/resourceprofile"
 )
 
 func TestUsageHighWater(t *testing.T) {
@@ -43,29 +43,32 @@ func TestUsageHighWaterWithoutMetrics(t *testing.T) {
 	}
 }
 
-func TestSubtractReservedSessions(t *testing.T) {
-	got := subtractReservedSessions(capacity.Estimate{
-		Count: 47, ByCPU: 112, ByMemory: 47, ByStorage: 173, LimitingResource: "memory",
-	}, 7)
-	if got.Count != 40 || got.ByCPU != 105 || got.ByMemory != 40 || got.ByStorage != 166 {
-		t.Fatalf("subtractReservedSessions() = %+v", got)
-	}
-	if got.LimitingResource != "memory" {
-		t.Fatalf("limiting resource = %q, want memory", got.LimitingResource)
+func TestCapacityEstimatesReservePoolVTAResourcesForEveryMode(t *testing.T) {
+	const mi = int64(1) << 20
+	h := &DashboardHandler{usage: newUsageHighWater(15 * time.Minute)}
+	stats := &k8s.ClusterStats{
+		Nodes: []k8s.NodeResourceStat{{
+			Name: "node-1", Schedulable: true,
+			CPUAllocatableMillis: 3500, CPURequestedMillis: 2900, CPUUsedMillis: 700,
+			MemAllocatableBytes: 6656 * mi, MemRequestedBytes: 3600 * mi, MemUsedBytes: 5376 * mi,
+		}},
+		StorageNodes:        []k8s.StorageNodeStat{{SchedulableBytes: 32800 * mi}},
+		MetricsAvailable:    true,
+		StorageAvailable:    true,
+		StorageReplicaCount: 1,
 	}
 
-	fullStack := subtractReservedSessions(capacity.Estimate{
-		Count: 1, ByCPU: 7, ByMemory: 1, ByStorage: 20, LimitingResource: "memory",
-	}, 7)
-	if fullStack.Count != 0 || fullStack.ByCPU != 0 || fullStack.ByMemory != 0 || fullStack.ByStorage != 13 {
+	_, estimates := h.capacityEstimatesWithProfilesAndReservations(stats, resourceprofile.Factory(), 7)
+	vtaOnly := estimates["vta_only"]
+	if vtaOnly.Count != 13 || vtaOnly.ByCPU != 53 || vtaOnly.ByMemory != 13 || vtaOnly.ByStorage != 157 {
+		t.Fatalf("VTA-only estimate = %+v", vtaOnly)
+	}
+	fullStack := estimates["full_stack"]
+	if fullStack.Count != 1 || fullStack.ByCPU != 6 || fullStack.ByMemory != 1 || fullStack.ByStorage != 19 {
 		t.Fatalf("full-stack estimate = %+v", fullStack)
 	}
-
-	unknownStorage := subtractReservedSessions(capacity.Estimate{
-		Count: 2, ByCPU: 2, ByMemory: 2, ByStorage: -1,
-	}, 5)
-	if unknownStorage.Count != 0 || unknownStorage.ByStorage != -1 {
-		t.Fatalf("unknown storage estimate = %+v", unknownStorage)
+	if fullStack.LimitingResource != "memory" {
+		t.Fatalf("full-stack limiting resource = %q, want memory", fullStack.LimitingResource)
 	}
 }
 

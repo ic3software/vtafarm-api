@@ -145,6 +145,29 @@ func EstimateMode(mode Mode, nodes []NodeFree, disks []DiskFree, replicas int, s
 	return est
 }
 
+// ReserveMode removes count sessions of mode from copies of the supplied
+// headroom. It is used for parked workloads whose pods do not yet appear in
+// Kubernetes requests but whose future resource footprint is already promised.
+func ReserveMode(mode Mode, count int, nodes []NodeFree, disks []DiskFree, replicas int, storageKnown bool) ([]NodeFree, []DiskFree, bool) {
+	nodesLeft := slices.Clone(nodes)
+	disksLeft := slices.Clone(disks)
+	if count <= 0 {
+		return nodesLeft, disksLeft, true
+	}
+	if count > maxSessions {
+		return nodesLeft, disksLeft, false
+	}
+	if replicas < 1 {
+		replicas = 1
+	}
+	for range count {
+		if !placeSession(mode, nodesLeft, disksLeft, replicas, storageKnown) {
+			return nodesLeft, disksLeft, false
+		}
+	}
+	return nodesLeft, disksLeft, true
+}
+
 // simulate counts how many whole sessions of mode fit, bin-packing onto
 // copies of the headroom slices so callers can reuse them.
 func simulate(mode Mode, nodes []NodeFree, disks []DiskFree, replicas int, storageKnown bool) int {
