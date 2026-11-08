@@ -104,6 +104,9 @@ func (r *Runner) ensureProvisionPlans(ctx context.Context) error {
 			if err := tx.Create(&plan).Error; err != nil {
 				return err
 			}
+			if err := recordPlanEvent(tx, plan.ID, "", model.PlacementPlanRunning, model.PlacementActorWorker, nil, "automatic provisioning plan created"); err != nil {
+				return err
+			}
 			task := model.PlacementTask{
 				PlanID: plan.ID, SessionID: placement.SessionID, Component: "vta",
 				State: model.PlacementRequested, P95MemoryBytes: r.service.p95,
@@ -113,8 +116,7 @@ func (r *Runner) ensureProvisionPlans(ctx context.Context) error {
 			if err := tx.Create(&task).Error; err != nil {
 				return err
 			}
-			taskID := task.ID
-			return tx.Create(&model.PlacementEvent{PlanID: plan.ID, TaskID: &taskID, State: model.PlacementRequested}).Error
+			return recordTaskEvent(tx, &task, "", model.PlacementRequested, model.PlacementActorWorker, nil, "gated Pod discovered", map[string]any{"pod_uid": task.PodUID})
 		})
 		if err != nil {
 			return fmt.Errorf("session %d: %w", placement.SessionID, err)
@@ -206,7 +208,9 @@ func (r *Runner) runNextTask(parent context.Context, plan *model.PlacementPlan) 
 	err := r.db.Where("plan_id = ? AND state NOT IN ?", plan.ID,
 		[]string{model.PlacementCompleted, model.PlacementFailed, model.PlacementCancelled, model.PlacementRolledBack}).Order("id").First(&task).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return r.db.Model(plan).Update("status", model.PlacementPlanCompleted).Error
+		return r.db.Transaction(func(tx *gorm.DB) error {
+			return transitionPlan(tx, plan, model.PlacementPlanCompleted, nil, model.PlacementActorWorker, nil, "all tasks reached a terminal state")
+		})
 	}
 	if err != nil {
 		return err
@@ -276,10 +280,12 @@ func (r *Runner) advance(ctx context.Context, plan *model.PlacementPlan, task *m
 		if err != nil {
 			return err
 		}
-		if err := r.db.Model(task).Updates(map[string]any{"pod_uid": string(pod.UID), "state": model.PlacementAssigningTargetNode}).Error; err != nil {
-			return err
-		}
-		return r.db.Model(&model.PlacementReservation{}).Where("task_id = ? AND status = ?", task.ID, "active").Update("pod_uid", string(pod.UID)).Error
+		return r.db.Transaction(func(tx *gorm.DB) error {
+			if err := transitionTask(tx, task, model.PlacementAssigningTargetNode, map[string]any{"pod_uid": string(pod.UID)}, model.PlacementActorWorker, nil, "gated Pod created"); err != nil {
+				return err
+			}
+			return tx.Model(&model.PlacementReservation{}).Where("task_id = ? AND status = ?", task.ID, "active").Update("pod_uid", string(pod.UID)).Error
+		})
 	case model.PlacementAssigningTargetNode:
 		placement, err := r.k8s.ListVTAPlacements(ctx)
 		if err != nil {
@@ -390,14 +396,14 @@ func (r *Runner) validateProvisionAndReserve(ctx context.Context, task *model.Pl
 		if err := r.acquireLockAndReservation(tx, task, target, now); err != nil {
 			return err
 		}
-		return tx.Model(task).Updates(map[string]any{
-			"state": model.PlacementReserved, "target_node": target, "namespace": namespace,
+		return transitionTask(tx, task, model.PlacementReserved, map[string]any{
+			"target_node": target, "namespace": namespace,
 			"deployment_name": placement.DeploymentName, "deployment_uid": placement.DeploymentUID,
 			"pod_uid": placement.PodUID, "pvc_name": identity.PVCName, "pvc_uid": identity.PVCUID,
 			"pv_name": identity.PVName, "pv_uid": identity.PVUID, "csi_volume_handle": identity.CSIVolumeHandle,
 			"longhorn_volume": identity.LonghornVolume, "last_backup_name": identity.LastBackupName,
 			"last_backup_at": identity.LastBackupAt, "started_at": now,
-		}).Error
+		}, model.PlacementActorWorker, nil, "destination capacity reserved")
 	})
 }
 
@@ -539,15 +545,15 @@ func (r *Runner) validateAndReserve(ctx context.Context, task *model.PlacementTa
 		if err := r.acquireLockAndReservation(tx, task, target, now); err != nil {
 			return err
 		}
-		return tx.Model(task).Updates(map[string]any{
-			"state": model.PlacementReserved, "source_node": source, "target_node": target,
+		return transitionTask(tx, task, model.PlacementReserved, map[string]any{
+			"source_node": source, "target_node": target,
 			"namespace": namespace, "deployment_name": k8s.VtaDeploymentName(task.SessionID),
 			"deployment_uid": deploymentUID, "deployment_snapshot": snapshot, "original_replicas": replicas,
 			"pvc_name": identity.PVCName, "pvc_uid": identity.PVCUID, "pv_name": identity.PVName,
 			"pv_uid": identity.PVUID, "csi_volume_handle": identity.CSIVolumeHandle,
 			"longhorn_volume": identity.LonghornVolume, "last_backup_name": identity.LastBackupName,
 			"last_backup_at": identity.LastBackupAt, "started_at": now,
-		}).Error
+		}, model.PlacementActorWorker, nil, "source validated and destination capacity reserved")
 	})
 }
 
@@ -557,28 +563,15 @@ func matchesTaskStorage(task *model.PlacementTask, identity k8s.StorageIdentity)
 }
 
 func (r *Runner) setState(task *model.PlacementTask, state string, updates map[string]any) error {
-	if updates == nil {
-		updates = map[string]any{}
-	}
-	updates["state"] = state
-	task.State = state
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(task).Updates(updates).Error; err != nil {
-			return err
-		}
-		taskID := task.ID
-		return tx.Create(&model.PlacementEvent{PlanID: task.PlanID, TaskID: &taskID, State: state}).Error
+		return transitionTask(tx, task, state, updates, model.PlacementActorWorker, nil, "")
 	})
 }
 
 func (r *Runner) complete(task *model.PlacementTask, podUID string) error {
 	now := time.Now().UTC()
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(task).Updates(map[string]any{"state": model.PlacementCompleted, "pod_uid": podUID, "completed_at": now, "error_msg": ""}).Error; err != nil {
-			return err
-		}
-		taskID := task.ID
-		if err := tx.Create(&model.PlacementEvent{PlanID: task.PlanID, TaskID: &taskID, State: model.PlacementCompleted}).Error; err != nil {
+		if err := transitionTask(tx, task, model.PlacementCompleted, map[string]any{"pod_uid": podUID, "completed_at": now, "error_msg": ""}, model.PlacementActorWorker, nil, "Pod is ready on the target node"); err != nil {
 			return err
 		}
 		if err := tx.Model(&model.PlacementReservation{}).Where("task_id = ? AND status = ?", task.ID, "active").Updates(map[string]any{"status": "released", "released_at": now}).Error; err != nil {
@@ -603,14 +596,10 @@ func (r *Runner) fail(plan *model.PlacementPlan, task *model.PlacementTask, caus
 	}
 	now := time.Now().UTC()
 	_ = r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(task).Updates(map[string]any{"state": model.PlacementFailed, "error_msg": cause.Error()}).Error; err != nil {
+		if err := transitionTask(tx, task, model.PlacementFailed, map[string]any{"error_msg": cause.Error()}, model.PlacementActorWorker, nil, cause.Error()); err != nil {
 			return err
 		}
-		taskID := task.ID
-		if err := tx.Create(&model.PlacementEvent{PlanID: task.PlanID, TaskID: &taskID, State: model.PlacementFailed, Message: cause.Error()}).Error; err != nil {
-			return err
-		}
-		if err := tx.Model(plan).Updates(map[string]any{"status": model.PlacementPlanPaused, "error_msg": cause.Error()}).Error; err != nil {
+		if err := transitionPlan(tx, plan, model.PlacementPlanPaused, map[string]any{"error_msg": cause.Error()}, model.PlacementActorWorker, nil, cause.Error()); err != nil {
 			return err
 		}
 		if err := tx.Model(&model.PlacementReservation{}).Where("task_id = ? AND status = ?", task.ID, "active").Updates(map[string]any{"status": "released", "released_at": now}).Error; err != nil {

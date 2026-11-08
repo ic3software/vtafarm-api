@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 const (
 	PlacementPlanReconcile = "reconcile"
@@ -27,6 +30,13 @@ const (
 	PlacementRollingBack           = "rolling_back"
 	PlacementRolledBack            = "rolled_back"
 	PlacementCancelled             = "cancelled"
+
+	PlacementEventTaskState  = "task_state_changed"
+	PlacementEventPlanStatus = "plan_status_changed"
+
+	PlacementActorAdmin  = "admin"
+	PlacementActorWorker = "worker"
+	PlacementActorSystem = "system"
 )
 
 type PlacementPlan struct {
@@ -83,12 +93,17 @@ type PlacementReservation struct {
 }
 
 type PlacementEvent struct {
-	ID        uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	PlanID    uint      `gorm:"not null;index" json:"plan_id"`
-	TaskID    *uint     `json:"task_id,omitempty"`
-	State     string    `gorm:"not null" json:"state"`
-	Message   string    `gorm:"not null;default:''" json:"message,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        uint            `gorm:"primaryKey;autoIncrement" json:"id"`
+	PlanID    uint            `gorm:"not null;index" json:"plan_id"`
+	TaskID    *uint           `json:"task_id,omitempty"`
+	EventType string          `gorm:"not null" json:"event_type"`
+	FromState string          `gorm:"not null;default:''" json:"from_state,omitempty"`
+	State     string          `gorm:"not null" json:"state"`
+	ActorType string          `gorm:"not null" json:"actor_type"`
+	ActorID   *uint           `json:"actor_id,omitempty"`
+	Message   string          `gorm:"not null;default:''" json:"message,omitempty"`
+	Metadata  json.RawMessage `gorm:"type:jsonb;not null;default:'{}'" json:"metadata"`
+	CreatedAt time.Time       `json:"created_at"`
 }
 
 type PlacementMaintenanceLock struct {

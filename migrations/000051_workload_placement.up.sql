@@ -47,12 +47,27 @@ CREATE TABLE placement_events (
     id          BIGSERIAL   PRIMARY KEY,
     plan_id     BIGINT      NOT NULL REFERENCES placement_plans(id) ON DELETE CASCADE,
     task_id     BIGINT      REFERENCES placement_tasks(id) ON DELETE CASCADE,
+    event_type  VARCHAR(32) NOT NULL CHECK (event_type IN ('task_state_changed', 'plan_status_changed')),
+    from_state  VARCHAR(40) NOT NULL DEFAULT '',
     state       VARCHAR(40) NOT NULL,
+    actor_type  VARCHAR(16) NOT NULL CHECK (actor_type IN ('admin', 'worker', 'system')),
+    actor_id    BIGINT,
     message     TEXT        NOT NULL DEFAULT '',
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    metadata    JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK (
+        (event_type = 'task_state_changed' AND task_id IS NOT NULL) OR
+        (event_type = 'plan_status_changed' AND task_id IS NULL)
+    ),
+    CHECK (
+        (actor_type = 'admin' AND actor_id IS NOT NULL) OR
+        (actor_type IN ('worker', 'system') AND actor_id IS NULL)
+    )
 );
 
 CREATE INDEX placement_events_plan_created ON placement_events(plan_id, created_at);
+CREATE INDEX placement_events_task_created ON placement_events(task_id, created_at, id)
+    WHERE task_id IS NOT NULL;
 
 CREATE TABLE placement_reservations (
     id            BIGSERIAL   PRIMARY KEY,

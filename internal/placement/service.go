@@ -2,6 +2,7 @@ package placement
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -292,6 +293,9 @@ func (s *Service) CreatePlan(ctx context.Context, adminID uint, kind string, ite
 		if err := tx.Create(plan).Error; err != nil {
 			return err
 		}
+		if err := recordPlanEvent(tx, plan.ID, "", model.PlacementPlanRunning, model.PlacementActorAdmin, &adminID, "plan created"); err != nil {
+			return err
+		}
 		tasks := make([]model.PlacementTask, len(preview))
 		for i, item := range preview {
 			tasks[i] = model.PlacementTask{PlanID: plan.ID, SessionID: item.SessionID, Component: "vta", TargetNode: item.TargetNode, State: model.PlacementRequested, P95MemoryBytes: s.p95}
@@ -299,12 +303,12 @@ func (s *Service) CreatePlan(ctx context.Context, adminID uint, kind string, ite
 		if err := tx.Create(&tasks).Error; err != nil {
 			return err
 		}
-		events := make([]model.PlacementEvent, len(tasks))
 		for i := range tasks {
-			taskID := tasks[i].ID
-			events[i] = model.PlacementEvent{PlanID: plan.ID, TaskID: &taskID, State: model.PlacementRequested}
+			if err := recordTaskEvent(tx, &tasks[i], "", model.PlacementRequested, model.PlacementActorAdmin, &adminID, "task requested", map[string]any{"target_node": tasks[i].TargetNode}); err != nil {
+				return err
+			}
 		}
-		return tx.Create(&events).Error
+		return nil
 	})
 	if err != nil {
 		return nil, preview, err
@@ -336,10 +340,10 @@ func (s *Service) ListPlans(page, pageSize int) ([]model.PlacementPlan, int64, b
 	return plans, total, runningPlans > 0, err
 }
 
-func (s *Service) CancelPlan(id uint) error {
+func (s *Service) CancelPlan(id, adminID uint) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		var plan model.PlacementPlan
-		if err := tx.First(&plan, id).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, id).Error; err != nil {
 			return err
 		}
 		if plan.Kind == model.PlacementPlanProvision {
@@ -353,21 +357,28 @@ func (s *Service) CancelPlan(id uint) error {
 		if active > 0 {
 			return errors.New("cannot cancel while a placement step is active")
 		}
-		result := tx.Model(&model.PlacementPlan{}).Where("id = ? AND status = ?", id, model.PlacementPlanRunning).
-			Update("status", model.PlacementPlanCancelled)
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected == 0 {
+		if plan.Status != model.PlacementPlanRunning {
 			return errors.New("placement plan is not running")
 		}
-		return tx.Model(&model.PlacementTask{}).Where("plan_id = ? AND state = ?", id, model.PlacementRequested).
-			Update("state", model.PlacementCancelled).Error
+		var tasks []model.PlacementTask
+		if err := tx.Where("plan_id = ? AND state = ?", id, model.PlacementRequested).Order("id").Find(&tasks).Error; err != nil {
+			return err
+		}
+		for i := range tasks {
+			if err := transitionTask(tx, &tasks[i], model.PlacementCancelled, nil, model.PlacementActorAdmin, &adminID, "plan cancelled"); err != nil {
+				return err
+			}
+		}
+		return transitionPlan(tx, &plan, model.PlacementPlanCancelled, nil, model.PlacementActorAdmin, &adminID, "plan cancelled")
 	})
 }
 
-func (s *Service) RetryTask(planID, taskID uint, targetNode string) error {
+func (s *Service) RetryTask(planID, taskID, adminID uint, targetNode string) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		var plan model.PlacementPlan
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, planID).Error; err != nil {
+			return err
+		}
 		var task model.PlacementTask
 		if err := tx.Where("id = ? AND plan_id = ?", taskID, planID).First(&task).Error; err != nil {
 			return err
@@ -375,43 +386,106 @@ func (s *Service) RetryTask(planID, taskID uint, targetNode string) error {
 		if task.State != model.PlacementFailed {
 			return errors.New("only failed placement tasks can be retried")
 		}
-		updates := map[string]any{"state": model.PlacementRequested, "error_msg": ""}
+		updates := map[string]any{"error_msg": ""}
 		if targetNode != "" {
 			updates["target_node"] = targetNode
 		}
-		if err := tx.Model(&task).Updates(updates).Error; err != nil {
+		if err := transitionTask(tx, &task, model.PlacementRequested, updates, model.PlacementActorAdmin, &adminID, "task retried"); err != nil {
 			return err
 		}
-		return tx.Model(&model.PlacementPlan{}).Where("id = ?", planID).Updates(map[string]any{"status": model.PlacementPlanRunning, "error_msg": ""}).Error
+		return transitionPlan(tx, &plan, model.PlacementPlanRunning, map[string]any{"error_msg": ""}, model.PlacementActorAdmin, &adminID, "plan resumed for retry")
 	})
 }
 
-func (s *Service) RollbackTask(ctx context.Context, planID, taskID uint) error {
+func (s *Service) RollbackTask(ctx context.Context, planID, taskID, adminID uint) error {
 	var task model.PlacementTask
-	if err := s.db.Where("id = ? AND plan_id = ?", taskID, planID).First(&task).Error; err != nil {
-		return err
-	}
-	if task.State != model.PlacementFailed || len(task.DeploymentSnapshot) <= 2 || task.Namespace == "" {
-		return errors.New("failed task has no restorable Deployment snapshot")
-	}
-	if err := s.db.Model(&task).Update("state", model.PlacementRollingBack).Error; err != nil {
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND plan_id = ?", taskID, planID).First(&task).Error; err != nil {
+			return err
+		}
+		if task.State != model.PlacementFailed || len(task.DeploymentSnapshot) <= 2 || task.Namespace == "" {
+			return errors.New("failed task has no restorable Deployment snapshot")
+		}
+		return transitionTask(tx, &task, model.PlacementRollingBack, nil, model.PlacementActorAdmin, &adminID, "rollback requested")
+	}); err != nil {
 		return err
 	}
 	if err := s.k8s.RestoreVTADeploymentSnapshot(ctx, task.Namespace, task.SessionID, task.DeploymentUID, task.DeploymentSnapshot); err != nil {
-		_ = s.db.Model(&task).Updates(map[string]any{"state": model.PlacementFailed, "error_msg": err.Error()}).Error
+		_ = s.db.Transaction(func(tx *gorm.DB) error {
+			return transitionTask(tx, &task, model.PlacementFailed, map[string]any{"error_msg": err.Error()}, model.PlacementActorAdmin, &adminID, err.Error())
+		})
 		return err
 	}
 	now := time.Now().UTC()
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&task).Updates(map[string]any{"state": model.PlacementRolledBack, "completed_at": now, "error_msg": ""}).Error; err != nil {
+		var plan model.PlacementPlan
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, planID).Error; err != nil {
 			return err
 		}
-		taskID := task.ID
-		if err := tx.Create(&model.PlacementEvent{PlanID: task.PlanID, TaskID: &taskID, State: model.PlacementRolledBack}).Error; err != nil {
+		if err := transitionTask(tx, &task, model.PlacementRolledBack, map[string]any{"completed_at": now, "error_msg": ""}, model.PlacementActorAdmin, &adminID, "Deployment snapshot restored"); err != nil {
 			return err
 		}
-		return tx.Model(&model.PlacementPlan{}).Where("id = ?", planID).Updates(map[string]any{
-			"status": model.PlacementPlanCancelled, "error_msg": "",
-		}).Error
+		return transitionPlan(tx, &plan, model.PlacementPlanCancelled, map[string]any{"error_msg": ""}, model.PlacementActorAdmin, &adminID, "plan cancelled after rollback")
 	})
+}
+
+func transitionTask(tx *gorm.DB, task *model.PlacementTask, state string, updates map[string]any, actorType string, actorID *uint, message string) error {
+	if updates == nil {
+		updates = map[string]any{}
+	}
+	fromState := task.State
+	updates["state"] = state
+	if err := tx.Model(task).Updates(updates).Error; err != nil {
+		return err
+	}
+	task.State = state
+	return recordTaskEvent(tx, task, fromState, state, actorType, actorID, message, updates)
+}
+
+func recordTaskEvent(tx *gorm.DB, task *model.PlacementTask, fromState, state, actorType string, actorID *uint, message string, updates map[string]any) error {
+	event, err := newTaskEvent(task, fromState, state, actorType, actorID, message, updates)
+	if err != nil {
+		return err
+	}
+	return tx.Create(event).Error
+}
+
+func newTaskEvent(task *model.PlacementTask, fromState, state, actorType string, actorID *uint, message string, updates map[string]any) (*model.PlacementEvent, error) {
+	metadata := map[string]any{}
+	for _, key := range []string{"source_node", "target_node", "pod_uid"} {
+		if value, ok := updates[key]; ok {
+			metadata[key] = value
+		}
+	}
+	raw, err := json.Marshal(metadata)
+	if err != nil {
+		return nil, err
+	}
+	taskID := task.ID
+	return &model.PlacementEvent{
+		PlanID: task.PlanID, TaskID: &taskID, EventType: model.PlacementEventTaskState,
+		FromState: fromState, State: state, ActorType: actorType, ActorID: actorID,
+		Message: message, Metadata: raw,
+	}, nil
+}
+
+func transitionPlan(tx *gorm.DB, plan *model.PlacementPlan, status string, updates map[string]any, actorType string, actorID *uint, message string) error {
+	if updates == nil {
+		updates = map[string]any{}
+	}
+	fromState := plan.Status
+	updates["status"] = status
+	if err := tx.Model(plan).Updates(updates).Error; err != nil {
+		return err
+	}
+	plan.Status = status
+	return recordPlanEvent(tx, plan.ID, fromState, status, actorType, actorID, message)
+}
+
+func recordPlanEvent(tx *gorm.DB, planID uint, fromState, state, actorType string, actorID *uint, message string) error {
+	return tx.Create(&model.PlacementEvent{
+		PlanID: planID, EventType: model.PlacementEventPlanStatus,
+		FromState: fromState, State: state, ActorType: actorType, ActorID: actorID,
+		Message: message, Metadata: json.RawMessage(`{}`),
+	}).Error
 }

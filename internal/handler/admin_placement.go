@@ -135,7 +135,8 @@ func (h *PlacementHandler) Cancel(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid plan id"})
 		return
 	}
-	if err := h.service.CancelPlan(uint(id)); err != nil {
+	adminID := c.MustGet(middleware.ContextUserID).(uint)
+	if err := h.service.CancelPlan(uint(id), adminID); err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}
@@ -156,7 +157,8 @@ func (h *PlacementHandler) Retry(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := h.service.RetryTask(uint(planID), uint(taskID), req.TargetNode); err != nil {
+	adminID := c.MustGet(middleware.ContextUserID).(uint)
+	if err := h.service.RetryTask(uint(planID), uint(taskID), adminID, req.TargetNode); err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}
@@ -170,7 +172,8 @@ func (h *PlacementHandler) Rollback(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid plan or task id"})
 		return
 	}
-	if err := h.service.RollbackTask(c.Request.Context(), uint(planID), uint(taskID)); err != nil {
+	adminID := c.MustGet(middleware.ContextUserID).(uint)
+	if err := h.service.RollbackTask(c.Request.Context(), uint(planID), uint(taskID), adminID); err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}

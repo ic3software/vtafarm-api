@@ -1,6 +1,7 @@
 package placement
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/ic3software/vtafarm-api/internal/config"
@@ -69,6 +70,30 @@ func TestSourceNeedsRelocationOnlyForUnsafeSources(t *testing.T) {
 				t.Fatalf("sourceNeedsRelocation(%q) = %v, want %v", test.source, got, test.want)
 			}
 		})
+	}
+}
+
+func TestNewTaskEventCapturesTransitionActorAndMetadata(t *testing.T) {
+	adminID := uint(17)
+	task := model.PlacementTask{ID: 23, PlanID: 11}
+	event, err := newTaskEvent(&task, model.PlacementFailed, model.PlacementRequested, model.PlacementActorAdmin, &adminID, "task retried", map[string]any{
+		"state": model.PlacementRequested, "target_node": "worker-2", "error_msg": "",
+	})
+	if err != nil {
+		t.Fatalf("newTaskEvent: %v", err)
+	}
+	if event.EventType != model.PlacementEventTaskState || event.FromState != model.PlacementFailed || event.State != model.PlacementRequested {
+		t.Fatalf("transition fields = %+v", event)
+	}
+	if event.ActorType != model.PlacementActorAdmin || event.ActorID == nil || *event.ActorID != adminID || event.Message != "task retried" {
+		t.Fatalf("actor fields = %+v", event)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal(event.Metadata, &metadata); err != nil {
+		t.Fatalf("metadata: %v", err)
+	}
+	if metadata["target_node"] != "worker-2" || len(metadata) != 1 {
+		t.Fatalf("metadata = %#v, want only target_node", metadata)
 	}
 }
 

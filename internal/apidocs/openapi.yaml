@@ -1167,6 +1167,25 @@ components:
               target_node: { type: string }
               state: { type: string }
               error_msg: { type: string }
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/PlacementEvent" }
+
+    PlacementEvent:
+      type: object
+      required: [id, plan_id, event_type, state, actor_type, metadata, created_at]
+      properties:
+        id: { type: integer }
+        plan_id: { type: integer }
+        task_id: { type: integer, nullable: true }
+        event_type: { type: string, enum: [task_state_changed, plan_status_changed] }
+        from_state: { type: string }
+        state: { type: string }
+        actor_type: { type: string, enum: [admin, worker, system] }
+        actor_id: { type: integer, nullable: true }
+        message: { type: string }
+        metadata: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
 
 paths:
   /health:
