@@ -91,12 +91,24 @@ func (h *PlacementHandler) Create(c *gin.Context) {
 }
 
 func (h *PlacementHandler) List(c *gin.Context) {
-	plans, err := h.service.ListPlans()
+	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if err != nil || page < 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "page must be a positive integer"})
+		return
+	}
+	pageSize, err := strconv.Atoi(c.DefaultQuery("page_size", "10"))
+	if err != nil || (pageSize != 10 && pageSize != 20 && pageSize != 50) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "page_size must be one of 10, 20, or 50"})
+		return
+	}
+	plans, total, hasRunningPlan, err := h.service.ListPlans(page, pageSize)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not list placement plans"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"plans": plans})
+	c.JSON(http.StatusOK, gin.H{
+		"plans": plans, "total": total, "page": page, "page_size": pageSize, "has_running_plan": hasRunningPlan,
+	})
 }
 
 func (h *PlacementHandler) Get(c *gin.Context) {

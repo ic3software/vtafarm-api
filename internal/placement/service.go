@@ -70,11 +70,11 @@ func (s *Service) Overview(ctx context.Context) (*Overview, error) {
 	if err != nil {
 		return nil, err
 	}
-	nodes, err := s.k8s.PlacementNodes(ctx, reservations)
+	placements, err := s.k8s.ListVTAPlacements(ctx)
 	if err != nil {
 		return nil, err
 	}
-	placements, err := s.k8s.ListVTAPlacements(ctx)
+	nodes, err := s.k8s.PlacementNodesFromPlacements(ctx, reservations, placements)
 	if err != nil {
 		return nil, err
 	}
@@ -88,16 +88,27 @@ func (s *Service) Overview(ctx context.Context) (*Overview, error) {
 			return nil, err
 		}
 	}
-	names := make(map[uint]string, len(sessions))
-	for _, session := range sessions {
-		names[session.ID] = session.VtaName
-	}
-	workloads := make([]WorkloadView, 0, len(placements))
-	for _, placement := range placements {
-		workloads = append(workloads, WorkloadView{VTAName: names[placement.SessionID], VTAPlacement: placement})
-	}
+	workloads := activeWorkloadViews(placements, sessions)
 	sort.Slice(workloads, func(i, j int) bool { return workloads[i].SessionID < workloads[j].SessionID })
 	return &Overview{Mode: s.cfg.Mode, Nodes: nodes, Workloads: workloads}, nil
+}
+
+func activeWorkloadViews(placements []k8s.VTAPlacement, sessions []model.SetupSession) []WorkloadView {
+	active := make(map[uint]model.SetupSession, len(sessions))
+	for _, session := range sessions {
+		if session.Mode == model.ModeVtaOnly && session.Status == "running" {
+			active[session.ID] = session
+		}
+	}
+	workloads := make([]WorkloadView, 0, len(active))
+	for _, placement := range placements {
+		session, ok := active[placement.SessionID]
+		if !ok {
+			continue
+		}
+		workloads = append(workloads, WorkloadView{VTAName: session.VtaName, VTAPlacement: placement})
+	}
+	return workloads
 }
 
 func (s *Service) reservations() (map[string]int64, error) {
@@ -152,11 +163,21 @@ func (s *Service) Preview(ctx context.Context, items []PlanItem, all bool) ([]Pr
 			continue
 		}
 		if preview.TargetNode == "" {
-			preview.TargetNode = safestNode(overview.Nodes, projected, s.p95, s.cfg.HotAtPercent)
+			if all && !sourceNeedsRelocation(preview.SourceNode, nodes, s.cfg.HotAtPercent) {
+				continue
+			}
+			preview.TargetNode = safestNodeExcept(overview.Nodes, projected, s.p95, s.cfg.HotAtPercent, preview.SourceNode)
+			if preview.TargetNode == "" {
+				preview.Reason = "no eligible destination"
+				result = append(result, preview)
+				continue
+			}
 		}
 		node, ok := nodes[preview.TargetNode]
 		if !ok {
 			preview.Reason = "target node not found"
+		} else if preview.TargetNode == preview.SourceNode {
+			preview.Reason = "target node is already the current node"
 		} else if !node.Schedulable || !node.Eligible || !node.MetricsAvailable {
 			preview.Reason = "target node is not eligible"
 		} else if node.MemAllocatable <= 0 {
@@ -177,9 +198,13 @@ func (s *Service) Preview(ctx context.Context, items []PlanItem, all bool) ([]Pr
 }
 
 func safestNode(nodes []k8s.NodePlacement, projected map[string]int64, p95 int64, hotAt int) string {
+	return safestNodeExcept(nodes, projected, p95, hotAt, "")
+}
+
+func safestNodeExcept(nodes []k8s.NodePlacement, projected map[string]int64, p95 int64, hotAt int, excluded string) string {
 	best, bestUsed := "", int64(^uint64(0)>>1)
 	for _, node := range nodes {
-		if !node.Schedulable || !node.Eligible || !node.MetricsAvailable || node.MemAllocatable <= 0 {
+		if node.Name == excluded || !node.Schedulable || !node.Eligible || !node.MetricsAvailable || node.MemAllocatable <= 0 {
 			continue
 		}
 		used := max(node.MemUsed, node.MemRequested) + node.MemReserved + projected[node.Name] + p95
@@ -191,6 +216,18 @@ func safestNode(nodes []k8s.NodePlacement, projected map[string]int64, p95 int64
 		}
 	}
 	return best
+}
+
+func sourceNeedsRelocation(source string, nodes map[string]k8s.NodePlacement, hotAt int) bool {
+	if source == "" {
+		return true
+	}
+	node, exists := nodes[source]
+	if !exists || !node.Schedulable || !node.MetricsAvailable || node.MemAllocatable <= 0 {
+		return true
+	}
+	used := max(node.MemUsed, node.MemRequested) + node.MemReserved
+	return node.MemoryState == "hot" || used*100/node.MemAllocatable >= int64(hotAt)
 }
 
 func (s *Service) CreatePlan(ctx context.Context, adminID uint, kind string, items []PlanItem, all bool) (*model.PlacementPlan, []PreviewItem, error) {
@@ -224,6 +261,18 @@ func (s *Service) CreatePlan(ctx context.Context, adminID uint, kind string, ite
 	}
 	plan := &model.PlacementPlan{AdminID: &adminID, Kind: kind, Status: model.PlacementPlanRunning}
 	err = s.db.Transaction(func(tx *gorm.DB) error {
+		// Serialize reviewed plan creation so two admins cannot both pass the
+		// running-plan check before either transaction inserts its plan.
+		if err := tx.Exec("SELECT pg_advisory_xact_lock(565447, 1)").Error; err != nil {
+			return err
+		}
+		var runningPlans int64
+		if err := tx.Model(&model.PlacementPlan{}).Where("status = ?", model.PlacementPlanRunning).Count(&runningPlans).Error; err != nil {
+			return err
+		}
+		if runningPlans > 0 {
+			return errors.New("another placement plan is already running")
+		}
 		ids := make([]uint, len(preview))
 		for i := range preview {
 			ids[i] = preview[i].SessionID
@@ -272,10 +321,19 @@ func (s *Service) GetPlan(id uint) (*model.PlacementPlan, error) {
 	return &plan, nil
 }
 
-func (s *Service) ListPlans() ([]model.PlacementPlan, error) {
+func (s *Service) ListPlans(page, pageSize int) ([]model.PlacementPlan, int64, bool, error) {
 	var plans []model.PlacementPlan
-	err := s.db.Preload("Tasks", func(db *gorm.DB) *gorm.DB { return db.Order("id") }).Order("id DESC").Limit(50).Find(&plans).Error
-	return plans, err
+	var total int64
+	if err := s.db.Model(&model.PlacementPlan{}).Count(&total).Error; err != nil {
+		return nil, 0, false, err
+	}
+	var runningPlans int64
+	if err := s.db.Model(&model.PlacementPlan{}).Where("status = ?", model.PlacementPlanRunning).Count(&runningPlans).Error; err != nil {
+		return nil, 0, false, err
+	}
+	err := s.db.Preload("Tasks", func(db *gorm.DB) *gorm.DB { return db.Order("id") }).
+		Order("id DESC").Limit(pageSize).Offset((page - 1) * pageSize).Find(&plans).Error
+	return plans, total, runningPlans > 0, err
 }
 
 func (s *Service) CancelPlan(id uint) error {

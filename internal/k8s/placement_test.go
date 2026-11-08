@@ -7,9 +7,47 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 )
+
+func TestListVTAPlacementsUsesOneClusterPodList(t *testing.T) {
+	ctx := context.Background()
+	objects := []runtime.Object{}
+	for _, sessionID := range []string{"41", "42"} {
+		namespace := "vtafarm-user-" + sessionID
+		objects = append(objects,
+			&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
+				Name: "vta-" + sessionID, Namespace: namespace,
+				Labels: map[string]string{"app": "vta", "session-id": sessionID},
+			}},
+			&corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+				Name: "vta-" + sessionID, Namespace: namespace, UID: types.UID("pod-" + sessionID),
+				Labels: map[string]string{"app": "vta", "session-id": sessionID},
+			}, Spec: corev1.PodSpec{NodeName: "worker-1"}},
+		)
+	}
+	kube := fake.NewSimpleClientset(objects...)
+	client := &Client{kube: kube, namespacePrefix: "vtafarm-user"}
+
+	placements, err := client.ListVTAPlacements(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(placements) != 2 {
+		t.Fatalf("got %d placements, want 2", len(placements))
+	}
+	podLists := 0
+	for _, action := range kube.Actions() {
+		if action.GetVerb() == "list" && action.GetResource().Resource == "pods" {
+			podLists++
+		}
+	}
+	if podLists != 1 {
+		t.Fatalf("listed pods %d times, want one cluster inventory read", podLists)
+	}
+}
 
 func TestRestoreVTADeploymentSnapshotPreservesDeploymentIdentity(t *testing.T) {
 	ctx := context.Background()

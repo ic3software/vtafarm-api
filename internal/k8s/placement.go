@@ -68,6 +68,27 @@ func (c *Client) ListVTAPlacements(ctx context.Context) ([]VTAPlacement, error) 
 	if err != nil {
 		return nil, fmt.Errorf("list VTA deployments: %w", err)
 	}
+	pods, err := c.kube.CoreV1().Pods("").List(ctx, metav1.ListOptions{LabelSelector: "app=vta"})
+	if err != nil {
+		return nil, fmt.Errorf("list VTA pods: %w", err)
+	}
+	podsBySession := make(map[string]*corev1.Pod, len(pods.Items))
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.DeletionTimestamp != nil {
+			continue
+		}
+		sessionID := pod.Labels["session-id"]
+		if sessionID == "" {
+			continue
+		}
+		key := placementSessionKey(pod.Namespace, sessionID)
+		if _, exists := podsBySession[key]; !exists {
+			podsBySession[key] = pod
+		}
+	}
+	storageByPVC := c.listPlacementStorage(ctx)
+
 	placements := make([]VTAPlacement, 0, len(deployments.Items))
 	for i := range deployments.Items {
 		deployment := &deployments.Items[i]
@@ -85,30 +106,103 @@ func (c *Client) ListVTAPlacements(ctx context.Context) ([]VTAPlacement, error) 
 		if len(deployment.Spec.Template.Spec.Containers) > 0 {
 			placement.MemoryRequest = deployment.Spec.Template.Spec.Containers[0].Resources.Requests.Memory().Value()
 		}
-		pods, listErr := c.kube.CoreV1().Pods(deployment.Namespace).List(ctx, metav1.ListOptions{
-			LabelSelector: fmt.Sprintf("app=vta,session-id=%d", placement.SessionID),
-		})
-		if listErr != nil {
-			return nil, fmt.Errorf("list VTA %d pods: %w", placement.SessionID, listErr)
-		}
-		for j := range pods.Items {
-			pod := &pods.Items[j]
-			if pod.DeletionTimestamp != nil {
-				continue
-			}
+		if pod := podsBySession[placementSessionKey(deployment.Namespace, deployment.Labels["session-id"])]; pod != nil {
 			placement.PodName = pod.Name
 			placement.PodUID = string(pod.UID)
 			placement.NodeName = pod.Spec.NodeName
 			placement.Gated = len(pod.Spec.SchedulingGates) > 0
 			placement.Ready = podReady(pod)
-			break
 		}
-		if storage, inspectErr := c.InspectVTAStorage(ctx, deployment.Namespace, placement.SessionID); inspectErr == nil {
+		if storage, ok := storageByPVC[placementPVCKey(deployment.Namespace, VtaPVCName(placement.SessionID))]; ok {
 			placement.Storage = storage
 		}
 		placements = append(placements, placement)
 	}
 	return placements, nil
+}
+
+func placementSessionKey(namespace, sessionID string) string {
+	return namespace + "/" + sessionID
+}
+
+func placementPVCKey(namespace, name string) string {
+	return namespace + "/" + name
+}
+
+// listPlacementStorage builds one best-effort cluster inventory. Storage data
+// is supplementary in the overview, so a missing CRD or temporary Longhorn
+// failure must not hide otherwise healthy workloads.
+func (c *Client) listPlacementStorage(ctx context.Context) map[string]StorageIdentity {
+	result := map[string]StorageIdentity{}
+	pvcs, err := c.kube.CoreV1().PersistentVolumeClaims("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return result
+	}
+	pvs, err := c.kube.CoreV1().PersistentVolumes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return result
+	}
+	pvByName := make(map[string]*corev1.PersistentVolume, len(pvs.Items))
+	for i := range pvs.Items {
+		pvByName[pvs.Items[i].Name] = &pvs.Items[i]
+	}
+	if c.dyn == nil {
+		return result
+	}
+	volumes, err := c.dyn.Resource(longhornVolumesGVR).Namespace(LonghornNamespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return result
+	}
+	volumeStatus := make(map[string][2]string, len(volumes.Items))
+	for i := range volumes.Items {
+		volume := &volumes.Items[i]
+		state, _, _ := unstructuredString(volume.Object, "status", "state")
+		robustness, _, _ := unstructuredString(volume.Object, "status", "robustness")
+		volumeStatus[volume.GetName()] = [2]string{state, robustness}
+	}
+
+	latestBackup := map[string][2]string{}
+	if backups, listErr := c.dyn.Resource(longhornBackupsGVR).Namespace(LonghornNamespace).List(ctx, metav1.ListOptions{}); listErr == nil {
+		for i := range backups.Items {
+			backup := &backups.Items[i]
+			volumeName, _, _ := unstructuredString(backup.Object, "status", "volumeName")
+			if volumeName == "" {
+				volumeName = backup.GetLabels()["longhornvolume"]
+			}
+			state, _, _ := unstructuredString(backup.Object, "status", "state")
+			if volumeName == "" || state != "Completed" && state != "completed" {
+				continue
+			}
+			createdAt, _, _ := unstructuredString(backup.Object, "status", "snapshotCreatedAt")
+			if createdAt == "" {
+				createdAt, _, _ = unstructuredString(backup.Object, "status", "backupCreatedAt")
+			}
+			if previous := latestBackup[volumeName]; createdAt > previous[1] {
+				latestBackup[volumeName] = [2]string{backup.GetName(), createdAt}
+			}
+		}
+	}
+
+	for i := range pvcs.Items {
+		pvc := &pvcs.Items[i]
+		pv := pvByName[pvc.Spec.VolumeName]
+		if pv == nil || pv.Spec.CSI == nil || pv.Spec.CSI.VolumeHandle == "" {
+			continue
+		}
+		status, exists := volumeStatus[pv.Spec.CSI.VolumeHandle]
+		if !exists {
+			continue
+		}
+		backup := latestBackup[pv.Spec.CSI.VolumeHandle]
+		result[placementPVCKey(pvc.Namespace, pvc.Name)] = StorageIdentity{
+			PVCName: pvc.Name, PVCUID: string(pvc.UID),
+			PVName: pv.Name, PVUID: string(pv.UID),
+			CSIVolumeHandle: pv.Spec.CSI.VolumeHandle, LonghornVolume: pv.Spec.CSI.VolumeHandle,
+			LonghornState: status[0], LonghornRobustness: status[1],
+			LastBackupName: backup[0], LastBackupAt: backup[1],
+		}
+	}
+	return result
 }
 
 func podReady(pod *corev1.Pod) bool {
@@ -194,11 +288,15 @@ func unstructuredString(object map[string]any, fields ...string) (string, bool, 
 }
 
 func (c *Client) PlacementNodes(ctx context.Context, reservations map[string]int64) ([]NodePlacement, error) {
-	stats, err := c.ClusterResourceStats(ctx)
+	placements, err := c.ListVTAPlacements(ctx)
 	if err != nil {
 		return nil, err
 	}
-	placements, err := c.ListVTAPlacements(ctx)
+	return c.PlacementNodesFromPlacements(ctx, reservations, placements)
+}
+
+func (c *Client) PlacementNodesFromPlacements(ctx context.Context, reservations map[string]int64, placements []VTAPlacement) ([]NodePlacement, error) {
+	stats, err := c.ClusterResourceStats(ctx)
 	if err != nil {
 		return nil, err
 	}

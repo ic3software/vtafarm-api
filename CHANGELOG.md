@@ -1,5 +1,22 @@
 # Changelog
 
+## [v0.18.4] - 2026-11-08
+
+### Added
+
+- A leader-elected placement worker classifies node memory headroom, reserves
+  capacity, and safely provisions or relocates VTA-only workloads while
+  preserving their Kubernetes and Longhorn storage identity.
+- Administrator placement APIs expose workload inventory, recommendations,
+  reviewed plans, progress, retries, cancellation, and rollback.
+- The Helm chart installs the placement worker with dedicated RBAC and supports
+  disabled, canary, and enabled activation modes.
+
+### Changed
+
+- Placement inventory uses bounded cluster-wide Kubernetes and Longhorn reads
+  instead of issuing several API calls for every VTA workload.
+
 ## [v0.18.3] - 2026-11-05
 
 ### Changed

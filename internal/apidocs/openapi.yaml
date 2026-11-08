@@ -1900,8 +1900,26 @@ paths:
       summary: List recent durable placement plans
       tags: [Admin]
       security: [{CookieAuthAdmin: []}]
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, enum: [10, 20, 50], default: 10 } }
       responses:
-        "200": { description: Recent plans and task progress }
+        "200":
+          description: Paginated plans and task progress
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [plans, total, page, page_size, has_running_plan]
+                properties:
+                  plans:
+                    type: array
+                    items: { $ref: "#/components/schemas/PlacementPlan" }
+                  total: { type: integer }
+                  page: { type: integer }
+                  page_size: { type: integer }
+                  has_running_plan: { type: boolean }
+        "400": { description: Invalid pagination parameters }
     post:
       summary: Start a reviewed placement plan
       tags: [Admin]

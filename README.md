@@ -64,7 +64,38 @@ The database being shared has consequences worth reading once:
    The API is now available at `http://localhost:8080`.
    API docs: `http://localhost:8080/docs`
 
-4. (Optional) Generate a DID hosting keypair (required only if DID hosting is enabled):
+4. Start the placement worker in another terminal when developing the Admin
+   placement page or testing gated VTA Pods:
+
+   ```bash
+   make dev-placement
+   ```
+
+   The worker reads the same `.env`, database tunnel, and kubeconfig as the
+   API. Keep `PLACEMENT_MODE=disabled` for normal shared-cluster development;
+   this updates node classifications and reports without moving Pods. Use
+   `canary` only after coordinating the numeric session IDs with the team. The
+   command also refuses to start unless the active kubectl context is
+   `rke2-vtafarm-dev`.
+
+   When starting the complete workspace from its parent directory,
+   `make dev` and `make dev-tunnel` start this worker automatically in
+   the same `PLACEMENT_MODE` configured for the API in `.env`. To override both
+   the API and worker for one run:
+
+   ```bash
+   DEV_PLACEMENT_MODE=canary make dev-tunnel
+   ```
+
+   Put the corresponding `PLACEMENT_CANARY_SESSION_IDS` in this repository's
+   `.env`. The override is deliberately applied to both processes; allowing the
+   API to accept plans while the worker is disabled would leave every task in
+   `requested`. `make status`, `make logs`, and `make down` in the workspace
+   include the placement process as well. Do not run the local worker when an
+   in-cluster placement Deployment is already enabled with different
+   configuration; both instances participate in the same leader election.
+
+5. (Optional) Generate a DID hosting keypair (required only if DID hosting is enabled):
 
    ```bash
    make gen-keypair
@@ -73,7 +104,7 @@ The database being shared has consequences worth reading once:
    Copy the two output lines (`DID_HOSTING_PRIVATE_KEY` and `DID_HOSTING_DID`) into your `.env`,
    then register the DID in the did-hosting service Access Control with **role=Service**.
 
-5. Create the first admin enrollment token — run in a separate terminal while the API is running:
+6. Create the first admin enrollment token — run in a separate terminal while the API is running:
 
    ```bash
    make enroll
@@ -115,6 +146,7 @@ Copy `.env.example` and adjust as needed:
 | `CLOUDFLARE_ZONE_ID` | _(optional)_ | Required for VTA setup wizard |
 | `KUBECONFIG` | _(empty)_ | Auto-detects `~/.kube/config` when empty |
 | `K8S_NAMESPACE_PREFIX` | `vtafarm-user` | Per-user namespace: `vtafarm-user-{userID}` |
+| `PLACEMENT_HEALTH_PORT` | `8081` | Local worker health endpoint; the Helm probe uses the same default |
 
 ### VTA Farm DID
 

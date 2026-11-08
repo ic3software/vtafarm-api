@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
@@ -22,6 +23,7 @@ import (
 )
 
 func main() {
+	_ = godotenv.Load()
 	cfg := config.Load()
 	db, err := database.Connect(cfg)
 	if err != nil {
@@ -39,7 +41,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	var leader atomic.Bool
-	go healthServer(ctx, &leader, cfg.Placement.Mode)
+	healthPort := os.Getenv("PLACEMENT_HEALTH_PORT")
+	if healthPort == "" {
+		healthPort = "8081"
+	}
+	go healthServer(ctx, &leader, cfg.Placement.Mode, healthPort)
 
 	namespace := os.Getenv("POD_NAMESPACE")
 	if namespace == "" {
@@ -65,13 +71,13 @@ func main() {
 	})
 }
 
-func healthServer(ctx context.Context, leader *atomic.Bool, mode string) {
+func healthServer(ctx context.Context, leader *atomic.Bool, mode, port string) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "leader": leader.Load(), "mode": mode})
 	})
-	server := &http.Server{Addr: ":8081", Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	server := &http.Server{Addr: ":" + port, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
