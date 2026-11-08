@@ -1070,6 +1070,8 @@ func (o *Orchestrator) fsDeployDids(ctx context.Context, ns string, s *model.Set
 		Env:             append(fsNoColorEnv(), fsDidsTuningEnv()...),
 		Port:            8534,
 		Labels:          fsLabels("dids", s.ID),
+		PlacementMode:   k8s.PlacementModeFullStack,
+		Component:       k8s.ComponentDids,
 		HealthCheckPath: "/health",
 		Resources:       profiles.Requirements(k8s.ComponentDids),
 	}); err != nil {
@@ -1102,6 +1104,8 @@ func (o *Orchestrator) fsDeployMediator(ctx context.Context, ns string, s *model
 		Env:             append(fsNoColorEnv(), fsMediatorTuningEnv()...),
 		Port:            7037,
 		Labels:          fsLabels("mediator", s.ID),
+		PlacementMode:   k8s.PlacementModeFullStack,
+		Component:       k8s.ComponentMediator,
 		HealthCheckPath: "/mediator/v1/readyz",
 		Resources:       profiles.Requirements(k8s.ComponentMediator),
 	}); err != nil {
@@ -1166,6 +1170,8 @@ func (o *Orchestrator) fsDeployVta(ctx context.Context, ns string, s *model.Setu
 		Env:             append(fsNoColorEnv(), k8s.VtaTuningEnv()...),
 		Port:            8100,
 		Labels:          fsLabels("vta", s.ID),
+		PlacementMode:   k8s.PlacementModeFullStack,
+		Component:       k8s.ComponentVTA,
 		HealthCheckPath: "/health",
 		Resources:       profiles.Requirements(k8s.ComponentVTA),
 	}); err != nil {

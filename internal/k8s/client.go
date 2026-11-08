@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -23,10 +24,15 @@ type Client struct {
 	// dyn reaches resources outside the typed clientset — currently the
 	// Longhorn CRDs (nodes/settings.longhorn.io) behind the admin dashboard's
 	// storage stats.
-	dyn             dynamic.Interface
-	restCfg         *rest.Config
-	namespacePrefix string
+	dyn                    dynamic.Interface
+	restCfg                *rest.Config
+	namespacePrefix        string
+	placementMode          string
+	placementCanary        map[uint]struct{}
+	placementMetricsMaxAge time.Duration
 }
+
+func (c *Client) Kubernetes() kubernetes.Interface { return c.kube }
 
 // NewClient creates a K8s client.
 // When running inside a cluster (production), it uses the in-cluster ServiceAccount.
@@ -60,11 +66,19 @@ func NewClient(cfg *config.Config) (*Client, error) {
 		return nil, fmt.Errorf("dynamic.NewForConfig: %w", err)
 	}
 
+	canary := make(map[uint]struct{}, len(cfg.Placement.CanarySessionIDs))
+	for _, sessionID := range cfg.Placement.CanarySessionIDs {
+		canary[sessionID] = struct{}{}
+	}
+
 	return &Client{
-		kube:            kube,
-		dyn:             dyn,
-		restCfg:         restCfg,
-		namespacePrefix: cfg.K8s.NamespacePrefix,
+		kube:                   kube,
+		dyn:                    dyn,
+		restCfg:                restCfg,
+		namespacePrefix:        cfg.K8s.NamespacePrefix,
+		placementMode:          cfg.Placement.Mode,
+		placementCanary:        canary,
+		placementMetricsMaxAge: time.Duration(cfg.Placement.MetricsStaleSeconds) * time.Second,
 	}, nil
 }
 

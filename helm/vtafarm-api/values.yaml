@@ -79,6 +79,25 @@ monitor:
   pendingGraceMin: "10"
   extraNamespaces: "vault,vault-transit,longhorn-system"
 
+placement:
+  mode: disabled
+  canarySessionIDs: ""
+  greenBelowPct: "70"
+  yellowBelowPct: "85"
+  hotAtPct: "90"
+  hotObservationMin: "5"
+  recoveryObservationMin: "10"
+  metricsStaleSeconds: "90"
+  vtaP95Memory: "128Mi"
+  pollSeconds: "15"
+  workerReplicas: 1
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
+
 github:
   packageOwner: ic3software
   packageName: vta

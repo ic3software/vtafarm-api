@@ -473,7 +473,7 @@ func (c *Client) createVtaDeployment(ctx context.Context, ns string, sessionID u
 		"session-id": fmt.Sprintf("%d", sessionID),
 	}
 
-	_, err := c.kube.AppsV1().Deployments(ns).Create(ctx, &appsv1.Deployment{
+	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: ns,
@@ -533,7 +533,9 @@ func (c *Client) createVtaDeployment(ctx context.Context, ns string, sessionID u
 				},
 			},
 		},
-	}, metav1.CreateOptions{})
+	}
+	c.applyVTAPlacement(deployment, sessionID)
+	_, err := c.kube.AppsV1().Deployments(ns).Create(ctx, deployment, metav1.CreateOptions{})
 	if err != nil && !k8serrors.IsAlreadyExists(err) {
 		return fmt.Errorf("create deployment: %w", err)
 	}

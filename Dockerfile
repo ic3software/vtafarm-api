@@ -8,7 +8,8 @@ RUN go mod download
 
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/bin/api    ./main.go && \
-    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/bin/enroll ./cmd/enroll
+    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/bin/enroll ./cmd/enroll && \
+    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/bin/placement-worker ./cmd/placement-worker
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
 FROM alpine:3.23
@@ -17,6 +18,7 @@ WORKDIR /app
 
 COPY --from=builder /app/bin/api    .
 COPY --from=builder /app/bin/enroll .
+COPY --from=builder /app/bin/placement-worker .
 COPY --from=builder /app/migrations ./migrations
 
 EXPOSE 8080

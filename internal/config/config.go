@@ -43,6 +43,29 @@ type Config struct {
 	WebAuthn           WebAuthnConfig
 	Vault              VaultConfig
 	Monitor            MonitorConfig
+	Placement          PlacementConfig
+}
+
+const (
+	PlacementDisabled = "disabled"
+	PlacementCanary   = "canary"
+	PlacementEnabled  = "enabled"
+)
+
+// PlacementConfig controls activation, not feature completeness. The complete
+// placement implementation ships together; production moves through disabled,
+// canary, and enabled without changing binaries.
+type PlacementConfig struct {
+	Mode                   string
+	CanarySessionIDs       []uint
+	GreenBelowPercent      int
+	YellowBelowPercent     int
+	HotAtPercent           int
+	HotObservationMin      int
+	RecoveryObservationMin int
+	MetricsStaleSeconds    int
+	VTAP95Memory           string
+	PollSeconds            int
 }
 
 // MonitorConfig configures the token-gated /api/v1/monitor/* endpoints polled
@@ -230,6 +253,18 @@ func Load() *Config {
 			PendingGraceMin:  getEnvInt("MONITOR_PENDING_GRACE_MIN", 10),
 			ExtraNamespaces:  splitComma(getEnv("MONITOR_EXTRA_NAMESPACES", "vault,vault-transit,longhorn-system")),
 		},
+		Placement: PlacementConfig{
+			Mode:                   placementMode(getEnv("PLACEMENT_MODE", PlacementDisabled)),
+			CanarySessionIDs:       splitUintComma(getEnv("PLACEMENT_CANARY_SESSION_IDS", "")),
+			GreenBelowPercent:      getEnvInt("PLACEMENT_GREEN_BELOW_PCT", 70),
+			YellowBelowPercent:     getEnvInt("PLACEMENT_YELLOW_BELOW_PCT", 85),
+			HotAtPercent:           getEnvInt("PLACEMENT_HOT_AT_PCT", 90),
+			HotObservationMin:      getEnvInt("PLACEMENT_HOT_OBSERVATION_MIN", 5),
+			RecoveryObservationMin: getEnvInt("PLACEMENT_RECOVERY_OBSERVATION_MIN", 10),
+			MetricsStaleSeconds:    getEnvInt("PLACEMENT_METRICS_STALE_SECONDS", 90),
+			VTAP95Memory:           getEnv("PLACEMENT_VTA_P95_MEMORY", "128Mi"),
+			PollSeconds:            getEnvInt("PLACEMENT_POLL_SECONDS", 15),
+		},
 		Vault: VaultConfig{
 			Addr:         getEnv("VAULT_ADDR", ""),
 			VTAAddr:      getEnv("VAULT_VTA_ADDR", "https://vault.vault.svc:8200"),
@@ -241,6 +276,28 @@ func Load() *Config {
 			SkipVerify:   getEnvBool("VAULT_SKIP_VERIFY", true),
 		},
 	}
+}
+
+func placementMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case PlacementCanary:
+		return PlacementCanary
+	case PlacementEnabled:
+		return PlacementEnabled
+	default:
+		return PlacementDisabled
+	}
+}
+
+func splitUintComma(s string) []uint {
+	var result []uint
+	for _, value := range splitComma(s) {
+		parsed, err := strconv.ParseUint(value, 10, 64)
+		if err == nil && parsed > 0 {
+			result = append(result, uint(parsed))
+		}
+	}
+	return result
 }
 
 func getEnvInt(key string, defaultVal int) int {

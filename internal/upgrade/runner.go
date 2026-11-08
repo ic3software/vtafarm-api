@@ -161,6 +161,15 @@ func (r *Runner) runTask(batch *model.UpgradeBatch, taskID uint) {
 		r.failTask(batch, &task, "Trust Registry enablement is in progress")
 		return
 	}
+	var placementActive int64
+	if err := r.db.Model(&model.PlacementMaintenanceLock{}).Where("session_id = ?", session.ID).Count(&placementActive).Error; err != nil {
+		r.failTask(batch, &task, "could not check workload placement: "+err.Error())
+		return
+	}
+	if placementActive > 0 {
+		r.failTask(batch, &task, "workload placement is in progress")
+		return
+	}
 	deployName, err := deploymentName(&session, task.Component)
 	if err != nil {
 		r.failTask(batch, &task, err.Error())

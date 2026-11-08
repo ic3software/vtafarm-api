@@ -28,6 +28,16 @@ data:
   MONITOR_RESTART_WINDOW_MIN: {{ .Values.monitor.restartWindowMin | quote }}
   MONITOR_PENDING_GRACE_MIN:  {{ .Values.monitor.pendingGraceMin | quote }}
   MONITOR_EXTRA_NAMESPACES:   {{ .Values.monitor.extraNamespaces | quote }}
+  PLACEMENT_MODE:                     {{ .Values.placement.mode | quote }}
+  PLACEMENT_CANARY_SESSION_IDS:       {{ .Values.placement.canarySessionIDs | quote }}
+  PLACEMENT_GREEN_BELOW_PCT:          {{ .Values.placement.greenBelowPct | quote }}
+  PLACEMENT_YELLOW_BELOW_PCT:         {{ .Values.placement.yellowBelowPct | quote }}
+  PLACEMENT_HOT_AT_PCT:               {{ .Values.placement.hotAtPct | quote }}
+  PLACEMENT_HOT_OBSERVATION_MIN:      {{ .Values.placement.hotObservationMin | quote }}
+  PLACEMENT_RECOVERY_OBSERVATION_MIN: {{ .Values.placement.recoveryObservationMin | quote }}
+  PLACEMENT_METRICS_STALE_SECONDS:    {{ .Values.placement.metricsStaleSeconds | quote }}
+  PLACEMENT_VTA_P95_MEMORY:           {{ .Values.placement.vtaP95Memory | quote }}
+  PLACEMENT_POLL_SECONDS:              {{ .Values.placement.pollSeconds | quote }}
   GITHUB_PACKAGE_OWNER:      {{ .Values.github.packageOwner | quote }}
   GITHUB_PACKAGE_NAME:       {{ .Values.github.packageName | quote }}
   GITHUB_MEDIATOR_PACKAGE_NAME: {{ .Values.github.mediatorPackageName | quote }}

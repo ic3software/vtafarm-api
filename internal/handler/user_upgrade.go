@@ -155,6 +155,15 @@ func (h *UpgradeHandler) CreateForSession(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "an upgrade for this session is already in progress"})
 		return
 	}
+	var placementActive int64
+	if err := h.db.Model(&model.PlacementMaintenanceLock{}).Where("session_id = ?", session.ID).Count(&placementActive).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not check workload placement"})
+		return
+	}
+	if placementActive > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "workload placement for this session is in progress"})
+		return
+	}
 
 	batch := model.UpgradeBatch{
 		UserID: &userID,

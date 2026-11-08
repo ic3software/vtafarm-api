@@ -272,6 +272,8 @@ func (o *Orchestrator) fsDeployVtc(ctx context.Context, ns string, s *model.Setu
 		Env:             append(fsNoColorEnv(), fsVtcTuningEnv()...),
 		Port:            8200,
 		Labels:          fsLabels("vtc", s.ID),
+		PlacementMode:   k8s.PlacementModeFullStack,
+		Component:       k8s.ComponentVTC,
 		HealthCheckPath: "/health",
 		Resources:       profiles.Requirements(k8s.ComponentVTC),
 	}); err != nil {

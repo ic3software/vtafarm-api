@@ -248,6 +248,14 @@ func (h *UpgradeHandler) resolveTargets(req *createUpgradeRequest) ([]upgradeTar
 
 	targets := make([]upgradeTargetPair, 0, len(sessions)*len(req.Components))
 	for _, s := range sessions {
+		var placementActive int64
+		if err := h.db.Model(&model.PlacementMaintenanceLock{}).Where("session_id = ?", s.ID).Count(&placementActive).Error; err != nil {
+			return nil, nil, err
+		}
+		if placementActive > 0 {
+			skipped = append(skipped, skippedItem{SessionID: s.VtaName, Reason: "workload placement is in progress"})
+			continue
+		}
 		if registryBusy(&s) != nil {
 			skipped = append(skipped, skippedItem{SessionID: s.VtaName, Reason: "Trust Registry enablement is in progress"})
 			continue
