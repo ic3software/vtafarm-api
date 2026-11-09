@@ -371,7 +371,7 @@ func (c *Client) ReconcileVTADeployment(ctx context.Context, namespace string, s
 		if err != nil {
 			return err
 		}
-		c.applyVTAPlacement(deployment, sessionID)
+		c.applyVTARelocationPolicy(deployment, sessionID)
 		_, err = c.kube.AppsV1().Deployments(namespace).Update(ctx, deployment, metav1.UpdateOptions{})
 		return err
 	})

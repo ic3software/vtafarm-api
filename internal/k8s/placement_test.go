@@ -13,6 +13,8 @@ import (
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
+
+	"github.com/ic3software/vtafarm-api/internal/config"
 )
 
 func TestListVTAPlacementsUsesOneLightweightClusterInventory(t *testing.T) {
@@ -191,6 +193,32 @@ func TestRestoreVTADeploymentSnapshotPreservesDeploymentIdentity(t *testing.T) {
 	restored, _ := client.kube.AppsV1().Deployments("tenant").Get(ctx, deployment.Name, metav1.GetOptions{})
 	if restored.Labels["before"] != "true" || len(restored.Spec.Template.Spec.SchedulingGates) != 0 {
 		t.Fatalf("snapshot was not restored: %#v", restored)
+	}
+}
+
+func TestReconcileVTADeploymentAddsRelocationGate(t *testing.T) {
+	ctx := context.Background()
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: VtaDeploymentName(42), Namespace: "tenant"},
+		Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "vta", "session-id": "42"}},
+		}},
+	}
+	client := &Client{kube: fake.NewSimpleClientset(deployment), placementMode: config.PlacementEnabled}
+
+	if err := client.ReconcileVTADeployment(ctx, "tenant", 42); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := client.kube.AppsV1().Deployments("tenant").Get(ctx, deployment.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated.Spec.Template.Spec.SchedulingGates) != 1 ||
+		updated.Spec.Template.Spec.SchedulingGates[0].Name != PlacementGateName {
+		t.Fatalf("scheduling gates = %#v, want relocation gate", updated.Spec.Template.Spec.SchedulingGates)
+	}
+	if updated.Spec.Template.Spec.Affinity == nil {
+		t.Fatal("relocation Deployment is missing placement affinity")
 	}
 }
 

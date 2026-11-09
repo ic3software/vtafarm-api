@@ -128,20 +128,22 @@ near 90%.
 
 The controller should set `vta-eligible=true` only when metrics are fresh and
 the node can accept one additional p95 VTA workload while remaining below 90%.
-Missing or stale metrics fail closed: remove eligibility, alert, and do not
-place a new VTA on that node.
+Missing or stale metrics fail closed for reviewed relocations: remove
+eligibility, alert, and do not select that node as a relocation destination.
+Initial VTA Pods do not use this label as a scheduling requirement.
 
-Eligibility is not a reservation. Two concurrent provisioning or relocation
-requests could otherwise consume the same reported headroom before metrics
-update. Every placement must atomically reserve the selected node's p95 VTA
-budget before releasing its Pod to the scheduler. Include active reservations
-in projected node utilization, and release them when the Pod becomes Ready,
-the placement fails, or recovery proves that the Pod no longer exists.
+Eligibility is not a reservation. Two concurrent relocations could otherwise
+consume the same reported headroom before metrics update. Every reviewed
+relocation must atomically reserve the selected node's p95 VTA budget before
+releasing its Pod to the scheduler. Include active reservations in projected
+node utilization, and release them when the Pod becomes Ready, the placement
+fails, or recovery proves that the Pod no longer exists.
 
-### Exclude hot nodes and prefer headroom
+### Exclude hot relocation targets and prefer headroom
 
-VTA-only Pods must require an eligible node. Among eligible nodes, they should
-prefer the node with the safer memory band:
+Pods created by a reviewed relocation must require an eligible node. Among
+eligible relocation targets, they should prefer the node with the safer memory
+band:
 
 ```yaml
 spec:
@@ -177,28 +179,32 @@ spec:
                 values: [orange]
 ```
 
-The required rule is the safety boundary: a `hot` node cannot receive a new
-VTA even if it currently has the fewest tenant Pods. Preferred weights remain
-useful for non-targeted placement, but they do not guarantee the destination.
-The placement controller described below tightens a gated Pod's required node
-affinity when an exact node has been selected.
+The required rule is the relocation safety boundary: a `hot` node cannot be an
+approved destination even if it currently has the fewest tenant Pods.
+Preferred weights do not guarantee the destination. The placement controller
+described below tightens a gated Pod's required node affinity when an exact
+node has been selected.
 
-Updating a node label does not move an existing healthy Pod. It controls new
-placement and gives the rebalancer an enforceable way to prevent a replacement
-from returning to a hot node.
+Updating a node label does not move an existing healthy Pod. It gives the
+reviewed relocation workflow an enforceable destination policy.
 
-If every node is `hot` or ineligible, admission should reject or queue new
-sessions before creating a Pending Pod. Rebalancing cannot create memory
-capacity; the required response is a cluster-capacity alert and an operator
-decision to add memory, add a node, or stop workloads.
+If every node is `hot` or ineligible, reviewed relocation must stop because it
+cannot create memory capacity. Initial VTA Pods still use the default scheduler
+and their declared resource requests; capacity admission and alerts remain a
+separate concern.
 
 Full Stack components should use the same `memory-state` exclusion only after
 their own p95 memory profiles and eligibility calculation are defined. Do not
 reuse the VTA p95 estimate for VTC, mediator, DIDS, or trust registry.
 
-### Gate every VTA placement
+### Gate reviewed VTA relocation only
 
-Every VTA-only Pod must be created with a Kubernetes scheduling gate:
+Initial VTA-only Pods are created without a scheduling gate or placement node
+affinity. The default Kubernetes scheduler places them immediately using their
+resource requests and the soft tenant topology spread rule.
+
+After an administrator approves relocation of an existing VTA, its replacement
+Pod is created with a Kubernetes scheduling gate:
 
 ```yaml
 spec:
@@ -207,13 +213,14 @@ spec:
 ```
 
 [Pod scheduling readiness](https://kubernetes.io/docs/concepts/scheduling-eviction/pod-scheduling-readiness/)
-keeps the Pod out of the scheduler queue while VTA Farm chooses and reserves a
-destination. While a Pod is gated, Kubernetes permits a controller to tighten
-its node selector or required node affinity. The placement controller must:
+keeps that replacement out of the scheduler queue while VTA Farm reserves the
+reviewed destination. While a Pod is gated, Kubernetes permits a controller to
+tighten its node selector or required node affinity. The placement controller
+must:
 
 1. identify the VTA from stable workload labels and the owning Deployment;
-2. load either an administrator-selected destination or choose the safest
-   eligible node for ordinary provisioning and restart recovery;
+2. load the administrator-selected destination or the destination from an
+   approved recommendation;
 3. lock the placement records, recalculate live and reserved headroom, and
    atomically reserve the VTA's p95 memory on the destination;
 4. revalidate node readiness, taints, MemoryPressure, metric freshness, Vault,
@@ -268,12 +275,12 @@ reservations, or accurate resource requests.
   estimate in one reviewed configuration source.
 - Remove VTA eligibility when metrics are stale or the projected p95 VTA would
   take the node to 90% or above.
-- Gate every VTA-only Pod and use atomic per-node p95 reservations for both
-  provisioning and administrator-requested relocation.
+- Gate only replacement Pods created by an approved relocation and use atomic
+  per-node p95 reservations for those relocations.
 - Persist placement and relocation state so an API restart resumes an
   interrupted scale-down, detach, scheduling, attach, or readiness wait.
-- Reject or queue new sessions when no eligible node exists; do not silently
-  bypass the memory gate.
+- Let initial sessions use the default scheduler without waiting for placement
+  metrics or a placement-worker reservation.
 - Generate the same stable Pod labels through the shared VTA and component
   Deployment helpers without changing immutable Deployment selectors.
 - Apply `auto-rebalance=true` only to the explicitly approved VTA-only scope.
@@ -642,8 +649,9 @@ Repository: `vtafarm-api`.
 
 - Centralize placement label keys, memory thresholds, observation windows,
   p95 costs, scheduling gate name, and affinity/topology builders.
-- Update VTA-only and parked VTA creation to include stable labels, the
-  scheduling gate, eligibility affinity, soft topology spread, and `Recreate`.
+- Update VTA-only and parked VTA creation to include stable labels, soft
+  topology spread, and `Recreate`, without delaying initial Pods behind the
+  managed-placement scheduling gate.
 - Update every Full Stack component to include its common labels, soft topology
   spread, and the correct RWO `Recreate` strategy without opting it into VTA
   relocation.
@@ -701,8 +709,8 @@ Repositories: all three.
 - Test node failure, API timeout, Vault unavailability, metrics loss, hot target,
   Pending Pod, Longhorn degraded/rebuilding volume, stale attachment ticket,
   and application health failure.
-- Test that concurrent provisioning and relocation cannot double-reserve a
-  node and that session deletion or upgrade cannot overlap relocation.
+- Test that concurrent relocations cannot double-reserve a node and that
+  session deletion or upgrade cannot overlap relocation.
 - Render and verify Helm/RBAC changes, run each repository's format, lint, and
   test entry points, and complete the restore drill before production approval.
 
@@ -721,18 +729,19 @@ remaining workloads through the single Admin Panel `Apply all` operation.
   budget.
 - Tests cover the `green`, `yellow`, `orange`, and `hot` boundaries,
   five-minute hot observation, ten-minute recovery, and stale metrics.
-- A hot or ineligible node cannot receive a new VTA.
+- A hot or ineligible node cannot be selected as a reviewed relocation
+  destination.
 - Green, yellow, and orange preferences are generated exactly as configured,
   without claiming a strict lowest-memory choice from scheduler preferences.
-- Admission rejects or queues new sessions when all nodes are hot or
-  ineligible.
-- Concurrent provisioning and relocation cannot reserve the same node
-  headroom twice; reservations are atomic, durable, included in projected
-  utilization, and recovered after controller restarts.
+- Initial sessions proceed through the default Kubernetes scheduler without a
+  placement reservation or durable provisioning plan.
+- Concurrent relocations cannot reserve the same node headroom twice;
+  reservations are atomic, durable, included in projected utilization, and
+  recovered after controller restarts.
 - New tenant Pods carry the common placement labels; only approved VTA-only
   Pods carry `auto-rebalance=true`.
-- Generated VTA-only Deployments contain the required memory gate, scheduling
-  gate, and soft topology spread policy.
+- Generated VTA-only Deployments contain soft topology spread but no initial
+  placement scheduling gate or eligibility affinity.
 - A gated Pod is assigned to the exact administrator-selected eligible node by
   tightening only that Pod's affinity; the Deployment is not permanently
   pinned to the destination.

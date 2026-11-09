@@ -14,6 +14,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
+
+	"github.com/ic3software/vtafarm-api/internal/config"
 )
 
 const testActivationID = "00112233445566778899aabbccddeeff"
@@ -55,8 +57,32 @@ func TestCreateVtaDeploymentUsesHealthReadinessProbe(t *testing.T) {
 	}
 }
 
+func TestCreateVtaDeploymentUsesDefaultSchedulerWhenPlacementEnabled(t *testing.T) {
+	client := &Client{kube: fake.NewSimpleClientset(), placementMode: config.PlacementEnabled}
+
+	if err := client.CreateVtaDeployment(context.Background(), "test", 42, "example/vta:test", ComponentResources("10m", "32Mi", "128Mi")); err != nil {
+		t.Fatalf("CreateVtaDeployment() error = %v", err)
+	}
+
+	deployment, err := client.kube.AppsV1().Deployments("test").Get(
+		context.Background(), VtaDeploymentName(42), metav1.GetOptions{},
+	)
+	if err != nil {
+		t.Fatalf("get Deployment: %v", err)
+	}
+	if len(deployment.Spec.Template.Spec.SchedulingGates) != 0 {
+		t.Fatal("initial VTA Deployment uses a placement scheduling gate")
+	}
+	if deployment.Spec.Template.Spec.Affinity != nil {
+		t.Fatal("initial VTA Deployment uses placement affinity")
+	}
+	if len(deployment.Spec.Template.Spec.TopologySpreadConstraints) != 1 {
+		t.Fatal("initial VTA Deployment is missing tenant topology spread")
+	}
+}
+
 func TestCreateParkedVtaDeploymentHasNoReplicas(t *testing.T) {
-	client := &Client{kube: fake.NewSimpleClientset()}
+	client := &Client{kube: fake.NewSimpleClientset(), placementMode: config.PlacementEnabled}
 
 	if err := client.CreateParkedVtaDeployment(context.Background(), "test", 43, "example/vta:test", ComponentResources("10m", "32Mi", "128Mi")); err != nil {
 		t.Fatalf("CreateParkedVtaDeployment() error = %v", err)
@@ -70,6 +96,9 @@ func TestCreateParkedVtaDeploymentHasNoReplicas(t *testing.T) {
 	}
 	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 0 {
 		t.Fatalf("replicas = %v, want 0", deployment.Spec.Replicas)
+	}
+	if len(deployment.Spec.Template.Spec.SchedulingGates) != 0 {
+		t.Fatal("parked VTA Deployment uses a placement scheduling gate")
 	}
 }
 

@@ -10,11 +10,10 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/config"
 )
 
-func TestApplyVTAPlacementAlwaysAddsStableMetadata(t *testing.T) {
-	client := &Client{placementMode: config.PlacementDisabled}
+func TestApplyVTAWorkloadPolicyAddsStableMetadataWithoutGating(t *testing.T) {
 	deployment := &appsv1.Deployment{Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{}}}
 
-	client.applyVTAPlacement(deployment, 42)
+	applyVTAWorkloadPolicy(deployment)
 
 	if got := deployment.Labels[PlacementLabelMode]; got != PlacementModeVTAOnly {
 		t.Fatalf("mode label = %q", got)
@@ -29,11 +28,14 @@ func TestApplyVTAPlacementAlwaysAddsStableMetadata(t *testing.T) {
 		t.Fatal("tenant topology spread was not added")
 	}
 	if len(deployment.Spec.Template.Spec.SchedulingGates) != 0 {
-		t.Fatal("disabled placement added a scheduling gate")
+		t.Fatal("initial workload policy added a scheduling gate")
+	}
+	if deployment.Spec.Template.Spec.Affinity != nil {
+		t.Fatal("initial workload policy added placement affinity")
 	}
 }
 
-func TestApplyVTAPlacementGatesOnlyActivatedSessions(t *testing.T) {
+func TestApplyVTARelocationPolicyGatesOnlyActivatedSessions(t *testing.T) {
 	tests := []struct {
 		name   string
 		client Client
@@ -47,7 +49,7 @@ func TestApplyVTAPlacementGatesOnlyActivatedSessions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			deployment := &appsv1.Deployment{Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{}}}
-			tt.client.applyVTAPlacement(deployment, tt.id)
+			tt.client.applyVTARelocationPolicy(deployment, tt.id)
 			if got := len(deployment.Spec.Template.Spec.SchedulingGates) == 1; got != tt.gated {
 				t.Fatalf("gated = %v, want %v", got, tt.gated)
 			}
