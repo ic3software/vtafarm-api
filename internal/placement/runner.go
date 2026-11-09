@@ -468,13 +468,22 @@ func (r *Runner) acquireLockAndReservation(tx *gorm.DB, task *model.PlacementTas
 	if session.Status == "deleting" || session.Status == "failed" {
 		return fmt.Errorf("session is %s", session.Status)
 	}
-	var conflicting int64
-	if err := tx.Model(&model.UpgradeTask{}).Where("session_id = ? AND status IN ?", task.SessionID,
-		[]string{model.UpgradeTaskPending, model.UpgradeTaskRunning, model.UpgradeTaskRollingBack}).Count(&conflicting).Error; err != nil {
+	var plan model.PlacementPlan
+	if err := tx.Select("kind").First(&plan, task.PlanID).Error; err != nil {
 		return err
 	}
-	if conflicting > 0 {
-		return errors.New("session has an active upgrade")
+	var conflicting int64
+	// A provisioning plan releases the gated Pod created by an upgrade or its
+	// rollback. Blocking that plan on the upgrade would leave both workers
+	// waiting for the other to finish.
+	if plan.Kind != model.PlacementPlanProvision {
+		if err := tx.Model(&model.UpgradeTask{}).Where("session_id = ? AND status IN ?", task.SessionID,
+			[]string{model.UpgradeTaskPending, model.UpgradeTaskRunning, model.UpgradeTaskRollingBack}).Count(&conflicting).Error; err != nil {
+			return err
+		}
+		if conflicting > 0 {
+			return errors.New("session has an active upgrade")
+		}
 	}
 	if err := tx.Model(&model.VtaAclSnapshot{}).Where("session_id = ? AND maintenance_started_at IS NOT NULL", task.SessionID).Count(&conflicting).Error; err != nil {
 		return err

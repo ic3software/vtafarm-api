@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ic3software/vtafarm-api/internal/config"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/model"
 	"github.com/ic3software/vtafarm-api/internal/testutil"
+	"gorm.io/gorm"
 )
 
 func TestActiveWorkloadViewsExcludeParkedPoolAndNonVTAOnlySessions(t *testing.T) {
@@ -145,6 +147,74 @@ func TestCompletePlanIfDoneCompletesPlanImmediately(t *testing.T) {
 	if events != 1 {
 		t.Fatalf("completion events = %d, want 1", events)
 	}
+}
+
+func TestAcquireLockAndReservationAllowsProvisionPlanDuringUpgrade(t *testing.T) {
+	db := testutil.Postgres(t)
+	session := testutil.SetupSession(t, db, model.ModeVtaOnly)
+	createActiveUpgrade(t, db, session)
+	task := createPlacementTask(t, db, session.ID, model.PlacementPlanProvision)
+
+	runner := Runner{db: db}
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		return runner.acquireLockAndReservation(tx, &task, "worker-2", time.Now().UTC())
+	}); err != nil {
+		t.Fatalf("provisioning reservation during upgrade: %v", err)
+	}
+
+	var reservations int64
+	if err := db.Model(&model.PlacementReservation{}).Where("task_id = ? AND status = ?", task.ID, "active").Count(&reservations).Error; err != nil {
+		t.Fatal(err)
+	}
+	if reservations != 1 {
+		t.Fatalf("active reservations = %d, want 1", reservations)
+	}
+}
+
+func TestAcquireLockAndReservationRejectsRelocationDuringUpgrade(t *testing.T) {
+	db := testutil.Postgres(t)
+	session := testutil.SetupSession(t, db, model.ModeVtaOnly)
+	createActiveUpgrade(t, db, session)
+	task := createPlacementTask(t, db, session.ID, model.PlacementPlanRelocate)
+
+	runner := Runner{db: db}
+	err := db.Transaction(func(tx *gorm.DB) error {
+		return runner.acquireLockAndReservation(tx, &task, "worker-2", time.Now().UTC())
+	})
+	if err == nil || !strings.Contains(err.Error(), "active upgrade") {
+		t.Fatalf("relocation reservation error = %v, want active upgrade rejection", err)
+	}
+}
+
+func createActiveUpgrade(t *testing.T, db *gorm.DB, session model.SetupSession) {
+	t.Helper()
+	batch := model.UpgradeBatch{UserID: &session.UserID, Status: model.UpgradeBatchRunning}
+	if err := db.Create(&batch).Error; err != nil {
+		t.Fatal(err)
+	}
+	task := model.UpgradeTask{
+		BatchID: batch.ID, SessionID: session.ID, Component: "vta",
+		ToImage: "ghcr.io/ic3software/vta:test", Status: model.UpgradeTaskRunning,
+	}
+	if err := db.Create(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func createPlacementTask(t *testing.T, db *gorm.DB, sessionID uint, kind string) model.PlacementTask {
+	t.Helper()
+	plan := model.PlacementPlan{Kind: kind, Status: model.PlacementPlanRunning}
+	if err := db.Create(&plan).Error; err != nil {
+		t.Fatal(err)
+	}
+	task := model.PlacementTask{
+		PlanID: plan.ID, SessionID: sessionID, State: model.PlacementRequested,
+		P95MemoryBytes: 128 * 1024 * 1024,
+	}
+	if err := db.Create(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	return task
 }
 
 func TestCancelPlanRejectsStaleRunningPlanWithoutQueuedTasks(t *testing.T) {
