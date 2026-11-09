@@ -365,6 +365,9 @@ func (s *Service) CancelPlan(id, adminID uint) error {
 		if err := tx.Where("plan_id = ? AND state = ?", id, model.PlacementRequested).Order("id").Find(&tasks).Error; err != nil {
 			return err
 		}
+		if len(tasks) == 0 {
+			return errors.New("placement plan has no queued tasks to cancel")
+		}
 		for i := range tasks {
 			if err := transitionTask(tx, &tasks[i], model.PlacementCancelled, nil, model.PlacementActorAdmin, &adminID, "plan cancelled"); err != nil {
 				return err
