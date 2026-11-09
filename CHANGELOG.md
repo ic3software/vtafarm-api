@@ -1,5 +1,15 @@
 # Changelog
 
+## [v0.19.2] - 2026-11-09
+
+### Fixed
+
+- New VTA deployments use the default Kubernetes scheduler instead of the
+  guarded relocation policy; reviewed relocations still apply placement gates
+  and affinity one workload at a time.
+- Placement plans complete immediately after their final task and reject
+  cancellation when no queued work remains.
+
 ## [v0.19.1] - 2026-11-08
 
 ### Changed
