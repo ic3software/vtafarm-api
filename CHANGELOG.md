@@ -1,5 +1,17 @@
 # Changelog
 
+## [v0.19.3] - 2026-11-09
+
+### Changed
+
+- Updated Trust Tasks, CORS, Go synchronization, and toolchain dependencies.
+
+### Fixed
+
+- Provisioning plans can release placement-gated pods during an active upgrade
+  or rollback, preventing the placement and upgrade workers from waiting on
+  each other while relocations remain blocked.
+
 ## [v0.19.2] - 2026-11-09
 
 ### Fixed
