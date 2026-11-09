@@ -854,6 +854,10 @@ func (h *SetupHandler) Delete(c *gin.Context) {
 // user, AdminDeleteSession accepts any session. Everything after that point is
 // identical, so both funnel through here.
 func (h *SetupHandler) teardownSession(c *gin.Context, session *model.SetupSession) {
+	if h.placementMaintenanceActive(session.ID) {
+		c.JSON(http.StatusConflict, gin.H{"error": "Workload placement is still running. Retry deletion after it finishes."})
+		return
+	}
 	var poolMembership int64
 	if h.db.Migrator().HasTable(&model.PoolSession{}) {
 		if err := h.db.Model(&model.PoolSession{}).Where("session_id = ?", session.ID).Count(&poolMembership).Error; err != nil {

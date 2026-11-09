@@ -314,6 +314,7 @@ func (o *Orchestrator) deployTrustRegistry(ctx context.Context, ns string, s *mo
 		Command: []string{"trust-registry"}, WorkingDir: "/work/trust-registry",
 		ServiceAccount: k8s.VtaServiceAccount, Env: env,
 		Port: 3232, HealthCheckPath: "/health", Labels: labels,
+		PlacementMode: k8s.PlacementModeFullStack, Component: k8s.ComponentTrustRegistry,
 		Resources: profiles.Requirements(k8s.ComponentTrustRegistry),
 		PVCMounts: []k8s.PVCMount{{Name: "registry-data", ClaimName: name, MountPath: "/work/trust-registry"}},
 		Recreate:  true,

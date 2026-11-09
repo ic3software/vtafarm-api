@@ -37,6 +37,8 @@ type ComponentDeploymentSpec struct {
 	Env            []corev1.EnvVar
 	Port           int32
 	Labels         map[string]string
+	PlacementMode  string
+	Component      string
 	// HealthCheckPath, if set, wires an HTTP readinessProbe against this path
 	// on Port. Without it, Kubernetes marks the pod Ready the instant the
 	// container process starts (no probe = ready-by-default), which is true
@@ -110,10 +112,10 @@ func (c *Client) CreateComponentDeployment(ctx context.Context, ns string, spec 
 	}
 
 	strategy := appsv1.DeploymentStrategy{}
-	if spec.Recreate {
+	if spec.Recreate || len(spec.PVCMounts) > 0 {
 		strategy.Type = appsv1.RecreateDeploymentStrategyType
 	}
-	_, err := c.kube.AppsV1().Deployments(ns).Create(ctx, &appsv1.Deployment{
+	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: spec.Name, Namespace: ns, Labels: spec.Labels},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
@@ -139,7 +141,9 @@ func (c *Client) CreateComponentDeployment(ctx context.Context, ns string, spec 
 				},
 			},
 		},
-	}, metav1.CreateOptions{})
+	}
+	applyComponentPlacement(deployment, spec.PlacementMode, spec.Component)
+	_, err := c.kube.AppsV1().Deployments(ns).Create(ctx, deployment, metav1.CreateOptions{})
 	if err != nil && !k8serrors.IsAlreadyExists(err) {
 		return fmt.Errorf("create deployment %s: %w", spec.Name, err)
 	}

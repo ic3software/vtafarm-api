@@ -21,6 +21,7 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/middleware"
 	"github.com/ic3software/vtafarm-api/internal/model"
 	"github.com/ic3software/vtafarm-api/internal/passkey"
+	"github.com/ic3software/vtafarm-api/internal/placement"
 	"github.com/ic3software/vtafarm-api/internal/setup"
 	"github.com/ic3software/vtafarm-api/internal/upgrade"
 )
@@ -89,6 +90,15 @@ func Setup(
 		registryGhcr = ghcr.New(cfg.GHCR.Token, cfg.GHCR.Owner, cfg.GHCR.TrustRegistryPackageName)
 	}
 	sh.ConfigureTrustRegistry(registryGhcr)
+	var placementService *placement.Service
+	if k8sClient != nil {
+		var placementErr error
+		placementService, placementErr = placement.NewService(db, k8sClient, cfg.Placement)
+		if placementErr != nil {
+			log.Printf("warn: placement service unavailable: %v", placementErr)
+		}
+	}
+	placementH := handler.NewPlacementHandler(placementService, cfg.Placement)
 	if k8sClient != nil && cfg.OrchestratorResume {
 		sh.StartTrustRegistryWorker(workerCtx)
 	}
@@ -281,6 +291,14 @@ func Setup(
 		// Cluster capacity overview: CPU/memory/storage totals per node plus
 		// how many more sessions of each mode still fit.
 		adminAuth.GET("/admin/dashboard", dashH.Get)
+		adminAuth.GET("/admin/placement", placementH.Overview)
+		adminAuth.POST("/admin/placement/preview", placementH.Preview)
+		adminAuth.POST("/admin/placement/plans", placementH.Create)
+		adminAuth.GET("/admin/placement/plans", placementH.List)
+		adminAuth.GET("/admin/placement/plans/:id", placementH.Get)
+		adminAuth.POST("/admin/placement/plans/:id/cancel", placementH.Cancel)
+		adminAuth.POST("/admin/placement/plans/:id/tasks/:task_id/retry", placementH.Retry)
+		adminAuth.POST("/admin/placement/plans/:id/tasks/:task_id/rollback", placementH.Rollback)
 		// Same handlers as their /setup/... twins — admins need the same facts
 		// (image tags for upgrades, hostname shape for the platform stack page)
 		// but sit behind a different cookie.

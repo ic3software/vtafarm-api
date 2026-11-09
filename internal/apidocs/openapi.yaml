@@ -1132,6 +1132,61 @@ components:
           type: boolean
           description: VTA-only only. True when cluster capacity permits a custom DID connection, even if the platform stack is unavailable.
 
+    PlacementPlanRequest:
+      type: object
+      required: [kind]
+      properties:
+        kind: { type: string, enum: [reconcile, relocate] }
+        all: { type: boolean, default: false }
+        items:
+          type: array
+          items:
+            type: object
+            required: [session_id, target_node]
+            properties:
+              session_id: { type: integer }
+              target_node: { type: string }
+
+    PlacementPlan:
+      type: object
+      properties:
+        id: { type: integer }
+        kind: { type: string, enum: [provision, reconcile, relocate] }
+        status: { type: string, enum: [running, paused, completed, cancelled] }
+        error_msg: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        tasks:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              session_id: { type: integer }
+              source_node: { type: string }
+              target_node: { type: string }
+              state: { type: string }
+              error_msg: { type: string }
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/PlacementEvent" }
+
+    PlacementEvent:
+      type: object
+      required: [id, plan_id, event_type, state, actor_type, metadata, created_at]
+      properties:
+        id: { type: integer }
+        plan_id: { type: integer }
+        task_id: { type: integer, nullable: true }
+        event_type: { type: string, enum: [task_state_changed, plan_status_changed] }
+        from_state: { type: string }
+        state: { type: string }
+        actor_type: { type: string, enum: [admin, worker, system] }
+        actor_id: { type: integer, nullable: true }
+        message: { type: string }
+        metadata: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+
 paths:
   /health:
     get:
@@ -1834,6 +1889,118 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  /api/v1/admin/placement:
+    get:
+      summary: Inspect node load and VTA-only placement
+      tags: [Admin]
+      security: [{CookieAuthAdmin: []}]
+      responses:
+        "200": { description: Placement mode, node capacity, reservations, workloads, and storage identity }
+        "401": { description: Admin authentication required }
+        "502": { description: Kubernetes or Longhorn inspection failed }
+
+  /api/v1/admin/placement/preview:
+    post:
+      summary: Preview a workload placement plan without moving Pods
+      tags: [Admin]
+      security: [{CookieAuthAdmin: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PlacementPlanRequest" }
+      responses:
+        "200": { description: Exact mappings and projected memory }
+        "400": { description: Invalid or unsafe plan }
+
+  /api/v1/admin/placement/plans:
+    get:
+      summary: List recent durable placement plans
+      tags: [Admin]
+      security: [{CookieAuthAdmin: []}]
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, enum: [10, 20, 50], default: 10 } }
+      responses:
+        "200":
+          description: Paginated plans and task progress
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [plans, total, page, page_size, has_running_plan]
+                properties:
+                  plans:
+                    type: array
+                    items: { $ref: "#/components/schemas/PlacementPlan" }
+                  total: { type: integer }
+                  page: { type: integer }
+                  page_size: { type: integer }
+                  has_running_plan: { type: boolean }
+        "400": { description: Invalid pagination parameters }
+    post:
+      summary: Start a reviewed placement plan
+      tags: [Admin]
+      security: [{CookieAuthAdmin: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PlacementPlanRequest" }
+      responses:
+        "201": { description: Durable placement plan created }
+        "409": { description: Activation mode, capacity, canary, or maintenance guard refused the plan }
+
+  /api/v1/admin/placement/plans/{id}:
+    get:
+      summary: Read one placement plan and its tasks
+      tags: [Admin]
+      security: [{CookieAuthAdmin: []}]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: Placement plan
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlacementPlan" }
+        "404": { description: Plan not found }
+
+  /api/v1/admin/placement/plans/{id}/cancel:
+    post:
+      summary: Cancel a plan with no active relocation step
+      tags: [Admin]
+      security: [{CookieAuthAdmin: []}]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "204": { description: Plan cancelled }
+        "409": { description: A task is active or the plan is automatic provisioning }
+
+  /api/v1/admin/placement/plans/{id}/tasks/{task_id}/retry:
+    post:
+      summary: Retry a paused failed placement task
+      tags: [Admin]
+      security: [{CookieAuthAdmin: []}]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: task_id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "204": { description: Task queued for retry }
+        "409": { description: Task is not failed }
+
+  /api/v1/admin/placement/plans/{id}/tasks/{task_id}/rollback:
+    post:
+      summary: Restore the saved pre-move Deployment template
+      tags: [Admin]
+      security: [{CookieAuthAdmin: []}]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: task_id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "204": { description: Saved Deployment restored }
+        "409": { description: Task is not failed or has no saved snapshot }
 
   /api/v1/admin/dashboard:
     get:

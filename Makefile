@@ -23,7 +23,7 @@ VAULT_PORT   ?= 8200
 DEV_API_BASE ?= http://localhost:8080
 DEV_WALLET_SEED_FILE ?= .dev/keyring-wallet.seed
 
-.PHONY: build test check-pg-image gen-keypair gen-farm-key dev-claim dev-keyring-sign-in tidy dev \
+.PHONY: build test check-pg-image gen-keypair gen-farm-key dev-claim dev-keyring-sign-in tidy dev dev-placement \
         migrate migrate-down migrate-new enroll enroll-prod \
         deploy-db forward-db forward-vault \
         image-build image-push \
@@ -91,6 +91,23 @@ dev:
 	  exit 1; \
 	}
 	air
+
+# Run the placement controller beside the local API. It reads the same .env,
+# shared database tunnel, and kubeconfig as the API. Keep PLACEMENT_MODE disabled
+# unless the team has agreed on the canary sessions being exercised.
+dev-placement:
+	@bash -c 'exec 3<>/dev/tcp/localhost/$(DB_PORT)' 2>/dev/null || { \
+	  echo "Nothing listening on localhost:$(DB_PORT)."; \
+	  echo "Start the tunnel first: make forward-db"; \
+	  exit 1; \
+	}
+	@current_context=$$(kubectl config current-context 2>/dev/null); \
+	if [[ "$$current_context" != "$(DEV_CONTEXT)" ]]; then \
+	  echo "Placement worker refused to start: current context is '$$current_context'."; \
+	  echo "Expected the shared development cluster: $(DEV_CONTEXT)"; \
+	  exit 1; \
+	fi
+	go run ./cmd/placement-worker
 
 # ─── Migrations (run locally against DB_HOST=localhost) ───────────────────────
 # Usage: make migrate-new NAME=create_users

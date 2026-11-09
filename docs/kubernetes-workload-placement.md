@@ -453,6 +453,12 @@ not be directly editable in the Admin Panel. Administrators control placement
 and resource requests or limits; they do not override live metrics by manually
 marking a full node green.
 
+Recommended placement is corrective rather than a general rebalance. Keep a
+scheduled workload on its current node while that node remains schedulable,
+has fresh metrics, and stays below the hot threshold. Recommend a relocation
+only for an unscheduled workload or an unsafe source node; routine balancing
+between healthy nodes requires an explicit administrator-selected placement.
+
 ## Exact-node relocation workflow
 
 For each approved VTA-only relocation:

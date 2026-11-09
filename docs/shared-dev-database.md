@@ -64,13 +64,20 @@ Some deliberate choices:
 
 ## Daily use
 
-Three terminals, all left running:
+Four terminals, all left running when placement is under development:
 
 ```bash
 make forward-db          # localhost:5432 → svc/vtafarm-dev-postgres
 make forward-vault       # localhost:8200 → vault/svc/vault (needed for setup work)
 make dev                 # air, against those tunnels
+make dev-placement       # placement controller, disabled by default in .env
 ```
+
+The workspace-level `make dev` and `make dev-tunnel` commands supervise all
+required processes automatically. The API and worker both read
+`PLACEMENT_MODE` from `vtafarm-api/.env`; `DEV_PLACEMENT_MODE` overrides both
+for one run. Keep the checked example's `disabled` default unless the team has
+agreed on the canary or enabled placement work being exercised.
 
 `make dev` refuses to start when nothing is listening on 5432 — without the
 check the symptom is a bare `connection refused` from GORM, which reads like a
@@ -138,7 +145,7 @@ Working rules that follow:
 `make enroll` creates the first admin. **Run it once for the team**, not once per
 person. Everyone else gets their own account from an authenticated admin:
 
-```
+```text
 POST /api/v1/admin/admins     → enrollment token → register your own passkey
 ```
 

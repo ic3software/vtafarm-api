@@ -141,6 +141,9 @@ func (h *SetupHandler) acquireTeardownMaintenance(sessionID uint) (func(), error
 }
 
 func (h *SetupHandler) acquireStackMaintenance(sessionID uint) (func(), error) {
+	if h.placementMaintenanceActive(sessionID) {
+		return nil, errAclJobBusy
+	}
 	if !aclJobLocks.TryLock(sessionID) {
 		return nil, errAclJobBusy
 	}
@@ -153,10 +156,23 @@ func (h *SetupHandler) acquireStackMaintenance(sessionID uint) (func(), error) {
 		aclJobLocks.Unlock(sessionID)
 		return nil, errAclJobBusy
 	}
+	if h.placementMaintenanceActive(sessionID) {
+		h.releaseVtaAclMaintenance(sessionID, startedAt)
+		aclJobLocks.Unlock(sessionID)
+		return nil, errAclJobBusy
+	}
 	return func() {
 		h.releaseVtaAclMaintenance(sessionID, startedAt)
 		aclJobLocks.Unlock(sessionID)
 	}, nil
+}
+
+func (h *SetupHandler) placementMaintenanceActive(sessionID uint) bool {
+	var count int64
+	if err := h.db.Model(&model.PlacementMaintenanceLock{}).Where("session_id = ?", sessionID).Count(&count).Error; err != nil {
+		return true
+	}
+	return count > 0
 }
 
 // platformSession loads the platform stack's session, writing the response and

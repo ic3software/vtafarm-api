@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
@@ -21,6 +22,7 @@ var (
 	longhornNodesGVR    = schema.GroupVersionResource{Group: "longhorn.io", Version: "v1beta2", Resource: "nodes"}
 	longhornSettingsGVR = schema.GroupVersionResource{Group: "longhorn.io", Version: "v1beta2", Resource: "settings"}
 	longhornVolumesGVR  = schema.GroupVersionResource{Group: "longhorn.io", Version: "v1beta2", Resource: "volumes"}
+	longhornBackupsGVR  = schema.GroupVersionResource{Group: "longhorn.io", Version: "v1beta2", Resource: "backups"}
 )
 
 // NodeResourceStat is one node's CPU/memory picture: what the scheduler can
@@ -38,6 +40,7 @@ type NodeResourceStat struct {
 	MemAllocatableBytes  int64
 	MemRequestedBytes    int64
 	MemUsedBytes         int64
+	MetricsObservedAt    time.Time
 }
 
 // StorageNodeStat is one Longhorn node's disk picture, summed across its
@@ -78,6 +81,7 @@ func (c *Client) ClusterResourceStats(ctx context.Context) (*ClusterStats, error
 	var nodeList *corev1.NodeList
 	var podList *corev1.PodList
 	var cpuUsed, memUsed map[string]int64
+	var metricsObserved map[string]time.Time
 	var metricsErr error
 	var storageNodes []StorageNodeStat
 	var dataWritten int64
@@ -105,7 +109,7 @@ func (c *Client) ClusterResourceStats(ctx context.Context) (*ClusterStats, error
 		return nil
 	})
 	group.Go(func() error {
-		cpuUsed, memUsed, metricsErr = c.nodeUsage(groupCtx)
+		cpuUsed, memUsed, metricsObserved, metricsErr = c.nodeUsage(groupCtx)
 		return nil
 	})
 	group.Go(func() error {
@@ -143,6 +147,7 @@ func (c *Client) ClusterResourceStats(ctx context.Context) (*ClusterStats, error
 			MemRequestedBytes:    memReq[node.Name],
 			CPUUsedMillis:        cpuUsed[node.Name],
 			MemUsedBytes:         memUsed[node.Name],
+			MetricsObservedAt:    metricsObserved[node.Name],
 		}
 		stats.Nodes = append(stats.Nodes, stat)
 	}
@@ -179,6 +184,20 @@ func nodeSchedulable(node *corev1.Node) bool {
 	if node.Spec.Unschedulable {
 		return false
 	}
+	ready := false
+	for _, condition := range node.Status.Conditions {
+		switch condition.Type {
+		case corev1.NodeReady:
+			ready = condition.Status == corev1.ConditionTrue
+		case corev1.NodeMemoryPressure:
+			if condition.Status == corev1.ConditionTrue {
+				return false
+			}
+		}
+	}
+	if !ready {
+		return false
+	}
 	for _, taint := range node.Spec.Taints {
 		if taint.Effect == corev1.TaintEffectNoSchedule || taint.Effect == corev1.TaintEffectNoExecute {
 			return false
@@ -190,11 +209,11 @@ func nodeSchedulable(node *corev1.Node) bool {
 // nodeUsage reads live per-node consumption from metrics-server. Raw REST
 // (rather than the k8s.io/metrics clientset) keeps the dependency surface at
 // client-go, which already ships the discovery REST client.
-func (c *Client) nodeUsage(ctx context.Context) (cpuMillis, memBytes map[string]int64, err error) {
+func (c *Client) nodeUsage(ctx context.Context) (cpuMillis, memBytes map[string]int64, observed map[string]time.Time, err error) {
 	raw, err := c.kube.Discovery().RESTClient().Get().
 		AbsPath("/apis/metrics.k8s.io/v1beta1/nodes").Do(ctx).Raw()
 	if err != nil {
-		return nil, nil, fmt.Errorf("query metrics-server: %w", err)
+		return nil, nil, nil, fmt.Errorf("query metrics-server: %w", err)
 	}
 
 	var list struct {
@@ -202,19 +221,22 @@ func (c *Client) nodeUsage(ctx context.Context) (cpuMillis, memBytes map[string]
 			Metadata struct {
 				Name string `json:"name"`
 			} `json:"metadata"`
-			Usage struct {
+			Timestamp time.Time `json:"timestamp"`
+			Usage     struct {
 				CPU    string `json:"cpu"`
 				Memory string `json:"memory"`
 			} `json:"usage"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(raw, &list); err != nil {
-		return nil, nil, fmt.Errorf("parse node metrics: %w", err)
+		return nil, nil, nil, fmt.Errorf("parse node metrics: %w", err)
 	}
 
 	cpuMillis = map[string]int64{}
 	memBytes = map[string]int64{}
+	observed = map[string]time.Time{}
 	for _, item := range list.Items {
+		observed[item.Metadata.Name] = item.Timestamp
 		if q, err := resource.ParseQuantity(item.Usage.CPU); err == nil {
 			cpuMillis[item.Metadata.Name] = q.MilliValue()
 		}
@@ -222,7 +244,7 @@ func (c *Client) nodeUsage(ctx context.Context) (cpuMillis, memBytes map[string]
 			memBytes[item.Metadata.Name] = q.Value()
 		}
 	}
-	return cpuMillis, memBytes, nil
+	return cpuMillis, memBytes, observed, nil
 }
 
 // longhornStats reads per-node disk capacity from the Longhorn CRDs, the
