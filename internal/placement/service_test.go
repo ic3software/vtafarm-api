@@ -47,11 +47,14 @@ func TestSafestNodeExceptDoesNotRecommendCurrentNode(t *testing.T) {
 	}
 }
 
-func TestSourceNeedsRelocationOnlyForUnsafeSources(t *testing.T) {
+func TestSourceNeedsRelocationForHighOrUnsafeSources(t *testing.T) {
 	nodes := map[string]k8s.NodePlacement{
-		"healthy": {Name: "healthy", Schedulable: true, MetricsAvailable: true, MemAllocatable: 1000, MemUsed: 120},
-		"hot":     {Name: "hot", Schedulable: true, MetricsAvailable: true, MemoryState: "hot", MemAllocatable: 1000, MemUsed: 850},
-		"stale":   {Name: "stale", Schedulable: true, MetricsAvailable: false, MemAllocatable: 1000, MemUsed: 120},
+		"healthy":       {Name: "healthy", Schedulable: true, MetricsAvailable: true, MemoryState: "green", MemAllocatable: 1000, MemUsed: 120},
+		"elevated":      {Name: "elevated", Schedulable: true, MetricsAvailable: true, MemoryState: "yellow", MemAllocatable: 1000, MemUsed: 840},
+		"high":          {Name: "high", Schedulable: true, MetricsAvailable: true, MemoryState: "orange", MemAllocatable: 1000, MemUsed: 850},
+		"high-by-usage": {Name: "high-by-usage", Schedulable: true, MetricsAvailable: true, MemoryState: "yellow", MemAllocatable: 1000, MemUsed: 850},
+		"hot":           {Name: "hot", Schedulable: true, MetricsAvailable: true, MemoryState: "hot", MemAllocatable: 1000, MemUsed: 900},
+		"stale":         {Name: "stale", Schedulable: true, MetricsAvailable: false, MemAllocatable: 1000, MemUsed: 120},
 	}
 
 	for _, test := range []struct {
@@ -60,13 +63,16 @@ func TestSourceNeedsRelocationOnlyForUnsafeSources(t *testing.T) {
 		want   bool
 	}{
 		{name: "healthy source stays put", source: "healthy", want: false},
+		{name: "elevated source stays put", source: "elevated", want: false},
+		{name: "high source moves", source: "high", want: true},
+		{name: "source at high threshold moves", source: "high-by-usage", want: true},
 		{name: "hot source moves", source: "hot", want: true},
 		{name: "stale metrics move", source: "stale", want: true},
 		{name: "unscheduled workload moves", source: "", want: true},
 		{name: "missing source moves", source: "missing", want: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got := sourceNeedsRelocation(test.source, nodes, 90); got != test.want {
+			if got := sourceNeedsRelocation(test.source, nodes, 85); got != test.want {
 				t.Fatalf("sourceNeedsRelocation(%q) = %v, want %v", test.source, got, test.want)
 			}
 		})

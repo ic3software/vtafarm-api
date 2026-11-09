@@ -164,7 +164,7 @@ func (s *Service) Preview(ctx context.Context, items []PlanItem, all bool) ([]Pr
 			continue
 		}
 		if preview.TargetNode == "" {
-			if all && !sourceNeedsRelocation(preview.SourceNode, nodes, s.cfg.HotAtPercent) {
+			if all && !sourceNeedsRelocation(preview.SourceNode, nodes, s.cfg.YellowBelowPercent) {
 				continue
 			}
 			preview.TargetNode = safestNodeExcept(overview.Nodes, projected, s.p95, s.cfg.HotAtPercent, preview.SourceNode)
@@ -219,7 +219,7 @@ func safestNodeExcept(nodes []k8s.NodePlacement, projected map[string]int64, p95
 	return best
 }
 
-func sourceNeedsRelocation(source string, nodes map[string]k8s.NodePlacement, hotAt int) bool {
+func sourceNeedsRelocation(source string, nodes map[string]k8s.NodePlacement, highAt int) bool {
 	if source == "" {
 		return true
 	}
@@ -228,7 +228,8 @@ func sourceNeedsRelocation(source string, nodes map[string]k8s.NodePlacement, ho
 		return true
 	}
 	used := max(node.MemUsed, node.MemRequested) + node.MemReserved
-	return node.MemoryState == "hot" || used*100/node.MemAllocatable >= int64(hotAt)
+	return node.MemoryState == "orange" || node.MemoryState == "hot" ||
+		used*100/node.MemAllocatable >= int64(highAt)
 }
 
 func (s *Service) CreatePlan(ctx context.Context, adminID uint, kind string, items []PlanItem, all bool) (*model.PlacementPlan, []PreviewItem, error) {

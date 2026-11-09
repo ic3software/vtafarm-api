@@ -455,9 +455,10 @@ marking a full node green.
 
 Recommended placement is corrective rather than a general rebalance. Keep a
 scheduled workload on its current node while that node remains schedulable,
-has fresh metrics, and stays below the hot threshold. Recommend a relocation
-only for an unscheduled workload or an unsafe source node; routine balancing
-between healthy nodes requires an explicit administrator-selected placement.
+has fresh metrics, and stays below the high threshold. Recommend a relocation
+for an unscheduled workload or a source node in the high or hot band; routine
+balancing between healthy nodes requires an explicit administrator-selected
+placement.
 
 ## Exact-node relocation workflow
 
