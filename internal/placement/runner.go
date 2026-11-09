@@ -209,9 +209,7 @@ func (r *Runner) runNextTask(parent context.Context, plan *model.PlacementPlan, 
 	err := r.db.Where("plan_id = ? AND state NOT IN ?", plan.ID,
 		[]string{model.PlacementCompleted, model.PlacementFailed, model.PlacementCancelled, model.PlacementRolledBack}).Order("id").First(&task).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return r.db.Transaction(func(tx *gorm.DB) error {
-			return transitionPlan(tx, plan, model.PlacementPlanCompleted, nil, model.PlacementActorWorker, nil, "all tasks reached a terminal state")
-		})
+		return r.completePlanIfDone(plan.ID)
 	}
 	if err != nil {
 		return err
@@ -222,7 +220,31 @@ func (r *Runner) runNextTask(parent context.Context, plan *model.PlacementPlan, 
 		r.fail(plan, &task, err)
 		return err
 	}
+	if task.State == model.PlacementCompleted {
+		return r.completePlanIfDone(plan.ID)
+	}
 	return nil
+}
+
+func (r *Runner) completePlanIfDone(planID uint) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		var plan model.PlacementPlan
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, planID).Error; err != nil {
+			return err
+		}
+		if plan.Status != model.PlacementPlanRunning {
+			return nil
+		}
+		var remaining int64
+		if err := tx.Model(&model.PlacementTask{}).Where("plan_id = ? AND state NOT IN ?", planID,
+			[]string{model.PlacementCompleted, model.PlacementFailed, model.PlacementCancelled, model.PlacementRolledBack}).Count(&remaining).Error; err != nil {
+			return err
+		}
+		if remaining > 0 {
+			return nil
+		}
+		return transitionPlan(tx, &plan, model.PlacementPlanCompleted, nil, model.PlacementActorWorker, nil, "all tasks reached a terminal state")
+	})
 }
 
 func (r *Runner) advance(ctx context.Context, plan *model.PlacementPlan, task *model.PlacementTask, placements []k8s.VTAPlacement) error {

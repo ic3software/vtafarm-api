@@ -88,13 +88,17 @@ func (c *Client) placementActive(sessionID uint) bool {
 	}
 }
 
-func (c *Client) applyVTAPlacement(deployment *appsv1.Deployment, sessionID uint) {
+func applyVTAWorkloadPolicy(deployment *appsv1.Deployment) {
 	placementLabels := TenantPlacementLabels(PlacementModeVTAOnly, "vta")
 	placementLabels[PlacementLabelAutoRebalance] = "true"
 	deployment.Labels = mergeLabels(deployment.Labels, placementLabels)
 	deployment.Spec.Template.Labels = mergeLabels(deployment.Spec.Template.Labels, placementLabels)
 	deployment.Spec.Template.Spec.TopologySpreadConstraints = TenantTopologySpread()
 	deployment.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
+}
+
+func (c *Client) applyVTARelocationPolicy(deployment *appsv1.Deployment, sessionID uint) {
+	applyVTAWorkloadPolicy(deployment)
 	if !c.placementActive(sessionID) {
 		return
 	}

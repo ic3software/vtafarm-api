@@ -534,7 +534,9 @@ func (c *Client) createVtaDeployment(ctx context.Context, ns string, sessionID u
 			},
 		},
 	}
-	c.applyVTAPlacement(deployment, sessionID)
+	// Initial Pods use the default scheduler; reviewed relocations add their
+	// one-at-a-time scheduling gate through ReconcileVTADeployment instead.
+	applyVTAWorkloadPolicy(deployment)
 	_, err := c.kube.AppsV1().Deployments(ns).Create(ctx, deployment, metav1.CreateOptions{})
 	if err != nil && !k8serrors.IsAlreadyExists(err) {
 		return fmt.Errorf("create deployment: %w", err)

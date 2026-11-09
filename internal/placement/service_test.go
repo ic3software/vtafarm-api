@@ -2,11 +2,13 @@ package placement
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/ic3software/vtafarm-api/internal/config"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/testutil"
 )
 
 func TestActiveWorkloadViewsExcludeParkedPoolAndNonVTAOnlySessions(t *testing.T) {
@@ -110,5 +112,62 @@ func TestNewServiceRejectsUnsafeThresholdOrder(t *testing.T) {
 	}
 	if _, err := NewService(nil, nil, cfg); err == nil {
 		t.Fatal("NewService accepted unordered thresholds")
+	}
+}
+
+func TestCompletePlanIfDoneCompletesPlanImmediately(t *testing.T) {
+	db := testutil.Postgres(t)
+	session := testutil.SetupSession(t, db, model.ModeVtaOnly)
+	plan := model.PlacementPlan{Kind: model.PlacementPlanReconcile, Status: model.PlacementPlanRunning}
+	if err := db.Create(&plan).Error; err != nil {
+		t.Fatal(err)
+	}
+	task := model.PlacementTask{PlanID: plan.ID, SessionID: session.ID, State: model.PlacementCompleted}
+	if err := db.Create(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	runner := Runner{db: db}
+	if err := runner.completePlanIfDone(plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&plan, plan.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != model.PlacementPlanCompleted {
+		t.Fatalf("plan status = %q, want completed", plan.Status)
+	}
+	var events int64
+	if err := db.Model(&model.PlacementEvent{}).Where("plan_id = ? AND event_type = ? AND state = ?", plan.ID,
+		model.PlacementEventPlanStatus, model.PlacementPlanCompleted).Count(&events).Error; err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 {
+		t.Fatalf("completion events = %d, want 1", events)
+	}
+}
+
+func TestCancelPlanRejectsStaleRunningPlanWithoutQueuedTasks(t *testing.T) {
+	db := testutil.Postgres(t)
+	session := testutil.SetupSession(t, db, model.ModeVtaOnly)
+	plan := model.PlacementPlan{Kind: model.PlacementPlanReconcile, Status: model.PlacementPlanRunning}
+	if err := db.Create(&plan).Error; err != nil {
+		t.Fatal(err)
+	}
+	task := model.PlacementTask{PlanID: plan.ID, SessionID: session.ID, State: model.PlacementCompleted}
+	if err := db.Create(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	service := Service{db: db}
+	err := service.CancelPlan(plan.ID, 7)
+	if err == nil || !strings.Contains(err.Error(), "no queued tasks") {
+		t.Fatalf("CancelPlan() error = %v, want no queued tasks", err)
+	}
+	if err := db.First(&plan, plan.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != model.PlacementPlanRunning {
+		t.Fatalf("plan status = %q, want unchanged running status", plan.Status)
 	}
 }
