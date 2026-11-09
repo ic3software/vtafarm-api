@@ -1,5 +1,20 @@
 # Changelog
 
+## [v0.19.1] - 2026-11-08
+
+### Changed
+
+- Recommended placement begins relocating VTA-only workloads when their source
+  node enters the High memory band instead of waiting for the Hot threshold.
+- Placement polling reuses one storage-free workload inventory, while the Admin
+  overview loads storage details separately from compact Longhorn
+  `BackupVolume` summaries.
+
+### Fixed
+
+- Placement worker memory no longer scales with the complete retained Longhorn
+  backup history on every reconciliation poll.
+
 ## [v0.19.0] - 2026-11-08
 
 ### Added
