@@ -55,7 +55,7 @@ rules:
     resources: ["nodes"]
     verbs: ["get", "list"]
   - apiGroups: ["longhorn.io"]
-    resources: ["nodes", "settings", "volumes", "backups"]
+    resources: ["nodes", "settings", "volumes", "backupvolumes"]
     verbs: ["get", "list"]
   - apiGroups: ["storage.k8s.io"]
     resources: ["storageclasses"]

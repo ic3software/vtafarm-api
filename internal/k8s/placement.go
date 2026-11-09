@@ -87,8 +87,6 @@ func (c *Client) ListVTAPlacements(ctx context.Context) ([]VTAPlacement, error) 
 			podsBySession[key] = pod
 		}
 	}
-	storageByPVC := c.listPlacementStorage(ctx)
-
 	placements := make([]VTAPlacement, 0, len(deployments.Items))
 	for i := range deployments.Items {
 		deployment := &deployments.Items[i]
@@ -113,10 +111,25 @@ func (c *Client) ListVTAPlacements(ctx context.Context) ([]VTAPlacement, error) 
 			placement.Gated = len(pod.Spec.SchedulingGates) > 0
 			placement.Ready = podReady(pod)
 		}
-		if storage, ok := storageByPVC[placementPVCKey(deployment.Namespace, VtaPVCName(placement.SessionID))]; ok {
+		placements = append(placements, placement)
+	}
+	return placements, nil
+}
+
+// ListVTAPlacementsWithStorage enriches the lightweight workload inventory for
+// the admin overview. Reconciliation does not need this cluster-wide storage
+// data and must use ListVTAPlacements instead.
+func (c *Client) ListVTAPlacementsWithStorage(ctx context.Context) ([]VTAPlacement, error) {
+	placements, err := c.ListVTAPlacements(ctx)
+	if err != nil {
+		return nil, err
+	}
+	storageByPVC := c.listPlacementStorage(ctx)
+	for i := range placements {
+		placement := &placements[i]
+		if storage, ok := storageByPVC[placementPVCKey(placement.Namespace, VtaPVCName(placement.SessionID))]; ok {
 			placement.Storage = storage
 		}
-		placements = append(placements, placement)
 	}
 	return placements, nil
 }
@@ -161,27 +174,7 @@ func (c *Client) listPlacementStorage(ctx context.Context) map[string]StorageIde
 		volumeStatus[volume.GetName()] = [2]string{state, robustness}
 	}
 
-	latestBackup := map[string][2]string{}
-	if backups, listErr := c.dyn.Resource(longhornBackupsGVR).Namespace(LonghornNamespace).List(ctx, metav1.ListOptions{}); listErr == nil {
-		for i := range backups.Items {
-			backup := &backups.Items[i]
-			volumeName, _, _ := unstructuredString(backup.Object, "status", "volumeName")
-			if volumeName == "" {
-				volumeName = backup.GetLabels()["longhornvolume"]
-			}
-			state, _, _ := unstructuredString(backup.Object, "status", "state")
-			if volumeName == "" || state != "Completed" && state != "completed" {
-				continue
-			}
-			createdAt, _, _ := unstructuredString(backup.Object, "status", "snapshotCreatedAt")
-			if createdAt == "" {
-				createdAt, _, _ = unstructuredString(backup.Object, "status", "backupCreatedAt")
-			}
-			if previous := latestBackup[volumeName]; createdAt > previous[1] {
-				latestBackup[volumeName] = [2]string{backup.GetName(), createdAt}
-			}
-		}
-	}
+	latestBackup := c.listLatestBackupSummaries(ctx, metav1.ListOptions{})
 
 	for i := range pvcs.Items {
 		pvc := &pvcs.Items[i]
@@ -246,29 +239,42 @@ func (c *Client) InspectVTAStorage(ctx context.Context, namespace string, sessio
 }
 
 func (c *Client) addLatestLonghornBackup(ctx context.Context, identity *StorageIdentity) {
-	backups, err := c.dyn.Resource(longhornBackupsGVR).Namespace(LonghornNamespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
+	if c.dyn == nil {
 		return
 	}
-	for i := range backups.Items {
-		backup := &backups.Items[i]
-		volumeName, _, _ := unstructuredString(backup.Object, "status", "volumeName")
-		if volumeName == "" {
-			volumeName = backup.GetLabels()["longhornvolume"]
-		}
-		state, _, _ := unstructuredString(backup.Object, "status", "state")
-		if volumeName != identity.LonghornVolume || state != "Completed" && state != "completed" {
+	summaries := c.listLatestBackupSummaries(ctx, metav1.ListOptions{
+		LabelSelector: "backup-volume=" + identity.LonghornVolume,
+	})
+	if backup := summaries[identity.LonghornVolume]; backup[1] > identity.LastBackupAt {
+		identity.LastBackupName = backup[0]
+		identity.LastBackupAt = backup[1]
+	}
+}
+
+// listLatestBackupSummaries reads one compact BackupVolume status per volume
+// instead of materializing the complete, ever-growing Backup history.
+func (c *Client) listLatestBackupSummaries(ctx context.Context, options metav1.ListOptions) map[string][2]string {
+	result := map[string][2]string{}
+	if c.dyn == nil {
+		return result
+	}
+	volumes, err := c.dyn.Resource(longhornBackupVolumesGVR).Namespace(LonghornNamespace).List(ctx, options)
+	if err != nil {
+		return result
+	}
+	for i := range volumes.Items {
+		volume := &volumes.Items[i]
+		volumeName, _, _ := unstructuredString(volume.Object, "spec", "volumeName")
+		backupName, _, _ := unstructuredString(volume.Object, "status", "lastBackupName")
+		backupAt, _, _ := unstructuredString(volume.Object, "status", "lastBackupAt")
+		if volumeName == "" || backupName == "" || backupAt == "" {
 			continue
 		}
-		createdAt, _, _ := unstructuredString(backup.Object, "status", "snapshotCreatedAt")
-		if createdAt == "" {
-			createdAt, _, _ = unstructuredString(backup.Object, "status", "backupCreatedAt")
-		}
-		if createdAt > identity.LastBackupAt {
-			identity.LastBackupAt = createdAt
-			identity.LastBackupName = backup.GetName()
+		if previous := result[volumeName]; backupAt > previous[1] {
+			result[volumeName] = [2]string{backupName, backupAt}
 		}
 	}
+	return result
 }
 
 func unstructuredString(object map[string]any, fields ...string) (string, bool, error) {
@@ -287,16 +293,8 @@ func unstructuredString(object map[string]any, fields ...string) (string, bool, 
 	return value, ok, nil
 }
 
-func (c *Client) PlacementNodes(ctx context.Context, reservations map[string]int64) ([]NodePlacement, error) {
-	placements, err := c.ListVTAPlacements(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return c.PlacementNodesFromPlacements(ctx, reservations, placements)
-}
-
 func (c *Client) PlacementNodesFromPlacements(ctx context.Context, reservations map[string]int64, placements []VTAPlacement) ([]NodePlacement, error) {
-	stats, err := c.ClusterResourceStats(ctx)
+	stats, metricsAvailable, err := c.nodeResourceStats(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -314,10 +312,10 @@ func (c *Client) PlacementNodesFromPlacements(ctx context.Context, reservations 
 	for i := range nodes.Items {
 		labels[nodes.Items[i].Name] = nodes.Items[i].Labels
 	}
-	result := make([]NodePlacement, 0, len(stats.Nodes))
-	for _, node := range stats.Nodes {
+	result := make([]NodePlacement, 0, len(stats))
+	for _, node := range stats {
 		state := labels[node.Name][PlacementLabelMemoryState]
-		metricsFresh := stats.MetricsAvailable && !node.MetricsObservedAt.IsZero() &&
+		metricsFresh := metricsAvailable && !node.MetricsObservedAt.IsZero() &&
 			time.Since(node.MetricsObservedAt) <= c.placementMetricsMaxAge
 		result = append(result, NodePlacement{
 			Name: node.Name, Schedulable: node.Schedulable,

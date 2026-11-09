@@ -7,12 +7,15 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
-func TestListVTAPlacementsUsesOneClusterPodList(t *testing.T) {
+func TestListVTAPlacementsUsesOneLightweightClusterInventory(t *testing.T) {
 	ctx := context.Background()
 	objects := []runtime.Object{}
 	for _, sessionID := range []string{"41", "42"} {
@@ -43,10 +46,120 @@ func TestListVTAPlacementsUsesOneClusterPodList(t *testing.T) {
 		if action.GetVerb() == "list" && action.GetResource().Resource == "pods" {
 			podLists++
 		}
+		if action.GetResource().Resource == "persistentvolumeclaims" || action.GetResource().Resource == "persistentvolumes" {
+			t.Fatalf("lightweight placement inventory read storage resource %s", action.GetResource().Resource)
+		}
 	}
 	if podLists != 1 {
 		t.Fatalf("listed pods %d times, want one cluster inventory read", podLists)
 	}
+}
+
+func TestListVTAPlacementsWithStorageUsesBackupVolumeSummaries(t *testing.T) {
+	ctx := context.Background()
+	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
+		Name: "vta-42", Namespace: "vtafarm-user-42",
+		Labels: map[string]string{"app": "vta", "session-id": "42"},
+	}}
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: VtaPVCName(42), Namespace: deployment.Namespace, UID: types.UID("pvc-uid")},
+		Spec:       corev1.PersistentVolumeClaimSpec{VolumeName: "pv-42"},
+	}
+	pv := &corev1.PersistentVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: "pv-42", UID: types.UID("pv-uid")},
+		Spec: corev1.PersistentVolumeSpec{PersistentVolumeSource: corev1.PersistentVolumeSource{
+			CSI: &corev1.CSIPersistentVolumeSource{VolumeHandle: "volume-42"},
+		}},
+	}
+	volume := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "longhorn.io/v1beta2", "kind": "Volume",
+		"metadata": map[string]any{"name": "volume-42", "namespace": LonghornNamespace},
+		"status":   map[string]any{"state": "attached", "robustness": "healthy"},
+	}}
+	backupVolume := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "longhorn.io/v1beta2", "kind": "BackupVolume",
+		"metadata": map[string]any{"name": "volume-42-default", "namespace": LonghornNamespace},
+		"spec":     map[string]any{"volumeName": "volume-42"},
+		"status": map[string]any{
+			"lastBackupName": "backup-latest",
+			"lastBackupAt":   "2026-11-09T00:19:39Z",
+		},
+	}}
+	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), volume, backupVolume)
+	client := &Client{
+		kube:            fake.NewSimpleClientset(deployment, pvc, pv),
+		dyn:             dyn,
+		namespacePrefix: "vtafarm-user",
+	}
+
+	placements, err := client.ListVTAPlacementsWithStorage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(placements) != 1 {
+		t.Fatalf("got %d placements, want 1", len(placements))
+	}
+	storage := placements[0].Storage
+	if storage.LonghornVolume != "volume-42" || storage.LastBackupName != "backup-latest" || storage.LastBackupAt != "2026-11-09T00:19:39Z" {
+		t.Fatalf("unexpected storage summary: %#v", storage)
+	}
+	for _, action := range dyn.Actions() {
+		if action.GetResource().Resource == "backups" {
+			t.Fatal("storage enrichment listed complete Longhorn backup history")
+		}
+	}
+}
+
+func TestInspectVTAStorageFiltersBackupVolumeSummary(t *testing.T) {
+	ctx := context.Background()
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: VtaPVCName(42), Namespace: "tenant", UID: types.UID("pvc-uid")},
+		Spec:       corev1.PersistentVolumeClaimSpec{VolumeName: "pv-42"},
+	}
+	pv := &corev1.PersistentVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: "pv-42", UID: types.UID("pv-uid")},
+		Spec: corev1.PersistentVolumeSpec{PersistentVolumeSource: corev1.PersistentVolumeSource{
+			CSI: &corev1.CSIPersistentVolumeSource{VolumeHandle: "volume-42"},
+		}},
+	}
+	volume := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "longhorn.io/v1beta2", "kind": "Volume",
+		"metadata": map[string]any{"name": "volume-42", "namespace": LonghornNamespace},
+		"status":   map[string]any{"state": "attached", "robustness": "healthy"},
+	}}
+	backupVolume := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "longhorn.io/v1beta2", "kind": "BackupVolume",
+		"metadata": map[string]any{
+			"name": "volume-42-default", "namespace": LonghornNamespace,
+			"labels": map[string]any{"backup-volume": "volume-42"},
+		},
+		"spec": map[string]any{"volumeName": "volume-42"},
+		"status": map[string]any{
+			"lastBackupName": "backup-latest",
+			"lastBackupAt":   "2026-11-09T00:19:39Z",
+		},
+	}}
+	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), volume, backupVolume)
+	client := &Client{kube: fake.NewSimpleClientset(pvc, pv), dyn: dyn}
+
+	storage, err := client.InspectVTAStorage(ctx, "tenant", 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storage.LastBackupName != "backup-latest" || storage.LastBackupAt != "2026-11-09T00:19:39Z" {
+		t.Fatalf("unexpected backup summary: %#v", storage)
+	}
+	for _, action := range dyn.Actions() {
+		if action.GetVerb() != "list" || action.GetResource().Resource != "backupvolumes" {
+			continue
+		}
+		selector := action.(k8stesting.ListAction).GetListRestrictions().Labels.String()
+		if selector != "backup-volume=volume-42" {
+			t.Fatalf("backup volume selector = %q, want backup-volume=volume-42", selector)
+		}
+		return
+	}
+	t.Fatal("InspectVTAStorage did not list a filtered backup volume summary")
 }
 
 func TestRestoreVTADeploymentSnapshotPreservesDeploymentIdentity(t *testing.T) {

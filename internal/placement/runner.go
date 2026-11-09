@@ -48,13 +48,18 @@ func (r *Runner) Run(ctx context.Context) {
 }
 
 func (r *Runner) cycle(ctx context.Context) {
-	if err := r.refreshNodes(ctx); err != nil {
+	placements, err := r.k8s.ListVTAPlacements(ctx)
+	if err != nil {
+		log.Printf("[placement] inventory VTA workloads: %v", err)
+		return
+	}
+	if err := r.refreshNodes(ctx, placements); err != nil {
 		log.Printf("[placement] refresh nodes: %v", err)
 	}
 	if r.cfg.Mode == config.PlacementDisabled {
 		return
 	}
-	if err := r.ensureProvisionPlans(ctx); err != nil {
+	if err := r.ensureProvisionPlans(ctx, placements); err != nil {
 		log.Printf("[placement] discover gated VTA pods: %v", err)
 	}
 	var plans []model.PlacementPlan
@@ -63,17 +68,13 @@ func (r *Runner) cycle(ctx context.Context) {
 		return
 	}
 	for _, plan := range plans {
-		if err := r.runNextTask(ctx, &plan); err != nil {
+		if err := r.runNextTask(ctx, &plan, placements); err != nil {
 			log.Printf("[placement] plan %d: %v", plan.ID, err)
 		}
 	}
 }
 
-func (r *Runner) ensureProvisionPlans(ctx context.Context) error {
-	placements, err := r.k8s.ListVTAPlacements(ctx)
-	if err != nil {
-		return err
-	}
+func (r *Runner) ensureProvisionPlans(ctx context.Context, placements []k8s.VTAPlacement) error {
 	for _, placement := range placements {
 		if !placement.Gated || placement.PodUID == "" {
 			continue
@@ -125,12 +126,12 @@ func (r *Runner) ensureProvisionPlans(ctx context.Context) error {
 	return nil
 }
 
-func (r *Runner) refreshNodes(ctx context.Context) error {
+func (r *Runner) refreshNodes(ctx context.Context, placements []k8s.VTAPlacement) error {
 	reservations, err := r.service.reservations()
 	if err != nil {
 		return err
 	}
-	nodes, err := r.k8s.PlacementNodes(ctx, reservations)
+	nodes, err := r.k8s.PlacementNodesFromPlacements(ctx, reservations, placements)
 	if err != nil {
 		return err
 	}
@@ -203,7 +204,7 @@ func memoryBand(percent int, cfg config.PlacementConfig) string {
 	}
 }
 
-func (r *Runner) runNextTask(parent context.Context, plan *model.PlacementPlan) error {
+func (r *Runner) runNextTask(parent context.Context, plan *model.PlacementPlan, placements []k8s.VTAPlacement) error {
 	var task model.PlacementTask
 	err := r.db.Where("plan_id = ? AND state NOT IN ?", plan.ID,
 		[]string{model.PlacementCompleted, model.PlacementFailed, model.PlacementCancelled, model.PlacementRolledBack}).Order("id").First(&task).Error
@@ -217,14 +218,14 @@ func (r *Runner) runNextTask(parent context.Context, plan *model.PlacementPlan) 
 	}
 	ctx, cancel := context.WithTimeout(parent, placementStepTimeout)
 	defer cancel()
-	if err := r.advance(ctx, plan, &task); err != nil {
+	if err := r.advance(ctx, plan, &task, placements); err != nil {
 		r.fail(plan, &task, err)
 		return err
 	}
 	return nil
 }
 
-func (r *Runner) advance(ctx context.Context, plan *model.PlacementPlan, task *model.PlacementTask) error {
+func (r *Runner) advance(ctx context.Context, plan *model.PlacementPlan, task *model.PlacementTask, placements []k8s.VTAPlacement) error {
 	var session model.SetupSession
 	if err := r.db.First(&session, task.SessionID).Error; err != nil {
 		return fmt.Errorf("load session: %w", err)
@@ -237,7 +238,7 @@ func (r *Runner) advance(ctx context.Context, plan *model.PlacementPlan, task *m
 	}
 	namespace := r.k8s.UserNamespace(fmt.Sprintf("%d", session.UserID))
 	if plan.Kind == model.PlacementPlanProvision {
-		return r.advanceProvision(ctx, task, namespace)
+		return r.advanceProvision(ctx, task, namespace, placements)
 	}
 	if session.Status != "running" {
 		return fmt.Errorf("session is not a running VTA-only workload")
@@ -245,7 +246,7 @@ func (r *Runner) advance(ctx context.Context, plan *model.PlacementPlan, task *m
 
 	switch task.State {
 	case model.PlacementRequested, model.PlacementValidating:
-		return r.validateAndReserve(ctx, task, namespace)
+		return r.validateAndReserve(ctx, task, namespace, placements)
 	case model.PlacementReserved, model.PlacementScalingDown:
 		if err := r.setState(task, model.PlacementScalingDown, nil); err != nil {
 			return err
@@ -287,12 +288,8 @@ func (r *Runner) advance(ctx context.Context, plan *model.PlacementPlan, task *m
 			return tx.Model(&model.PlacementReservation{}).Where("task_id = ? AND status = ?", task.ID, "active").Update("pod_uid", string(pod.UID)).Error
 		})
 	case model.PlacementAssigningTargetNode:
-		placement, err := r.k8s.ListVTAPlacements(ctx)
-		if err != nil {
-			return err
-		}
 		var podName string
-		for _, item := range placement {
+		for _, item := range placements {
 			if item.SessionID == session.ID {
 				podName = item.PodName
 				break
@@ -329,21 +326,17 @@ func (r *Runner) advance(ctx context.Context, plan *model.PlacementPlan, task *m
 	}
 }
 
-func (r *Runner) advanceProvision(ctx context.Context, task *model.PlacementTask, namespace string) error {
+func (r *Runner) advanceProvision(ctx context.Context, task *model.PlacementTask, namespace string, placements []k8s.VTAPlacement) error {
 	switch task.State {
 	case model.PlacementRequested, model.PlacementValidating:
-		placements, err := r.k8s.ListVTAPlacements(ctx)
-		if err != nil {
-			return err
-		}
 		for _, placement := range placements {
 			if placement.SessionID == task.SessionID && placement.PodUID == task.PodUID && !placement.Gated && task.TargetNode != "" {
 				return r.setState(task, model.PlacementWaitingReady, nil)
 			}
 		}
-		return r.validateProvisionAndReserve(ctx, task, namespace)
+		return r.validateProvisionAndReserve(ctx, task, namespace, placements)
 	case model.PlacementReserved, model.PlacementAssigningTargetNode:
-		placement, err := r.gatedPlacement(ctx, task.SessionID, task.PodUID)
+		placement, err := r.gatedPlacement(placements, task.SessionID, task.PodUID)
 		if err != nil {
 			return err
 		}
@@ -372,11 +365,11 @@ func (r *Runner) advanceProvision(ctx context.Context, task *model.PlacementTask
 	}
 }
 
-func (r *Runner) validateProvisionAndReserve(ctx context.Context, task *model.PlacementTask, namespace string) error {
+func (r *Runner) validateProvisionAndReserve(ctx context.Context, task *model.PlacementTask, namespace string, placements []k8s.VTAPlacement) error {
 	if err := r.setState(task, model.PlacementValidating, nil); err != nil {
 		return err
 	}
-	placement, err := r.gatedPlacement(ctx, task.SessionID, task.PodUID)
+	placement, err := r.gatedPlacement(placements, task.SessionID, task.PodUID)
 	if err != nil {
 		return err
 	}
@@ -387,7 +380,7 @@ func (r *Runner) validateProvisionAndReserve(ctx context.Context, task *model.Pl
 	if identity.LonghornRobustness == "faulted" {
 		return errors.New("Longhorn volume is faulted")
 	}
-	target, err := r.chooseTarget(ctx, task)
+	target, err := r.chooseTarget(ctx, task, placements)
 	if err != nil {
 		return err
 	}
@@ -407,11 +400,7 @@ func (r *Runner) validateProvisionAndReserve(ctx context.Context, task *model.Pl
 	})
 }
 
-func (r *Runner) gatedPlacement(ctx context.Context, sessionID uint, podUID string) (*k8s.VTAPlacement, error) {
-	placements, err := r.k8s.ListVTAPlacements(ctx)
-	if err != nil {
-		return nil, err
-	}
+func (r *Runner) gatedPlacement(placements []k8s.VTAPlacement, sessionID uint, podUID string) (*k8s.VTAPlacement, error) {
 	for i := range placements {
 		placement := &placements[i]
 		if placement.SessionID == sessionID && placement.Gated && (podUID == "" || placement.PodUID == podUID) {
@@ -421,12 +410,12 @@ func (r *Runner) gatedPlacement(ctx context.Context, sessionID uint, podUID stri
 	return nil, errors.New("gated VTA pod disappeared or was replaced")
 }
 
-func (r *Runner) chooseTarget(ctx context.Context, task *model.PlacementTask) (string, error) {
+func (r *Runner) chooseTarget(ctx context.Context, task *model.PlacementTask, placements []k8s.VTAPlacement) (string, error) {
 	reservations, err := r.service.reservations()
 	if err != nil {
 		return "", err
 	}
-	nodes, err := r.k8s.PlacementNodes(ctx, reservations)
+	nodes, err := r.k8s.PlacementNodesFromPlacements(ctx, reservations, placements)
 	if err != nil {
 		return "", err
 	}
@@ -486,7 +475,7 @@ func (r *Runner) acquireLockAndReservation(tx *gorm.DB, task *model.PlacementTas
 	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&reservation).Error
 }
 
-func (r *Runner) validateAndReserve(ctx context.Context, task *model.PlacementTask, namespace string) error {
+func (r *Runner) validateAndReserve(ctx context.Context, task *model.PlacementTask, namespace string, placements []k8s.VTAPlacement) error {
 	if err := r.setState(task, model.PlacementValidating, nil); err != nil {
 		return err
 	}
@@ -508,7 +497,7 @@ func (r *Runner) validateAndReserve(ctx context.Context, task *model.PlacementTa
 	if err != nil {
 		return err
 	}
-	nodes, err := r.k8s.PlacementNodes(ctx, reservations)
+	nodes, err := r.k8s.PlacementNodesFromPlacements(ctx, reservations, placements)
 	if err != nil {
 		return err
 	}
@@ -517,10 +506,6 @@ func (r *Runner) validateAndReserve(ctx context.Context, task *model.PlacementTa
 		target = safestNode(nodes, map[string]int64{}, task.P95MemoryBytes, r.cfg.HotAtPercent)
 	}
 	var source string
-	placements, err := r.k8s.ListVTAPlacements(ctx)
-	if err != nil {
-		return err
-	}
 	for _, placement := range placements {
 		if placement.SessionID == task.SessionID {
 			source = placement.NodeName

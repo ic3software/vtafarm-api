@@ -71,7 +71,7 @@ func (s *Service) Overview(ctx context.Context) (*Overview, error) {
 	if err != nil {
 		return nil, err
 	}
-	placements, err := s.k8s.ListVTAPlacements(ctx)
+	placements, err := s.k8s.ListVTAPlacementsWithStorage(ctx)
 	if err != nil {
 		return nil, err
 	}

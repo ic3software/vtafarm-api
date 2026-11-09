@@ -22,7 +22,7 @@ rules:
     resources: ["volumeattachments", "storageclasses"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["longhorn.io"]
-    resources: ["nodes", "settings", "volumes", "volumeattachments", "backups"]
+    resources: ["nodes", "settings", "volumes", "volumeattachments", "backupvolumes"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]

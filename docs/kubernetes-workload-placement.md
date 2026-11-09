@@ -624,6 +624,10 @@ Repositories: `vtafarm-api` and `vtafarm-k8s`.
   volume, namespace, Secret, or Vault-data creation and deletion.
 - Publish `memory-state` and `vta-eligible` node labels with threshold
   hysteresis and stale-metric fail-closed behavior.
+- Reuse one lightweight VTA placement inventory per poll for node refresh and
+  gated-Pod discovery. Keep PVC/PV/Longhorn enrichment in the Admin overview,
+  and read latest-backup metadata from `BackupVolume` summaries rather than
+  loading the complete backup history.
 - Watch gated VTA Pods, acquire an atomic reservation, tighten each Pod to the
   chosen hostname, and remove the gate only after all health checks pass.
 - Resume every non-terminal workflow after worker restart or leader change and

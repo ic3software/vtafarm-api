@@ -19,10 +19,10 @@ import (
 const LonghornNamespace = "longhorn-system"
 
 var (
-	longhornNodesGVR    = schema.GroupVersionResource{Group: "longhorn.io", Version: "v1beta2", Resource: "nodes"}
-	longhornSettingsGVR = schema.GroupVersionResource{Group: "longhorn.io", Version: "v1beta2", Resource: "settings"}
-	longhornVolumesGVR  = schema.GroupVersionResource{Group: "longhorn.io", Version: "v1beta2", Resource: "volumes"}
-	longhornBackupsGVR  = schema.GroupVersionResource{Group: "longhorn.io", Version: "v1beta2", Resource: "backups"}
+	longhornNodesGVR         = schema.GroupVersionResource{Group: "longhorn.io", Version: "v1beta2", Resource: "nodes"}
+	longhornSettingsGVR      = schema.GroupVersionResource{Group: "longhorn.io", Version: "v1beta2", Resource: "settings"}
+	longhornVolumesGVR       = schema.GroupVersionResource{Group: "longhorn.io", Version: "v1beta2", Resource: "volumes"}
+	longhornBackupVolumesGVR = schema.GroupVersionResource{Group: "longhorn.io", Version: "v1beta2", Resource: "backupvolumes"}
 )
 
 // NodeResourceStat is one node's CPU/memory picture: what the scheduler can
@@ -78,15 +78,50 @@ type ClusterStats struct {
 // ClusterResourceStats reads node capacity, pod requests, live usage
 // (metrics-server), and Longhorn disk stats across every node in the cluster.
 func (c *Client) ClusterResourceStats(ctx context.Context) (*ClusterStats, error) {
+	var nodes []NodeResourceStat
+	var metricsAvailable bool
+	var storageNodes []StorageNodeStat
+	var dataWritten int64
+	var replicas int
+	var storageErr error
+
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.Go(func() error {
+		var err error
+		nodes, metricsAvailable, err = c.nodeResourceStats(groupCtx)
+		return err
+	})
+	group.Go(func() error {
+		storageNodes, dataWritten, replicas, storageErr = c.longhornStats(groupCtx)
+		return nil
+	})
+	if err := group.Wait(); err != nil {
+		return nil, err
+	}
+
+	stats := &ClusterStats{
+		Nodes:               nodes,
+		MetricsAvailable:    metricsAvailable,
+		StorageReplicaCount: 1,
+	}
+	if storageErr == nil {
+		stats.StorageAvailable = true
+		stats.StorageNodes = storageNodes
+		stats.StorageDataWrittenBytes = dataWritten
+		stats.StorageReplicaCount = replicas
+	}
+	return stats, nil
+}
+
+// nodeResourceStats is the storage-free cluster snapshot used by placement
+// reconciliation. The broader admin dashboard snapshot adds Longhorn data in
+// ClusterResourceStats.
+func (c *Client) nodeResourceStats(ctx context.Context) ([]NodeResourceStat, bool, error) {
 	var nodeList *corev1.NodeList
 	var podList *corev1.PodList
 	var cpuUsed, memUsed map[string]int64
 	var metricsObserved map[string]time.Time
 	var metricsErr error
-	var storageNodes []StorageNodeStat
-	var dataWritten int64
-	var replicas int
-	var storageErr error
 
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.Go(func() error {
@@ -112,12 +147,8 @@ func (c *Client) ClusterResourceStats(ctx context.Context) (*ClusterStats, error
 		cpuUsed, memUsed, metricsObserved, metricsErr = c.nodeUsage(groupCtx)
 		return nil
 	})
-	group.Go(func() error {
-		storageNodes, dataWritten, replicas, storageErr = c.longhornStats(groupCtx)
-		return nil
-	})
 	if err := group.Wait(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	cpuReq := map[string]int64{}
@@ -132,10 +163,7 @@ func (c *Client) ClusterResourceStats(ctx context.Context) (*ClusterStats, error
 		memReq[pod.Spec.NodeName] += mem
 	}
 
-	stats := &ClusterStats{StorageReplicaCount: 1}
-
-	stats.MetricsAvailable = metricsErr == nil
-
+	stats := make([]NodeResourceStat, 0, len(nodeList.Items))
 	for i := range nodeList.Items {
 		node := &nodeList.Items[i]
 		stat := NodeResourceStat{
@@ -149,17 +177,9 @@ func (c *Client) ClusterResourceStats(ctx context.Context) (*ClusterStats, error
 			MemUsedBytes:         memUsed[node.Name],
 			MetricsObservedAt:    metricsObserved[node.Name],
 		}
-		stats.Nodes = append(stats.Nodes, stat)
+		stats = append(stats, stat)
 	}
-
-	if storageErr == nil {
-		stats.StorageAvailable = true
-		stats.StorageNodes = storageNodes
-		stats.StorageDataWrittenBytes = dataWritten
-		stats.StorageReplicaCount = replicas
-	}
-
-	return stats, nil
+	return stats, metricsErr == nil, nil
 }
 
 // podEffectiveRequests mirrors the scheduler's math: per resource,
