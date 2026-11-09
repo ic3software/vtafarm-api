@@ -16,7 +16,7 @@ require (
 	github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go v0.10.4
 	github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go/proof v0.1.4
 	golang.org/x/net v0.62.0
-	golang.org/x/sync v0.24.0
+	golang.org/x/sync v0.25.0
 	gorm.io/driver/postgres v1.6.3
 	gorm.io/gorm v1.31.2
 	k8s.io/api v0.37.2
