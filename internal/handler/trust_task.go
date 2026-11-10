@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/ic3software/vtafarm-api/internal/config"
 	"github.com/ic3software/vtafarm-api/internal/connection"
+	"github.com/ic3software/vtafarm-api/internal/maintenance"
 	"github.com/ic3software/vtafarm-api/internal/model"
 	farmtrusttask "github.com/ic3software/vtafarm-api/internal/trusttask"
 	"github.com/ic3software/vtafarm-api/internal/webvh"
@@ -45,6 +46,7 @@ type TrustTaskHandler struct {
 	jwtSecret       string
 	cookieSecure    bool
 	kickPoolPrewarm func(uint)
+	maintenance     *maintenance.Manager
 }
 
 type farmDocumentResolver interface {
@@ -99,6 +101,10 @@ func (h *TrustTaskHandler) Enabled() bool { return h != nil && h.enabled }
 
 func (h *TrustTaskHandler) ConfigurePoolPrewarm(kick func(uint)) {
 	h.kickPoolPrewarm = kick
+}
+
+func (h *TrustTaskHandler) ConfigureMaintenance(manager *maintenance.Manager) {
+	h.maintenance = manager
 }
 
 func (h *TrustTaskHandler) WalletSignInEnabled() bool {
@@ -158,12 +164,22 @@ func (h *TrustTaskHandler) Consume(c *gin.Context) {
 		}
 		h.consumeOOB(c, envelope.Type, envelope.Payload, raw)
 	case provisionvtaclaimv0_1.TypeURI:
+		release, ok := h.acquireProvisionWorkflow(c, "pool_claim")
+		if !ok {
+			return
+		}
+		defer release()
 		if err := h.validator.Validate(provisionvtaclaimv0_1.PayloadSchemaJSON, envelope.Payload); err != nil {
 			h.emitMalformed(c, raw, err)
 			return
 		}
 		h.consumeClaim(c, raw)
 	case provisionvtaredeemv0_1.TypeURI:
+		release, ok := h.acquireProvisionWorkflow(c, "pool_redeem")
+		if !ok {
+			return
+		}
+		defer release()
 		if err := h.validator.Validate(provisionvtaredeemv0_1.PayloadSchemaJSON, envelope.Payload); err != nil {
 			h.emitMalformed(c, raw, err)
 			return
@@ -172,6 +188,25 @@ func (h *TrustTaskHandler) Consume(c *gin.Context) {
 	default:
 		h.emitUnsupported(c, raw)
 	}
+}
+
+func (h *TrustTaskHandler) acquireProvisionWorkflow(c *gin.Context, operationType string) (func(), bool) {
+	if h.maintenance == nil {
+		return func() {}, true
+	}
+	release, err := h.maintenance.Acquire(c.Request.Context(), operationType, "VTA claim", false)
+	if errors.Is(err, maintenance.ErrEnabled) {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":  "VTA Farm is under maintenance. VTA claims are temporarily unavailable.",
+			"reason": "maintenance_mode",
+		})
+		return nil, false
+	}
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "VTA claim is temporarily unavailable."})
+		return nil, false
+	}
+	return release, true
 }
 
 func (h *TrustTaskHandler) consumeClaim(c *gin.Context, raw json.RawMessage) {
