@@ -18,6 +18,7 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/ghcr"
 	"github.com/ic3software/vtafarm-api/internal/handler"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
+	"github.com/ic3software/vtafarm-api/internal/maintenance"
 	"github.com/ic3software/vtafarm-api/internal/middleware"
 	"github.com/ic3software/vtafarm-api/internal/model"
 	"github.com/ic3software/vtafarm-api/internal/passkey"
@@ -62,7 +63,16 @@ func Setup(
 	}))
 
 	r.GET("/health", handler.Health)
+	maintenanceManager, err := maintenance.New(db)
+	if err != nil {
+		log.Fatalf("maintenance manager init: %v", err)
+	}
+	maintenanceH := handler.NewMaintenanceHandler(maintenanceManager)
+	workflow := func(operationType string, admin bool) gin.HandlerFunc {
+		return middleware.Workflow(maintenanceManager, operationType, admin)
+	}
 	trustTask := handler.NewTrustTaskHandler(db, cfg.VTAClaim)
+	trustTask.ConfigureMaintenance(maintenanceManager)
 	if orch != nil {
 		trustTask.ConfigurePoolPrewarm(orch.KickPoolPrewarm)
 	}
@@ -107,6 +117,7 @@ func Setup(
 	}
 
 	v1 := r.Group("/api/v1")
+	v1.GET("/status/maintenance", middleware.NoStore(), maintenanceH.Status)
 	v1.GET("/auth/keyring/config", middleware.NoStore(), middleware.RateLimit(60, time.Minute), trustTask.WalletSignInConfig)
 	statusHandler := handler.NewStatusHandler(db, k8sClient, handler.StatusConfig{
 		ClusterDomain:   cfg.ClusterDomain,
@@ -181,10 +192,10 @@ func Setup(
 	poolH.Start(workerCtx, cfg.OrchestratorResume)
 	v1.GET("/internal/pool-activations/:session_id/:activation_id", middleware.NoStore(), poolH.PoolActivationGate)
 	publicClaims := v1.Group("/public/pool-claims", middleware.NoStore())
-	publicClaims.POST("", middleware.RateLimit(50, time.Hour), poolH.CreatePublicClaim)
+	publicClaims.POST("", middleware.RateLimit(50, time.Hour), workflow("pool_claim", false), poolH.CreatePublicClaim)
 	publicClaims.GET("/:request_id", middleware.RateLimit(120, time.Minute), poolH.GetPublicClaim)
-	publicClaims.POST("/:request_id/confirm", middleware.RateLimit(30, time.Minute), poolH.ConfirmPublicClaim)
-	publicClaims.POST("/:request_id/reject", middleware.RateLimit(30, time.Minute), poolH.RejectPublicClaim)
+	publicClaims.POST("/:request_id/confirm", middleware.RateLimit(30, time.Minute), workflow("pool_claim_confirm", false), poolH.ConfirmPublicClaim)
+	publicClaims.POST("/:request_id/reject", middleware.RateLimit(30, time.Minute), workflow("pool_claim_reject", false), poolH.RejectPublicClaim)
 
 	// Admin routes — cookie: vtafarm_admin
 	adminAuth := v1.Group("",
@@ -196,6 +207,8 @@ func Setup(
 	rh := handler.NewRecoveryHandler(db, cfg.JWTSecret, cfg.CookieSecure())
 	{
 		adminH := handler.NewAdminHandler(db)
+		adminAuth.GET("/admin/maintenance", maintenanceH.AdminStatus)
+		adminAuth.PUT("/admin/maintenance", maintenanceH.Set)
 		adminAuth.GET("/admin/admins", adminH.List)
 		adminAuth.POST("/admin/admins", adminH.Create)
 		adminAuth.GET("/admin/users", uh.List)
@@ -214,32 +227,32 @@ func Setup(
 		adminAuth.GET("/admin/image-defaults", sh.AdminImageDefaults)
 		adminAuth.PUT("/admin/image-defaults", sh.AdminSaveImageDefault)
 		adminAuth.GET("/admin/setup-sessions", sh.AdminListSessions)
-		adminAuth.POST("/admin/setup-sessions/:id/recover", sh.AdminRecoverSession)
+		adminAuth.POST("/admin/setup-sessions/:id/recover", workflow("vta_recovery", true), sh.AdminRecoverSession)
 		adminAuth.GET("/admin/setup-sessions/:id/resources", sh.AdminSessionResources)
-		adminAuth.PUT("/admin/setup-sessions/resources", sh.AdminApplySessionResources)
-		adminAuth.POST("/admin/load-tests", sh.AdminCreateLoadTest)
+		adminAuth.PUT("/admin/setup-sessions/resources", workflow("resource_update", true), sh.AdminApplySessionResources)
+		adminAuth.POST("/admin/load-tests", workflow("load_test_create", true), sh.AdminCreateLoadTest)
 		adminAuth.GET("/admin/load-tests", sh.AdminListLoadTests)
 		adminAuth.GET("/admin/load-tests/:id", sh.AdminGetLoadTest)
 		adminAuth.POST("/admin/load-tests/:id/check", sh.AdminCheckLoadTest)
-		adminAuth.DELETE("/admin/load-tests/:id", sh.AdminDeleteLoadTest)
-		adminAuth.POST("/admin/pool-batches", poolH.CreateBatch)
+		adminAuth.DELETE("/admin/load-tests/:id", workflow("load_test_delete", true), sh.AdminDeleteLoadTest)
+		adminAuth.POST("/admin/pool-batches", workflow("pool_create", true), poolH.CreateBatch)
 		adminAuth.GET("/admin/pool-batches", poolH.ListBatches)
 		adminAuth.GET("/admin/pool-batches/:id", poolH.GetBatch)
-		adminAuth.DELETE("/admin/pool-batches/:id", poolH.CleanupBatch)
-		adminAuth.POST("/admin/pool-batches/:id/inventory", poolH.AddInventory)
+		adminAuth.DELETE("/admin/pool-batches/:id", workflow("pool_cleanup", true), poolH.CleanupBatch)
+		adminAuth.POST("/admin/pool-batches/:id/inventory", workflow("pool_inventory", true), poolH.AddInventory)
 		adminAuth.POST("/admin/pool-batches/:id/public-signup", poolH.EnablePublicSignup)
 		adminAuth.DELETE("/admin/pool-batches/:id/public-signup", poolH.DisablePublicSignup)
-		adminAuth.POST("/admin/pool-batches/:id/claims", poolH.Reserve)
-		adminAuth.POST("/admin/pool-sessions/cleanup", poolH.Cleanup)
-		adminAuth.POST("/admin/pool-sessions/:id/retry", poolH.Retry)
+		adminAuth.POST("/admin/pool-batches/:id/claims", workflow("pool_reserve", true), poolH.Reserve)
+		adminAuth.POST("/admin/pool-sessions/cleanup", workflow("pool_cleanup", true), poolH.Cleanup)
+		adminAuth.POST("/admin/pool-sessions/:id/retry", workflow("pool_retry", true), poolH.Retry)
 		poolClaims := adminAuth.Group("/admin/pool-claims", middleware.NoStore(), middleware.RateLimit(120, time.Minute))
 		poolClaims.GET("/:request_id", poolH.GetClaim)
-		poolClaims.POST("/:request_id/confirm", poolH.ConfirmClaim)
-		poolClaims.POST("/:request_id/reject", poolH.RejectClaim)
+		poolClaims.POST("/:request_id/confirm", workflow("pool_claim_confirm", true), poolH.ConfirmClaim)
+		poolClaims.POST("/:request_id/reject", workflow("pool_claim_reject", true), poolH.RejectClaim)
 		// Same teardown as the user-facing DELETE /setup/:id, but reaches any
 		// user's session rather than only the caller's. Deleting the platform
 		// stack additionally requires {"confirm": "<label>"} in the body.
-		adminAuth.DELETE("/admin/setup-sessions/:id", sh.AdminDeleteSession)
+		adminAuth.DELETE("/admin/setup-sessions/:id", workflow("vta_delete", true), sh.AdminDeleteSession)
 		// Admin-cookie twin of GET /setup/:id/logs. The platform stack belongs
 		// to a passkey-less system account, so its provisioning is otherwise
 		// unwatchable — nobody can hold that user's cookie.
@@ -252,26 +265,26 @@ func Setup(
 		// user-facing POST /setup/:id/admin can never be called for it — and
 		// the admin DID can't be supplied up front, since `pnm setup` mints it
 		// from a VTA DID the pipeline hasn't produced yet.
-		adminAuth.POST("/admin/setup-sessions/:id/admin", sh.AdminProvisionAdmin)
+		adminAuth.POST("/admin/setup-sessions/:id/admin", workflow("vta_provision", true), sh.AdminProvisionAdmin)
 		// The rest of the post-provisioning actions, same reasoning: without
 		// them an admin can see the platform stack's single-use enrollment and
 		// install links but never acknowledge or reissue one, which is most of
 		// what finishing the stack consists of.
-		adminAuth.POST("/admin/setup-sessions/:id/dids/reissue-enroll", sh.AdminReissueDidsEnroll)
+		adminAuth.POST("/admin/setup-sessions/:id/dids/reissue-enroll", workflow("dids_enroll_reissue", true), sh.AdminReissueDidsEnroll)
 		adminAuth.POST("/admin/setup-sessions/:id/dids/enroll-ack", sh.AdminAckDidsEnroll)
-		adminAuth.POST("/admin/setup-sessions/:id/vtc/reissue-install", sh.AdminReissueVtcInstall)
+		adminAuth.POST("/admin/setup-sessions/:id/vtc/reissue-install", workflow("vtc_install_reissue", true), sh.AdminReissueVtcInstall)
 		adminAuth.POST("/admin/setup-sessions/:id/vtc/install-ack", sh.AdminAckVtcInstall)
 		// The farm's own flagship stack at vta.{CLUSTER_DOMAIN} and friends —
 		// the default mediator and DID host for vta_only sessions. Created whole
 		// (domain + DNS + session) by one action; the only route that can mint
 		// a domains row for our own zone.
-		adminAuth.POST("/admin/platform-stack", sh.CreatePlatformStack)
+		adminAuth.POST("/admin/platform-stack", workflow("platform_stack_create", true), sh.CreatePlatformStack)
 		adminAuth.GET("/admin/platform-stack", sh.GetPlatformStack)
 		adminAuth.GET("/admin/platform-stack/trust-registry", sh.AdminGetTrustRegistry)
-		adminAuth.POST("/admin/platform-stack/trust-registry", sh.AdminEnableTrustRegistry)
+		adminAuth.POST("/admin/platform-stack/trust-registry", workflow("trust_registry", true), sh.AdminEnableTrustRegistry)
 		adminAuth.GET("/admin/platform-stack/config", sh.AdminGetPlatformStackConfigs)
 		adminAuth.POST("/admin/platform-stack/config/validate", sh.AdminValidatePlatformStackConfigs)
-		adminAuth.PUT("/admin/platform-stack/config", sh.AdminApplyPlatformStackConfigs)
+		adminAuth.PUT("/admin/platform-stack/config", workflow("config_update", true), sh.AdminApplyPlatformStackConfigs)
 		// Co-admins on that stack's VTA — self-service, so a second admin can
 		// add the did:key their own `pnm setup` minted instead of asking
 		// whoever holds the credential to run `pnm acl create` for them.
@@ -286,19 +299,19 @@ func Setup(
 		// needs an approval step this doesn't have. See
 		// docs/platform-stack-admin-grant-design.md §1 and §7.4.
 		adminAuth.GET("/admin/platform-stack/admins", sh.ListPlatformStackAdmins)
-		adminAuth.POST("/admin/platform-stack/admins", sh.GrantPlatformStackAdmin)
-		adminAuth.POST("/admin/platform-stack/admins/refresh", sh.RefreshPlatformStackAdmins)
+		adminAuth.POST("/admin/platform-stack/admins", workflow("acl_grant", true), sh.GrantPlatformStackAdmin)
+		adminAuth.POST("/admin/platform-stack/admins/refresh", workflow("acl_refresh", true), sh.RefreshPlatformStackAdmins)
 		// Cluster capacity overview: CPU/memory/storage totals per node plus
 		// how many more sessions of each mode still fit.
 		adminAuth.GET("/admin/dashboard", dashH.Get)
 		adminAuth.GET("/admin/placement", placementH.Overview)
 		adminAuth.POST("/admin/placement/preview", placementH.Preview)
-		adminAuth.POST("/admin/placement/plans", placementH.Create)
+		adminAuth.POST("/admin/placement/plans", workflow("placement", true), placementH.Create)
 		adminAuth.GET("/admin/placement/plans", placementH.List)
 		adminAuth.GET("/admin/placement/plans/:id", placementH.Get)
-		adminAuth.POST("/admin/placement/plans/:id/cancel", placementH.Cancel)
-		adminAuth.POST("/admin/placement/plans/:id/tasks/:task_id/retry", placementH.Retry)
-		adminAuth.POST("/admin/placement/plans/:id/tasks/:task_id/rollback", placementH.Rollback)
+		adminAuth.POST("/admin/placement/plans/:id/cancel", workflow("placement_cancel", true), placementH.Cancel)
+		adminAuth.POST("/admin/placement/plans/:id/tasks/:task_id/retry", workflow("placement_retry", true), placementH.Retry)
+		adminAuth.POST("/admin/placement/plans/:id/tasks/:task_id/rollback", workflow("placement_rollback", true), placementH.Rollback)
 		// Same handlers as their /setup/... twins — admins need the same facts
 		// (image tags for upgrades, hostname shape for the platform stack page)
 		// but sit behind a different cookie.
@@ -306,11 +319,11 @@ func Setup(
 		adminAuth.GET("/admin/setup/domain-info", sh.DomainInfo)
 
 		// Batch image upgrades — background runner, DB-backed queue.
-		adminAuth.POST("/admin/upgrades", uph.Create)
+		adminAuth.POST("/admin/upgrades", workflow("image_upgrade", true), uph.Create)
 		adminAuth.GET("/admin/upgrades", uph.List)
 		adminAuth.GET("/admin/upgrades/:id", uph.Get)
-		adminAuth.POST("/admin/upgrades/:id/cancel", uph.Cancel)
-		adminAuth.POST("/admin/upgrades/:id/resume", uph.Resume)
+		adminAuth.POST("/admin/upgrades/:id/cancel", workflow("upgrade_cancel", true), uph.Cancel)
+		adminAuth.POST("/admin/upgrades/:id/resume", workflow("upgrade_resume", true), uph.Resume)
 	}
 
 	// Public invitation routes (no auth required)
@@ -352,44 +365,44 @@ func Setup(
 		// don't hardcode the production shape.
 		userAuth.GET("/setup/domain-info", sh.DomainInfo)
 		userAuth.GET("/setup", sh.List)
-		userAuth.POST("/setup", sh.Create)
+		userAuth.POST("/setup", workflow("vta_create", false), sh.Create)
 		userAuth.POST("/setup/connection/inspect", middleware.RateLimit(20, time.Minute), sh.InspectConnection)
 		userAuth.GET("/setup/:id", sh.Get)
 		userAuth.GET("/setup/:id/trust-registry", sh.GetTrustRegistry)
-		userAuth.POST("/setup/:id/trust-registry", sh.EnableTrustRegistry)
-		userAuth.POST("/setup/:id/recover", sh.RecoverSession)
-		userAuth.DELETE("/setup/:id", sh.Delete)
+		userAuth.POST("/setup/:id/trust-registry", workflow("trust_registry", false), sh.EnableTrustRegistry)
+		userAuth.POST("/setup/:id/recover", workflow("vta_recovery", false), sh.RecoverSession)
+		userAuth.DELETE("/setup/:id", workflow("vta_delete", false), sh.Delete)
 		userAuth.GET("/setup/:id/logs", sh.Logs)
 		userAuth.GET("/setup/:id/did-log", sh.DownloadDIDLog)
-		userAuth.POST("/setup/:id/did-log/validate", middleware.RateLimit(20, time.Minute), sh.ValidatePublishedDID)
+		userAuth.POST("/setup/:id/did-log/validate", middleware.RateLimit(20, time.Minute), workflow("vta_provision", false), sh.ValidatePublishedDID)
 		// Zips read from the running pods: the rendered config.toml each
 		// binary wrote to its PVC, and the pods' own logs — no Job logs.
 		userAuth.GET("/setup/:id/export/configs", sh.ExportConfigs)
 		userAuth.GET("/setup/:id/export/logs", sh.ExportLogs)
 		userAuth.GET("/setup/:id/config", sh.GetStackConfigs)
 		userAuth.POST("/setup/:id/config/validate", sh.ValidateStackConfigs)
-		userAuth.PUT("/setup/:id/config", sh.ApplyStackConfigs)
+		userAuth.PUT("/setup/:id/config", workflow("config_update", false), sh.ApplyStackConfigs)
 		// Self-service image upgrade/downgrade — a user can only ever change
 		// their own session (looked up by unique_id AND user_id).
-		userAuth.POST("/setup/:id/upgrade", uph.CreateForSession)
+		userAuth.POST("/setup/:id/upgrade", workflow("image_upgrade", false), uph.CreateForSession)
 		userAuth.GET("/setup/:id/upgrade", uph.GetForSession)
-		userAuth.POST("/setup/:id/admin", sh.ProvisionAdmin)
+		userAuth.POST("/setup/:id/admin", workflow("vta_provision", false), sh.ProvisionAdmin)
 		mobileOwner := userAuth.Group("/setup/:id/mobile-connections", middleware.NoStore(), middleware.RateLimit(120, time.Minute))
 		mobileOwner.GET("/current", mobile.Current)
-		mobileOwner.POST("", mobile.Change)
-		mobileOwner.POST("/:request_id/refresh", mobile.Change)
-		mobileOwner.DELETE("/:request_id", mobile.Change)
-		mobileOwner.POST("/:request_id/confirm", mobile.Confirm)
-		mobileOwner.POST("/:request_id/reject", mobile.Reject)
+		mobileOwner.POST("", workflow("mobile_connection", false), mobile.Change)
+		mobileOwner.POST("/:request_id/refresh", workflow("mobile_connection", false), mobile.Change)
+		mobileOwner.DELETE("/:request_id", workflow("mobile_connection", false), mobile.Change)
+		mobileOwner.POST("/:request_id/confirm", workflow("mobile_connection", false), mobile.Confirm)
+		mobileOwner.POST("/:request_id/reject", workflow("mobile_connection", false), mobile.Reject)
 		// Add another PNM as an administrator after provisioning. The handler
 		// resolves :id through the authenticated owner and accepts only running
 		// sessions; the ACL maintenance window is serialized per session.
 		userAuth.GET("/setup/:id/admins", sh.ListSessionAdmins)
-		userAuth.POST("/setup/:id/admins", sh.GrantSessionAdmin)
-		userAuth.POST("/setup/:id/admins/refresh", sh.RefreshSessionAdmins)
-		userAuth.POST("/setup/:id/dids/reissue-enroll", sh.ReissueDidsEnroll)
+		userAuth.POST("/setup/:id/admins", workflow("acl_grant", false), sh.GrantSessionAdmin)
+		userAuth.POST("/setup/:id/admins/refresh", workflow("acl_refresh", false), sh.RefreshSessionAdmins)
+		userAuth.POST("/setup/:id/dids/reissue-enroll", workflow("dids_enroll_reissue", false), sh.ReissueDidsEnroll)
 		userAuth.POST("/setup/:id/dids/enroll-ack", sh.AckDidsEnroll)
-		userAuth.POST("/setup/:id/vtc/reissue-install", sh.ReissueVtcInstall)
+		userAuth.POST("/setup/:id/vtc/reissue-install", workflow("vtc_install_reissue", false), sh.ReissueVtcInstall)
 		userAuth.POST("/setup/:id/vtc/install-ack", sh.AckVtcInstall)
 	}
 

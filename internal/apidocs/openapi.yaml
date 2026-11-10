@@ -92,6 +92,36 @@ components:
       description: Environment-scoped MONITOR_TOKEN for external uptime polling.
 
   schemas:
+    MaintenanceState:
+      type: object
+      additionalProperties: false
+      required: [enabled, message, updated_at]
+      properties:
+        enabled: { type: boolean }
+        message: { type: string }
+        enabled_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    MaintenanceOperation:
+      type: object
+      additionalProperties: false
+      required: [operation_type, target, started_at]
+      properties:
+        operation_type: { type: string }
+        target: { type: string }
+        started_at: { type: string, format: date-time }
+
+    MaintenanceSnapshot:
+      allOf:
+        - { $ref: "#/components/schemas/MaintenanceState" }
+        - type: object
+          required: [can_enable, active_operations]
+          properties:
+            can_enable: { type: boolean }
+            active_operations:
+              type: array
+              items: { $ref: "#/components/schemas/MaintenanceOperation" }
+
     PublicInfraStatus:
       type: object
       additionalProperties: false
@@ -1206,6 +1236,24 @@ paths:
 
   # ── Public customer status ─────────────────────────────────────────────────
 
+  /api/v1/status/maintenance:
+    get:
+      summary: Public maintenance-mode status
+      description: Reports whether user workflows are temporarily blocked. Read-only portal and authentication operations remain available.
+      tags: [System]
+      security: []
+      responses:
+        "200":
+          description: Current maintenance state
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MaintenanceState" }
+        "503":
+          description: Maintenance state could not be read
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/v1/status/farm:
     get:
       summary: Public VTA Farm control-plane availability
@@ -2001,6 +2049,41 @@ paths:
       responses:
         "204": { description: Saved Deployment restored }
         "409": { description: Task is not failed or has no saved snapshot }
+
+  /api/v1/admin/maintenance:
+    get:
+      summary: Read maintenance readiness and active operations
+      tags: [Admin]
+      security: [{CookieAuthAdmin: []}]
+      responses:
+        "200":
+          description: Current maintenance state and operations that block a transition
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MaintenanceSnapshot" }
+    put:
+      summary: Enable or disable maintenance mode
+      description: The transition is rejected atomically while any protected workflow is running.
+      tags: [Admin]
+      security: [{CookieAuthAdmin: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+                message: { type: string, maxLength: 500 }
+      responses:
+        "200":
+          description: Maintenance state updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MaintenanceSnapshot" }
+        "409":
+          description: One or more protected workflows are still running
 
   /api/v1/admin/dashboard:
     get:
