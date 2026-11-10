@@ -23,7 +23,7 @@ CREATE INDEX operation_locks_started_at ON operation_locks(started_at);
 -- small because they contain only work that can block a maintenance transition.
 CREATE INDEX setup_sessions_maintenance_active
     ON setup_sessions(updated_at)
-    WHERE status NOT IN ('running', 'failed', 'awaiting_admin_did', 'awaiting_did_publication', 'pool_prepared', 'pool_waiting');
+    WHERE status NOT IN ('running', 'failed', 'vta_setup_complete', 'awaiting_admin_did', 'awaiting_did_publication', 'pool_prepared', 'pool_waiting');
 CREATE INDEX setup_sessions_maintenance_registry
     ON setup_sessions(updated_at) WHERE trust_registry_state = 'enabling';
 CREATE INDEX upgrade_batches_maintenance_active
