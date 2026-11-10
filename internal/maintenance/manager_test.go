@@ -76,11 +76,18 @@ func TestDurableWorkflowBlocksMaintenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	session := testutil.SetupSession(t, db, model.ModeVtaOnly)
+	snapshot, err := manager.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.CanEnable || len(snapshot.ActiveOperations) != 0 {
+		t.Fatalf("completed setup awaiting admin DID blocked maintenance: %+v", snapshot)
+	}
 	if err := db.Model(&session).Update("status", "vta_setup_running").Error; err != nil {
 		t.Fatal(err)
 	}
 
-	snapshot, err := manager.Set(context.Background(), true, "upgrade", admin.ID)
+	snapshot, err = manager.Set(context.Background(), true, "upgrade", admin.ID)
 	if !errors.Is(err, ErrOperationsInProgress) {
 		t.Fatalf("enable with durable workflow error = %v", err)
 	}

@@ -241,7 +241,7 @@ func (m *Manager) durableOperations(ctx context.Context) ([]ActiveOperation, err
 	const query = `
 		SELECT 'vta_workflow' AS operation_type, vta_name AS target, updated_at AS started_at
 		FROM setup_sessions
-		WHERE status NOT IN ('running', 'failed', 'awaiting_admin_did', 'awaiting_did_publication', 'pool_prepared', 'pool_waiting')
+		WHERE status NOT IN ('running', 'failed', 'vta_setup_complete', 'awaiting_admin_did', 'awaiting_did_publication', 'pool_prepared', 'pool_waiting')
 		UNION ALL
 		SELECT 'image_upgrade', 'Upgrade batch #' || b.id::text, b.created_at
 		FROM upgrade_batches b
