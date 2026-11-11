@@ -108,6 +108,7 @@ func (o *Orchestrator) runFullStackFinish(ctx context.Context, sessionID uint, a
 	}
 
 	o.fsSetStatus(sessionID, "running")
+	o.syncPlatformImageDefaults(s)
 	log.Printf("[orchestrator] fs-vtc session %d: running at https://%s", sessionID, s.VtcFQDN())
 }
 

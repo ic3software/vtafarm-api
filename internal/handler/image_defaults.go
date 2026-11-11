@@ -9,7 +9,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"github.com/ic3software/vtafarm-api/internal/ghcr"
 	"github.com/ic3software/vtafarm-api/internal/model"
@@ -106,11 +105,7 @@ func (h *SetupHandler) AdminSaveImageDefault(c *gin.Context) {
 			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "select an immutable image from the " + input.Component + " image list"})
 			return
 		}
-		row := model.ImageDefault{Component: input.Component, Image: image}
-		if err := h.db.WithContext(ctx).Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "component"}},
-			DoUpdates: clause.AssignmentColumns([]string{"image", "updated_at"}),
-		}).Create(&row).Error; err != nil {
+		if err := model.UpsertImageDefault(h.db.WithContext(ctx), input.Component, image); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save image default"})
 			return
 		}

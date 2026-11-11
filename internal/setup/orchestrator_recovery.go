@@ -193,5 +193,6 @@ func (o *Orchestrator) finishRecoveredSession(ctx context.Context, sessionID uin
 	o.db.Model(&model.SetupSession{}).Where("id = ?", sessionID).Updates(map[string]any{
 		"status": "running", "error_msg": "", "failed_stage": "", "updated_at": time.Now(),
 	})
+	o.syncPlatformImageDefaults(s)
 	log.Printf("[orchestrator] recovered full-stack session %d: running at https://%s", sessionID, s.VtcFQDN())
 }

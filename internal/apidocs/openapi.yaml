@@ -3094,8 +3094,11 @@ paths:
       summary: Read component image defaults
       description: |
         Returns the immutable default image for each configured component.
-        Components without a default are omitted and follow the image tagged
-        `latest` on the user-facing create form.
+        Defaults follow what the platform stack last deployed successfully:
+        every component's image is written when the stack reaches `running`,
+        the Trust Registry's when it is enabled later, and a component's when
+        an upgrade of it succeeds. Components without a default are omitted,
+        and pickers fall back to the image tagged `latest`.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
@@ -3112,8 +3115,9 @@ paths:
       summary: Pin or clear a component image default
       description: |
         Pins an immutable image currently returned by the component's image-list
-        endpoint. An empty or omitted `image` clears the pin so the create form
-        follows the image tagged `latest` again.
+        endpoint. An empty or omitted `image` clears the pin so pickers follow
+        the image tagged `latest` again. A manual pin lasts until the platform
+        stack next deploys that component, which overwrites it.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []

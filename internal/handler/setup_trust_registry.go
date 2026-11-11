@@ -209,6 +209,11 @@ func (h *SetupHandler) runTrustRegistry(parent context.Context, id uint) {
 			}
 			return h.orch.CleanupFailedRegistryJobs(&s)
 		}
+		// Enabled after the stack was set up: the platform stack's registry
+		// image becomes the default now, as the base images did at running.
+		if err := model.SyncPlatformImageDefaults(h.db, &s, "trust-registry"); err != nil {
+			log.Printf("[setup] warn: session %d: could not sync Trust Registry image default: %v", id, err)
+		}
 		return nil
 	})
 	if err != nil {
