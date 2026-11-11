@@ -66,49 +66,71 @@ func (h *SetupHandler) AdminImageDefaults(c *gin.Context) {
 }
 
 // PUT /api/v1/admin/image-defaults
-// Body {"component": "vta", "image": "ghcr.io/…:tag"}. An empty image clears
-// the pin so users follow "latest" again. A non-empty image must be one of the
-// immutable images currently listed for that component.
-func (h *SetupHandler) AdminSaveImageDefault(c *gin.Context) {
+// Body {"images": {"vta": "ghcr.io/…:tag", "mediator": ""}}. Only the listed
+// components change; an empty image clears that pin so pickers follow
+// "latest" again. A non-empty image must be one of the immutable images
+// currently listed for its component. All-or-nothing: every entry is
+// validated before any is written, and the writes share one transaction.
+func (h *SetupHandler) AdminSaveImageDefaults(c *gin.Context) {
 	var input struct {
-		Component string `json:"component"`
-		Image     string `json:"image"`
+		Images map[string]string `json:"images"`
 	}
-	if err := c.ShouldBindJSON(&input); err != nil || input.Component == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "component is required"})
-		return
-	}
-	client, ok := h.ghcrClientFor(input.Component)
-	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown component " + input.Component + unknownComponentMessage})
+	if err := c.ShouldBindJSON(&input); err != nil || len(input.Images) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "images is required: an object of component to image"})
 		return
 	}
 	ctx := c.Request.Context()
-	image := strings.TrimSpace(input.Image)
 
-	if image == "" {
-		if err := h.db.WithContext(ctx).Where("component = ?", input.Component).Delete(&model.ImageDefault{}).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not clear image default"})
+	// Fixed order: errors are deterministic, and concurrent saves lock rows in
+	// the same order (as resource defaults do).
+	changes := make([]model.ImageDefault, 0, len(input.Images))
+	for component := range input.Images {
+		if _, ok := h.ghcrClientFor(component); !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unknown component " + component + unknownComponentMessage})
 			return
 		}
-	} else {
-		if client == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "image source not configured for " + input.Component})
-			return
+	}
+	for _, component := range model.UpgradeComponents {
+		raw, listed := input.Images[component]
+		if !listed {
+			continue
 		}
-		tags, err := client.ListTags(ctx)
-		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch images: " + err.Error()})
-			return
+		image := strings.TrimSpace(raw)
+		if image != "" {
+			client, _ := h.ghcrClientFor(component)
+			if client == nil {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "image source not configured for " + component})
+				return
+			}
+			tags, err := client.ListTags(ctx)
+			if err != nil {
+				c.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch " + component + " images: " + err.Error()})
+				return
+			}
+			if !slices.ContainsFunc(tags, func(tag ghcr.ImageTag) bool { return tag.Image == image }) {
+				c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "select an immutable image from the " + component + " image list"})
+				return
+			}
 		}
-		if !slices.ContainsFunc(tags, func(tag ghcr.ImageTag) bool { return tag.Image == image }) {
-			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "select an immutable image from the " + input.Component + " image list"})
-			return
+		changes = append(changes, model.ImageDefault{Component: component, Image: image})
+	}
+
+	if err := h.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, change := range changes {
+			if change.Image == "" {
+				if err := tx.Where("component = ?", change.Component).Delete(&model.ImageDefault{}).Error; err != nil {
+					return err
+				}
+				continue
+			}
+			if err := model.UpsertImageDefault(tx, change.Component, change.Image); err != nil {
+				return err
+			}
 		}
-		if err := model.UpsertImageDefault(h.db.WithContext(ctx), input.Component, image); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save image default"})
-			return
-		}
+		return nil
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save image defaults"})
+		return
 	}
 
 	response, err := imageDefaultsResponse(ctx, h.db)

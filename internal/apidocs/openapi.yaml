@@ -3112,12 +3112,15 @@ paths:
         "403": { description: Insufficient role }
         "500": { description: Could not load image defaults }
     put:
-      summary: Pin or clear a component image default
+      summary: Pin or clear one or more component image defaults
       description: |
-        Pins an immutable image currently returned by the component's image-list
-        endpoint. An empty or omitted `image` clears the pin so pickers follow
-        the image tagged `latest` again. A manual pin lasts until the platform
-        stack next deploys that component, which overwrites it.
+        Changes the defaults of the components listed in `images`; unlisted
+        components are left as they are. A non-empty image must be one
+        currently returned by that component's image-list endpoint; an empty
+        string clears the pin so pickers follow the image tagged `latest`
+        again. All-or-nothing: every entry is validated before any is written,
+        and the writes share one transaction. A manual pin lasts until the
+        platform stack next deploys that component, which overwrites it.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
@@ -3127,28 +3130,32 @@ paths:
           application/json:
             schema:
               type: object
-              required: [component]
+              required: [images]
               properties:
-                component:
-                  type: string
-                  enum: [mediator, vtc, vta, dids, trust-registry]
-                image:
-                  type: string
-                  description: Full immutable image reference. Empty or omitted to clear the pin.
-                  example: "ghcr.io/ic3software/vta:0.9.0-917881c"
+                images:
+                  type: object
+                  minProperties: 1
+                  description: Component to full immutable image reference. An empty string clears that component's pin.
+                  propertyNames:
+                    enum: [mediator, vtc, vta, dids, trust-registry]
+                  additionalProperties:
+                    type: string
+                  example:
+                    vta: "ghcr.io/ic3software/vta:0.9.0-917881c"
+                    mediator: ""
       responses:
         "200":
           description: Updated image defaults
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ImageDefaults" }
-        "400": { description: "Invalid JSON body, missing component, or unknown component" }
+        "400": { description: "Invalid JSON body, missing or empty images, or an unknown component" }
         "401": { description: Admin authentication required }
         "403": { description: Insufficient role }
-        "422": { description: Image is not in the component's current registry list }
-        "500": { description: "Could not save, clear, or reload image defaults" }
-        "502": { description: Failed to fetch images from the registry }
-        "503": { description: Image source not configured for the requested component }
+        "422": { description: An image is not in its component's current registry list; nothing was saved }
+        "500": { description: "Could not save or clear image defaults (nothing was saved), or could not reload them afterward" }
+        "502": { description: Failed to fetch a component's images from the registry; nothing was saved }
+        "503": { description: Image source not configured for a listed component; nothing was saved }
 
   /api/v1/admin/setup-sessions/resources:
     put:

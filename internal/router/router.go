@@ -225,7 +225,7 @@ func Setup(
 		adminAuth.GET("/admin/resource-defaults", sh.AdminResourceDefaults)
 		adminAuth.PUT("/admin/resource-defaults", sh.AdminSaveResourceDefaults)
 		adminAuth.GET("/admin/image-defaults", sh.AdminImageDefaults)
-		adminAuth.PUT("/admin/image-defaults", sh.AdminSaveImageDefault)
+		adminAuth.PUT("/admin/image-defaults", sh.AdminSaveImageDefaults)
 		adminAuth.GET("/admin/setup-sessions", sh.AdminListSessions)
 		adminAuth.POST("/admin/setup-sessions/:id/recover", workflow("vta_recovery", true), sh.AdminRecoverSession)
 		adminAuth.GET("/admin/setup-sessions/:id/resources", sh.AdminSessionResources)

@@ -55,17 +55,18 @@ func TestSaveImageDefaultRejectsInvalidInput(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &SetupHandler{}
 	for body, want := range map[string]int{
-		`{`:                                   http.StatusBadRequest,
-		`{}`:                                  http.StatusBadRequest,
-		`{"component":"","image":"x"}`:        http.StatusBadRequest,
-		`{"component":"unknown","image":"x"}`: http.StatusBadRequest,
-		`{"component":"vta","image":"ghcr.io/o/vta:1-a"}`: http.StatusServiceUnavailable, // no registry client configured
+		`{`:                                      http.StatusBadRequest,
+		`{}`:                                     http.StatusBadRequest,
+		`{"images":{}}`:                          http.StatusBadRequest,
+		`{"component":"vta","image":""}`:         http.StatusBadRequest, // the old single-component shape
+		`{"images":{"unknown":"x"}}`:             http.StatusBadRequest,
+		`{"images":{"vta":"ghcr.io/o/vta:1-a"}}`: http.StatusServiceUnavailable, // no registry client configured
 	} {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest(http.MethodPut, "/", strings.NewReader(body))
 		c.Request.Header.Set("Content-Type", "application/json")
-		h.AdminSaveImageDefault(c)
+		h.AdminSaveImageDefaults(c)
 		if w.Code != want {
 			t.Fatalf("body %s returned %d, want %d: %s", body, w.Code, want, w.Body.String())
 		}
@@ -79,7 +80,7 @@ func TestImageDefaultsPersistence(t *testing.T) {
 	h := &SetupHandler{db: scoped}
 	router := gin.New()
 	router.GET("/defaults", h.AdminImageDefaults)
-	router.PUT("/defaults", h.AdminSaveImageDefault)
+	router.PUT("/defaults", h.AdminSaveImageDefaults)
 	request := func(method, body string, want int) map[string]string {
 		t.Helper()
 		w := httptest.NewRecorder()
@@ -121,9 +122,25 @@ func TestImageDefaultsPersistence(t *testing.T) {
 	if err := scoped.Exec(`INSERT INTO image_defaults (component, image) VALUES ('vtc', 'ghcr.io/o/vtc:1-a')`).Error; err != nil {
 		t.Fatal(err)
 	}
-	images := request(http.MethodPut, `{"component":"vta","image":""}`, http.StatusOK)
+	images := request(http.MethodPut, `{"images":{"vta":""}}`, http.StatusOK)
 	if _, still := images["vta"]; still || images["vtc"] != "ghcr.io/o/vtc:1-a" {
 		t.Fatalf("clear left %v", images)
+	}
+
+	// One batch clears several components and leaves unlisted ones alone.
+	if err := scoped.Exec(`INSERT INTO image_defaults (component, image) VALUES ('vta', 'ghcr.io/o/vta:0.66.0-def'), ('mediator', 'ghcr.io/o/mediator:1-a')`).Error; err != nil {
+		t.Fatal(err)
+	}
+	images = request(http.MethodPut, `{"images":{"vta":"","mediator":""}}`, http.StatusOK)
+	if len(images) != 1 || images["vtc"] != "ghcr.io/o/vtc:1-a" {
+		t.Fatalf("batch clear left %v", images)
+	}
+
+	// All-or-nothing: one entry that fails validation rejects the batch, so
+	// the clear listed beside it is not applied either.
+	request(http.MethodPut, `{"images":{"vtc":"","dids":"ghcr.io/o/dids:1-a"}}`, http.StatusServiceUnavailable)
+	if images := request(http.MethodGet, "", http.StatusOK); images["vtc"] != "ghcr.io/o/vtc:1-a" {
+		t.Fatalf("rejected batch still changed defaults: %v", images)
 	}
 	// The table's CHECK constraint keeps unknown components out even below the handler.
 	if err := scoped.Exec(`INSERT INTO image_defaults (component, image) VALUES ('bogus', 'x')`).Error; err == nil {
