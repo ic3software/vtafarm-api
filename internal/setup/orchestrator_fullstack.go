@@ -114,6 +114,15 @@ func (o *Orchestrator) fsSetStatus(sessionID uint, status string) {
 	})
 }
 
+// syncPlatformImageDefaults makes the images a platform stack has just proven
+// in a full run the user-facing defaults (no-op for any other session). The
+// default only steers pickers, so failing to write it is logged, not fatal.
+func (o *Orchestrator) syncPlatformImageDefaults(s *model.SetupSession) {
+	if err := model.SyncPlatformImageDefaults(o.db, s, model.UpgradeComponents...); err != nil {
+		log.Printf("[orchestrator] warn: session %d: could not sync image defaults: %v", s.ID, err)
+	}
+}
+
 // fsJobFailErr builds an error for a failed Job, appending its logs when
 // available — mirrors the inline pattern in runSetup/runProvision.
 func (o *Orchestrator) fsJobFailErr(ctx context.Context, ns, jobName, failMsg string) error {
