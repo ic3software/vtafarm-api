@@ -84,6 +84,19 @@ func TestSourceNeedsRelocationForHighOrUnsafeSources(t *testing.T) {
 	}
 }
 
+func TestExecutableRecommendationsExcludeUnsafeDestinations(t *testing.T) {
+	items := []PreviewItem{
+		{TargetNode: "worker-1", Allowed: true},
+		{Reason: "no eligible destination"},
+		{TargetNode: "worker-2", Allowed: true},
+	}
+
+	got := executableRecommendations(items)
+	if len(got) != 2 || got[0].TargetNode != "worker-1" || got[1].TargetNode != "worker-2" {
+		t.Fatalf("executableRecommendations() = %#v, want only allowed moves", got)
+	}
+}
+
 func TestNewTaskEventCapturesTransitionActorAndMetadata(t *testing.T) {
 	adminID := uint(17)
 	task := model.PlacementTask{ID: 23, PlanID: 11}
