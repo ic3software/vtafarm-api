@@ -9,17 +9,66 @@ VTA Farm can therefore remain heavily skewed even though every node is Ready.
 
 This policy is intended to:
 
-- spread tenant workloads across nodes without making provisioning depend on a
-  perfectly even cluster;
+- give an administrator a bounded manual correction when tenant workloads have
+  become materially unbalanced;
 - keep system and stateful infrastructure out of routine rebalancing;
 - make maintenance recovery predictable for workloads backed by Longhorn RWO
   volumes;
 - let an administrator inspect cluster load and move a selected VTA to an
   exact eligible node from the Admin Panel; and
-- apply the same policy to existing and newly created workloads.
+- return scheduling control to Kubernetes immediately after that selected move
+  completes.
 
 It is not intended to balance Longhorn replicas. Pod placement and replica
 placement are related operationally, but they are separate scheduling systems.
+It is also not a continuous rebalancer, an alternative scheduler, or durable
+node pinning. Normal imbalance is observed; substantial imbalance may produce
+an administrator-facing recommendation; only an administrator's explicit
+exact-node relocation may change a workload's placement.
+
+## Scheduling ownership invariant
+
+The Kubernetes default scheduler is the sole placement authority unless an
+administrator explicitly submits an exact-node relocation for a selected
+VTA-only workload. This is a product invariant, not an implementation detail.
+
+An approved relocation grants VTA Farm one narrow, one-shot authority: place
+the replacement Pod created for that relocation on the administrator-selected
+eligible node. That authority ends when the relocation reaches a terminal
+state. It must not become sticky Deployment desired state and must not carry
+forward to any later Pod replacement.
+
+Consequently, initial provisioning, image upgrades and rollbacks, resource or
+configuration updates, ordinary restarts, node-failure recovery, maintenance
+recovery, and every other non-relocation workflow must leave destination choice
+to the Kubernetes default scheduler. These workflows must not create or retain
+a placement scheduling gate, exact-hostname constraint, relocation reservation,
+or automatic placement plan merely because the workload was relocated before.
+
+Recommendations, node health labels, topology spread, and placement previews
+may inform an administrator or the default scheduler, but they do not authorize
+VTA Farm to choose a node. Reconciliation may normalize safe workload metadata
+and strategy; it is not relocation and must not silently acquire relocation
+authority.
+
+The purpose of relocation is therefore manual correction, not lasting
+optimization. When observed distribution becomes materially unbalanced, an
+administrator may choose a bounded set of corrective moves. VTA Farm executes
+only those reviewed mappings and then becomes observational again. It must not
+use the completed correction as permission to manage later scheduling.
+
+### Known implementation violation observed on 2026-11-12
+
+Release `v0.20.0` persists the relocation scheduling gate and placement affinity
+in the VTA Deployment template. Although the worker removes the gate from the
+reviewed Pod and releases its reservation and maintenance lock, a later image
+upgrade inherits the template gate. The worker then creates an automatic
+`provision` placement plan for that unrelated replacement.
+
+That behavior violates the scheduling ownership invariant above. A completed
+relocation must not grant authority over a later image rollout or any other Pod
+replacement. The implementation and its tests must be changed to make the gate
+one-shot; this document must not be weakened to preserve the current behavior.
 
 ## Production gap observed on 2026-11-02
 
@@ -219,8 +268,9 @@ tighten its node selector or required node affinity. The placement controller
 must:
 
 1. identify the VTA from stable workload labels and the owning Deployment;
-2. load the administrator-selected destination or the destination from an
-   approved recommendation;
+2. load the exact destination recorded in the administrator-reviewed
+   relocation; a system recommendation remains advisory until the administrator
+   explicitly approves that source-to-destination mapping;
 3. lock the placement records, recalculate live and reserved headroom, and
    atomically reserve the VTA's p95 memory on the destination;
 4. revalidate node readiness, taints, MemoryPressure, metric freshness, Vault,
@@ -231,10 +281,12 @@ must:
 7. wait for the default Kubernetes scheduler, volume attachment, and Pod
    readiness before committing the placement and releasing the reservation.
 
-The per-Pod hostname constraint is intentionally not stored in the Deployment
-template. It controls one scheduling decision without permanently pinning the
-VTA. A later Pod replacement receives a new scheduling gate and is evaluated
-against current capacity again.
+Both the per-Pod hostname constraint and the scheduling gate are one-shot
+relocation controls. They must not remain in the Deployment's durable desired
+state after the reviewed replacement is created. Completing, failing,
+cancelling, or rolling back the relocation revokes the relocation authority.
+Any later Pod replacement must be gate-free and must return destination choice
+to the Kubernetes default scheduler.
 
 If validation fails, leave the Pod gated, release any unusable reservation,
 and expose the blocking reason. Do not remove the gate merely to make the Pod
@@ -279,8 +331,15 @@ reservations, or accurate resource requests.
   per-node p95 reservations for those relocations.
 - Persist placement and relocation state so an API restart resumes an
   interrupted scale-down, detach, scheduling, attach, or readiness wait.
-- Let initial sessions use the default scheduler without waiting for placement
-  metrics or a placement-worker reservation.
+- Let initial sessions and every non-relocation replacement use the default
+  scheduler without waiting for placement metrics or a placement-worker
+  reservation.
+- Scope every scheduling gate to an active, administrator-reviewed relocation
+  task. A gated Pod without that task is an invariant violation to surface and
+  stop, not a request to create an automatic provisioning or placement plan.
+- Ensure image upgrades and rollbacks, resource or configuration updates,
+  restarts, and recovery never inherit relocation-only gates, affinity, exact
+  hostnames, or reservations from an earlier relocation.
 - Generate the same stable Pod labels through the shared VTA and component
   Deployment helpers without changing immutable Deployment selectors.
 - Apply `auto-rebalance=true` only to the explicitly approved VTA-only scope.
@@ -408,10 +467,11 @@ Deployment, the operation must:
    ConfigMaps, and user-specific settings;
 4. scale an RWO workload to zero, wait for its Pod to terminate, and verify that
    the Longhorn volume is healthy and detached;
-5. patch only Deployment metadata labels, Pod-template labels, the scheduling
-   gate, affinity, topology spread, and Deployment strategy;
-6. restore the desired replica count and let the placement controller process
-   the newly gated Pod; and
+5. patch only Deployment metadata labels, Pod-template labels, topology spread,
+   and Deployment strategy, without adding relocation-only scheduling gates,
+   affinity, or exact-hostname constraints;
+6. restore the desired replica count and let the Kubernetes default scheduler
+   place the replacement Pod; and
 7. wait for volume attachment, Pod readiness, and application health before
    marking that workload complete.
 
@@ -423,8 +483,9 @@ retain its original snapshot and expose retry and rollback actions without
 silently undoing successful entries.
 
 Changing only the Deployment strategy does not restart a Pod. Any Pod-template
-change does, so label, gate, and affinity reconciliation must use the same RWO
-handoff and rollback guarantees as an image rollout.
+change does, so label and topology reconciliation must use the same RWO handoff
+and rollback guarantees as an image rollout. Reconciliation must not use that
+restart as an implicit exact-node relocation.
 
 ## Admin-controlled load management
 
@@ -481,9 +542,12 @@ For each approved VTA-only relocation:
    `kubernetes.io/hostname` and remove the scheduling gate;
 7. wait for the default scheduler to bind it to the exact destination;
 8. wait for volume attachment, Pod readiness, and VTA application health;
-9. commit the new placement, release the reservation, and observe source and
-   destination through a cooldown window; and
-10. continue with the next entry in the administrator's placement plan.
+9. prove that durable Deployment desired state contains no relocation-only
+   gate, affinity, or exact-hostname constraint, without causing another Pod
+   replacement;
+10. commit the new placement, release the reservation, and observe source and
+    destination through a cooldown window; and
+11. continue with the next entry in the administrator's placement plan.
 
 Stop the plan before the next entry if the destination becomes ineligible, the
 replacement remains Pending, a volume is degraded or rebuilding, any node
@@ -632,11 +696,13 @@ Repositories: `vtafarm-api` and `vtafarm-k8s`.
 - Publish `memory-state` and `vta-eligible` node labels with threshold
   hysteresis and stale-metric fail-closed behavior.
 - Reuse one lightweight VTA placement inventory per poll for node refresh and
-  gated-Pod discovery. Keep PVC/PV/Longhorn enrichment in the Admin overview,
-  and read latest-backup metadata from `BackupVolume` summaries rather than
-  loading the complete backup history.
-- Watch gated VTA Pods, acquire an atomic reservation, tighten each Pod to the
-  chosen hostname, and remove the gate only after all health checks pass.
+  active-relocation recovery. Keep PVC/PV/Longhorn enrichment in the Admin
+  overview, and read latest-backup metadata from `BackupVolume` summaries
+  rather than loading the complete backup history.
+- Process a gated VTA Pod only when its identity matches an active,
+  administrator-reviewed relocation task. Acquire its atomic reservation,
+  tighten that Pod to the reviewed hostname, and remove the gate only after all
+  health checks pass. Never infer a new plan from a gated Pod alone.
 - Resume every non-terminal workflow after worker restart or leader change and
   expose worker health, queue depth, gated Pod age, reservation age, and
   workflow metrics.
@@ -671,8 +737,8 @@ Repository: `vtafarm-api`.
   described above.
 - Capture storage and Deployment identities before any scale operation.
 - For RWO workloads, perform graceful scale-down, full detach verification,
-  template reconciliation, gated restart, attachment, readiness, application
-  verification, and identity comparison.
+  template reconciliation, default-scheduled restart, attachment, readiness,
+  application verification, and identity comparison.
 - Preserve completed entries, stop on the first unsafe result, and support
   retry and rollback from the saved original template.
 - Assert at the Kubernetes fake-client and integration-test levels that this
@@ -703,6 +769,9 @@ Repositories: all three.
   mismatches.
 - Integration-test exact-node scheduling through a gated Pod and the default
   scheduler.
+- Integration-test that a successfully relocated workload later replaced by an
+  image upgrade, rollback, resource update, restart, or recovery has no gate,
+  creates no automatic placement plan, and is placed by the default scheduler.
 - Test controller termination at every workflow state, including replica zero,
   detach complete, gated Pod created, gate removed, volume attaching, and Pod
   Ready before the database commit.
@@ -733,8 +802,9 @@ remaining workloads through the single Admin Panel `Apply all` operation.
   destination.
 - Green, yellow, and orange preferences are generated exactly as configured,
   without claiming a strict lowest-memory choice from scheduler preferences.
-- Initial sessions proceed through the default Kubernetes scheduler without a
-  placement reservation or durable provisioning plan.
+- Initial sessions and all non-relocation replacements proceed through the
+  default Kubernetes scheduler without a placement reservation or durable
+  provisioning plan.
 - Concurrent relocations cannot reserve the same node headroom twice;
   reservations are atomic, durable, included in projected utilization, and
   recovered after controller restarts.
@@ -743,8 +813,15 @@ remaining workloads through the single Admin Panel `Apply all` operation.
 - Generated VTA-only Deployments contain soft topology spread but no initial
   placement scheduling gate or eligibility affinity.
 - A gated Pod is assigned to the exact administrator-selected eligible node by
-  tightening only that Pod's affinity; the Deployment is not permanently
-  pinned to the destination.
+  tightening only that Pod's affinity; the Deployment retains no gate,
+  relocation affinity, or exact-hostname constraint after the one-shot move.
+- A later image upgrade, rollback, resource or configuration update, restart,
+  node-failure recovery, or maintenance recovery of a relocated workload does
+  not create an automatic placement plan and leaves destination choice to the
+  Kubernetes default scheduler.
+- The placement worker rejects and reports a gated Pod that is not backed by an
+  active, administrator-reviewed relocation task; it never treats that Pod as
+  implicit authorization to place the workload.
 - Existing Deployment selectors are unchanged.
 - Single-replica RWO Deployments use `Recreate`; stateless Deployments retain
   `RollingUpdate`.

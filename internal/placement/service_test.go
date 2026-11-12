@@ -1,6 +1,7 @@
 package placement
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -83,6 +84,19 @@ func TestSourceNeedsRelocationForHighOrUnsafeSources(t *testing.T) {
 	}
 }
 
+func TestExecutableRecommendationsExcludeUnsafeDestinations(t *testing.T) {
+	items := []PreviewItem{
+		{TargetNode: "worker-1", Allowed: true},
+		{Reason: "no eligible destination"},
+		{TargetNode: "worker-2", Allowed: true},
+	}
+
+	got := executableRecommendations(items)
+	if len(got) != 2 || got[0].TargetNode != "worker-1" || got[1].TargetNode != "worker-2" {
+		t.Fatalf("executableRecommendations() = %#v, want only allowed moves", got)
+	}
+}
+
 func TestNewTaskEventCapturesTransitionActorAndMetadata(t *testing.T) {
 	adminID := uint(17)
 	task := model.PlacementTask{ID: 23, PlanID: 11}
@@ -149,25 +163,31 @@ func TestCompletePlanIfDoneCompletesPlanImmediately(t *testing.T) {
 	}
 }
 
-func TestAcquireLockAndReservationAllowsProvisionPlanDuringUpgrade(t *testing.T) {
+func TestAcquireLockAndReservationRejectsProvisionPlanDuringUpgrade(t *testing.T) {
 	db := testutil.Postgres(t)
 	session := testutil.SetupSession(t, db, model.ModeVtaOnly)
 	createActiveUpgrade(t, db, session)
 	task := createPlacementTask(t, db, session.ID, model.PlacementPlanProvision)
 
 	runner := Runner{db: db}
-	if err := db.Transaction(func(tx *gorm.DB) error {
+	err := db.Transaction(func(tx *gorm.DB) error {
 		return runner.acquireLockAndReservation(tx, &task, "worker-2", time.Now().UTC())
-	}); err != nil {
-		t.Fatalf("provisioning reservation during upgrade: %v", err)
+	})
+	if err == nil || !strings.Contains(err.Error(), "active upgrade") {
+		t.Fatalf("legacy provision reservation error = %v, want active upgrade rejection", err)
 	}
+}
 
-	var reservations int64
-	if err := db.Model(&model.PlacementReservation{}).Where("task_id = ? AND status = ?", task.ID, "active").Count(&reservations).Error; err != nil {
-		t.Fatal(err)
-	}
-	if reservations != 1 {
-		t.Fatalf("active reservations = %d, want 1", reservations)
+func TestAdvanceRejectsLegacyProvisionPlan(t *testing.T) {
+	db := testutil.Postgres(t)
+	session := testutil.SetupSession(t, db, model.ModeVtaOnly)
+	plan := model.PlacementPlan{Kind: model.PlacementPlanProvision, Status: model.PlacementPlanRunning}
+	task := model.PlacementTask{SessionID: session.ID, State: model.PlacementRequested}
+
+	runner := Runner{db: db}
+	err := runner.advance(context.Background(), &plan, &task, nil)
+	if err == nil || !strings.Contains(err.Error(), "automatic provision placement is retired") {
+		t.Fatalf("legacy provision advance error = %v, want retired workflow rejection", err)
 	}
 }
 

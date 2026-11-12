@@ -195,7 +195,20 @@ func (s *Service) Preview(ctx context.Context, items []PlanItem, all bool) ([]Pr
 		}
 		result = append(result, preview)
 	}
+	if all {
+		result = executableRecommendations(result)
+	}
 	return result, nil
+}
+
+func executableRecommendations(items []PreviewItem) []PreviewItem {
+	result := make([]PreviewItem, 0, len(items))
+	for _, item := range items {
+		if item.Allowed {
+			result = append(result, item)
+		}
+	}
+	return result
 }
 
 func safestNode(nodes []k8s.NodePlacement, projected map[string]int64, p95 int64, hotAt int) string {

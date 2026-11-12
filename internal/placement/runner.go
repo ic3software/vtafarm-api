@@ -56,11 +56,14 @@ func (r *Runner) cycle(ctx context.Context) {
 	if err := r.refreshNodes(ctx, placements); err != nil {
 		log.Printf("[placement] refresh nodes: %v", err)
 	}
+	if err := r.cleanupCompletedRelocationPolicies(ctx, placements); err != nil {
+		log.Printf("[placement] clean one-shot relocation policy: %v", err)
+	}
+	if err := r.reportUnexpectedGatedPods(ctx, placements); err != nil {
+		log.Printf("[placement] inspect gated VTA pods: %v", err)
+	}
 	if r.cfg.Mode == config.PlacementDisabled {
 		return
-	}
-	if err := r.ensureProvisionPlans(ctx, placements); err != nil {
-		log.Printf("[placement] discover gated VTA pods: %v", err)
 	}
 	var plans []model.PlacementPlan
 	if err := r.db.Where("status = ?", model.PlacementPlanRunning).Order("id").Find(&plans).Error; err != nil {
@@ -74,56 +77,74 @@ func (r *Runner) cycle(ctx context.Context) {
 	}
 }
 
-func (r *Runner) ensureProvisionPlans(ctx context.Context, placements []k8s.VTAPlacement) error {
+func (r *Runner) cleanupCompletedRelocationPolicies(ctx context.Context, placements []k8s.VTAPlacement) error {
+	var cleanupErrors []error
+	for _, placement := range placements {
+		if !placement.TemplateGated || placement.PodName == "" || placement.PodUID == "" {
+			continue
+		}
+		active, err := r.hasActiveReviewedRelocation(ctx, placement.SessionID)
+		if err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("session %d: %w", placement.SessionID, err))
+			continue
+		}
+		if active {
+			continue
+		}
+		var task model.PlacementTask
+		err = r.db.WithContext(ctx).Model(&model.PlacementTask{}).
+			Select("placement_tasks.*").
+			Joins("JOIN placement_plans ON placement_plans.id = placement_tasks.plan_id").
+			Where("placement_tasks.session_id = ? AND placement_tasks.state = ? AND placement_plans.kind IN ?",
+				placement.SessionID, model.PlacementCompleted, []string{model.PlacementPlanReconcile, model.PlacementPlanRelocate}).
+			Order("placement_tasks.id DESC").First(&task).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("load session %d relocation snapshot: %w", placement.SessionID, err))
+			continue
+		}
+		deploymentUID := placement.DeploymentUID
+		var snapshot []byte
+		if err == nil && task.DeploymentUID == placement.DeploymentUID {
+			deploymentUID = task.DeploymentUID
+			snapshot = task.DeploymentSnapshot
+		}
+		if err := r.k8s.FinalizeVTAOneShotRelocation(
+			ctx, placement.Namespace, placement.SessionID, deploymentUID,
+			placement.PodName, placement.PodUID, snapshot,
+		); err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("session %d: %w", placement.SessionID, err))
+			continue
+		}
+		log.Printf("[placement] session %d: removed stale one-shot relocation policy", placement.SessionID)
+	}
+	return errors.Join(cleanupErrors...)
+}
+
+func (r *Runner) reportUnexpectedGatedPods(ctx context.Context, placements []k8s.VTAPlacement) error {
 	for _, placement := range placements {
 		if !placement.Gated || placement.PodUID == "" {
 			continue
 		}
-		if r.cfg.Mode == config.PlacementCanary && !containsSession(r.cfg.CanarySessionIDs, placement.SessionID) {
-			continue
-		}
-		err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			var active int64
-			if err := tx.Model(&model.PlacementTask{}).Where(
-				"session_id = ? AND (state NOT IN ? OR (state = ? AND pod_uid = ?))", placement.SessionID,
-				[]string{model.PlacementCompleted, model.PlacementFailed, model.PlacementCancelled, model.PlacementRolledBack},
-				model.PlacementFailed, placement.PodUID,
-			).Count(&active).Error; err != nil {
-				return err
-			}
-			if active > 0 {
-				return nil
-			}
-			var session model.SetupSession
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&session, placement.SessionID).Error; err != nil {
-				return err
-			}
-			if session.Mode != model.ModeVtaOnly || session.Status == "failed" || session.Status == "deleting" {
-				return nil
-			}
-			plan := model.PlacementPlan{Kind: model.PlacementPlanProvision, Status: model.PlacementPlanRunning}
-			if err := tx.Create(&plan).Error; err != nil {
-				return err
-			}
-			if err := recordPlanEvent(tx, plan.ID, "", model.PlacementPlanRunning, model.PlacementActorWorker, nil, "automatic provisioning plan created"); err != nil {
-				return err
-			}
-			task := model.PlacementTask{
-				PlanID: plan.ID, SessionID: placement.SessionID, Component: "vta",
-				State: model.PlacementRequested, P95MemoryBytes: r.service.p95,
-				Namespace: placement.Namespace, DeploymentName: placement.DeploymentName,
-				DeploymentUID: placement.DeploymentUID, PodUID: placement.PodUID,
-			}
-			if err := tx.Create(&task).Error; err != nil {
-				return err
-			}
-			return recordTaskEvent(tx, &task, "", model.PlacementRequested, model.PlacementActorWorker, nil, "gated Pod discovered", map[string]any{"pod_uid": task.PodUID})
-		})
+		active, err := r.hasActiveReviewedRelocation(ctx, placement.SessionID)
 		if err != nil {
-			return fmt.Errorf("session %d: %w", placement.SessionID, err)
+			return err
+		}
+		if !active {
+			log.Printf("[placement] invariant violation: session %d Pod %s is gated without an active reviewed relocation", placement.SessionID, placement.PodUID)
 		}
 	}
 	return nil
+}
+
+func (r *Runner) hasActiveReviewedRelocation(ctx context.Context, sessionID uint) (bool, error) {
+	var count int64
+	err := r.db.WithContext(ctx).Model(&model.PlacementTask{}).
+		Joins("JOIN placement_plans ON placement_plans.id = placement_tasks.plan_id").
+		Where("placement_tasks.session_id = ? AND placement_plans.status = ? AND placement_plans.kind IN ? AND placement_tasks.state NOT IN ?",
+			sessionID, model.PlacementPlanRunning, []string{model.PlacementPlanReconcile, model.PlacementPlanRelocate},
+			[]string{model.PlacementCompleted, model.PlacementFailed, model.PlacementCancelled, model.PlacementRolledBack}).
+		Count(&count).Error
+	return count > 0, err
 }
 
 func (r *Runner) refreshNodes(ctx context.Context, placements []k8s.VTAPlacement) error {
@@ -258,10 +279,10 @@ func (r *Runner) advance(ctx context.Context, plan *model.PlacementPlan, task *m
 	if r.cfg.Mode == config.PlacementCanary && !containsSession(r.cfg.CanarySessionIDs, session.ID) {
 		return fmt.Errorf("session is not in the placement canary allowlist")
 	}
-	namespace := r.k8s.UserNamespace(fmt.Sprintf("%d", session.UserID))
 	if plan.Kind == model.PlacementPlanProvision {
-		return r.advanceProvision(ctx, task, namespace, placements)
+		return errors.New("automatic provision placement is retired; Kubernetes owns non-relocation scheduling")
 	}
+	namespace := r.k8s.UserNamespace(fmt.Sprintf("%d", session.UserID))
 	if session.Status != "running" {
 		return fmt.Errorf("session is not a running VTA-only workload")
 	}
@@ -342,94 +363,15 @@ func (r *Runner) advance(ctx context.Context, plan *model.PlacementPlan, task *m
 		if identity.LonghornState != "attached" || identity.LonghornRobustness == "faulted" {
 			return fmt.Errorf("Longhorn volume is %s/%s", identity.LonghornState, identity.LonghornRobustness)
 		}
+		if err := r.k8s.FinalizeVTAOneShotRelocation(
+			ctx, namespace, session.ID, task.DeploymentUID, pod.Name, string(pod.UID), task.DeploymentSnapshot,
+		); err != nil {
+			return err
+		}
 		return r.complete(task, string(pod.UID))
 	default:
 		return fmt.Errorf("unsupported placement state %s", task.State)
 	}
-}
-
-func (r *Runner) advanceProvision(ctx context.Context, task *model.PlacementTask, namespace string, placements []k8s.VTAPlacement) error {
-	switch task.State {
-	case model.PlacementRequested, model.PlacementValidating:
-		for _, placement := range placements {
-			if placement.SessionID == task.SessionID && placement.PodUID == task.PodUID && !placement.Gated && task.TargetNode != "" {
-				return r.setState(task, model.PlacementWaitingReady, nil)
-			}
-		}
-		return r.validateProvisionAndReserve(ctx, task, namespace, placements)
-	case model.PlacementReserved, model.PlacementAssigningTargetNode:
-		placement, err := r.gatedPlacement(placements, task.SessionID, task.PodUID)
-		if err != nil {
-			return err
-		}
-		if _, err := r.k8s.AssignGatedPod(ctx, placement.Namespace, placement.PodName, task.TargetNode); err != nil {
-			return err
-		}
-		return r.setState(task, model.PlacementWaitingReady, nil)
-	case model.PlacementWaitingVolumeAttach, model.PlacementWaitingReady:
-		pod, err := r.k8s.WaitVTAReadyOnNode(ctx, namespace, task.SessionID, task.TargetNode, placementStepTimeout)
-		if err != nil {
-			return err
-		}
-		identity, err := r.k8s.InspectVTAStorage(ctx, namespace, task.SessionID)
-		if err != nil {
-			return err
-		}
-		if !matchesTaskStorage(task, identity) {
-			return errors.New("storage identity changed during initial placement")
-		}
-		if identity.LonghornState != "attached" || identity.LonghornRobustness == "faulted" {
-			return fmt.Errorf("Longhorn volume is %s/%s", identity.LonghornState, identity.LonghornRobustness)
-		}
-		return r.complete(task, string(pod.UID))
-	default:
-		return fmt.Errorf("unsupported initial placement state %s", task.State)
-	}
-}
-
-func (r *Runner) validateProvisionAndReserve(ctx context.Context, task *model.PlacementTask, namespace string, placements []k8s.VTAPlacement) error {
-	if err := r.setState(task, model.PlacementValidating, nil); err != nil {
-		return err
-	}
-	placement, err := r.gatedPlacement(placements, task.SessionID, task.PodUID)
-	if err != nil {
-		return err
-	}
-	identity, err := r.k8s.InspectVTAStorage(ctx, namespace, task.SessionID)
-	if err != nil {
-		return err
-	}
-	if identity.LonghornRobustness == "faulted" {
-		return errors.New("Longhorn volume is faulted")
-	}
-	target, err := r.chooseTarget(ctx, task, placements)
-	if err != nil {
-		return err
-	}
-	now := time.Now().UTC()
-	return r.db.Transaction(func(tx *gorm.DB) error {
-		if err := r.acquireLockAndReservation(tx, task, target, now); err != nil {
-			return err
-		}
-		return transitionTask(tx, task, model.PlacementReserved, map[string]any{
-			"target_node": target, "namespace": namespace,
-			"deployment_name": placement.DeploymentName, "deployment_uid": placement.DeploymentUID,
-			"pod_uid": placement.PodUID, "pvc_name": identity.PVCName, "pvc_uid": identity.PVCUID,
-			"pv_name": identity.PVName, "pv_uid": identity.PVUID, "csi_volume_handle": identity.CSIVolumeHandle,
-			"longhorn_volume": identity.LonghornVolume, "last_backup_name": identity.LastBackupName,
-			"last_backup_at": identity.LastBackupAt, "started_at": now,
-		}, model.PlacementActorWorker, nil, "destination capacity reserved")
-	})
-}
-
-func (r *Runner) gatedPlacement(placements []k8s.VTAPlacement, sessionID uint, podUID string) (*k8s.VTAPlacement, error) {
-	for i := range placements {
-		placement := &placements[i]
-		if placement.SessionID == sessionID && placement.Gated && (podUID == "" || placement.PodUID == podUID) {
-			return placement, nil
-		}
-	}
-	return nil, errors.New("gated VTA pod disappeared or was replaced")
 }
 
 func (r *Runner) chooseTarget(ctx context.Context, task *model.PlacementTask, placements []k8s.VTAPlacement) (string, error) {
@@ -468,22 +410,13 @@ func (r *Runner) acquireLockAndReservation(tx *gorm.DB, task *model.PlacementTas
 	if session.Status == "deleting" || session.Status == "failed" {
 		return fmt.Errorf("session is %s", session.Status)
 	}
-	var plan model.PlacementPlan
-	if err := tx.Select("kind").First(&plan, task.PlanID).Error; err != nil {
+	var conflicting int64
+	if err := tx.Model(&model.UpgradeTask{}).Where("session_id = ? AND status IN ?", task.SessionID,
+		[]string{model.UpgradeTaskPending, model.UpgradeTaskRunning, model.UpgradeTaskRollingBack}).Count(&conflicting).Error; err != nil {
 		return err
 	}
-	var conflicting int64
-	// A provisioning plan releases the gated Pod created by an upgrade or its
-	// rollback. Blocking that plan on the upgrade would leave both workers
-	// waiting for the other to finish.
-	if plan.Kind != model.PlacementPlanProvision {
-		if err := tx.Model(&model.UpgradeTask{}).Where("session_id = ? AND status IN ?", task.SessionID,
-			[]string{model.UpgradeTaskPending, model.UpgradeTaskRunning, model.UpgradeTaskRollingBack}).Count(&conflicting).Error; err != nil {
-			return err
-		}
-		if conflicting > 0 {
-			return errors.New("session has an active upgrade")
-		}
+	if conflicting > 0 {
+		return errors.New("session has an active upgrade")
 	}
 	if err := tx.Model(&model.VtaAclSnapshot{}).Where("session_id = ? AND maintenance_started_at IS NOT NULL", task.SessionID).Count(&conflicting).Error; err != nil {
 		return err
