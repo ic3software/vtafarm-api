@@ -57,6 +57,39 @@ func TestCreateVtaDeploymentUsesHealthReadinessProbe(t *testing.T) {
 	}
 }
 
+func TestCreateVtaDeploymentSetsTuningEnv(t *testing.T) {
+	client := &Client{kube: fake.NewSimpleClientset()}
+
+	if err := client.CreateVtaDeployment(context.Background(), "test", 42, "example/vta:test", ComponentResources("10m", "16Mi", "64Mi")); err != nil {
+		t.Fatalf("CreateVtaDeployment() error = %v", err)
+	}
+	deployment, err := client.kube.AppsV1().Deployments("test").Get(
+		context.Background(), VtaDeploymentName(42), metav1.GetOptions{},
+	)
+	if err != nil {
+		t.Fatalf("get Deployment: %v", err)
+	}
+	env := map[string]string{}
+	for _, item := range deployment.Spec.Template.Spec.Containers[0].Env {
+		env[item.Name] = item.Value
+	}
+	want := map[string]string{
+		"STORAGE_FJALL_BLOCK_CACHE":  "8388608",
+		"STORAGE_FJALL_WRITE_BUFFER": "16777216",
+		"STORAGE_FJALL_MAX_JOURNAL":  "67108864",
+		"MALLOC_ARENA_MAX":           "2",
+	}
+	for name, value := range want {
+		if env[name] != value {
+			t.Errorf("%s = %q, want %q", name, env[name], value)
+		}
+	}
+	// A new Deployment must already be what the upgrade path converges to.
+	if ensureVtaTuningEnv(deployment) {
+		t.Fatal("a freshly created VTA Deployment is missing tuning env")
+	}
+}
+
 func TestCreateVtaDeploymentUsesDefaultSchedulerWhenPlacementEnabled(t *testing.T) {
 	client := &Client{kube: fake.NewSimpleClientset(), placementMode: config.PlacementEnabled}
 
