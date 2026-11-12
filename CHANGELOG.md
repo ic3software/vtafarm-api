@@ -1,5 +1,22 @@
 # Changelog
 
+## [v0.20.0] - 2026-11-12
+
+### Added
+
+- Administrators can enable maintenance mode with a custom message only after
+  active workflows finish, inspect operations that block the transition, and
+  keep administrative maintenance work available while user mutations are
+  paused.
+
+### Changed
+
+- Image defaults now track the images successfully deployed for all five
+  Platform Stack components, and administrators can update multiple defaults
+  atomically.
+- Existing Platform Stack component images are backfilled as defaults without
+  replacing previously configured values.
+
 ## [v0.19.3] - 2026-11-09
 
 ### Changed
