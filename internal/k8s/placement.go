@@ -12,7 +12,9 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 )
 
@@ -39,6 +41,7 @@ type VTAPlacement struct {
 	NodeName       string          `json:"node_name,omitempty"`
 	Ready          bool            `json:"ready"`
 	Gated          bool            `json:"gated"`
+	TemplateGated  bool            `json:"-"`
 	MemoryRequest  int64           `json:"memory_request_bytes"`
 	Storage        StorageIdentity `json:"storage"`
 }
@@ -59,6 +62,7 @@ type NodePlacement struct {
 type DeploymentPlacementSnapshot struct {
 	Labels   map[string]string         `json:"labels"`
 	Replicas int32                     `json:"replicas"`
+	Paused   bool                      `json:"paused"`
 	Strategy appsv1.DeploymentStrategy `json:"strategy"`
 	Template corev1.PodTemplateSpec    `json:"template"`
 }
@@ -100,6 +104,7 @@ func (c *Client) ListVTAPlacements(ctx context.Context) ([]VTAPlacement, error) 
 		placement := VTAPlacement{
 			SessionID: uint(sessionID64), Namespace: deployment.Namespace,
 			DeploymentName: deployment.Name, DeploymentUID: string(deployment.UID),
+			TemplateGated: hasSchedulingGateInTemplate(&deployment.Spec.Template, PlacementGateName),
 		}
 		if len(deployment.Spec.Template.Spec.Containers) > 0 {
 			placement.MemoryRequest = deployment.Spec.Template.Spec.Containers[0].Resources.Requests.Memory().Value()
@@ -356,7 +361,7 @@ func (c *Client) SnapshotVTADeployment(ctx context.Context, namespace string, se
 	}
 	snapshot, err := json.Marshal(DeploymentPlacementSnapshot{
 		Labels: deployment.Labels, Replicas: replicas,
-		Strategy: deployment.Spec.Strategy, Template: deployment.Spec.Template,
+		Paused: deployment.Spec.Paused, Strategy: deployment.Spec.Strategy, Template: deployment.Spec.Template,
 	})
 	if err != nil {
 		return nil, 0, "", fmt.Errorf("marshal deployment snapshot: %w", err)
@@ -396,6 +401,7 @@ func (c *Client) RestoreVTADeploymentSnapshot(ctx context.Context, namespace str
 			return errors.New("Deployment identity changed; refusing snapshot rollback")
 		}
 		deployment.Labels = snapshot.Labels
+		deployment.Spec.Paused = snapshot.Paused
 		deployment.Spec.Strategy = snapshot.Strategy
 		deployment.Spec.Template = snapshot.Template
 		deployment.Spec.Replicas = &snapshot.Replicas
@@ -406,6 +412,207 @@ func (c *Client) RestoreVTADeploymentSnapshot(ctx context.Context, namespace str
 		return fmt.Errorf("restore VTA deployment %s: %w", name, err)
 	}
 	return nil
+}
+
+// FinalizeVTAOneShotRelocation removes the temporary scheduling policy from
+// both Deployment and ReplicaSet desired state without replacing the Pod that
+// just completed the reviewed relocation. The Deployment is paused while its
+// owned ReplicaSets are normalized so the controller cannot interpret the
+// cleanup as a second rollout.
+func (c *Client) FinalizeVTAOneShotRelocation(
+	ctx context.Context,
+	namespace string,
+	sessionID uint,
+	deploymentUID string,
+	podName string,
+	podUID string,
+	rawSnapshot []byte,
+) error {
+	snapshot := DeploymentPlacementSnapshot{}
+	if len(rawSnapshot) > 0 && json.Unmarshal(rawSnapshot, &snapshot) != nil {
+		return errors.New("saved Deployment snapshot is invalid")
+	}
+	restoreGates := withoutSchedulingGate(snapshot.Template.Spec.SchedulingGates, PlacementGateName)
+	restoreAffinity := snapshot.Template.Spec.Affinity
+	if apiequality.Semantic.DeepEqual(restoreAffinity, VTAPlacementAffinity()) {
+		restoreAffinity = nil
+	}
+
+	pod, err := c.kube.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("get relocated Pod %s: %w", podName, err)
+	}
+	if podUID != "" && string(pod.UID) != podUID {
+		return errors.New("relocated Pod identity changed before policy cleanup")
+	}
+	podOwner := metav1.GetControllerOf(pod)
+	if podOwner == nil || podOwner.Kind != "ReplicaSet" || podOwner.Name == "" {
+		return errors.New("relocated Pod is not controlled by a ReplicaSet")
+	}
+
+	name := VtaDeploymentName(sessionID)
+	deployment, err := c.kube.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("get VTA deployment %s: %w", name, err)
+	}
+	if deploymentUID != "" && string(deployment.UID) != deploymentUID {
+		return errors.New("Deployment identity changed before relocation policy cleanup")
+	}
+	owned, err := c.ownedReplicaSets(ctx, deployment)
+	if err != nil {
+		return err
+	}
+	currentOwned := false
+	needsCleanup := hasManagedRelocationPolicy(&deployment.Spec.Template)
+	for i := range owned {
+		if owned[i].Name == podOwner.Name && owned[i].UID == podOwner.UID {
+			currentOwned = true
+		}
+		needsCleanup = needsCleanup || hasManagedRelocationPolicy(&owned[i].Spec.Template)
+	}
+	if !currentOwned {
+		return errors.New("relocated Pod ReplicaSet is not owned by the expected Deployment")
+	}
+	if !needsCleanup {
+		return nil
+	}
+
+	if !deployment.Spec.Paused {
+		deployment.Spec.Paused = true
+		deployment, err = c.kube.AppsV1().Deployments(namespace).Update(ctx, deployment, metav1.UpdateOptions{})
+		if err != nil {
+			return fmt.Errorf("pause VTA deployment %s: %w", name, err)
+		}
+		if err := c.waitDeploymentObserved(ctx, namespace, name, deployment.UID, deployment.Generation, true); err != nil {
+			return err
+		}
+	}
+
+	owned, err = c.ownedReplicaSets(ctx, deployment)
+	if err != nil {
+		return err
+	}
+	for i := range owned {
+		if !hasManagedRelocationPolicy(&owned[i].Spec.Template) {
+			continue
+		}
+		rsName := owned[i].Name
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			rs, getErr := c.kube.AppsV1().ReplicaSets(namespace).Get(ctx, rsName, metav1.GetOptions{})
+			if getErr != nil {
+				return getErr
+			}
+			if owner := metav1.GetControllerOf(rs); owner == nil || owner.UID != deployment.UID {
+				return errors.New("ReplicaSet ownership changed during relocation policy cleanup")
+			}
+			restoreRelocationPolicy(&rs.Spec.Template, restoreGates, restoreAffinity)
+			_, updateErr := c.kube.AppsV1().ReplicaSets(namespace).Update(ctx, rs, metav1.UpdateOptions{})
+			return updateErr
+		}); err != nil {
+			return fmt.Errorf("clean ReplicaSet %s relocation policy: %w", rsName, err)
+		}
+	}
+
+	currentRS, err := c.kube.AppsV1().ReplicaSets(namespace).Get(ctx, podOwner.Name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("reload relocated Pod ReplicaSet: %w", err)
+	}
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		current, getErr := c.kube.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+		if getErr != nil {
+			return getErr
+		}
+		if current.UID != deployment.UID {
+			return errors.New("Deployment identity changed during relocation policy cleanup")
+		}
+		desired := current.Spec.Template.DeepCopy()
+		restoreRelocationPolicy(desired, restoreGates, restoreAffinity)
+		if !podTemplatesEqualIgnoreHash(&currentRS.Spec.Template, desired) {
+			return errors.New("clean ReplicaSet template does not match Deployment desired state")
+		}
+		current.Spec.Template = *desired
+		current.Spec.Paused = snapshot.Paused
+		_, updateErr := c.kube.AppsV1().Deployments(namespace).Update(ctx, current, metav1.UpdateOptions{})
+		return updateErr
+	}); err != nil {
+		return fmt.Errorf("finalize VTA deployment %s relocation policy: %w", name, err)
+	}
+
+	// A Pod which is still gated has not been scheduled and cannot have mounted
+	// the RWO volume. Recreate it from the now-clean ReplicaSet so Kubernetes,
+	// rather than VTA Farm, chooses its node.
+	if hasSchedulingGate(pod, PlacementGateName) {
+		if err := c.kube.CoreV1().Pods(namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil {
+			return fmt.Errorf("replace stale gated Pod %s: %w", pod.Name, err)
+		}
+	}
+	return nil
+}
+
+func (c *Client) ownedReplicaSets(ctx context.Context, deployment *appsv1.Deployment) ([]appsv1.ReplicaSet, error) {
+	selector, err := metav1.LabelSelectorAsSelector(deployment.Spec.Selector)
+	if err != nil {
+		return nil, fmt.Errorf("deployment selector: %w", err)
+	}
+	items, err := c.kube.AppsV1().ReplicaSets(deployment.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selector.String()})
+	if err != nil {
+		return nil, fmt.Errorf("list VTA ReplicaSets: %w", err)
+	}
+	result := make([]appsv1.ReplicaSet, 0, len(items.Items))
+	for i := range items.Items {
+		owner := metav1.GetControllerOf(&items.Items[i])
+		if owner != nil && owner.UID == deployment.UID {
+			result = append(result, items.Items[i])
+		}
+	}
+	return result, nil
+}
+
+func (c *Client) waitDeploymentObserved(ctx context.Context, namespace, name string, uid types.UID, generation int64, paused bool) error {
+	deadline := time.NewTimer(30 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		deployment, err := c.kube.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if deployment.UID != uid {
+			return errors.New("Deployment identity changed while waiting for pause")
+		}
+		if deployment.Spec.Paused == paused && deployment.Status.ObservedGeneration >= generation {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("timeout waiting for Deployment %s pause to be observed", name)
+		case <-ticker.C:
+		}
+	}
+}
+
+func hasManagedRelocationPolicy(template *corev1.PodTemplateSpec) bool {
+	return hasSchedulingGateInTemplate(template, PlacementGateName) ||
+		apiequality.Semantic.DeepEqual(template.Spec.Affinity, VTAPlacementAffinity())
+}
+
+func restoreRelocationPolicy(template *corev1.PodTemplateSpec, gates []corev1.PodSchedulingGate, affinity *corev1.Affinity) {
+	template.Spec.SchedulingGates = append([]corev1.PodSchedulingGate(nil), gates...)
+	if affinity == nil {
+		template.Spec.Affinity = nil
+	} else {
+		template.Spec.Affinity = affinity.DeepCopy()
+	}
+}
+
+func podTemplatesEqualIgnoreHash(left, right *corev1.PodTemplateSpec) bool {
+	leftCopy, rightCopy := left.DeepCopy(), right.DeepCopy()
+	delete(leftCopy.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
+	delete(rightCopy.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
+	return apiequality.Semantic.DeepEqual(leftCopy, rightCopy)
 }
 
 func (c *Client) ScaleVTADeployment(ctx context.Context, namespace string, sessionID uint, replicas int32) error {
@@ -478,12 +685,26 @@ func (c *Client) WaitForGatedVTAPod(ctx context.Context, namespace string, sessi
 }
 
 func hasSchedulingGate(pod *corev1.Pod, name string) bool {
-	for _, gate := range pod.Spec.SchedulingGates {
+	return hasSchedulingGateInTemplate(&corev1.PodTemplateSpec{Spec: pod.Spec}, name)
+}
+
+func hasSchedulingGateInTemplate(template *corev1.PodTemplateSpec, name string) bool {
+	for _, gate := range template.Spec.SchedulingGates {
 		if gate.Name == name {
 			return true
 		}
 	}
 	return false
+}
+
+func withoutSchedulingGate(gates []corev1.PodSchedulingGate, name string) []corev1.PodSchedulingGate {
+	result := make([]corev1.PodSchedulingGate, 0, len(gates))
+	for _, gate := range gates {
+		if gate.Name != name {
+			result = append(result, gate)
+		}
+	}
+	return result
 }
 
 func (c *Client) AssignGatedPod(ctx context.Context, namespace, podName, targetNode string) (*corev1.Pod, error) {
@@ -507,13 +728,7 @@ func (c *Client) AssignGatedPod(ctx context.Context, namespace, podName, targetN
 			pod.Spec.NodeSelector = map[string]string{}
 		}
 		pod.Spec.NodeSelector[corev1.LabelHostname] = targetNode
-		gates := pod.Spec.SchedulingGates[:0]
-		for _, gate := range pod.Spec.SchedulingGates {
-			if gate.Name != PlacementGateName {
-				gates = append(gates, gate)
-			}
-		}
-		pod.Spec.SchedulingGates = gates
+		pod.Spec.SchedulingGates = withoutSchedulingGate(pod.Spec.SchedulingGates, PlacementGateName)
 		updated, err = c.kube.CoreV1().Pods(namespace).Update(ctx, pod, metav1.UpdateOptions{})
 		return err
 	})
