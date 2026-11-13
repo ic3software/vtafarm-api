@@ -63,12 +63,47 @@ func vtaServiceName(sessionID uint) string {
 const VtaServiceAccount = "vta"
 
 // VtaTuningEnv is shared by the VTA-only and full-stack Deployments.
+//
+// MALLOC_ARENA_MAX caps glibc's per-thread malloc arenas. The VTA runs ~24
+// threads, and without the cap each arena keeps the memory a burst of requests
+// freed, so the pod stays near its high-water mark long after going idle. On
+// staging the same light session left a VTA at 50Mi without the cap and 18Mi
+// with it. glibc reads the variable once at process start.
 func VtaTuningEnv() []corev1.EnvVar {
 	return []corev1.EnvVar{
 		{Name: "STORAGE_FJALL_BLOCK_CACHE", Value: "8388608"},   // 8 MiB
 		{Name: "STORAGE_FJALL_WRITE_BUFFER", Value: "16777216"}, // 16 MiB
 		{Name: "STORAGE_FJALL_MAX_JOURNAL", Value: "67108864"},  // 64 MiB
+		{Name: "MALLOC_ARENA_MAX", Value: "2"},
 	}
+}
+
+// ensureVtaTuningEnv adds any VtaTuningEnv variable a VTA Deployment is
+// missing. Deployments are only ever created from the template, never
+// re-rendered, so one created before a variable existed would otherwise lack
+// it forever. It only adds: a value already set is left alone, because
+// operators tune individual VTAs by hand. Deployments that are not a VTA are
+// not touched. Reports whether it changed anything.
+func ensureVtaTuningEnv(deployment *appsv1.Deployment) bool {
+	if app := deployment.Labels["app"]; app != "vta" && app != "fs-vta" {
+		return false
+	}
+	if len(deployment.Spec.Template.Spec.Containers) == 0 {
+		return false
+	}
+	container := &deployment.Spec.Template.Spec.Containers[0]
+	present := make(map[string]bool, len(container.Env))
+	for _, env := range container.Env {
+		present[env.Name] = true
+	}
+	changed := false
+	for _, env := range VtaTuningEnv() {
+		if !present[env.Name] {
+			container.Env = append(container.Env, env)
+			changed = true
+		}
+	}
+	return changed
 }
 
 // CreateVtaDeployment creates a Deployment that runs the VTA service using the PVC created
