@@ -1,5 +1,16 @@
 # Changelog
 
+## [v0.20.1] - 2026-11-13
+
+### Fixed
+
+- New and upgraded VTA deployments cap glibc malloc arenas to reduce retained
+  idle memory; an operator script can apply the same setting to existing
+  deployments before their next image upgrade.
+- Completed VTA relocations remove their one-shot scheduling gate and affinity
+  so later upgrades, restarts, and replacements return to the default
+  Kubernetes scheduler instead of creating automatic placement plans.
+
 ## [v0.20.0] - 2026-11-12
 
 ### Added
