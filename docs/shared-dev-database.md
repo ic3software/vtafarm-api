@@ -69,12 +69,14 @@ Four terminals, all left running when placement is under development:
 ```bash
 make forward-db          # localhost:5432 → svc/vtafarm-dev-postgres
 make forward-vault       # localhost:8200 → vault/svc/vault (needed for setup work)
+make forward-metrics     # localhost:9091 → monitoring/svc/thanos-query
 make dev                 # air, against those tunnels
 make dev-placement       # placement controller, disabled by default in .env
 ```
 
 The workspace-level `make dev` and `make dev-tunnel` commands supervise all
-required processes automatically. The API and worker both read
+required processes, including the database, Vault, and metrics tunnels,
+automatically. The API and worker both read
 `PLACEMENT_MODE` from `vtafarm-api/.env`; `DEV_PLACEMENT_MODE` overrides both
 for one run. Keep the checked example's `disabled` default unless the team has
 agreed on the canary or enabled placement work being exercised.

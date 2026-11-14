@@ -28,6 +28,15 @@ data:
   MONITOR_RESTART_WINDOW_MIN: {{ .Values.monitor.restartWindowMin | quote }}
   MONITOR_PENDING_GRACE_MIN:  {{ .Values.monitor.pendingGraceMin | quote }}
   MONITOR_EXTRA_NAMESPACES:   {{ .Values.monitor.extraNamespaces | quote }}
+  METRICS_QUERY_URL:          {{ .Values.metrics.queryURL | quote }}
+  METRICS_QUERY_TIMEOUT:      {{ .Values.metrics.queryTimeout | quote }}
+  METRICS_LIVE_INTERVAL:      {{ .Values.metrics.liveInterval | quote }}
+  METRICS_LIVE_WINDOW:        {{ .Values.metrics.liveWindow | quote }}
+  METRICS_STREAM_MAX_AGE:     {{ .Values.metrics.streamMaxAge | quote }}
+  METRICS_CACHE_TTL:          {{ .Values.metrics.cacheTTL | quote }}
+  METRICS_MAX_POINTS:         {{ .Values.metrics.maxPoints | quote }}
+  METRICS_MAX_STREAMS_PER_USER:   {{ .Values.metrics.maxStreamsPerUser | quote }}
+  METRICS_MAX_STREAMS_PER_TARGET: {{ .Values.metrics.maxStreamsPerTarget | quote }}
   PLACEMENT_MODE:                     {{ .Values.placement.mode | quote }}
   PLACEMENT_CANARY_SESSION_IDS:       {{ .Values.placement.canarySessionIDs | quote }}
   PLACEMENT_GREEN_BELOW_PCT:          {{ .Values.placement.greenBelowPct | quote }}

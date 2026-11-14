@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/ic3software/vtafarm-api/internal/metrics"
 	"github.com/ic3software/vtafarm-api/internal/middleware"
 	"github.com/ic3software/vtafarm-api/internal/model"
 )
@@ -74,14 +75,17 @@ func (h *UserHandler) Me(c *gin.Context) {
 		limit := defaultVTALimit
 		vtaLimit = &limit
 	}
+	entitlement := metrics.EntitlementFor(user)
 
 	c.JSON(http.StatusOK, gin.H{
-		"id":               user.UniqueId,
-		"email":            user.Email,
-		"fullstack_access": user.FullstackAccess,
-		"vta_count":        vtaCount,
-		"vta_limit":        vtaLimit,
-		"created_at":       user.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		"id":                     user.UniqueId,
+		"email":                  user.Email,
+		"fullstack_access":       user.FullstackAccess,
+		"plan":                   entitlement.Plan,
+		"metrics_retention_days": entitlement.RetentionDays,
+		"vta_count":              vtaCount,
+		"vta_limit":              vtaLimit,
+		"created_at":             user.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 	})
 }
 

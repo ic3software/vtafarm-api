@@ -222,7 +222,7 @@ Display:
 Live · 1h · 6h · 24h · 7d · 30d
 ```
 
-- The default is `24h`.
+- The default is `1h`.
 - Free users see `30d` as locked with an upgrade explanation.
 - Premium users can select every option.
 - Live is available to both plans.
@@ -310,8 +310,8 @@ The private service URL is configuration, not a browser-visible value:
 | --- | --- | --- |
 | `METRICS_QUERY_URL` | empty | Prometheus-compatible Thanos Query base URL; empty disables tenant metrics |
 | `METRICS_QUERY_TIMEOUT` | `10s` | per upstream request timeout |
-| `METRICS_LIVE_INTERVAL` | `30s` | Live sample interval; must not be below the scrape interval |
-| `METRICS_LIVE_WINDOW` | `15m` | initial Live snapshot window |
+| `METRICS_LIVE_INTERVAL` | `15s` | Live sample interval; must not be below the scrape interval |
+| `METRICS_LIVE_WINDOW` | `5m` | initial Live snapshot window |
 | `METRICS_MAX_POINTS` | `2000` | maximum points per returned series |
 | `METRICS_CACHE_TTL` | `25s` | short-lived instant-query cache |
 
@@ -327,7 +327,7 @@ Every new route must also be added to `internal/apidocs/openapi.yaml`.
 ### 10.1 Metadata
 
 ```text
-GET /api/v1/setup/:id/metrics/meta?range=24h
+GET /api/v1/setup/:id/metrics/meta?range=1h
 ```
 
 The handler resolves `vta_name = :id AND user_id = authenticated user`, derives
@@ -341,12 +341,12 @@ Example:
 {
   "plan": "free",
   "metrics_retention_days": 7,
-  "default_range": "24h",
+  "default_range": "1h",
   "allowed_ranges": ["1h", "6h", "24h", "7d"],
   "live": {
     "enabled": true,
-    "interval_seconds": 30,
-    "window_seconds": 900
+    "interval_seconds": 15,
+    "window_seconds": 300
   },
   "components": [
     {"id": "vta", "label": "VTA"},
@@ -484,7 +484,7 @@ retry: 3000
 
 event: snapshot
 id: 1794697800000
-data: {"window_seconds":900,"step_seconds":30,"series":[...]}
+data: {"window_seconds":300,"step_seconds":15,"series":[...]}
 
 : keepalive
 

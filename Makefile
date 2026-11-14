@@ -20,12 +20,15 @@ DEV_CONTEXT  ?= rke2-vtafarm-dev
 DEV_DB       ?= vtafarm-dev-postgres
 DB_PORT      ?= 5432
 VAULT_PORT   ?= 8200
+METRICS_PORT ?= 9091
+METRICS_NAMESPACE ?= monitoring
+METRICS_SERVICE ?= thanos-query
 DEV_API_BASE ?= http://localhost:8080
 DEV_WALLET_SEED_FILE ?= .dev/keyring-wallet.seed
 
 .PHONY: build test check-pg-image gen-keypair gen-farm-key dev-claim dev-keyring-sign-in tidy dev dev-placement \
         migrate migrate-down migrate-new enroll enroll-prod \
-        deploy-db forward-db forward-vault \
+        deploy-db forward-db forward-vault forward-metrics \
         image-build image-push \
         release release-check release-image release-chart release-github \
         deploy
@@ -152,6 +155,14 @@ forward-vault:
 	@echo "Forwarding $(DEV_CONTEXT) vault/svc/vault → localhost:$(VAULT_PORT)  (Ctrl-C to stop)"
 	@trap 'exit 0' INT; while true; do \
 	  kubectl --context $(DEV_CONTEXT) port-forward -n vault svc/vault $(VAULT_PORT):8200 || true; \
+	  echo "port-forward dropped — reconnecting in 2s"; \
+	  sleep 2; \
+	done
+
+forward-metrics:
+	@echo "Forwarding $(DEV_CONTEXT) $(METRICS_NAMESPACE)/svc/$(METRICS_SERVICE) → localhost:$(METRICS_PORT)  (Ctrl-C to stop)"
+	@trap 'exit 0' INT; while true; do \
+	  kubectl --context $(DEV_CONTEXT) port-forward -n $(METRICS_NAMESPACE) svc/$(METRICS_SERVICE) $(METRICS_PORT):9090 || true; \
 	  echo "port-forward dropped — reconnecting in 2s"; \
 	  sleep 2; \
 	done

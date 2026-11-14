@@ -67,6 +67,8 @@ tags:
     description: "Invitation link management. Create/list require `vtafarm_admin` cookie; validate and register are public."
   - name: User
     description: User endpoints (requires `vtafarm_user` cookie)
+  - name: User — Metrics
+    description: Tenant-isolated historical and live session metrics.
   - name: User — Passkeys
     description: |
       Manage passkeys bound to the authenticated user account (requires `vtafarm_user` cookie).
@@ -6073,6 +6075,102 @@ paths:
         "409": { description: Farm DID host is not ready, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "422": { description: Public DID does not resolve, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
+  /api/v1/setup/{id}/metrics/meta:
+    get:
+      summary: Get session metrics selectors and entitlement
+      tags: [User — Metrics]
+      security: [{CookieAuthUser: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: Available components, current pods, plan, and retention.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plan: {type: string, enum: [free, premium]}
+                  retention_days: {type: integer, enum: [7, 30]}
+                  live_enabled: {type: boolean}
+                  live_interval_seconds: {type: integer, minimum: 1, example: 15}
+                  live_window_seconds: {type: integer, minimum: 1, example: 300}
+                  mode: {type: string, enum: [vta_only, full_stack]}
+                  components: {type: array, items: {type: string}}
+                  pods:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: {type: string}
+                        component: {type: string}
+                        ready: {type: boolean}
+                        started_at: {type: string, format: date-time}
+                        last_termination_reason: {type: string}
+        '401': {description: Missing or invalid user cookie}
+        '404': {description: Session not found or belongs to another user}
+        '503': {description: Metrics backend is not configured}
+
+  /api/v1/setup/{id}/metrics/range:
+    get:
+      summary: Query historical session metrics
+      tags: [User — Metrics]
+      security: [{CookieAuthUser: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: range
+          in: query
+          schema: {type: string, enum: [1h, 6h, 24h, 7d, 30d], default: 1h}
+        - name: scope
+          in: query
+          schema: {type: string, enum: [stack, component, pod], default: component}
+        - name: component
+          in: query
+          schema: {type: string}
+        - name: pod
+          in: query
+          schema: {type: string}
+      responses:
+        '200': {description: Bounded, downsampled metric series and latest-value summary}
+        '400': {description: Invalid range or target}
+        '403': {description: Requested range exceeds the plan retention}
+        '404': {description: Session not found or belongs to another user}
+        '502': {description: Metrics backend query failed}
+
+  /api/v1/setup/{id}/metrics/live:
+    get:
+      summary: Stream live session metrics over SSE
+      description: Sends status, snapshot, sample, problem, and reconnect events. Connections turn over after one hour so authentication is revalidated.
+      tags: [User — Metrics]
+      security: [{CookieAuthUser: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: scope
+          in: query
+          schema: {type: string, enum: [stack, component, pod], default: component}
+        - name: component
+          in: query
+          schema: {type: string}
+        - name: pod
+          in: query
+          schema: {type: string}
+      responses:
+        '200':
+          description: Server-sent event stream.
+          content:
+            text/event-stream: {}
+        '400': {description: Invalid target}
+        '404': {description: Session not found or belongs to another user}
+
   /api/v1/setup/{id}/trust-registry:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
@@ -6357,7 +6455,7 @@ paths:
       summary: Get the session's latest self-service upgrade
       description: |
         The caller's most recent upgrade of this session with per-component
-        task state — the progress view polls this. 404 until the user has
+        task state — the progress view polls this. 204 until the user has
         upgraded the session at least once; admin-initiated rollouts are not
         shown. A `paused` status means the upgrade stopped on a failure —
         the failed task's `error_msg` says why.
@@ -6378,6 +6476,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionUpgrade"
+        "204":
+          description: The session has no self-service upgrade history
         "401":
           description: Missing or invalid token
           content:
@@ -6385,7 +6485,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "404":
-          description: Session not found, or no upgrade yet
+          description: Session not found or owned by another user
           content:
             application/json:
               schema:

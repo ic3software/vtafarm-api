@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type VTAClaimConfig struct {
@@ -44,6 +45,19 @@ type Config struct {
 	Vault              VaultConfig
 	Monitor            MonitorConfig
 	Placement          PlacementConfig
+	Metrics            MetricsConfig
+}
+
+type MetricsConfig struct {
+	QueryURL            string
+	QueryTimeout        time.Duration
+	LiveInterval        time.Duration
+	LiveWindow          time.Duration
+	StreamMaxAge        time.Duration
+	CacheTTL            time.Duration
+	MaxPoints           int
+	MaxStreamsPerUser   int
+	MaxStreamsPerTarget int
 }
 
 const (
@@ -265,6 +279,17 @@ func Load() *Config {
 			VTAP95Memory:           getEnv("PLACEMENT_VTA_P95_MEMORY", "128Mi"),
 			PollSeconds:            getEnvInt("PLACEMENT_POLL_SECONDS", 15),
 		},
+		Metrics: MetricsConfig{
+			QueryURL:            getEnv("METRICS_QUERY_URL", ""),
+			QueryTimeout:        getEnvDuration("METRICS_QUERY_TIMEOUT", 15*time.Second),
+			LiveInterval:        getEnvDuration("METRICS_LIVE_INTERVAL", 15*time.Second),
+			LiveWindow:          getEnvDuration("METRICS_LIVE_WINDOW", 5*time.Minute),
+			StreamMaxAge:        getEnvDuration("METRICS_STREAM_MAX_AGE", time.Hour),
+			CacheTTL:            getEnvDuration("METRICS_CACHE_TTL", 10*time.Second),
+			MaxPoints:           getEnvInt("METRICS_MAX_POINTS", 2000),
+			MaxStreamsPerUser:   getEnvInt("METRICS_MAX_STREAMS_PER_USER", 4),
+			MaxStreamsPerTarget: getEnvInt("METRICS_MAX_STREAMS_PER_TARGET", 2),
+		},
 		Vault: VaultConfig{
 			Addr:         getEnv("VAULT_ADDR", ""),
 			VTAAddr:      getEnv("VAULT_VTA_ADDR", "https://vault.vault.svc:8200"),
@@ -316,6 +341,14 @@ func getEnvBool(key string, defaultVal bool) bool {
 	default:
 		return defaultVal
 	}
+}
+
+func getEnvDuration(key string, defaultVal time.Duration) time.Duration {
+	value, err := time.ParseDuration(os.Getenv(key))
+	if err != nil || value <= 0 {
+		return defaultVal
+	}
+	return value
 }
 
 func splitComma(s string) []string {

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"slices"
 
@@ -197,7 +198,7 @@ func (h *UpgradeHandler) CreateForSession(c *gin.Context) {
 
 // GetForSession — GET /api/v1/setup/:id/upgrade (user only). The caller's
 // latest upgrade of this session, with per-component task state — the polling
-// endpoint behind the frontend's progress view. 404 until the user has
+// endpoint behind the frontend's progress view. Returns 204 until the user has
 // upgraded the session at least once. Admin-initiated batches are not shown.
 func (h *UpgradeHandler) GetForSession(c *gin.Context) {
 	session, userID, ok := h.ownSession(c)
@@ -210,8 +211,12 @@ func (h *UpgradeHandler) GetForSession(c *gin.Context) {
 		Where("user_id = ? AND id IN (?)", userID,
 			h.db.Model(&model.UpgradeTask{}).Select("batch_id").Where("session_id = ?", session.ID)).
 		Order("id desc").First(&batch).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		c.Status(http.StatusNoContent)
+		return
+	}
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "no upgrade for this session"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not load upgrade"})
 		return
 	}
 	c.JSON(http.StatusOK, h.sessionUpgradeJSON(&batch, session))
