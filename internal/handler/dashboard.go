@@ -3,6 +3,8 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
 	"net/http"
 	"time"
 
@@ -10,22 +12,26 @@ import (
 
 	"github.com/ic3software/vtafarm-api/internal/capacity"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
+	"github.com/ic3software/vtafarm-api/internal/metrics"
 	"github.com/ic3software/vtafarm-api/internal/model"
 	"github.com/ic3software/vtafarm-api/internal/resourceprofile"
+	"golang.org/x/sync/errgroup"
 	"gorm.io/gorm"
 )
 
 type DashboardHandler struct {
-	db    *gorm.DB
-	k8s   *k8s.Client
-	usage *usageHighWater
+	db      *gorm.DB
+	k8s     *k8s.Client
+	metrics *metrics.Client
+	usage   *usageHighWater
 }
 
-func NewDashboardHandler(db *gorm.DB, k8sClient *k8s.Client) *DashboardHandler {
+func NewDashboardHandler(db *gorm.DB, k8sClient *k8s.Client, metricsClient *metrics.Client) *DashboardHandler {
 	return &DashboardHandler{
-		db:    db,
-		k8s:   k8sClient,
-		usage: newUsageHighWater(capacityUsageWindow),
+		db:      db,
+		k8s:     k8sClient,
+		metrics: metricsClient,
+		usage:   newUsageHighWater(capacityUsageWindow),
 	}
 }
 
@@ -69,6 +75,11 @@ func (h *DashboardHandler) Get(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "kubernetes is not available"})
 		return
 	}
+	requestedSource := c.DefaultQuery("source", "auto")
+	if requestedSource != "auto" && requestedSource != "prometheus" && requestedSource != "kubernetes" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "source must be auto, prometheus, or kubernetes"})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
 	defer cancel()
@@ -77,6 +88,26 @@ func (h *DashboardHandler) Get(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "cluster stats: " + err.Error()})
 		return
+	}
+	kubernetesMetricsAvailable := stats.MetricsAvailable
+	metricsSource := "unavailable"
+	metricsWarning := ""
+	if requestedSource != "kubernetes" && h.metrics != nil {
+		if err := h.applyPrometheusUsage(ctx, stats); err == nil {
+			metricsSource = "prometheus"
+			stats.MetricsAvailable = true
+		} else {
+			metricsWarning = "Prometheus metrics are unavailable; using Kubernetes metrics when available."
+		}
+	}
+	if metricsSource != "prometheus" {
+		stats.MetricsAvailable = kubernetesMetricsAvailable
+		if kubernetesMetricsAvailable {
+			metricsSource = "kubernetes"
+		}
+		if requestedSource == "prometheus" && h.metrics == nil {
+			metricsWarning = "Prometheus is not configured; using Kubernetes metrics when available."
+		}
 	}
 	modes, calculated, err := h.capacityEstimates(ctx, stats)
 	if err != nil {
@@ -171,9 +202,74 @@ func (h *DashboardHandler) Get(c *gin.Context) {
 		"nodes":             nodes,
 		"storage_nodes":     storageNodes,
 		"metrics_available": stats.MetricsAvailable,
+		"metrics_source":    metricsSource,
+		"metrics_warning":   metricsWarning,
 		"storage_available": stats.StorageAvailable,
 		"estimates":         estimates,
 	})
+}
+
+const dashboardCPUQuery = `sum by (node) (max by (node, namespace, pod, container) (rate(container_cpu_usage_seconds_total{container!="",container!="POD",image!="",node!=""}[1m])))`
+const dashboardMemoryQuery = `sum by (node) (max by (node, namespace, pod, container) (container_memory_working_set_bytes{container!="",container!="POD",image!="",node!=""}))`
+
+func (h *DashboardHandler) applyPrometheusUsage(ctx context.Context, stats *k8s.ClusterStats) error {
+	if h.metrics == nil {
+		return errors.New("prometheus is not configured")
+	}
+	var cpuSeries, memorySeries []metrics.Series
+	group, queryCtx := errgroup.WithContext(ctx)
+	group.Go(func() error {
+		var err error
+		cpuSeries, _, err = h.metrics.Instant(queryCtx, "node_cpu_usage_cores", dashboardCPUQuery, time.Now().UTC())
+		return err
+	})
+	group.Go(func() error {
+		var err error
+		memorySeries, _, err = h.metrics.Instant(queryCtx, "node_memory_working_set_bytes", dashboardMemoryQuery, time.Now().UTC())
+		return err
+	})
+	if err := group.Wait(); err != nil {
+		return err
+	}
+	cpuByNode, err := nodeMetricValues(cpuSeries)
+	if err != nil {
+		return fmt.Errorf("prometheus CPU usage: %w", err)
+	}
+	memoryByNode, err := nodeMetricValues(memorySeries)
+	if err != nil {
+		return fmt.Errorf("prometheus memory usage: %w", err)
+	}
+	for _, node := range stats.Nodes {
+		_, cpuOK := cpuByNode[node.Name]
+		_, memoryOK := memoryByNode[node.Name]
+		if !cpuOK || !memoryOK {
+			return fmt.Errorf("prometheus has no complete sample for node %s", node.Name)
+		}
+	}
+	for i := range stats.Nodes {
+		stats.Nodes[i].CPUUsedMillis = int64(math.Round(cpuByNode[stats.Nodes[i].Name] * 1000))
+		stats.Nodes[i].MemUsedBytes = int64(math.Round(memoryByNode[stats.Nodes[i].Name]))
+	}
+	return nil
+}
+
+func nodeMetricValues(series []metrics.Series) (map[string]float64, error) {
+	values := make(map[string]float64, len(series))
+	for _, item := range series {
+		node := item.Labels["node"]
+		if node == "" || len(item.Points) == 0 {
+			continue
+		}
+		value := item.Points[len(item.Points)-1].Value
+		if value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+			return nil, fmt.Errorf("invalid sample for node %s", node)
+		}
+		values[node] = value
+	}
+	if len(values) == 0 {
+		return nil, errors.New("no node samples")
+	}
+	return values, nil
 }
 
 // clusterCapacitySnapshot reads the slow cluster state without holding the pool

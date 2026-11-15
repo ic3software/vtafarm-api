@@ -1,10 +1,15 @@
 package handler
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/ic3software/vtafarm-api/internal/k8s"
+	"github.com/ic3software/vtafarm-api/internal/metrics"
 	"github.com/ic3software/vtafarm-api/internal/resourceprofile"
 )
 
@@ -41,6 +46,80 @@ func TestUsageHighWaterWithoutMetrics(t *testing.T) {
 	if len(got) != 0 {
 		t.Fatalf("Observe() returned %v without a live or cached sample", got)
 	}
+}
+
+func TestNodeMetricValues(t *testing.T) {
+	values, err := nodeMetricValues([]metrics.Series{
+		{Labels: map[string]string{"node": "node-1"}, Points: []metrics.Point{{Value: 1.25}}},
+		{Labels: map[string]string{"node": "node-2"}, Points: []metrics.Point{{Value: 2.5}}},
+	})
+	if err != nil {
+		t.Fatalf("nodeMetricValues() error = %v", err)
+	}
+	if values["node-1"] != 1.25 || values["node-2"] != 2.5 {
+		t.Fatalf("nodeMetricValues() = %v", values)
+	}
+}
+
+func TestNodeMetricValuesRejectsEmptySamples(t *testing.T) {
+	if _, err := nodeMetricValues(nil); err == nil {
+		t.Fatal("nodeMetricValues() accepted empty samples")
+	}
+}
+
+func TestApplyPrometheusUsage(t *testing.T) {
+	server := dashboardMetricsServer(t, true)
+	defer server.Close()
+	h := &DashboardHandler{metrics: metrics.NewClient(server.URL, time.Second)}
+	stats := &k8s.ClusterStats{Nodes: []k8s.NodeResourceStat{{Name: "node-1"}, {Name: "node-2"}}}
+	if err := h.applyPrometheusUsage(t.Context(), stats); err != nil {
+		t.Fatalf("applyPrometheusUsage() error = %v", err)
+	}
+	if stats.Nodes[0].CPUUsedMillis != 1250 || stats.Nodes[0].MemUsedBytes != 1024 {
+		t.Fatalf("node-1 usage = %+v", stats.Nodes[0])
+	}
+	if stats.Nodes[1].CPUUsedMillis != 2500 || stats.Nodes[1].MemUsedBytes != 2048 {
+		t.Fatalf("node-2 usage = %+v", stats.Nodes[1])
+	}
+}
+
+func TestApplyPrometheusUsageDoesNotPartiallyReplaceFallback(t *testing.T) {
+	server := dashboardMetricsServer(t, false)
+	defer server.Close()
+	h := &DashboardHandler{metrics: metrics.NewClient(server.URL, time.Second)}
+	stats := &k8s.ClusterStats{Nodes: []k8s.NodeResourceStat{
+		{Name: "node-1", CPUUsedMillis: 100, MemUsedBytes: 200},
+		{Name: "node-2", CPUUsedMillis: 300, MemUsedBytes: 400},
+	}}
+	if err := h.applyPrometheusUsage(t.Context(), stats); err == nil {
+		t.Fatal("applyPrometheusUsage() accepted incomplete samples")
+	}
+	if stats.Nodes[0].CPUUsedMillis != 100 || stats.Nodes[0].MemUsedBytes != 200 {
+		t.Fatalf("fallback usage was partially replaced: %+v", stats.Nodes[0])
+	}
+}
+
+func dashboardMetricsServer(t *testing.T, includeNode2 bool) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		values := []string{`{"metric":{"node":"node-1"},"value":[1,"1.25"]}`}
+		if strings.Contains(r.Form.Get("query"), "memory_working_set_bytes") {
+			values = []string{`{"metric":{"node":"node-1"},"value":[1,"1024"]}`}
+		}
+		if includeNode2 {
+			if strings.Contains(r.Form.Get("query"), "memory_working_set_bytes") {
+				values = append(values, `{"metric":{"node":"node-2"},"value":[1,"2048"]}`)
+			} else {
+				values = append(values, `{"metric":{"node":"node-2"},"value":[1,"2.5"]}`)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"status":"success","data":{"resultType":"vector","result":[%s]}}`, strings.Join(values, ","))
+	}))
 }
 
 func TestCapacityEstimatesReservePoolVTAResourcesForEveryMode(t *testing.T) {
