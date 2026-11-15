@@ -43,17 +43,20 @@ The database being shared has consequences worth reading once:
    `DB_*` and `JWT_SECRET` must match the rest of the team — one database means
    one set of accounts, and a token signed with a different secret is rejected.
 
-2. Open the two tunnels into the dev cluster. Each needs its own terminal and
-   stays open while you develop — both reconnect on their own, since
+2. Open the tunnels you need into the dev cluster. Each needs its own terminal
+   and stays open while you develop — they reconnect on their own, since
    `kubectl port-forward` drops on pod restarts.
 
    ```bash
    make forward-db          # localhost:5432 → svc/vtafarm-dev-postgres
    make forward-vault       # localhost:8200 → vault/svc/vault
+   make forward-metrics     # localhost:9091 → monitoring/svc/thanos-query
    ```
 
    Vault is required for VTA setup — the API provisions per-user Vault
-   policies/roles.
+   policies/roles. The metrics tunnel is required when developing tenant
+   metrics; uncomment `METRICS_QUERY_URL=http://127.0.0.1:9091` in `.env` when
+   running this API by itself.
 
 3. Start the API (migrations run automatically on startup):
 
@@ -146,6 +149,7 @@ Copy `.env.example` and adjust as needed:
 | `CLOUDFLARE_ZONE_ID` | _(optional)_ | Required for VTA setup wizard |
 | `KUBECONFIG` | _(empty)_ | Auto-detects `~/.kube/config` when empty |
 | `K8S_NAMESPACE_PREFIX` | `vtafarm-user` | Per-user namespace: `vtafarm-user-{userID}` |
+| `METRICS_QUERY_URL` | _(empty)_ | Thanos Query base URL; use `http://127.0.0.1:9091` with `make forward-metrics`. Empty disables tenant metrics |
 | `PLACEMENT_HEALTH_PORT` | `8081` | Local worker health endpoint; the Helm probe uses the same default |
 
 ### VTA Farm DID

@@ -79,6 +79,19 @@ monitor:
   pendingGraceMin: "10"
   extraNamespaces: "vault,vault-transit,longhorn-system"
 
+# Private Prometheus-compatible endpoint. Thanos Query Frontend provides
+# caching and query splitting while remaining unreachable from tenant browsers.
+metrics:
+  queryURL: "http://thanos-query-frontend.monitoring.svc:9090"
+  queryTimeout: "15s"
+  liveInterval: "15s"
+  liveWindow: "5m"
+  streamMaxAge: "1h"
+  cacheTTL: "10s"
+  maxPoints: "2000"
+  maxStreamsPerUser: "4"
+  maxStreamsPerTarget: "2"
+
 placement:
   mode: disabled
   canarySessionIDs: ""

@@ -205,6 +205,20 @@ func (c *Client) ListPods(ctx context.Context, userID string) ([]corev1.Pod, err
 	return list.Items, nil
 }
 
+// ListSessionPods returns only pods carrying the immutable session ownership
+// label. The metrics API uses this list to validate pod targets before any
+// Prometheus query is constructed.
+func (c *Client) ListSessionPods(ctx context.Context, userID string, sessionID uint) ([]corev1.Pod, error) {
+	ns := c.UserNamespace(userID)
+	list, err := c.kube.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("session-id=%d", sessionID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list session pods: %w", err)
+	}
+	return list.Items, nil
+}
+
 // DeletePod removes a pod from the user's namespace.
 func (c *Client) DeletePod(ctx context.Context, userID, podName string) error {
 	ns := c.UserNamespace(userID)

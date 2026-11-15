@@ -19,6 +19,7 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/handler"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/maintenance"
+	"github.com/ic3software/vtafarm-api/internal/metrics"
 	"github.com/ic3software/vtafarm-api/internal/middleware"
 	"github.com/ic3software/vtafarm-api/internal/model"
 	"github.com/ic3software/vtafarm-api/internal/passkey"
@@ -95,6 +96,15 @@ func Setup(
 		dhFactory, k8sClient, orch, ghcrClient,
 		mediatorGhcrClient, didsGhcrClient, vtcGhcrClient,
 	)
+	metricsH := handler.NewMetricsHandler(db, k8sClient, metrics.NewClient(cfg.Metrics.QueryURL, cfg.Metrics.QueryTimeout), handler.MetricsHandlerConfig{
+		LiveInterval:        cfg.Metrics.LiveInterval,
+		LiveWindow:          cfg.Metrics.LiveWindow,
+		StreamMaxAge:        cfg.Metrics.StreamMaxAge,
+		MaxPoints:           cfg.Metrics.MaxPoints,
+		CacheTTL:            cfg.Metrics.CacheTTL,
+		MaxStreamsPerUser:   cfg.Metrics.MaxStreamsPerUser,
+		MaxStreamsPerTarget: cfg.Metrics.MaxStreamsPerTarget,
+	})
 	var registryGhcr *ghcr.Client
 	if cfg.GHCR.Owner != "" && cfg.GHCR.TrustRegistryPackageName != "" {
 		registryGhcr = ghcr.New(cfg.GHCR.Token, cfg.GHCR.Owner, cfg.GHCR.TrustRegistryPackageName)
@@ -368,6 +378,9 @@ func Setup(
 		userAuth.POST("/setup", workflow("vta_create", false), sh.Create)
 		userAuth.POST("/setup/connection/inspect", middleware.RateLimit(20, time.Minute), sh.InspectConnection)
 		userAuth.GET("/setup/:id", sh.Get)
+		userAuth.GET("/setup/:id/metrics/meta", middleware.NoStore(), middleware.RateLimit(120, time.Minute), metricsH.Meta)
+		userAuth.GET("/setup/:id/metrics/range", middleware.NoStore(), middleware.RateLimit(120, time.Minute), metricsH.Range)
+		userAuth.GET("/setup/:id/metrics/live", middleware.NoStore(), metricsH.Live)
 		userAuth.GET("/setup/:id/trust-registry", sh.GetTrustRegistry)
 		userAuth.POST("/setup/:id/trust-registry", workflow("trust_registry", false), sh.EnableTrustRegistry)
 		userAuth.POST("/setup/:id/recover", workflow("vta_recovery", false), sh.RecoverSession)
