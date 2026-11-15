@@ -66,19 +66,23 @@ type podMeta struct {
 	LastTerminationReason string `json:"last_termination_reason,omitempty"`
 }
 
-func (h *MetricsHandler) loadContext(c *gin.Context) (metricsContext, bool) {
+func (h *MetricsHandler) loadContext(c *gin.Context, admin bool) (metricsContext, bool) {
 	if h.k8s == nil || h.client == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "metrics are not configured"})
 		return metricsContext{}, false
 	}
-	userID := c.MustGet(middleware.ContextUserID).(uint)
 	var user model.User
-	if err := h.db.First(&user, userID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
-		return metricsContext{}, false
-	}
 	var session model.SetupSession
-	if err := h.db.Where("vta_name = ? AND user_id = ?", c.Param("id"), userID).First(&session).Error; err != nil {
+	query := h.db.Where("vta_name = ?", c.Param("id"))
+	if !admin {
+		userID := c.MustGet(middleware.ContextUserID).(uint)
+		if err := h.db.First(&user, userID).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			return metricsContext{}, false
+		}
+		query = query.Where("user_id = ?", userID)
+	}
+	if err := query.First(&session).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 		} else {
@@ -145,11 +149,22 @@ func (h *MetricsHandler) target(c *gin.Context, ctx metricsContext) (metrics.Tar
 // Meta provides all selector options and enforces ownership before the UI
 // opens a potentially long-lived EventSource connection.
 func (h *MetricsHandler) Meta(c *gin.Context) {
-	ctx, ok := h.loadContext(c)
+	h.meta(c, false)
+}
+
+func (h *MetricsHandler) AdminMeta(c *gin.Context) {
+	h.meta(c, true)
+}
+
+func (h *MetricsHandler) meta(c *gin.Context, admin bool) {
+	ctx, ok := h.loadContext(c, admin)
 	if !ok {
 		return
 	}
 	entitlement := metrics.EntitlementFor(ctx.user)
+	if admin {
+		entitlement = metrics.Entitlement{Plan: "premium", RetentionDays: metrics.PremiumRetentionDays}
+	}
 	components := metrics.AvailableComponents(ctx.session.Mode, ctx.session.TrustRegistryEnabled)
 	c.JSON(http.StatusOK, gin.H{
 		"plan": entitlement.Plan, "retention_days": entitlement.RetentionDays,
@@ -170,7 +185,15 @@ type rangeResponse struct {
 }
 
 func (h *MetricsHandler) Range(c *gin.Context) {
-	ctx, ok := h.loadContext(c)
+	h.rangeMetrics(c, false)
+}
+
+func (h *MetricsHandler) AdminRange(c *gin.Context) {
+	h.rangeMetrics(c, true)
+}
+
+func (h *MetricsHandler) rangeMetrics(c *gin.Context, admin bool) {
+	ctx, ok := h.loadContext(c, admin)
 	if !ok {
 		return
 	}
@@ -179,7 +202,7 @@ func (h *MetricsHandler) Range(c *gin.Context) {
 		return
 	}
 	preset := c.DefaultQuery("range", "1h")
-	if preset == "30d" && metrics.EntitlementFor(ctx.user).RetentionDays < 30 {
+	if preset == "30d" && !admin && metrics.EntitlementFor(ctx.user).RetentionDays < 30 {
 		c.JSON(http.StatusForbidden, gin.H{"error": "30 day history requires premium access", "code": "retention_limit"})
 		return
 	}
@@ -246,7 +269,15 @@ func (h *MetricsHandler) queryRange(ctx context.Context, sessionID uint, target 
 }
 
 func (h *MetricsHandler) Live(c *gin.Context) {
-	ctx, ok := h.loadContext(c)
+	h.live(c, false)
+}
+
+func (h *MetricsHandler) AdminLive(c *gin.Context) {
+	h.live(c, true)
+}
+
+func (h *MetricsHandler) live(c *gin.Context, admin bool) {
+	ctx, ok := h.loadContext(c, admin)
 	if !ok {
 		return
 	}
@@ -254,7 +285,11 @@ func (h *MetricsHandler) Live(c *gin.Context) {
 	if !ok {
 		return
 	}
-	release, ok := h.acquireStream(ctx.user.ID, ctx.session.ID, target)
+	actor := fmt.Sprintf("user:%d", ctx.user.ID)
+	if admin {
+		actor = fmt.Sprintf("admin:%d", c.MustGet(middleware.ContextUserID).(uint))
+	}
+	release, ok := h.acquireStream(actor, ctx.session.ID, target)
 	if !ok {
 		c.JSON(http.StatusTooManyRequests, gin.H{"error": "too many active metrics streams"})
 		return
@@ -342,21 +377,20 @@ func setPodSummary(summary map[string]float64, pods []podMeta, target metrics.Ta
 	summary["pod_total"] = float64(total)
 }
 
-func (h *MetricsHandler) acquireStream(userID, sessionID uint, target metrics.Target) (func(), bool) {
+func (h *MetricsHandler) acquireStream(actor string, sessionID uint, target metrics.Target) (func(), bool) {
 	targetBytes, _ := json.Marshal(target)
-	userKey := fmt.Sprintf("user:%d", userID)
 	targetKey := fmt.Sprintf("target:%d:%s", sessionID, targetBytes)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.streams[userKey] >= h.config.MaxStreamsPerUser || h.streams[targetKey] >= h.config.MaxStreamsPerTarget {
+	if h.streams[actor] >= h.config.MaxStreamsPerUser || h.streams[targetKey] >= h.config.MaxStreamsPerTarget {
 		return nil, false
 	}
-	h.streams[userKey]++
+	h.streams[actor]++
 	h.streams[targetKey]++
 	return func() {
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		h.streams[userKey]--
+		h.streams[actor]--
 		h.streams[targetKey]--
 	}, true
 }

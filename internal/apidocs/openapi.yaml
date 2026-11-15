@@ -2092,18 +2092,29 @@ paths:
       summary: Cluster capacity overview
       description: |
         Whole-cluster resource picture for the admin dashboard: per-node and
-        total CPU/memory (allocatable, requested by pods, live usage from
-        metrics-server), Longhorn storage per node (maximum, reserved,
+        total CPU/memory (allocatable, requested by pods, and live usage from
+        Prometheus or the Kubernetes Metrics API), Longhorn storage per node (maximum, reserved,
         scheduled, available, schedulable headroom), and a placement-simulated
         estimate of how many more sessions of each mode still fit.
 
-        `metrics_available` / `storage_available` flag degraded responses:
-        when metrics-server or Longhorn is unreachable the corresponding
+        Both live sources represent the kubelet's whole-node CPU usage and
+        memory working set. Prometheus derives CPU from its latest two scrapes;
+        the Kubernetes Metrics API reports the metrics-server sampling window.
+        Memory is a current working-set snapshot in both sources.
+
+        `source=auto` prefers Prometheus and falls back to the Kubernetes Metrics
+        API. `metrics_available` / `storage_available` flag degraded responses:
+        when both live metrics sources or Longhorn are unreachable the corresponding
         numbers are zero/absent instead of the request failing. Estimate
         `by_storage` is -1 when storage stats are unavailable.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
+      parameters:
+        - name: source
+          in: query
+          description: Live CPU/memory source. Auto prefers Prometheus and falls back to Kubernetes.
+          schema: { type: string, enum: [auto, prometheus, kubernetes], default: auto }
       responses:
         "200":
           description: Cluster totals, per-node breakdowns, and session estimates
@@ -2171,6 +2182,8 @@ paths:
                         available_bytes: { type: integer }
                         schedulable_bytes: { type: integer }
                   metrics_available: { type: boolean }
+                  metrics_source: { type: string, enum: [prometheus, kubernetes, unavailable] }
+                  metrics_warning: { type: string }
                   storage_available: { type: boolean }
                   estimates:
                     type: object
@@ -6074,6 +6087,78 @@ paths:
         "400": { description: Invalid DID fields, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "409": { description: Farm DID host is not ready, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "422": { description: Public DID does not resolve, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api/v1/admin/setup-sessions/{id}/metrics/meta:
+    get:
+      summary: Get metrics selectors for an admin-visible session
+      description: Admin equivalent of the user metrics metadata route. Admin views receive the full 30-day retention selector.
+      tags: [Admin]
+      security: [{CookieAuthAdmin: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: Available components, current pods, and retention settings}
+        '401': {description: Missing or invalid admin cookie}
+        '404': {description: Session not found}
+        '503': {description: Metrics backend is not configured}
+
+  /api/v1/admin/setup-sessions/{id}/metrics/range:
+    get:
+      summary: Query historical metrics for an admin-visible session
+      tags: [Admin]
+      security: [{CookieAuthAdmin: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: range
+          in: query
+          schema: {type: string, enum: [1h, 6h, 24h, 7d, 30d], default: 1h}
+        - name: scope
+          in: query
+          schema: {type: string, enum: [stack, component, pod], default: component}
+        - name: component
+          in: query
+          schema: {type: string}
+        - name: pod
+          in: query
+          schema: {type: string}
+      responses:
+        '200': {description: Bounded, downsampled metric series and latest-value summary}
+        '400': {description: Invalid range or target}
+        '404': {description: Session not found}
+        '502': {description: Metrics backend query failed}
+
+  /api/v1/admin/setup-sessions/{id}/metrics/live:
+    get:
+      summary: Stream live metrics for an admin-visible session over SSE
+      tags: [Admin]
+      security: [{CookieAuthAdmin: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: scope
+          in: query
+          schema: {type: string, enum: [stack, component, pod], default: component}
+        - name: component
+          in: query
+          schema: {type: string}
+        - name: pod
+          in: query
+          schema: {type: string}
+      responses:
+        '200':
+          description: Server-sent event stream.
+          content:
+            text/event-stream: {}
+        '400': {description: Invalid target}
+        '404': {description: Session not found}
 
   /api/v1/setup/{id}/metrics/meta:
     get:

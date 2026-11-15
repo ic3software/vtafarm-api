@@ -96,7 +96,8 @@ func Setup(
 		dhFactory, k8sClient, orch, ghcrClient,
 		mediatorGhcrClient, didsGhcrClient, vtcGhcrClient,
 	)
-	metricsH := handler.NewMetricsHandler(db, k8sClient, metrics.NewClient(cfg.Metrics.QueryURL, cfg.Metrics.QueryTimeout), handler.MetricsHandlerConfig{
+	metricsClient := metrics.NewClient(cfg.Metrics.QueryURL, cfg.Metrics.QueryTimeout)
+	metricsH := handler.NewMetricsHandler(db, k8sClient, metricsClient, handler.MetricsHandlerConfig{
 		LiveInterval:        cfg.Metrics.LiveInterval,
 		LiveWindow:          cfg.Metrics.LiveWindow,
 		StreamMaxAge:        cfg.Metrics.StreamMaxAge,
@@ -197,7 +198,7 @@ func Setup(
 	uph := handler.NewUpgradeHandler(db, upgradeRunner, ghcrClient, mediatorGhcrClient, didsGhcrClient, vtcGhcrClient)
 	uph.ConfigureTrustRegistry(registryGhcr)
 	mobile := handler.NewMobileConnectionHandler(db, orch, sh.KickAdditionalMobile, cfg.VTAClaim, trustTask.Enabled())
-	dashH := handler.NewDashboardHandler(db, k8sClient)
+	dashH := handler.NewDashboardHandler(db, k8sClient, metricsClient)
 	poolH := handler.NewPoolHandler(db, sh, dashH, mobile)
 	poolH.Start(workerCtx, cfg.OrchestratorResume)
 	v1.GET("/internal/pool-activations/:session_id/:activation_id", middleware.NoStore(), poolH.PoolActivationGate)
@@ -267,6 +268,9 @@ func Setup(
 		// to a passkey-less system account, so its provisioning is otherwise
 		// unwatchable — nobody can hold that user's cookie.
 		adminAuth.GET("/admin/setup-sessions/:id/logs", sh.AdminSessionLogs)
+		adminAuth.GET("/admin/setup-sessions/:id/metrics/meta", middleware.NoStore(), middleware.RateLimit(120, time.Minute), metricsH.AdminMeta)
+		adminAuth.GET("/admin/setup-sessions/:id/metrics/range", middleware.NoStore(), middleware.RateLimit(120, time.Minute), metricsH.AdminRange)
+		adminAuth.GET("/admin/setup-sessions/:id/metrics/live", middleware.NoStore(), metricsH.AdminLive)
 		// Admin twins of the export routes below.
 		adminAuth.GET("/admin/setup-sessions/:id/export/configs", sh.AdminExportConfigs)
 		adminAuth.GET("/admin/setup-sessions/:id/export/logs", sh.AdminExportLogs)
