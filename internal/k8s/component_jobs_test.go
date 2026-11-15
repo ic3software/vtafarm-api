@@ -4,7 +4,9 @@ import (
 	"context"
 	"testing"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -157,5 +159,31 @@ func TestCreateSetupResourcesUsesVtaStorageSize(t *testing.T) {
 	want := resource.MustParse(VtaPVCStorageSize)
 	if got.Cmp(want) != 0 {
 		t.Fatalf("storage request = %s, want %s", got.String(), want.String())
+	}
+}
+
+func TestDeleteAllComponentJobsDeletesMediatorAdminReader(t *testing.T) {
+	readerJob := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+		Name: FSMediatorAdminReaderName(14), Namespace: "test",
+	}}
+	readerPod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: FSMediatorAdminReaderName(14) + "-pod", Namespace: "test",
+		Labels: map[string]string{"job-name": FSMediatorAdminReaderName(14)},
+	}}
+	unrelated := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: "unrelated", Namespace: "test",
+	}}
+	client := &Client{kube: fake.NewSimpleClientset(readerJob, readerPod, unrelated)}
+
+	client.DeleteAllComponentJobs(context.Background(), "test", 14)
+
+	if _, err := client.kube.BatchV1().Jobs("test").Get(context.Background(), readerJob.Name, metav1.GetOptions{}); !k8serrors.IsNotFound(err) {
+		t.Fatalf("mediator admin reader Job remains after teardown: %v", err)
+	}
+	if _, err := client.kube.CoreV1().Pods("test").Get(context.Background(), readerPod.Name, metav1.GetOptions{}); !k8serrors.IsNotFound(err) {
+		t.Fatalf("mediator admin reader Pod remains after teardown: %v", err)
+	}
+	if _, err := client.kube.CoreV1().Pods("test").Get(context.Background(), unrelated.Name, metav1.GetOptions{}); err != nil {
+		t.Fatalf("unrelated Pod was deleted: %v", err)
 	}
 }

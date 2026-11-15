@@ -213,10 +213,11 @@ func (c *Client) DeleteComponentJob(ctx context.Context, ns, name string) {
 	_ = c.kube.CoreV1().Secrets(ns).Delete(ctx, name, metav1.DeleteOptions{})
 }
 
-// DeleteAllComponentJobs removes every full_stack setup Job (+ ConfigMap or Secret)
-// for a session. Best-effort.
+// DeleteAllComponentJobs removes every full_stack setup Job (+ ConfigMap or
+// Secret) and an abandoned mediator admin reader Job for a session. Best-effort.
 func (c *Client) DeleteAllComponentJobs(ctx context.Context, ns string, sessionID uint) {
 	for _, name := range allFSJobNames(sessionID) {
 		c.DeleteComponentJob(ctx, ns, name)
 	}
+	_ = c.deleteMediatorAdminReader(ctx, ns, FSMediatorAdminReaderName(sessionID), "")
 }

@@ -1,9 +1,14 @@
 package setup
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/ic3software/vtafarm-api/internal/didresolver"
 )
 
 // ── §8: regex output parsing for the full_stack step Jobs ──────────────────
@@ -12,7 +17,6 @@ var (
 	mediatorDIDRe        = regexp.MustCompile(`(?i)mediator:\s*(did:\S+)`)
 	digestRe             = regexp.MustCompile(`SHA-256 digest:\s+(\S+)`)
 	mediatorAdminDIDRe   = regexp.MustCompile(`Admin DID:\s+(did:\S+)`)
-	mediatorAdminKeyRe   = regexp.MustCompile(`Private key \(multibase\):\s+(\S+)`)
 	webvhAdminDIDRe      = regexp.MustCompile(`Generated admin did:key:\s+(did:\S+)`)
 	webvhAdminKeyRe      = regexp.MustCompile(`Private key \(save now, not re-shown\):\s+(\S+)`)
 	serverDidRe          = regexp.MustCompile(`server_did\s*=\s*"([^"]+)"`)
@@ -21,6 +25,24 @@ var (
 	artifactMarkerLineRe = regexp.MustCompile(`(?m)^---ARTIFACT:[^\n]*?---\s*$`)
 	ansiEscapeRe         = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 )
+
+type mediatorAdminProfile struct {
+	Alias   string                `json:"alias"`
+	DID     string                `json:"did"`
+	Secrets []mediatorAdminSecret `json:"secrets"`
+}
+
+type mediatorAdminSecret struct {
+	PrivateKeyJWK       *mediatorAdminJWK `json:"privateKeyJwk"`
+	PrivateKeyMultibase string            `json:"privateKeyMultibase"`
+}
+
+type mediatorAdminJWK struct {
+	Kty string `json:"kty"`
+	Crv string `json:"crv"`
+	D   string `json:"d"`
+	X   string `json:"x"`
+}
 
 // stripANSI removes ANSI/CSI escape sequences (color codes, cursor moves)
 // from CLI output. Some full_stack binaries colorize stdout even when piped
@@ -57,13 +79,81 @@ func ParseMediatorAdminDID(output string) (string, error) {
 	return "", fmt.Errorf("mediator admin DID not found in output")
 }
 
-// ParseMediatorAdminKey extracts the mediator admin private key (2c,
-// multibase) from `mediator-setup --bundle --digest` output.
-func ParseMediatorAdminKey(output string) (string, error) {
-	if m := mediatorAdminKeyRe.FindStringSubmatch(output); m != nil {
-		return m[1], nil
+// ParseMediatorAdminProfile extracts the generated admin key from the
+// owner-only TDK profile written by mediator-setup. The profile reaches the API
+// over pods/exec, never through the setup Job's logs.
+func ParseMediatorAdminProfile(profileJSON string) (string, error) {
+	var profile mediatorAdminProfile
+	if err := json.Unmarshal([]byte(profileJSON), &profile); err != nil {
+		return "", fmt.Errorf("invalid mediator admin profile: %w", err)
 	}
-	return "", fmt.Errorf("mediator admin private key not found in output")
+	if profile.Alias != "admin" || !strings.HasPrefix(profile.DID, "did:key:") {
+		return "", fmt.Errorf("mediator admin profile identity is invalid")
+	}
+	if len(profile.Secrets) != 1 {
+		return "", fmt.Errorf("mediator admin profile has %d secrets, want 1", len(profile.Secrets))
+	}
+	key, did, err := mediatorAdminPrivateKey(profile.Secrets[0])
+	if err != nil {
+		return "", err
+	}
+	if profile.DID != did {
+		return "", fmt.Errorf("mediator admin profile private key does not match its DID")
+	}
+	return key, nil
+}
+
+func mediatorAdminPrivateKey(secret mediatorAdminSecret) (key, did string, err error) {
+	if secret.PrivateKeyJWK != nil && secret.PrivateKeyMultibase != "" {
+		return "", "", fmt.Errorf("mediator admin profile contains ambiguous private key material")
+	}
+
+	var seed []byte
+	if jwk := secret.PrivateKeyJWK; jwk != nil {
+		if jwk.Kty != "OKP" || jwk.Crv != "Ed25519" {
+			return "", "", fmt.Errorf("mediator admin profile private key is not Ed25519")
+		}
+		seed, err = decodeCanonicalBase64URL(jwk.D, ed25519.SeedSize)
+		if err != nil {
+			return "", "", fmt.Errorf("mediator admin profile has an invalid private key")
+		}
+		public, publicErr := decodeCanonicalBase64URL(jwk.X, ed25519.PublicKeySize)
+		if publicErr != nil {
+			clear(seed)
+			return "", "", fmt.Errorf("mediator admin profile has an invalid public key")
+		}
+		derivedPublic := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
+		if !ed25519.PublicKey(public).Equal(derivedPublic) {
+			clear(seed)
+			return "", "", fmt.Errorf("mediator admin profile public and private keys do not match")
+		}
+		key = "z" + didresolver.EncodeBase58BTC(append([]byte{0x80, 0x26}, seed...))
+	} else if secret.PrivateKeyMultibase != "" {
+		decoded, decodeErr := didresolver.DecodeBase58BTC(strings.TrimPrefix(secret.PrivateKeyMultibase, "z"))
+		if decodeErr != nil || !strings.HasPrefix(secret.PrivateKeyMultibase, "z") || len(decoded) != 2+ed25519.SeedSize || decoded[0] != 0x80 || decoded[1] != 0x26 {
+			return "", "", fmt.Errorf("mediator admin profile has an invalid private key")
+		}
+		if "z"+didresolver.EncodeBase58BTC(decoded) != secret.PrivateKeyMultibase {
+			return "", "", fmt.Errorf("mediator admin profile has a non-canonical private key")
+		}
+		seed = append([]byte(nil), decoded[2:]...)
+		key = secret.PrivateKeyMultibase
+	} else {
+		return "", "", fmt.Errorf("mediator admin profile has no private key")
+	}
+	defer clear(seed)
+
+	public := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
+	did = "did:key:z" + didresolver.EncodeBase58BTC(append([]byte{0xed, 0x01}, public...))
+	return key, did, nil
+}
+
+func decodeCanonicalBase64URL(value string, size int) ([]byte, error) {
+	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil || len(decoded) != size || base64.RawURLEncoding.EncodeToString(decoded) != value {
+		return nil, fmt.Errorf("invalid base64url value")
+	}
+	return decoded, nil
 }
 
 // ParseWebvhAdminDID extracts the webvh admin DID (3b) from
