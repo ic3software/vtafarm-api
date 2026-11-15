@@ -21,9 +21,8 @@ func VtaDeploymentName(sessionID uint) string {
 }
 
 // SetDeploymentImage points every container in the Deployment at image and
-// forces the Recreate strategy. A VTA Deployment also gains any tuning
-// variable it is missing (see ensureVtaTuningEnv), so the rollout an upgrade
-// already causes brings older Deployments in line with the template. Recreate matters: these Deployments mount RWO
+// forces the Recreate strategy. The same rollout reconciles VTA tuning and an
+// existing mediator's persisted Vault CA configuration. Recreate matters: these Deployments mount RWO
 // PVCs, so the default RollingUpdate would start the new pod while the old
 // one still holds the volume and deadlock the rollout. Replacing the whole
 // Strategy struct also clears any rollingUpdate params, which the API server
@@ -39,6 +38,7 @@ func (c *Client) SetDeploymentImage(ctx context.Context, ns, name, image string)
 			deploy.Spec.Template.Spec.Containers[i].Image = image
 		}
 		ensureVtaTuningEnv(deploy)
+		ensureMediatorVaultCA(deploy, image)
 		_, err = c.kube.AppsV1().Deployments(ns).Update(ctx, deploy, metav1.UpdateOptions{})
 		return err
 	})
@@ -62,6 +62,7 @@ func (c *Client) RecoverDeploymentImage(ctx context.Context, ns, name, image str
 			deploy.Spec.Template.Spec.Containers[i].Image = image
 		}
 		ensureVtaTuningEnv(deploy)
+		ensureMediatorVaultCA(deploy, image)
 		if deploy.Spec.Template.Annotations == nil {
 			deploy.Spec.Template.Annotations = map[string]string{}
 		}

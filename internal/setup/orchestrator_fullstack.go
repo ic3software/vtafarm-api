@@ -73,6 +73,10 @@ func fsMediatorTuningEnv() []corev1.EnvVar {
 	}
 }
 
+func fsMediatorVaultMounts() ([]corev1.Volume, []corev1.VolumeMount) {
+	return []corev1.Volume{k8s.VaultCAVolume()}, []corev1.VolumeMount{k8s.VaultCAVolumeMount()}
+}
+
 // The dids daemon applies these budgets to each of its two Fjall stores.
 func fsDidsTuningEnv() []corev1.EnvVar {
 	return []corev1.EnvVar{
@@ -616,17 +620,17 @@ func (o *Orchestrator) fsStepVtaSetup(ctx context.Context, ns string, s *model.S
 // Vault (kubernetes auth — the mediator's own pod ServiceAccount JWT).
 func (o *Orchestrator) fsStepMediatorP1(ctx context.Context, ns string, s *model.SetupSession) error {
 	recipe, err := RenderMediatorRecipeTOML(s, MediatorVaultSecrets{
-		HostPort:   vaultHostPort(o.vaultAddr),
-		KVMount:    o.vault.KVMount(),
-		Prefix:     vault.MediatorPrefix(s.UserID, s.ID),
-		K8sRole:    vault.UserName(s.UserID),
-		SkipVerify: true,
+		HostPort: vaultHostPort(o.vaultAddr),
+		KVMount:  o.vault.KVMount(),
+		Prefix:   vault.MediatorPrefix(s.UserID, s.ID),
+		K8sRole:  vault.UserName(s.UserID),
 	})
 	if err != nil {
 		return fmt.Errorf("render mediator-recipe.toml: %w", err)
 	}
 
 	jobName := k8s.FSJobMediatorP1(s.ID)
+	extraVolumes, extraMounts := fsMediatorVaultMounts()
 	if err := o.k8s.CreateComponentJob(ctx, ns, k8s.ComponentJobSpec{
 		Name:           jobName,
 		Image:          s.MediatorImage,
@@ -637,7 +641,9 @@ func (o *Orchestrator) fsStepMediatorP1(ctx context.Context, ns string, s *model
 		ConfigMapName:  jobName,
 		ConfigMapKey:   "mediator-recipe.toml",
 		ConfigMapData:  recipe,
-		Env:            fsNoColorEnv(),
+		Env:            append(fsNoColorEnv(), k8s.VaultCAEnvVar()),
+		ExtraVolumes:   extraVolumes,
+		ExtraMounts:    extraMounts,
 	}); err != nil {
 		return fmt.Errorf("create job: %w", err)
 	}
@@ -700,11 +706,10 @@ func (o *Orchestrator) fsStepMediatorReprov(ctx context.Context, ns string, s *m
 // conf/atm-functions.lua to the mediator PVC.
 func (o *Orchestrator) fsStepMediatorP2(ctx context.Context, ns string, s *model.SetupSession, digest2a string) (adminKey string, err error) {
 	recipe, err := RenderMediatorRecipeTOML(s, MediatorVaultSecrets{
-		HostPort:   vaultHostPort(o.vaultAddr),
-		KVMount:    o.vault.KVMount(),
-		Prefix:     vault.MediatorPrefix(s.UserID, s.ID),
-		K8sRole:    vault.UserName(s.UserID),
-		SkipVerify: true,
+		HostPort: vaultHostPort(o.vaultAddr),
+		KVMount:  o.vault.KVMount(),
+		Prefix:   vault.MediatorPrefix(s.UserID, s.ID),
+		K8sRole:  vault.UserName(s.UserID),
 	})
 	if err != nil {
 		return "", fmt.Errorf("render mediator-recipe.toml: %w", err)
@@ -712,6 +717,7 @@ func (o *Orchestrator) fsStepMediatorP2(ctx context.Context, ns string, s *model
 
 	jobName := k8s.FSJobMediatorP2(s.ID)
 	cmd := fmt.Sprintf("mediator-setup --from /config/mediator-recipe.toml --bundle bundle.armor --digest %s", shellQuote(digest2a))
+	extraVolumes, extraMounts := fsMediatorVaultMounts()
 
 	if err := o.k8s.CreateComponentJob(ctx, ns, k8s.ComponentJobSpec{
 		Name:           jobName,
@@ -723,7 +729,9 @@ func (o *Orchestrator) fsStepMediatorP2(ctx context.Context, ns string, s *model
 		ConfigMapName:  jobName,
 		ConfigMapKey:   "mediator-recipe.toml",
 		ConfigMapData:  recipe,
-		Env:            fsNoColorEnv(),
+		Env:            append(fsNoColorEnv(), k8s.VaultCAEnvVar()),
+		ExtraVolumes:   extraVolumes,
+		ExtraMounts:    extraMounts,
 	}); err != nil {
 		return "", fmt.Errorf("create job: %w", err)
 	}
@@ -1103,6 +1111,9 @@ func (o *Orchestrator) fsDeployMediator(ctx context.Context, ns string, s *model
 		return fmt.Errorf("load resource defaults: %w", err)
 	}
 	name := k8s.FSMediatorName(s.ID)
+	extraVolumes, extraMounts := fsMediatorVaultMounts()
+	env := append(fsNoColorEnv(), fsMediatorTuningEnv()...)
+	env = append(env, k8s.VaultCAEnvVar())
 	if err := o.k8s.CreateComponentDeployment(ctx, ns, k8s.ComponentDeploymentSpec{
 		Name:            name,
 		Image:           s.MediatorImage,
@@ -1110,7 +1121,9 @@ func (o *Orchestrator) fsDeployMediator(ctx context.Context, ns string, s *model
 		WorkingDir:      "/work/mediator",
 		ServiceAccount:  k8s.VtaServiceAccount,
 		PVCMounts:       []k8s.PVCMount{{Name: "mediator-data", ClaimName: name, MountPath: "/work/mediator"}},
-		Env:             append(fsNoColorEnv(), fsMediatorTuningEnv()...),
+		Env:             env,
+		ExtraVolumes:    extraVolumes,
+		ExtraMounts:     extraMounts,
 		Port:            7037,
 		Labels:          fsLabels("mediator", s.ID),
 		PlacementMode:   k8s.PlacementModeFullStack,

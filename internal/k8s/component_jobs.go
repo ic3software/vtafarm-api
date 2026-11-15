@@ -63,6 +63,9 @@ type ComponentJobSpec struct {
 
 	Env []corev1.EnvVar
 
+	ExtraVolumes []corev1.Volume
+	ExtraMounts  []corev1.VolumeMount
+
 	// ActiveDeadlineSeconds defaults to 600 (10 min) when zero.
 	ActiveDeadlineSeconds int64
 
@@ -126,8 +129,8 @@ func (c *Client) CreateComponentJob(ctx context.Context, ns string, spec Compone
 		}
 	}
 
-	volumes := make([]corev1.Volume, 0, len(spec.PVCMounts)+1)
-	mounts := make([]corev1.VolumeMount, 0, len(spec.PVCMounts)+1)
+	volumes := make([]corev1.Volume, 0, len(spec.PVCMounts)+len(spec.ExtraVolumes)+1)
+	mounts := make([]corev1.VolumeMount, 0, len(spec.PVCMounts)+len(spec.ExtraMounts)+1)
 	for _, m := range spec.PVCMounts {
 		volumes = append(volumes, corev1.Volume{
 			Name: m.Name,
@@ -157,6 +160,8 @@ func (c *Client) CreateComponentJob(ctx context.Context, ns string, spec Compone
 		})
 		mounts = append(mounts, corev1.VolumeMount{Name: "config", MountPath: "/config", ReadOnly: true})
 	}
+	volumes = append(volumes, spec.ExtraVolumes...)
+	mounts = append(mounts, spec.ExtraMounts...)
 
 	backoff := int32(0)
 	ttl := int32(3600)
