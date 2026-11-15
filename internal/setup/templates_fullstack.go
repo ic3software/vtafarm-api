@@ -97,7 +97,7 @@ vta_mode  = "sealed-export"
 context = "mediator"
 
 [secrets]
-storage = "vault://{{ .Vault.HostPort }}/{{ .Vault.KVMount }}/{{ .Vault.Prefix }}?auth=kubernetes&role={{ .Vault.K8sRole }}{{ if .Vault.SkipVerify }}&insecure=1{{ end }}"
+storage = "vault://{{ .Vault.HostPort }}/{{ .Vault.KVMount }}/{{ .Vault.Prefix }}?auth=kubernetes&role={{ .Vault.K8sRole }}"
 
 [security]
 ssl          = "none"
@@ -123,11 +123,10 @@ listen_address = "0.0.0.0:7037"
 // mediator binary exchanges its pod's own ServiceAccount JWT for a Vault
 // token, so there's no VAULT_TOKEN to mint or inject (design §9).
 type MediatorVaultSecrets struct {
-	HostPort   string // e.g. vault.vault.svc:8200 (no scheme — vault:// URL form)
-	KVMount    string // KV v2 mount, e.g. "secret"
-	Prefix     string // mediator/user-<id>/session-<id>
-	K8sRole    string // Vault kubernetes-auth role, e.g. vta-user-<id>
-	SkipVerify bool   // self-signed in-cluster CA → ?insecure=1
+	HostPort string // e.g. vault.vault.svc:8200 (no scheme — vault:// URL form)
+	KVMount  string // KV v2 mount, e.g. "secret"
+	Prefix   string // mediator/user-<id>/session-<id>
+	K8sRole  string // Vault kubernetes-auth role, e.g. vta-user-<id>
 }
 
 type mediatorRecipeData struct {

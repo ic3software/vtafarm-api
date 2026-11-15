@@ -82,6 +82,32 @@ func TestCreateComponentJobMountsSecretConfig(t *testing.T) {
 	}
 }
 
+func TestCreateComponentJobMountsExtraVolume(t *testing.T) {
+	client := &Client{kube: fake.NewSimpleClientset()}
+	if err := client.CreateComponentJob(context.Background(), "test", ComponentJobSpec{
+		Name:         "mediator-setup",
+		Image:        "example/mediator:test",
+		ExtraVolumes: []corev1.Volume{VaultCAVolume()},
+		ExtraMounts:  []corev1.VolumeMount{VaultCAVolumeMount()},
+	}); err != nil {
+		t.Fatalf("CreateComponentJob() error = %v", err)
+	}
+	job, err := client.kube.BatchV1().Jobs("test").Get(
+		context.Background(), "mediator-setup", metav1.GetOptions{},
+	)
+	if err != nil {
+		t.Fatalf("get Job: %v", err)
+	}
+	volumes := job.Spec.Template.Spec.Volumes
+	mounts := job.Spec.Template.Spec.Containers[0].VolumeMounts
+	if len(volumes) != 1 || volumes[0].ConfigMap == nil || volumes[0].ConfigMap.Name != VaultCAConfigMapName {
+		t.Fatalf("extra volumes = %#v", volumes)
+	}
+	if len(mounts) != 1 || mounts[0].MountPath != VaultCAMountPath || !mounts[0].ReadOnly {
+		t.Fatalf("extra mounts = %#v", mounts)
+	}
+}
+
 func TestCreateComponentDeploymentUsesConfiguredHealthReadinessProbe(t *testing.T) {
 	client := &Client{kube: fake.NewSimpleClientset()}
 

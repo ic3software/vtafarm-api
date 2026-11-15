@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -112,16 +113,102 @@ func TestRecoverDeploymentImageAddsMissingVtaTuningEnv(t *testing.T) {
 	}
 }
 
-func TestSetDeploymentImageLeavesOtherComponentsEnvAlone(t *testing.T) {
-	client := &Client{kube: fake.NewSimpleClientset(tuningTestDeployment("fs-7-mediator", "fs-mediator",
+func TestSetDeploymentImageMigratesMediatorToVersionIndependentVaultCA(t *testing.T) {
+	deployment := tuningTestDeployment("fs-7-mediator", "fs-mediator",
 		corev1.EnvVar{Name: "NO_COLOR", Value: "1"},
-	))}
+		corev1.EnvVar{Name: "MEDIATOR_ALLOW_INSECURE_VAULT", Value: "1"},
+	)
+	deployment.Spec.Template.Spec.Volumes = []corev1.Volume{{
+		Name: "mediator-data",
+		VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+			ClaimName: "fs-7-mediator",
+		}},
+	}}
+	deployment.Spec.Template.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{
+		Name: "mediator-data", MountPath: "/work/mediator",
+	}}
+	client := &Client{kube: fake.NewSimpleClientset(deployment)}
 
 	if err := client.SetDeploymentImage(context.Background(), "test", "fs-7-mediator", "example/mediator:new"); err != nil {
 		t.Fatalf("SetDeploymentImage() error = %v", err)
 	}
 	env := deploymentEnv(t, client, "fs-7-mediator")
-	if len(env) != 1 || env["NO_COLOR"] != "1" {
-		t.Fatalf("mediator env changed: %v", env)
+	if len(env) != 2 || env["NO_COLOR"] != "1" || env[VaultCAEnvName] != VaultCAFilePath {
+		t.Fatalf("mediator env = %v", env)
 	}
+	got, err := client.kube.AppsV1().Deployments("test").Get(context.Background(), "fs-7-mediator", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get Deployment: %v", err)
+	}
+	if got.Spec.Template.Spec.Containers[0].Image != "example/mediator:new" {
+		t.Fatalf("mediator image = %q", got.Spec.Template.Spec.Containers[0].Image)
+	}
+	if len(got.Spec.Template.Spec.InitContainers) != 1 {
+		t.Fatalf("init containers = %#v", got.Spec.Template.Spec.InitContainers)
+	}
+	init := got.Spec.Template.Spec.InitContainers[0]
+	if init.Name != mediatorVaultMigrationInit || init.Image != "example/mediator:new" {
+		t.Fatalf("migration init container = %#v", init)
+	}
+	if len(init.Command) != 3 || !strings.Contains(init.Command[2], "&insecure=1") || !strings.Contains(init.Command[2], "&ca_cert=") {
+		t.Fatalf("migration command = %#v", init.Command)
+	}
+	container := got.Spec.Template.Spec.Containers[0]
+	if !hasVolumeMount(container.VolumeMounts, VaultCAVolumeName, VaultCAMountPath) {
+		t.Fatalf("mediator mounts = %#v", container.VolumeMounts)
+	}
+	if !hasConfigMapVolume(got.Spec.Template.Spec.Volumes, VaultCAVolumeName, VaultCAConfigMapName) {
+		t.Fatalf("mediator volumes = %#v", got.Spec.Template.Spec.Volumes)
+	}
+
+	if err := client.SetDeploymentImage(context.Background(), "test", "fs-7-mediator", "example/mediator:new"); err != nil {
+		t.Fatalf("second SetDeploymentImage() error = %v", err)
+	}
+	got, _ = client.kube.AppsV1().Deployments("test").Get(context.Background(), "fs-7-mediator", metav1.GetOptions{})
+	if len(got.Spec.Template.Spec.InitContainers) != 1 {
+		t.Fatalf("migration init container duplicated: %#v", got.Spec.Template.Spec.InitContainers)
+	}
+
+	if err := client.RecoverDeploymentImage(context.Background(), "test", "fs-7-mediator", "example/mediator:0.52.0-6b15a89"); err != nil {
+		t.Fatalf("RecoverDeploymentImage() error = %v", err)
+	}
+	got, _ = client.kube.AppsV1().Deployments("test").Get(context.Background(), "fs-7-mediator", metav1.GetOptions{})
+	if got.Spec.Template.Spec.InitContainers[0].Image != "example/mediator:0.52.0-6b15a89" {
+		t.Fatalf("rollback migration image = %q", got.Spec.Template.Spec.InitContainers[0].Image)
+	}
+	env = deploymentEnv(t, client, "fs-7-mediator")
+	if env[VaultCAEnvName] != VaultCAFilePath {
+		t.Fatalf("rollback mediator env = %v", env)
+	}
+}
+
+func TestSetDeploymentImageLeavesOtherComponentsEnvAlone(t *testing.T) {
+	client := &Client{kube: fake.NewSimpleClientset(tuningTestDeployment("fs-7-dids", "fs-dids",
+		corev1.EnvVar{Name: "NO_COLOR", Value: "1"},
+	))}
+	if err := client.SetDeploymentImage(context.Background(), "test", "fs-7-dids", "example/dids:new"); err != nil {
+		t.Fatalf("SetDeploymentImage() error = %v", err)
+	}
+	env := deploymentEnv(t, client, "fs-7-dids")
+	if len(env) != 1 || env["NO_COLOR"] != "1" {
+		t.Fatalf("dids env changed: %v", env)
+	}
+}
+
+func hasVolumeMount(mounts []corev1.VolumeMount, name, path string) bool {
+	for _, mount := range mounts {
+		if mount.Name == name && mount.MountPath == path && mount.ReadOnly {
+			return true
+		}
+	}
+	return false
+}
+
+func hasConfigMapVolume(volumes []corev1.Volume, name, configMap string) bool {
+	for _, volume := range volumes {
+		if volume.Name == name && volume.ConfigMap != nil && volume.ConfigMap.Name == configMap {
+			return true
+		}
+	}
+	return false
 }
