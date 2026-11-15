@@ -20,17 +20,34 @@ func TestEntitlementFor(t *testing.T) {
 }
 
 func TestValidateTarget(t *testing.T) {
-	if err := ValidateTarget(Target{Scope: "stack"}, "vta_only", nil); err == nil {
+	if err := ValidateTarget(Target{Scope: "stack"}, "vta_only", false, nil); err == nil {
 		t.Fatal("vta_only accepted stack scope")
 	}
-	if err := ValidateTarget(Target{Scope: "component", Component: "mediator"}, "vta_only", nil); err == nil {
+	if err := ValidateTarget(Target{Scope: "component", Component: "mediator"}, "vta_only", false, nil); err == nil {
 		t.Fatal("vta_only accepted mediator")
 	}
-	if err := ValidateTarget(Target{Scope: "pod", Pod: "vta-42-abc"}, "full_stack", []string{"vta-42-abc"}); err != nil {
+	if err := ValidateTarget(Target{Scope: "component", Component: "trust-registry"}, "full_stack", false, nil); err == nil {
+		t.Fatal("full_stack without trust registry accepted trust-registry")
+	}
+	if err := ValidateTarget(Target{Scope: "component", Component: "trust-registry"}, "full_stack", true, nil); err != nil {
+		t.Fatalf("enabled trust registry rejected: %v", err)
+	}
+	if err := ValidateTarget(Target{Scope: "pod", Pod: "vta-42-abc"}, "full_stack", false, []string{"vta-42-abc"}); err != nil {
 		t.Fatalf("current pod rejected: %v", err)
 	}
-	if err := ValidateTarget(Target{Scope: "pod", Pod: `vta-42-abc"}`}, "full_stack", []string{`vta-42-abc"}`}); err == nil {
+	if err := ValidateTarget(Target{Scope: "pod", Pod: `vta-42-abc"}`}, "full_stack", false, []string{`vta-42-abc"}`}); err == nil {
 		t.Fatal("unsafe pod name accepted")
+	}
+}
+
+func TestAvailableComponents(t *testing.T) {
+	withoutRegistry := AvailableComponents("full_stack", false)
+	if strings.Join(withoutRegistry, ",") != "vta,mediator,dids,vtc" {
+		t.Fatalf("components without registry = %v", withoutRegistry)
+	}
+	withRegistry := AvailableComponents("full_stack", true)
+	if strings.Join(withRegistry, ",") != "vta,mediator,dids,vtc,trust-registry" {
+		t.Fatalf("components with registry = %v", withRegistry)
 	}
 }
 

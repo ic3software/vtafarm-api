@@ -135,7 +135,7 @@ func (h *MetricsHandler) target(c *gin.Context, ctx metricsContext) (metrics.Tar
 	for _, pod := range ctx.pods {
 		names = append(names, pod.Name)
 	}
-	if err := metrics.ValidateTarget(target, ctx.session.Mode, names); err != nil {
+	if err := metrics.ValidateTarget(target, ctx.session.Mode, ctx.session.TrustRegistryEnabled, names); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return metrics.Target{}, false
 	}
@@ -150,10 +150,7 @@ func (h *MetricsHandler) Meta(c *gin.Context) {
 		return
 	}
 	entitlement := metrics.EntitlementFor(ctx.user)
-	components := []string{"vta"}
-	if ctx.session.Mode == "full_stack" {
-		components = []string{"vta", "mediator", "dids", "vtc", "trust-registry"}
-	}
+	components := metrics.AvailableComponents(ctx.session.Mode, ctx.session.TrustRegistryEnabled)
 	c.JSON(http.StatusOK, gin.H{
 		"plan": entitlement.Plan, "retention_days": entitlement.RetentionDays,
 		"live_enabled": true, "live_interval_seconds": int(h.config.LiveInterval.Seconds()),

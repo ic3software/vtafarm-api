@@ -27,6 +27,18 @@ func EntitlementFor(user model.User) Entitlement {
 	return Entitlement{Plan: "free", RetentionDays: FreeRetentionDays}
 }
 
+func AvailableComponents(mode string, trustRegistryEnabled bool) []string {
+	components := []string{"vta"}
+	if mode != "full_stack" {
+		return components
+	}
+	components = append(components, "mediator", "dids", "vtc")
+	if trustRegistryEnabled {
+		components = append(components, "trust-registry")
+	}
+	return components
+}
+
 type Target struct {
 	Scope     string `json:"scope"`
 	Component string `json:"component,omitempty"`
@@ -35,12 +47,10 @@ type Target struct {
 
 var podNamePattern = regexp.MustCompile(`^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$`)
 
-func ValidateTarget(target Target, mode string, currentPods []string) error {
-	components := map[string]bool{"vta": true}
-	if mode == "full_stack" {
-		for _, component := range []string{"mediator", "dids", "vtc", "trust-registry"} {
-			components[component] = true
-		}
+func ValidateTarget(target Target, mode string, trustRegistryEnabled bool, currentPods []string) error {
+	components := make(map[string]bool)
+	for _, component := range AvailableComponents(mode, trustRegistryEnabled) {
+		components[component] = true
 	}
 	switch target.Scope {
 	case "stack":
