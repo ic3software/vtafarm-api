@@ -83,6 +83,19 @@ func TestApplyPrometheusUsage(t *testing.T) {
 	}
 }
 
+func TestDashboardPrometheusQueriesUseWholeNodeResources(t *testing.T) {
+	if !strings.Contains(dashboardCPUQuery, "irate(node_cpu_usage_seconds_total") {
+		t.Fatalf("CPU query does not use kubelet node resources: %s", dashboardCPUQuery)
+	}
+	if !strings.Contains(dashboardMemoryQuery, "node_memory_working_set_bytes") {
+		t.Fatalf("memory query does not use kubelet node resources: %s", dashboardMemoryQuery)
+	}
+	if strings.Contains(dashboardCPUQuery, "container_cpu_usage_seconds_total") ||
+		strings.Contains(dashboardMemoryQuery, "container_memory_working_set_bytes") {
+		t.Fatal("dashboard queries still aggregate container-only metrics")
+	}
+}
+
 func TestApplyPrometheusUsageDoesNotPartiallyReplaceFallback(t *testing.T) {
 	server := dashboardMetricsServer(t, false)
 	defer server.Close()

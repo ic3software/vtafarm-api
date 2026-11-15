@@ -2097,6 +2097,11 @@ paths:
         scheduled, available, schedulable headroom), and a placement-simulated
         estimate of how many more sessions of each mode still fit.
 
+        Both live sources represent the kubelet's whole-node CPU usage and
+        memory working set. Prometheus derives CPU from its latest two scrapes;
+        the Kubernetes Metrics API reports the metrics-server sampling window.
+        Memory is a current working-set snapshot in both sources.
+
         `source=auto` prefers Prometheus and falls back to the Kubernetes Metrics
         API. `metrics_available` / `storage_available` flag degraded responses:
         when both live metrics sources or Longhorn are unreachable the corresponding

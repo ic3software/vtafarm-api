@@ -209,8 +209,8 @@ func (h *DashboardHandler) Get(c *gin.Context) {
 	})
 }
 
-const dashboardCPUQuery = `sum by (node) (max by (node, namespace, pod, container) (rate(container_cpu_usage_seconds_total{container!="",container!="POD",image!="",node!=""}[1m])))`
-const dashboardMemoryQuery = `sum by (node) (max by (node, namespace, pod, container) (container_memory_working_set_bytes{container!="",container!="POD",image!="",node!=""}))`
+const dashboardCPUQuery = `max by (node) (irate(node_cpu_usage_seconds_total{node!=""}[1m]))`
+const dashboardMemoryQuery = `max by (node) (node_memory_working_set_bytes{node!=""})`
 
 func (h *DashboardHandler) applyPrometheusUsage(ctx context.Context, stats *k8s.ClusterStats) error {
 	if h.metrics == nil {
