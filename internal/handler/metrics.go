@@ -86,7 +86,9 @@ func (h *MetricsHandler) loadContext(c *gin.Context) (metricsContext, bool) {
 		}
 		return metricsContext{}, false
 	}
-	pods, err := h.k8s.ListSessionPods(c.Request.Context(), user.UniqueId, session.ID)
+	// Provisioning namespaces are keyed by the database user ID, not the
+	// public account identifier.
+	pods, err := h.k8s.ListSessionPods(c.Request.Context(), fmt.Sprint(session.UserID), session.ID)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to list session pods"})
 		return metricsContext{}, false
@@ -194,6 +196,7 @@ func (h *MetricsHandler) Range(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
+	setPodSummary(response.Summary, ctx.pods, target)
 	c.JSON(http.StatusOK, response)
 }
 
@@ -204,12 +207,25 @@ func (h *MetricsHandler) queryRange(ctx context.Context, sessionID uint, target 
 	for _, definition := range definitions {
 		definition := definition
 		group.Go(func() error {
-			series, warnings, err := h.client.Range(queryCtx, definition.Name, metrics.Query(definition, sessionID, target), start, end, step)
+			series, warnings, err := h.client.Range(queryCtx, definition.Name, metrics.RangeQuery(definition, sessionID, target, step), start, end, step)
 			if err != nil {
 				return fmt.Errorf("query %s: %w", definition.Name, err)
 			}
 			mu.Lock()
 			response.Series = append(response.Series, series...)
+			response.Warnings = append(response.Warnings, warnings...)
+			mu.Unlock()
+			return nil
+		})
+	}
+	for _, definition := range metrics.SummaryDefinitions() {
+		definition := definition
+		group.Go(func() error {
+			series, warnings, err := h.client.Instant(queryCtx, definition.Name, metrics.Query(definition, sessionID, target), end)
+			if err != nil {
+				return fmt.Errorf("query current %s: %w", definition.Name, err)
+			}
+			mu.Lock()
 			response.Warnings = append(response.Warnings, warnings...)
 			for _, item := range series {
 				if len(item.Points) > 0 {
@@ -263,6 +279,7 @@ func (h *MetricsHandler) Live(c *gin.Context) {
 	if err != nil {
 		writeEvent(c, flusher, "problem", gin.H{"message": err.Error(), "retryable": true})
 	} else {
+		setPodSummary(snapshot.Summary, ctx.pods, target)
 		writeEvent(c, flusher, "snapshot", snapshot)
 	}
 
@@ -296,6 +313,7 @@ func (h *MetricsHandler) Live(c *gin.Context) {
 				if recoveryErr != nil {
 					continue
 				}
+				setPodSummary(recovered.Summary, ctx.pods, target)
 				writeEvent(c, flusher, "snapshot", recovered)
 				degraded = false
 			}
@@ -307,6 +325,24 @@ func (h *MetricsHandler) Live(c *gin.Context) {
 			writeEvent(c, flusher, "sample", gin.H{"observed_at": observed, "series": series, "warnings": warnings})
 		}
 	}
+}
+
+func setPodSummary(summary map[string]float64, pods []podMeta, target metrics.Target) {
+	var ready, total int
+	for _, pod := range pods {
+		selected := target.Scope == "stack" ||
+			(target.Scope == "component" && pod.Component == target.Component) ||
+			(target.Scope == "pod" && pod.Name == target.Pod)
+		if !selected {
+			continue
+		}
+		total++
+		if pod.Ready {
+			ready++
+		}
+	}
+	summary["pod_ready"] = float64(ready)
+	summary["pod_total"] = float64(total)
 }
 
 func (h *MetricsHandler) acquireStream(userID, sessionID uint, target metrics.Target) (func(), bool) {

@@ -114,27 +114,67 @@ func Query(def Definition, sessionID uint, target Target) string {
 	return fmt.Sprintf("sum by (pod) (%s%s)", def.Record, selector)
 }
 
+// RangeQuery rolls dense samples into the resolution selected for the view.
+// Gauges and rates use a bucket average; configured ceilings and cumulative
+// values use the bucket maximum so reference lines remain exact.
+func RangeQuery(def Definition, sessionID uint, target Target, window time.Duration) string {
+	selector := Selector(sessionID, target)
+	if target.Scope == "component" && target.Component == "vta" {
+		selector = strings.Replace(selector, `label_app="vta|fs-vta"`, `label_app=~"vta|fs-vta"`, 1)
+	}
+	function := "avg_over_time"
+	switch def.Name {
+	case "cpu_requested_cores", "cpu_limit_cores", "memory_requested_bytes", "memory_limit_bytes",
+		"persistent_volume_used_bytes", "persistent_volume_capacity_bytes", "container_restarts_total":
+		function = "max_over_time"
+	}
+	return fmt.Sprintf("sum by (pod) (%s(%s%s[%ds]))", function, def.Record, selector, int64(window.Seconds()))
+}
+
 func LiveDefinitions() []Definition {
 	definitions := append([]Definition(nil), HistoricalDefinitions...)
 	definitions[0].Record = "vtafarm:pod_cpu_usage_cores:rate1m"
 	return definitions
 }
 
-func Preset(value string, now time.Time, maxPoints int) (time.Time, time.Time, time.Duration, error) {
-	durations := map[string]time.Duration{
-		"1h": time.Hour, "6h": 6 * time.Hour, "24h": 24 * time.Hour,
-		"7d": 7 * 24 * time.Hour, "30d": 30 * 24 * time.Hour,
+func SummaryDefinitions() []Definition {
+	wanted := map[string]bool{
+		"cpu_usage_cores": true, "memory_working_set_bytes": true,
+		"persistent_volume_used_bytes": true, "persistent_volume_capacity_bytes": true,
+		"container_restarts_total": true,
 	}
-	duration, ok := durations[value]
+	definitions := LiveDefinitions()
+	result := make([]Definition, 0, len(wanted))
+	for _, definition := range definitions {
+		if wanted[definition.Name] {
+			result = append(result, definition)
+		}
+	}
+	return result
+}
+
+func Preset(value string, now time.Time, maxPoints int) (time.Time, time.Time, time.Duration, error) {
+	type preset struct {
+		duration time.Duration
+		step     time.Duration
+	}
+	presets := map[string]preset{
+		"1h":  {duration: time.Hour, step: time.Minute},
+		"6h":  {duration: 6 * time.Hour, step: time.Minute},
+		"24h": {duration: 24 * time.Hour, step: 2 * time.Minute},
+		"7d":  {duration: 7 * 24 * time.Hour, step: 10 * time.Minute},
+		"30d": {duration: 30 * 24 * time.Hour, step: time.Hour},
+	}
+	selected, ok := presets[value]
 	if !ok {
 		return time.Time{}, time.Time{}, 0, fmt.Errorf("range must be 1h, 6h, 24h, 7d, or 30d")
 	}
-	step := duration / time.Duration(maxPoints)
-	if step < 30*time.Second {
-		step = 30 * time.Second
+	step := selected.step
+	if maxPoints > 0 && selected.duration/step > time.Duration(maxPoints) {
+		step = selected.duration / time.Duration(maxPoints)
+		step = ((step + time.Second - 1) / time.Second) * time.Second
 	}
-	step = step.Round(time.Second)
-	return now.Add(-duration), now, step, nil
+	return now.Add(-selected.duration), now, step, nil
 }
 
 func PodNames(pods map[string]string) []string {

@@ -43,14 +43,30 @@ func TestQueryUsesOnlyServerSelectors(t *testing.T) {
 	}
 }
 
+func TestRangeQueryAggregatesIntoViewBuckets(t *testing.T) {
+	target := Target{Scope: "component", Component: "vta"}
+	usage := RangeQuery(HistoricalDefinitions[0], 42, target, time.Hour)
+	if !strings.Contains(usage, "avg_over_time(") || !strings.Contains(usage, "[3600s]") {
+		t.Fatalf("usage query is not hourly average: %q", usage)
+	}
+	limit := RangeQuery(HistoricalDefinitions[3], 42, target, time.Hour)
+	if !strings.Contains(limit, "max_over_time(") {
+		t.Fatalf("limit query does not preserve bucket maximum: %q", limit)
+	}
+}
+
 func TestPresetBoundsPoints(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	start, end, step, err := Preset("30d", now, 2000)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if end.Sub(start) != 30*24*time.Hour || step < 21*time.Minute {
+	if end.Sub(start) != 30*24*time.Hour || step != time.Hour {
 		t.Fatalf("unexpected range=%v step=%v", end.Sub(start), step)
+	}
+	_, _, dayStep, err := Preset("24h", now, 2000)
+	if err != nil || dayStep != 2*time.Minute {
+		t.Fatalf("24h step=%v err=%v", dayStep, err)
 	}
 	if _, _, _, err := Preset("90d", now, 2000); err == nil {
 		t.Fatal("unsupported range accepted")
