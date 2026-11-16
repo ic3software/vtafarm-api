@@ -1,5 +1,27 @@
 # Changelog
 
+## [v0.21.0] - 2026-11-16
+
+### Added
+
+- Session owners and administrators can query bounded historical metrics and
+  live SSE updates for an entire stack, component, or pod, including CPU,
+  memory, network, persistent storage, resource limits, and pod readiness.
+- User profiles expose their metrics plan and retention entitlement: seven
+  days for standard access and 30 days for Full Stack access.
+- The administrator dashboard can use Prometheus for cluster usage, select a
+  source explicitly, and fall back to Kubernetes metrics when necessary.
+- The Helm chart configures the private Thanos query endpoint and bounded
+  query, live-stream, cache, and concurrency settings.
+
+### Fixed
+
+- New and upgraded Full Stack mediators trust the mounted Vault CA instead of
+  disabling TLS verification; upgrades also remove persisted insecure Vault
+  options from existing mediator configuration.
+- Session upgrade status returns an empty success response before the first
+  upgrade instead of reporting the missing history as an error.
+
 ## [v0.20.1] - 2026-11-13
 
 ### Fixed
