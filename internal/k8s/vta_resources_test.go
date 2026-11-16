@@ -85,7 +85,7 @@ func TestCreateVtaDeploymentSetsTuningEnv(t *testing.T) {
 		}
 	}
 	// A new Deployment must already be what the upgrade path converges to.
-	if ensureVtaTuningEnv(deployment) {
+	if ensureTuningEnv(deployment) {
 		t.Fatal("a freshly created VTA Deployment is missing tuning env")
 	}
 }

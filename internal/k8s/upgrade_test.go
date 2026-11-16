@@ -182,16 +182,58 @@ func TestSetDeploymentImageMigratesMediatorToVersionIndependentVaultCA(t *testin
 	}
 }
 
+func TestSetDeploymentImageAddsMissingDidsAndVtcTuningEnv(t *testing.T) {
+	cases := []struct {
+		app  string
+		want []corev1.EnvVar
+	}{
+		{"fs-dids", DidsTuningEnv()},
+		{"fs-vtc", VtcTuningEnv()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.app, func(t *testing.T) {
+			// Created before MALLOC_ARENA_MAX joined the template, with one
+			// budget tuned by hand.
+			client := &Client{kube: fake.NewSimpleClientset(tuningTestDeployment("fs-7", tc.app,
+				corev1.EnvVar{Name: "NO_COLOR", Value: "1"},
+				corev1.EnvVar{Name: "STORAGE_FJALL_BLOCK_CACHE", Value: "4194304"},
+			))}
+
+			if err := client.SetDeploymentImage(context.Background(), "test", "fs-7", "example/image:new"); err != nil {
+				t.Fatalf("SetDeploymentImage() error = %v", err)
+			}
+			env := deploymentEnv(t, client, "fs-7")
+			if env["MALLOC_ARENA_MAX"] != "2" {
+				t.Fatalf("MALLOC_ARENA_MAX = %q, want 2", env["MALLOC_ARENA_MAX"])
+			}
+			if env["STORAGE_FJALL_BLOCK_CACHE"] != "4194304" {
+				t.Fatalf("hand-tuned STORAGE_FJALL_BLOCK_CACHE was overwritten: %q", env["STORAGE_FJALL_BLOCK_CACHE"])
+			}
+			for _, want := range tc.want {
+				if want.Name == "STORAGE_FJALL_BLOCK_CACHE" {
+					continue
+				}
+				if env[want.Name] != want.Value {
+					t.Fatalf("%s = %q, want %q", want.Name, env[want.Name], want.Value)
+				}
+			}
+			if len(env) != len(tc.want)+1 {
+				t.Fatalf("unexpected env after the upgrade: %v", env)
+			}
+		})
+	}
+}
+
 func TestSetDeploymentImageLeavesOtherComponentsEnvAlone(t *testing.T) {
-	client := &Client{kube: fake.NewSimpleClientset(tuningTestDeployment("fs-7-dids", "fs-dids",
+	client := &Client{kube: fake.NewSimpleClientset(tuningTestDeployment("fs-7-trust-registry", "fs-trust-registry",
 		corev1.EnvVar{Name: "NO_COLOR", Value: "1"},
 	))}
-	if err := client.SetDeploymentImage(context.Background(), "test", "fs-7-dids", "example/dids:new"); err != nil {
+	if err := client.SetDeploymentImage(context.Background(), "test", "fs-7-trust-registry", "example/trust-registry:new"); err != nil {
 		t.Fatalf("SetDeploymentImage() error = %v", err)
 	}
-	env := deploymentEnv(t, client, "fs-7-dids")
+	env := deploymentEnv(t, client, "fs-7-trust-registry")
 	if len(env) != 1 || env["NO_COLOR"] != "1" {
-		t.Fatalf("dids env changed: %v", env)
+		t.Fatalf("trust registry env changed: %v", env)
 	}
 }
 
