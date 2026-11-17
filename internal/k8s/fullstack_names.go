@@ -15,6 +15,9 @@ func FSVtaName(sessionID uint) string      { return fmt.Sprintf("fs-%d-vta", ses
 func FSMediatorName(sessionID uint) string { return fmt.Sprintf("fs-%d-mediator", sessionID) }
 func FSDidsName(sessionID uint) string     { return fmt.Sprintf("fs-%d-dids", sessionID) }
 func FSVtcName(sessionID uint) string      { return fmt.Sprintf("fs-%d-vtc", sessionID) }
+func FSMediatorAdminReaderName(sessionID uint) string {
+	return fmt.Sprintf("fs-%d-mediator-admin-reader", sessionID)
+}
 func FSTrustRegistryName(sessionID uint) string {
 	return fmt.Sprintf("fs-%d-trust-registry", sessionID)
 }

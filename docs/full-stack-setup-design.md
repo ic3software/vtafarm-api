@@ -549,12 +549,14 @@ mediator-setup --from /config/mediator-recipe.toml \
 
 Provisions the unified secret backend **into Vault** (`mediator_jwt_secret`,
 `mediator_operating_secrets`, `mediator_admin_credential`,
-`mediator/vta/last_known_bundle`) and writes `conf/mediator.toml` +
-`conf/atm-functions.lua` to the PVC. The success line reads
+`mediator/vta/last_known_bundle`) and writes `conf/mediator.toml`,
+`conf/admin-monitor.json` and `conf/atm-functions.lua` to the PVC. The success line reads
 `Provisioning unified secret backend: vault://…` (not `file://`), and no
-`conf/secrets.json` is produced. Parse **2c** Admin private key
-(`Private key \(multibase\):\s+(\S+)`) — already stored in Vault too — and return it to
-the user once for offline backup ([§9](#9-secrets-handling)).
+`conf/secrets.json` is produced. A short-lived helper Job mounts the mediator PVC read-only;
+the API reads **2c** from `admin-monitor.json` in that Job's Pod over `pods/exec`, lets the Job
+complete, and immediately deletes it. The private key is never printed to either Job's logs. It
+is already stored in Vault too, and is returned to the user once for offline backup
+([§9](#9-secrets-handling)).
 
 ### Step `step_dids_p1` — DIDS Job (offline-prepare, workingDir `/work/dids`, SA `vta`)
 
@@ -1091,7 +1093,7 @@ of letting the daemon auto-assign a random one, matching the `-vta`/`-mediator` 
 | `step_vta_setup` | VTA + mediator DID logs | content after `---ARTIFACT:…---` markers |
 | `step_mediator_reprov` | 2a digest | `SHA-256 digest:\s+(\S+)` |
 | `step_mediator_reprov` | 2b admin DID | `Admin DID:\s+(did:\S+)` |
-| `step_mediator_p2` | 2c admin priv key | `Private key \(multibase\):\s+(\S+)` |
+| `step_mediator_p2` | 2c admin priv key | `admin-monitor.json` via a read-only helper Job and `pods/exec` |
 | `step_dids_provision` | 3a digest | `SHA-256 digest:\s+(\S+)` |
 | `step_dids_p2` | 3b admin DID | `Generated admin did:key:\s+(did:\S+)` |
 | `step_dids_p2` | 3c admin priv key | `Private key \(save now, not re-shown\):\s+(\S+)` |
@@ -1192,13 +1194,14 @@ already had.
 > `pod-operator`. `step_vtc_setup_key` only mints and writes a local key file, so it does
 > too ([§6](#6-per-step-jobs)).
 
-**Reveal-once secrets (2c, 3c, 5d, 5e).** The mediator and webvh admin private keys are
-captured from the setup logs and surfaced to the user **once** via `GET /setup/:id` for
-offline backup; both are also in Vault by the time they're shown, and teardown deletes both
-KV prefixes ([§13](#13-teardown)), so this reveal is the only copy the user keeps. The
-VTC's `install_url` + `claim_code` are reveal-once for a different reason — they're
-single-use credentials for the admin-claim ceremony ([§14](#14-manual-gates-that-remain)),
-not backups.
+**Reveal-once secrets (2c, 3c, 5d, 5e).** The mediator admin private key is read from its
+owner-only PVC profile over `pods/exec`; the webvh key is captured from its setup output.
+Neither mediator Pod writes the key to logs. Both keys are surfaced to the user **once** via
+`GET /setup/:id` for offline backup; both are also in Vault by the time they're shown, and
+teardown deletes both KV prefixes ([§13](#13-teardown)), so this reveal is the only copy the
+user keeps. The VTC's `install_url` + `claim_code` are reveal-once for a different reason —
+they're single-use credentials for the admin-claim ceremony
+([§14](#14-manual-gates-that-remain)), not backups.
 
 ---
 

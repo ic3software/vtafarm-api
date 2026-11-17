@@ -685,8 +685,8 @@ func (o *Orchestrator) fsStepMediatorReprov(ctx context.Context, ns string, s *m
 }
 
 // fsStepMediatorP2 runs `mediator-setup --bundle --digest`, provisioning the
-// unified secret backend into Vault and writing conf/mediator.toml +
-// conf/atm-functions.lua to the mediator PVC.
+// unified secret backend into Vault and writing conf/mediator.toml,
+// conf/admin-monitor.json and conf/atm-functions.lua to the mediator PVC.
 func (o *Orchestrator) fsStepMediatorP2(ctx context.Context, ns string, s *model.SetupSession, digest2a string) (adminKey string, err error) {
 	recipe, err := RenderMediatorRecipeTOML(s, MediatorVaultSecrets{
 		HostPort: vaultHostPort(o.vaultAddr),
@@ -699,7 +699,7 @@ func (o *Orchestrator) fsStepMediatorP2(ctx context.Context, ns string, s *model
 	}
 
 	jobName := k8s.FSJobMediatorP2(s.ID)
-	cmd := fmt.Sprintf("mediator-setup --from /config/mediator-recipe.toml --bundle bundle.armor --digest %s", shellQuote(digest2a))
+	cmd := fsMediatorPhase2Command(digest2a)
 	extraVolumes, extraMounts := fsMediatorVaultMounts()
 
 	if err := o.k8s.CreateComponentJob(ctx, ns, k8s.ComponentJobSpec{
@@ -726,15 +726,36 @@ func (o *Orchestrator) fsStepMediatorP2(ctx context.Context, ns string, s *model
 	if !succeeded {
 		return "", o.fsJobFailErr(ctx, ns, jobName, failMsg)
 	}
-	logs, err := o.fsJobLogs(ctx, ns, jobName)
+	profile, err := o.k8s.ReadMediatorAdminProfile(ctx, ns, s.ID, s.MediatorImage)
 	if err != nil {
-		return "", fmt.Errorf("read job logs: %w", err)
+		return "", err
 	}
-	adminKey, err = ParseMediatorAdminKey(logs)
+	adminKey, err = ParseMediatorAdminProfile(profile)
 	if err != nil {
 		return "", err
 	}
 	return adminKey, nil
+}
+
+// fsMediatorPhase2Command preserves mediator-setup's exit status while
+// filtering the pre-0.54 release's unconditional private-key line. Newer
+// releases no longer print the key, but the same command keeps 0.52 compatible
+// without ever placing the credential in Kubernetes logs.
+func fsMediatorPhase2Command(digest string) string {
+	return fmt.Sprintf(`fifo=/tmp/vtafarm-mediator-setup.stdout
+rm -f "$fifo"
+mkfifo "$fifo" || exit 1
+trap 'rm -f "$fifo"' EXIT
+sed -E 's|(Private key \(multibase\):).*|\1 [REDACTED]|' <"$fifo" &
+filter_pid=$!
+mediator-setup --from /config/mediator-recipe.toml --bundle bundle.armor --digest %s >"$fifo"
+setup_status=$?
+wait "$filter_pid"
+filter_status=$?
+if [ "$setup_status" -ne 0 ]; then
+  exit "$setup_status"
+fi
+exit "$filter_status"`, shellQuote(digest))
 }
 
 // fsWebvhVaultSecrets builds the dids daemon's Vault [secrets] params —
