@@ -14,7 +14,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go v0.11.1
-	github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go/proof v0.1.4
+	github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go/proof v0.2.1
 	golang.org/x/net v0.62.0
 	golang.org/x/sync v0.25.0
 	gorm.io/driver/postgres v1.6.3
