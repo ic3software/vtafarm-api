@@ -77,23 +77,6 @@ func fsMediatorVaultMounts() ([]corev1.Volume, []corev1.VolumeMount) {
 	return []corev1.Volume{k8s.VaultCAVolume()}, []corev1.VolumeMount{k8s.VaultCAVolumeMount()}
 }
 
-// The dids daemon applies these budgets to each of its two Fjall stores.
-func fsDidsTuningEnv() []corev1.EnvVar {
-	return []corev1.EnvVar{
-		{Name: "STORAGE_FJALL_BLOCK_CACHE", Value: "8388608"},   // 8 MiB
-		{Name: "STORAGE_FJALL_WRITE_BUFFER", Value: "16777216"}, // 16 MiB
-		{Name: "STORAGE_FJALL_MAX_JOURNAL", Value: "67108864"},  // 64 MiB
-	}
-}
-
-func fsVtcTuningEnv() []corev1.EnvVar {
-	return []corev1.EnvVar{
-		{Name: "STORAGE_FJALL_BLOCK_CACHE", Value: "16777216"},  // 16 MiB
-		{Name: "STORAGE_FJALL_WRITE_BUFFER", Value: "33554432"}, // 32 MiB
-		{Name: "STORAGE_FJALL_MAX_JOURNAL", Value: "134217728"}, // 128 MiB
-	}
-}
-
 // vaultHostPort strips the scheme from a Vault address for the mediator's
 // vault://host:port/... storage URL form.
 func vaultHostPort(addr string) string {
@@ -1084,7 +1067,7 @@ func (o *Orchestrator) fsDeployDids(ctx context.Context, ns string, s *model.Set
 		WorkingDir:      "/work/dids",
 		ServiceAccount:  k8s.VtaServiceAccount,
 		PVCMounts:       []k8s.PVCMount{{Name: "dids-data", ClaimName: name, MountPath: "/work/dids"}},
-		Env:             append(fsNoColorEnv(), fsDidsTuningEnv()...),
+		Env:             append(fsNoColorEnv(), k8s.DidsTuningEnv()...),
 		Port:            8534,
 		Labels:          fsLabels("dids", s.ID),
 		PlacementMode:   k8s.PlacementModeFullStack,

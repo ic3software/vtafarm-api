@@ -78,17 +78,58 @@ func VtaTuningEnv() []corev1.EnvVar {
 	}
 }
 
-// ensureVtaTuningEnv adds any VtaTuningEnv variable a VTA Deployment is
-// missing. Deployments are only ever created from the template, never
-// re-rendered, so one created before a variable existed would otherwise lack
-// it forever. It only adds: a value already set is left alone, because
-// operators tune individual VTAs by hand. Deployments that are not a VTA are
-// not touched. Reports whether it changed anything.
-func ensureVtaTuningEnv(deployment *appsv1.Deployment) bool {
-	if app := deployment.Labels["app"]; app != "vta" && app != "fs-vta" {
-		return false
+// DidsTuningEnv is the DID hosting daemon's tuning. The daemon applies the
+// Fjall budgets to each of its two stores.
+//
+// MALLOC_ARENA_MAX: same glibc arena retention as the VTA. The platform DID
+// host on staging held 80 MB in 26 arenas after 90 hours without the cap and
+// 15 MB in one arena after 86 hours with it.
+func DidsTuningEnv() []corev1.EnvVar {
+	return []corev1.EnvVar{
+		{Name: "STORAGE_FJALL_BLOCK_CACHE", Value: "8388608"},   // 8 MiB
+		{Name: "STORAGE_FJALL_WRITE_BUFFER", Value: "16777216"}, // 16 MiB
+		{Name: "STORAGE_FJALL_MAX_JOURNAL", Value: "67108864"},  // 64 MiB
+		{Name: "MALLOC_ARENA_MAX", Value: "2"},
 	}
-	if len(deployment.Spec.Template.Spec.Containers) == 0 {
+}
+
+// VtcTuningEnv is the VTC's tuning.
+//
+// MALLOC_ARENA_MAX: the VTC runs 40–55 threads and held 60–110 MB in 22–29
+// glibc arenas on staging; with the cap that was 15 MB in one arena. The cap
+// does not bound the main heap, which still grows on a busy VTC.
+func VtcTuningEnv() []corev1.EnvVar {
+	return []corev1.EnvVar{
+		{Name: "STORAGE_FJALL_BLOCK_CACHE", Value: "16777216"},  // 16 MiB
+		{Name: "STORAGE_FJALL_WRITE_BUFFER", Value: "33554432"}, // 32 MiB
+		{Name: "STORAGE_FJALL_MAX_JOURNAL", Value: "134217728"}, // 128 MiB
+		{Name: "MALLOC_ARENA_MAX", Value: "2"},
+	}
+}
+
+// tuningEnvFor returns the tuning template for a Deployment's app label, or
+// nil for components whose env is not reconciled on upgrade.
+func tuningEnvFor(app string) []corev1.EnvVar {
+	switch app {
+	case "vta", "fs-vta":
+		return VtaTuningEnv()
+	case "fs-dids":
+		return DidsTuningEnv()
+	case "fs-vtc":
+		return VtcTuningEnv()
+	}
+	return nil
+}
+
+// ensureTuningEnv adds any tuning variable a VTA, DID hosting or VTC
+// Deployment is missing from its component's template. Deployments are only
+// ever created from the template, never re-rendered, so one created before a
+// variable existed would otherwise lack it forever. It only adds: a value
+// already set is left alone, because operators tune individual Deployments by
+// hand. Other components are not touched. Reports whether it changed anything.
+func ensureTuningEnv(deployment *appsv1.Deployment) bool {
+	want := tuningEnvFor(deployment.Labels["app"])
+	if len(want) == 0 || len(deployment.Spec.Template.Spec.Containers) == 0 {
 		return false
 	}
 	container := &deployment.Spec.Template.Spec.Containers[0]
@@ -97,7 +138,7 @@ func ensureVtaTuningEnv(deployment *appsv1.Deployment) bool {
 		present[env.Name] = true
 	}
 	changed := false
-	for _, env := range VtaTuningEnv() {
+	for _, env := range want {
 		if !present[env.Name] {
 			container.Env = append(container.Env, env)
 			changed = true
