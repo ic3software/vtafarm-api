@@ -1,5 +1,18 @@
 # Changelog
 
+## [v0.21.1] - 2026-11-16
+
+### Changed
+
+- Updated Trust Tasks, proof, and CORS dependencies.
+
+### Fixed
+
+- New and upgraded DID Hosting and VTC deployments cap glibc malloc arenas to
+  reduce retained idle memory, matching the existing VTA tuning.
+- Full Stack mediator setup reads and validates the administrator key from its
+  owner-only profile instead of exposing the private key in Kubernetes logs.
+
 ## [v0.21.0] - 2026-11-16
 
 ### Added
