@@ -129,6 +129,18 @@ The existing `kube-prometheus-stack` continues to own Grafana and Prometheus.
 No additional Grafana chart is installed. The Loki data source points to the
 internal Loki gateway service.
 
+Keep metrics and logging in separate namespaces from the first deployment:
+
+- `monitoring` contains Prometheus, Thanos, Grafana, and Alertmanager;
+- `logging` contains Loki, the Loki gateway, Alloy, and the Loki S3 Secret.
+
+Grafana queries `http://loki-gateway.logging.svc.cluster.local`, and Alloy
+writes to that gateway from the same namespace. The Prometheus instance in
+`monitoring` discovers ServiceMonitors and PrometheusRules across namespaces so
+it can continue scraping and alerting on the logging components. Grafana's
+dashboard sidecar also watches all namespaces for the dashboards installed with
+Loki.
+
 ## 6. Alloy collection model
 
 ### 6.1 One collector per node
