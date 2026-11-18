@@ -1,5 +1,19 @@
 # Changelog
 
+## [v0.21.2] - 2026-11-18
+
+### Breaking
+
+- Tenant metrics are disabled by default. Set `metrics.queryURL` explicitly to
+  a Prometheus or Thanos Query endpoint to keep tenant metrics enabled on
+  upgrades that relied on the previous default.
+
+### Fixed
+
+- Finalizing a VTA relocation keeps the relocated pod ready on its target node
+  while removing temporary scheduling constraints, preventing Kubernetes from
+  reactivating an older ReplicaSet.
+
 ## [v0.21.1] - 2026-11-16
 
 ### Changed
