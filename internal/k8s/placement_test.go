@@ -3,6 +3,7 @@ package k8s
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -237,7 +238,10 @@ func TestFinalizeVTAOneShotRelocationRestoresTemplatesWithoutReplacingReadyPod(t
 	controller := true
 	deploymentUID := types.UID("deployment-uid")
 	replicaSetUID := types.UID("replicaset-uid")
+	previousReplicaSetUID := types.UID("previous-replicaset-uid")
 	podUID := types.UID("pod-uid")
+	oneReplica := int32(1)
+	zeroReplicas := int32(0)
 	labels := map[string]string{"app": "vta", "session-id": "42"}
 	customAffinity := &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
 		PreferredDuringSchedulingIgnoredDuringExecution: []corev1.PreferredSchedulingTerm{{
@@ -260,9 +264,11 @@ func TestFinalizeVTAOneShotRelocationRestoresTemplatesWithoutReplacingReadyPod(t
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: VtaDeploymentName(42), Namespace: "tenant", UID: deploymentUID, Generation: 1},
 		Spec: appsv1.DeploymentSpec{
-			Selector: &metav1.LabelSelector{MatchLabels: labels}, Template: managed,
+			Replicas: &oneReplica, Selector: &metav1.LabelSelector{MatchLabels: labels}, Template: managed,
 		},
-		Status: appsv1.DeploymentStatus{ObservedGeneration: 1},
+		Status: appsv1.DeploymentStatus{
+			ObservedGeneration: 1, Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1, AvailableReplicas: 1,
+		},
 	}
 	replicaTemplate := *managed.DeepCopy()
 	replicaTemplate.Labels = map[string]string{
@@ -276,7 +282,25 @@ func TestFinalizeVTAOneShotRelocationRestoresTemplatesWithoutReplacingReadyPod(t
 				UID: deploymentUID, Controller: &controller,
 			}},
 		},
-		Spec: appsv1.ReplicaSetSpec{Selector: &metav1.LabelSelector{MatchLabels: labels}, Template: replicaTemplate},
+		Spec: appsv1.ReplicaSetSpec{
+			Replicas: &oneReplica, Selector: &metav1.LabelSelector{MatchLabels: labels}, Template: replicaTemplate,
+		},
+	}
+	previousTemplate := *original.DeepCopy()
+	previousTemplate.Labels = map[string]string{
+		"app": "vta", "session-id": "42", appsv1.DefaultDeploymentUniqueLabelKey: "previous-hash",
+	}
+	previousReplicaSet := &appsv1.ReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "vta-42-previous-hash", Namespace: "tenant", UID: previousReplicaSetUID, Labels: labels,
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "apps/v1", Kind: "Deployment", Name: deployment.Name,
+				UID: deploymentUID, Controller: &controller,
+			}},
+		},
+		Spec: appsv1.ReplicaSetSpec{
+			Replicas: &zeroReplicas, Selector: &metav1.LabelSelector{MatchLabels: labels}, Template: previousTemplate,
+		},
 	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -287,12 +311,15 @@ func TestFinalizeVTAOneShotRelocationRestoresTemplatesWithoutReplacingReadyPod(t
 			}},
 		},
 		Spec: corev1.PodSpec{NodeName: "worker-2"},
+		Status: corev1.PodStatus{Conditions: []corev1.PodCondition{{
+			Type: corev1.PodReady, Status: corev1.ConditionTrue,
+		}}},
 	}
 	snapshot, err := json.Marshal(DeploymentPlacementSnapshot{Template: original})
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := &Client{kube: fake.NewSimpleClientset(deployment, replicaSet, pod)}
+	client := &Client{kube: fake.NewSimpleClientset(deployment, previousReplicaSet, replicaSet, pod)}
 
 	if err := client.FinalizeVTAOneShotRelocation(
 		ctx, "tenant", 42, string(deploymentUID), pod.Name, string(podUID), snapshot,
@@ -319,9 +346,34 @@ func TestFinalizeVTAOneShotRelocationRestoresTemplatesWithoutReplacingReadyPod(t
 		!hasSchedulingGateInTemplate(&updatedReplicaSet.Spec.Template, "example.com/other-gate") {
 		t.Fatalf("ReplicaSet retained relocation policy: %#v", updatedReplicaSet.Spec.Template.Spec)
 	}
+	if updatedDeployment.Spec.Template.Annotations[placementRevisionAnnotation] == "" ||
+		updatedDeployment.Spec.Template.Annotations[placementRevisionAnnotation] !=
+			updatedReplicaSet.Spec.Template.Annotations[placementRevisionAnnotation] {
+		t.Fatalf("Deployment and relocated ReplicaSet do not share a placement revision: deployment=%#v replicaSet=%#v",
+			updatedDeployment.Spec.Template.Annotations, updatedReplicaSet.Spec.Template.Annotations)
+	}
+	updatedPreviousReplicaSet, err := client.kube.AppsV1().ReplicaSets("tenant").Get(ctx, previousReplicaSet.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if podTemplatesEqualIgnoreHash(&updatedPreviousReplicaSet.Spec.Template, &updatedDeployment.Spec.Template) {
+		t.Fatal("finalized Deployment still matches the previous ReplicaSet and can reactivate it")
+	}
+	if !podTemplatesEqualIgnoreHash(&updatedReplicaSet.Spec.Template, &updatedDeployment.Spec.Template) {
+		t.Fatal("finalized Deployment no longer matches the relocated ReplicaSet")
+	}
 	readyPod, err := client.kube.CoreV1().Pods("tenant").Get(ctx, pod.Name, metav1.GetOptions{})
 	if err != nil || readyPod.UID != podUID {
 		t.Fatalf("ready Pod was replaced during policy cleanup: pod=%#v err=%v", readyPod, err)
+	}
+	updatedPreviousReplicaSet.Spec.Replicas = &oneReplica
+	if _, err := client.kube.AppsV1().ReplicaSets("tenant").Update(ctx, updatedPreviousReplicaSet, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.verifyVTAOneShotRelocationStable(
+		ctx, "tenant", updatedDeployment, updatedReplicaSet, readyPod, 1,
+	); err == nil || !strings.Contains(err.Error(), "previous ReplicaSet") {
+		t.Fatalf("previous ReplicaSet reactivation was not detected: %v", err)
 	}
 }
 
