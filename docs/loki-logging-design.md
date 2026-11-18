@@ -82,8 +82,8 @@ This design cannot recover logs that disappeared before Alloy was installed.
 - Keep Loki, its gateway, and Grafana private ClusterIP services.
 - Keep the data path available while one production or staging Loki replica is
   restarting or unavailable.
-- Store durable history in object storage rather than consuming node-local
-  Longhorn capacity for the entire retention period.
+- Store durable history in object storage and use retained Hetzner CSI Volumes
+  only for Loki's WAL and working state.
 - Bound storage growth with explicit Loki Compactor retention.
 - Make collection gaps, rejected writes, WAL pressure, and failed S3 uploads
   observable through the existing Prometheus stack.
@@ -218,7 +218,7 @@ Losing two replicas removes write quorum; Alloy must retry until quorum is
 restored.
 
 Replication protects recent in-memory and WAL data. The three replicas share
-the same object-storage buckets. They do not receive separate buckets. Loki's
+the same object-storage locations. They do not receive separate buckets. Loki's
 content-addressed chunks avoid three independent long-term copies when the
 ingesters flush identical data, although temporarily divergent replicas may
 produce objects that queries later deduplicate.
@@ -237,8 +237,8 @@ read and write components independently.
 
 ### 8.1 Loki PVCs
 
-Each monolithic Loki replica receives one Longhorn PVC. The PVC holds working
-state, not the full retention window:
+Each monolithic Loki replica receives one retained Hetzner CSI PVC. The PVC
+holds working state, not the full retention window:
 
 - the ingester write-ahead log;
 - chunks that have not yet been flushed successfully;
@@ -257,26 +257,33 @@ The selected sizes are:
 | staging | 3 | 20 GiB | 60 GiB |
 | production | 3 | 20 GiB | 60 GiB |
 
-Longhorn's physical consumption depends on the StorageClass replica count and
-actual blocks written; the logical totals above are not object-storage usage.
+Each PVC is one Hetzner Cloud Volume. The logical totals above are not
+object-storage usage.
 
-### 8.2 Object-storage buckets
+### 8.2 Object-storage bucket and prefixes
 
-Create two uniquely named private buckets for each environment:
+Create one private bucket named `loki`. Each cluster receives separate chunks
+and ruler storage prefixes:
 
 ```text
-vtafarm-<environment>-loki-chunks
-vtafarm-<environment>-loki-ruler
+loki bucket
+├── <cluster-name>-loki-chunks
+└── <cluster-name>-loki-ruler
 ```
 
-The chunks bucket contains:
+For example, dev uses `rke2-vtafarm-dev-loki-chunks` and
+`rke2-vtafarm-dev-loki-ruler`. Loki 3.7 storage prefixes accept letters,
+numbers, and hyphens but reject `/`, so the supported layout uses two flat
+cluster-scoped prefixes instead of `loki/<cluster>/...` path segments.
+
+The chunks prefix contains:
 
 - compressed log chunks;
 - the Loki TSDB index;
 - Compactor and delete-request objects; and
 - other object-store metadata required to query and retain logs.
 
-The ruler bucket contains Loki alerting and recording rule definitions. It does
+The ruler prefix contains Loki alerting and recording rule definitions. It does
 not contain normal Pod logs and should remain very small. OSS Loki does not
 need the Grafana Enterprise Logs admin bucket.
 
@@ -297,9 +304,9 @@ The normal data path is:
 
 ```text
 recent, unflushed lines -> ingester memory and WAL
-completed chunks       -> S3 chunks bucket
-TSDB index files       -> S3 chunks bucket
-30-day history         -> S3 chunks bucket
+completed chunks       -> S3 chunks prefix
+TSDB index files       -> S3 chunks prefix
+30-day history         -> S3 chunks prefix
 ```
 
 Queries merge recent data from ingesters with flushed history from object
@@ -391,11 +398,11 @@ Retention requires both:
 Setting only a period does not make old objects disappear. The Compactor must
 remove index references before deleting chunks.
 
-Do not apply a blanket 30-day Object Storage lifecycle rule to the entire
-chunks bucket. An object-store lifecycle policy is unaware of the Loki index
-and can delete a still-referenced object. If a lifecycle policy is later added
-as a safety net, it must be scoped and longer than Loki retention plus the
-Compactor delete delay.
+Do not apply a blanket 30-day Object Storage lifecycle rule to the entire Loki
+bucket. An object-store lifecycle policy is unaware of the Loki index and can
+delete a still-referenced object. If a lifecycle policy is later added as a
+safety net, it must be scoped to the chunks prefix and longer than Loki
+retention plus the Compactor delete delay.
 
 ## 12. Security and access
 
@@ -441,7 +448,8 @@ those measurements rather than the pre-installation snapshot alone.
 
 ## 14. Rollout
 
-1. Create dedicated private chunks and ruler buckets for dev.
+1. Create the private `loki` bucket for cluster-scoped chunks and ruler
+   prefixes.
 2. Install one dev Loki replica with a 10 GiB retained PVC.
 3. Add the internal Loki data source to the existing dev Grafana.
 4. Install Alloy as a DaemonSet on every dev node with persistent positions.
