@@ -73,19 +73,20 @@ func deploymentEnv(t *testing.T, client *Client, name string) map[string]string 
 func TestSetDeploymentImageAddsMissingVtaTuningEnv(t *testing.T) {
 	for _, app := range []string{"vta", "fs-vta"} {
 		t.Run(app, func(t *testing.T) {
-			// A Deployment created before MALLOC_ARENA_MAX joined the template,
-			// with one storage value an operator tuned by hand.
+			// A Deployment created before the journal budget joined the
+			// template, with one storage value an operator tuned by hand.
 			client := &Client{kube: fake.NewSimpleClientset(tuningTestDeployment("vta-7", app,
 				corev1.EnvVar{Name: "NO_COLOR", Value: "1"},
 				corev1.EnvVar{Name: "STORAGE_FJALL_BLOCK_CACHE", Value: "4194304"},
+				corev1.EnvVar{Name: "STORAGE_FJALL_WRITE_BUFFER", Value: "16777216"},
 			))}
 
 			if err := client.SetDeploymentImage(context.Background(), "test", "vta-7", "example/vta:new"); err != nil {
 				t.Fatalf("SetDeploymentImage() error = %v", err)
 			}
 			env := deploymentEnv(t, client, "vta-7")
-			if env["MALLOC_ARENA_MAX"] != "2" {
-				t.Fatalf("MALLOC_ARENA_MAX = %q, want 2", env["MALLOC_ARENA_MAX"])
+			if env["STORAGE_FJALL_MAX_JOURNAL"] != "67108864" {
+				t.Fatalf("STORAGE_FJALL_MAX_JOURNAL = %q, want 67108864", env["STORAGE_FJALL_MAX_JOURNAL"])
 			}
 			if env["STORAGE_FJALL_BLOCK_CACHE"] != "4194304" {
 				t.Fatalf("hand-tuned STORAGE_FJALL_BLOCK_CACHE was overwritten: %q", env["STORAGE_FJALL_BLOCK_CACHE"])
@@ -108,8 +109,52 @@ func TestRecoverDeploymentImageAddsMissingVtaTuningEnv(t *testing.T) {
 	if err := client.RecoverDeploymentImage(context.Background(), "test", "vta-7", "example/vta:new"); err != nil {
 		t.Fatalf("RecoverDeploymentImage() error = %v", err)
 	}
-	if env := deploymentEnv(t, client, "vta-7"); env["MALLOC_ARENA_MAX"] != "2" {
-		t.Fatalf("MALLOC_ARENA_MAX = %q, want 2", env["MALLOC_ARENA_MAX"])
+	env := deploymentEnv(t, client, "vta-7")
+	for _, want := range VtaTuningEnv() {
+		if env[want.Name] != want.Value {
+			t.Fatalf("%s = %q, want %q", want.Name, env[want.Name], want.Value)
+		}
+	}
+}
+
+// MALLOC_ARENA_MAX was part of the VTA, DID hosting and VTC templates while
+// those images used glibc's allocator. They link jemalloc now, so an upgrade
+// takes the variable off Deployments that still carry it.
+func TestSetDeploymentImageRemovesRetiredTuningEnv(t *testing.T) {
+	for _, app := range []string{"vta", "fs-vta", "fs-dids", "fs-vtc"} {
+		t.Run(app, func(t *testing.T) {
+			env := append([]corev1.EnvVar{{Name: "NO_COLOR", Value: "1"}}, tuningEnvFor(app)...)
+			env = append(env, corev1.EnvVar{Name: "MALLOC_ARENA_MAX", Value: "2"})
+			env[1].Value = "4194304" // hand-tuned STORAGE_FJALL_BLOCK_CACHE
+			client := &Client{kube: fake.NewSimpleClientset(tuningTestDeployment("fs-7", app, env...))}
+
+			if err := client.SetDeploymentImage(context.Background(), "test", "fs-7", "example/image:new"); err != nil {
+				t.Fatalf("SetDeploymentImage() error = %v", err)
+			}
+			got := deploymentEnv(t, client, "fs-7")
+			if value, ok := got["MALLOC_ARENA_MAX"]; ok {
+				t.Fatalf("MALLOC_ARENA_MAX = %q, want it removed", value)
+			}
+			if got["STORAGE_FJALL_BLOCK_CACHE"] != "4194304" {
+				t.Fatalf("hand-tuned STORAGE_FJALL_BLOCK_CACHE was overwritten: %q", got["STORAGE_FJALL_BLOCK_CACHE"])
+			}
+			if len(got) != len(env)-1 {
+				t.Fatalf("unexpected env after the upgrade: %v", got)
+			}
+		})
+	}
+}
+
+func TestRecoverDeploymentImageRemovesRetiredTuningEnv(t *testing.T) {
+	client := &Client{kube: fake.NewSimpleClientset(tuningTestDeployment("vta-7", "vta",
+		corev1.EnvVar{Name: "MALLOC_ARENA_MAX", Value: "2"},
+	))}
+
+	if err := client.RecoverDeploymentImage(context.Background(), "test", "vta-7", "example/vta:new"); err != nil {
+		t.Fatalf("RecoverDeploymentImage() error = %v", err)
+	}
+	if value, ok := deploymentEnv(t, client, "vta-7")["MALLOC_ARENA_MAX"]; ok {
+		t.Fatalf("MALLOC_ARENA_MAX = %q, want it removed", value)
 	}
 }
 
@@ -192,8 +237,7 @@ func TestSetDeploymentImageAddsMissingDidsAndVtcTuningEnv(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.app, func(t *testing.T) {
-			// Created before MALLOC_ARENA_MAX joined the template, with one
-			// budget tuned by hand.
+			// Created with only the block cache budget, tuned by hand.
 			client := &Client{kube: fake.NewSimpleClientset(tuningTestDeployment("fs-7", tc.app,
 				corev1.EnvVar{Name: "NO_COLOR", Value: "1"},
 				corev1.EnvVar{Name: "STORAGE_FJALL_BLOCK_CACHE", Value: "4194304"},
@@ -203,9 +247,6 @@ func TestSetDeploymentImageAddsMissingDidsAndVtcTuningEnv(t *testing.T) {
 				t.Fatalf("SetDeploymentImage() error = %v", err)
 			}
 			env := deploymentEnv(t, client, "fs-7")
-			if env["MALLOC_ARENA_MAX"] != "2" {
-				t.Fatalf("MALLOC_ARENA_MAX = %q, want 2", env["MALLOC_ARENA_MAX"])
-			}
 			if env["STORAGE_FJALL_BLOCK_CACHE"] != "4194304" {
 				t.Fatalf("hand-tuned STORAGE_FJALL_BLOCK_CACHE was overwritten: %q", env["STORAGE_FJALL_BLOCK_CACHE"])
 			}

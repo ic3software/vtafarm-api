@@ -37,7 +37,7 @@ func (c *Client) SetDeploymentImage(ctx context.Context, ns, name, image string)
 		for i := range deploy.Spec.Template.Spec.Containers {
 			deploy.Spec.Template.Spec.Containers[i].Image = image
 		}
-		ensureTuningEnv(deploy)
+		reconcileTuningEnv(deploy)
 		ensureMediatorVaultCA(deploy, image)
 		_, err = c.kube.AppsV1().Deployments(ns).Update(ctx, deploy, metav1.UpdateOptions{})
 		return err
@@ -61,7 +61,7 @@ func (c *Client) RecoverDeploymentImage(ctx context.Context, ns, name, image str
 		for i := range deploy.Spec.Template.Spec.Containers {
 			deploy.Spec.Template.Spec.Containers[i].Image = image
 		}
-		ensureTuningEnv(deploy)
+		reconcileTuningEnv(deploy)
 		ensureMediatorVaultCA(deploy, image)
 		if deploy.Spec.Template.Annotations == nil {
 			deploy.Spec.Template.Annotations = map[string]string{}

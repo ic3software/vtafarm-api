@@ -77,15 +77,19 @@ func TestCreateVtaDeploymentSetsTuningEnv(t *testing.T) {
 		"STORAGE_FJALL_BLOCK_CACHE":  "8388608",
 		"STORAGE_FJALL_WRITE_BUFFER": "16777216",
 		"STORAGE_FJALL_MAX_JOURNAL":  "67108864",
-		"MALLOC_ARENA_MAX":           "2",
 	}
 	for name, value := range want {
 		if env[name] != value {
 			t.Errorf("%s = %q, want %q", name, env[name], value)
 		}
 	}
+	for name := range retiredTuningEnv {
+		if _, ok := env[name]; ok {
+			t.Errorf("retired variable %s is set on a new Deployment", name)
+		}
+	}
 	// A new Deployment must already be what the upgrade path converges to.
-	if ensureTuningEnv(deployment) {
+	if reconcileTuningEnv(deployment) {
 		t.Fatal("a freshly created VTA Deployment is missing tuning env")
 	}
 }
