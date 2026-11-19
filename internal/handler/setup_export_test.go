@@ -103,20 +103,30 @@ func TestRequestedLogRange(t *testing.T) {
 	}
 }
 
-func TestSessionPodPatternIsBoundedToSession(t *testing.T) {
-	if got := sessionPodPattern(&model.SetupSession{ID: 7, Mode: model.ModeFullStack}); got != `^fs-7-.+$` {
-		t.Fatalf("full stack pattern = %q", got)
+func TestComponentLogQueryScopesSessionAndComponent(t *testing.T) {
+	fullStack := &model.SetupSession{ID: 7, Mode: model.ModeFullStack, TrustRegistryEnabled: true, TrustRegistryDid: "did:web:registry.example"}
+	wantApps := []string{"fs-vta", "fs-mediator", "fs-dids", "fs-vtc", "fs-trust-registry"}
+	for i, comp := range exportComponents(fullStack) {
+		want := `{namespace="fpp-user-2", app="` + wantApps[i] + `"} | session_id="7"`
+		if got := componentLogQuery("fpp-user-2", fullStack, comp); got != want {
+			t.Errorf("%s query = %q, want %q", comp.name, got, want)
+		}
 	}
-	if got := sessionPodPattern(&model.SetupSession{ID: 7, Mode: model.ModeVtaOnly}); got != `^(vta-7-|vta-setup-7-|vta-provision-7-|vta-acl-7-).+$` {
-		t.Fatalf("VTA-only pattern = %q", got)
+	vtaOnly := &model.SetupSession{ID: 8, Mode: model.ModeVtaOnly}
+	if got := componentLogQuery("fpp-user-2", vtaOnly, exportComponent{name: "vta"}); got != `{namespace="fpp-user-2", app="vta"} | session_id="8"` {
+		t.Fatalf("VTA-only query = %q", got)
 	}
 }
 
-func TestRetainedLogArchiveUsesReadableLogAndHidesPlan(t *testing.T) {
+func TestRetainedLogArchiveSplitsComponentsAndHidesPlan(t *testing.T) {
 	dir := t.TempDir()
-	logsPath := filepath.Join(dir, "logs.log")
-	if err := os.WriteFile(logsPath, []byte("one log line\n"), 0o600); err != nil {
-		t.Fatal(err)
+	logFiles := make([]retainedLogFile, 0, 4)
+	for _, name := range []string{"vta.log", "mediator.log", "dids.log", "vtc.log"} {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(name+" line\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		logFiles = append(logFiles, retainedLogFile{name: name, path: path})
 	}
 	archivePath := filepath.Join(dir, "logs.zip")
 	archive, err := os.Create(archivePath)
@@ -124,7 +134,7 @@ func TestRetainedLogArchiveUsesReadableLogAndHidesPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest := logExportManifest{RetentionDays: 30, RangeDays: 7, Entries: 1}
-	if err := writeRetainedLogArchive(archive, logsPath, manifest); err != nil {
+	if err := writeRetainedLogArchive(archive, logFiles, manifest); err != nil {
 		t.Fatal(err)
 	}
 	if err := archive.Close(); err != nil {
@@ -136,10 +146,16 @@ func TestRetainedLogArchiveUsesReadableLogAndHidesPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer zr.Close()
-	if len(zr.File) != 2 || zr.File[0].Name != "all-logs.log" || zr.File[1].Name != "manifest.json" {
+	wantNames := []string{"vta.log", "mediator.log", "dids.log", "vtc.log", "manifest.json"}
+	if len(zr.File) != len(wantNames) {
 		t.Fatalf("archive members = %#v", zr.File)
 	}
-	manifestFile, err := zr.File[1].Open()
+	for i, file := range zr.File {
+		if file.Name != wantNames[i] {
+			t.Fatalf("archive member %d = %q, want %q", i, file.Name, wantNames[i])
+		}
+	}
+	manifestFile, err := zr.File[len(zr.File)-1].Open()
 	if err != nil {
 		t.Fatal(err)
 	}

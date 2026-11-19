@@ -173,6 +173,11 @@ type logExportManifest struct {
 	Entries       int       `json:"entries"`
 }
 
+type retainedLogFile struct {
+	name string
+	path string
+}
+
 func (h *SetupHandler) exportRetainedLogs(c *gin.Context, session *model.SetupSession, admin bool) {
 	if h.logquery == nil {
 		h.exportArchive(c, session, exportKindLogs)
@@ -201,25 +206,34 @@ func (h *SetupHandler) exportRetainedLogs(c *gin.Context, session *model.SetupSe
 	}
 	start := logExportStart(session.CreatedAt, end, rangeDays)
 
-	logsFile, err := os.CreateTemp("", "vtafarm-session-logs-*.log")
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to prepare log export"})
-		return
-	}
-	logsPath := logsFile.Name()
-	defer os.Remove(logsPath)
-
 	ns := h.k8s.UserNamespace(strconv.FormatUint(uint64(session.UserID), 10))
-	query := fmt.Sprintf(`{namespace=%s} | pod=~%s`, strconv.Quote(ns), strconv.Quote(sessionPodPattern(session)))
-	entries, queryErr := h.logquery.WriteRange(c.Request.Context(), query, start, end, logsFile)
-	closeErr := logsFile.Close()
-	if queryErr != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": queryErr.Error()})
-		return
-	}
-	if closeErr != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to finalize log export"})
-		return
+	components := exportComponents(session)
+	logFiles := make([]retainedLogFile, 0, len(components))
+	defer func() {
+		for _, file := range logFiles {
+			os.Remove(file.path)
+		}
+	}()
+	entries := 0
+	for _, comp := range components {
+		logsFile, err := os.CreateTemp("", "vtafarm-session-"+comp.name+"-*.log")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to prepare log export"})
+			return
+		}
+		logFiles = append(logFiles, retainedLogFile{name: comp.name + ".log", path: logsFile.Name()})
+		query := componentLogQuery(ns, session, comp)
+		count, queryErr := h.logquery.WriteRange(c.Request.Context(), query, start, end, logsFile)
+		closeErr := logsFile.Close()
+		if queryErr != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": queryErr.Error()})
+			return
+		}
+		if closeErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to finalize log export"})
+			return
+		}
+		entries += count
 	}
 
 	archive, err := os.CreateTemp("", "vtafarm-session-logs-*.zip")
@@ -233,7 +247,7 @@ func (h *SetupHandler) exportRetainedLogs(c *gin.Context, session *model.SetupSe
 		RetentionDays: entitlement.RetentionDays,
 		RangeDays:     rangeDays, Start: start, End: end, Entries: entries,
 	}
-	if err := writeRetainedLogArchive(archive, logsPath, manifest); err != nil {
+	if err := writeRetainedLogArchive(archive, logFiles, manifest); err != nil {
 		archive.Close()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build log archive"})
 		return
@@ -282,32 +296,35 @@ func logExportStart(sessionCreated, end time.Time, rangeDays int) time.Time {
 	return start
 }
 
-func sessionPodPattern(session *model.SetupSession) string {
-	id := strconv.FormatUint(uint64(session.ID), 10)
+func componentLogQuery(namespace string, session *model.SetupSession, comp exportComponent) string {
+	app := "vta"
 	if session.IsFullStack() {
-		return "^fs-" + id + "-.+$"
+		app = "fs-" + comp.name
 	}
-	return "^(vta-" + id + "-|vta-setup-" + id + "-|vta-provision-" + id + "-|vta-acl-" + id + "-).+$"
+	return fmt.Sprintf(`{namespace=%s, app=%s} | session_id=%s`,
+		strconv.Quote(namespace), strconv.Quote(app), strconv.Quote(strconv.FormatUint(uint64(session.ID), 10)))
 }
 
-func writeRetainedLogArchive(dst *os.File, logsPath string, manifest logExportManifest) (err error) {
+func writeRetainedLogArchive(dst *os.File, logFiles []retainedLogFile, manifest logExportManifest) (err error) {
 	zw := zip.NewWriter(dst)
 	defer func() {
 		if closeErr := zw.Close(); err == nil {
 			err = closeErr
 		}
 	}()
-	logs, err := os.Open(logsPath)
-	if err != nil {
-		return err
-	}
-	member, err := zw.Create("all-logs.log")
-	if err == nil {
-		_, err = io.Copy(member, logs)
-	}
-	logs.Close()
-	if err != nil {
-		return err
+	for _, file := range logFiles {
+		logs, openErr := os.Open(file.path)
+		if openErr != nil {
+			return openErr
+		}
+		member, createErr := zw.Create(file.name)
+		if createErr == nil {
+			_, createErr = io.Copy(member, logs)
+		}
+		logs.Close()
+		if createErr != nil {
+			return createErr
+		}
 	}
 	manifestMember, err := zw.Create("manifest.json")
 	if err != nil {
