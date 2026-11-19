@@ -18,6 +18,7 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/didhosting"
 	"github.com/ic3software/vtafarm-api/internal/ghcr"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
+	"github.com/ic3software/vtafarm-api/internal/logquery"
 	"github.com/ic3software/vtafarm-api/internal/middleware"
 	"github.com/ic3software/vtafarm-api/internal/model"
 	"github.com/ic3software/vtafarm-api/internal/setup"
@@ -34,6 +35,7 @@ type SetupHandler struct {
 	// authenticates with vtafarm-api's own client keypair.
 	didHosting   *didhosting.Factory // nil when no keypair configured
 	k8s          *k8s.Client
+	logquery     *logquery.Client
 	resources    deploymentResourceObserver
 	orch         *setup.Orchestrator
 	ghcr         *ghcr.Client // nil when not configured
@@ -53,6 +55,7 @@ func NewSetupHandler(
 	appEnv, ingressIP, clusterDomain string,
 	dhFactory *didhosting.Factory,
 	k8sClient *k8s.Client,
+	logqueryClient *logquery.Client,
 	orch *setup.Orchestrator,
 	ghcrClient *ghcr.Client,
 	mediatorGhcrClient *ghcr.Client,
@@ -67,6 +70,7 @@ func NewSetupHandler(
 		clusterDomain: clusterDomain,
 		didHosting:    dhFactory,
 		k8s:           k8sClient,
+		logquery:      logqueryClient,
 		resources:     k8sClient,
 		orch:          orch,
 		ghcr:          ghcrClient,
@@ -780,6 +784,7 @@ func (h *SetupHandler) Get(c *gin.Context) {
 		"id":              session.VtaName,
 		"status":          session.Status,
 		"mode":            session.Mode,
+		"log_source":      h.logSource(),
 		"domain_type":     session.DomainType,
 		"domain":          session.Domain,
 		"url":             session.PublicURL(),

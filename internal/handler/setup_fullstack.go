@@ -260,6 +260,7 @@ func (h *SetupHandler) getFullStack(c *gin.Context, session *model.SetupSession)
 		"domain_type": session.DomainType,
 		"domain":      session.Domain,
 		"status":      session.Status,
+		"log_source":  h.logSource(),
 		"urls":        urls,
 		"collected":   collected,
 		// Current images per component — the self-service upgrade UI shows

@@ -337,12 +337,13 @@ func (h *SetupHandler) GetPlatformStack(c *gin.Context) {
 	}
 
 	resp := gin.H{
-		"exists": true,
-		"id":     session.VtaName,
-		"status": session.Status,
-		"label":  session.VtaName,
-		"domain": domain.Domain,
-		"urls":   platformURLs(&session),
+		"exists":     true,
+		"id":         session.VtaName,
+		"status":     session.Status,
+		"label":      session.VtaName,
+		"domain":     domain.Domain,
+		"log_source": h.logSource(),
+		"urls":       platformURLs(&session),
 		// vta_did is what the admin feeds to `pnm setup` locally to mint the
 		// admin DID this stack parks waiting for — so the page can't ask for
 		// that DID without showing this one first.

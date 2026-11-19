@@ -18,6 +18,7 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/ghcr"
 	"github.com/ic3software/vtafarm-api/internal/handler"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
+	"github.com/ic3software/vtafarm-api/internal/logquery"
 	"github.com/ic3software/vtafarm-api/internal/maintenance"
 	"github.com/ic3software/vtafarm-api/internal/metrics"
 	"github.com/ic3software/vtafarm-api/internal/middleware"
@@ -91,9 +92,10 @@ func Setup(
 		r.GET("/docs", apidocs.ServeUI)
 	}
 
+	logqueryClient := logquery.NewClient(cfg.Logging.QueryURL, cfg.Logging.QueryTimeout)
 	sh := handler.NewSetupHandler(
 		db, cfClient, cfg.AppEnv, cfg.ClusterIngressIP, cfg.ClusterDomain,
-		dhFactory, k8sClient, orch, ghcrClient,
+		dhFactory, k8sClient, logqueryClient, orch, ghcrClient,
 		mediatorGhcrClient, didsGhcrClient, vtcGhcrClient,
 	)
 	metricsClient := metrics.NewClient(cfg.Metrics.QueryURL, cfg.Metrics.QueryTimeout)

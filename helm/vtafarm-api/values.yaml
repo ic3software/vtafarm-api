@@ -92,6 +92,10 @@ metrics:
   maxStreamsPerUser: "4"
   maxStreamsPerTarget: "2"
 
+logging:
+  queryURL: ""
+  queryTimeout: "5m"
+
 placement:
   mode: disabled
   canarySessionIDs: ""

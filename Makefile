@@ -23,12 +23,15 @@ VAULT_PORT   ?= 8200
 METRICS_PORT ?= 9091
 METRICS_NAMESPACE ?= monitoring
 METRICS_SERVICE ?= thanos-query
+LOGGING_PORT ?= 3100
+LOGGING_NAMESPACE ?= logging
+LOGGING_SERVICE ?= loki-gateway
 DEV_API_BASE ?= http://localhost:8080
 DEV_WALLET_SEED_FILE ?= .dev/keyring-wallet.seed
 
 .PHONY: build test check-pg-image gen-keypair gen-farm-key dev-claim dev-keyring-sign-in tidy dev dev-placement \
         migrate migrate-down migrate-new enroll enroll-prod \
-        deploy-db forward-db forward-vault forward-metrics \
+        deploy-db forward-db forward-vault forward-metrics forward-logging \
         image-build image-push \
         release release-check release-image release-chart release-github \
         deploy
@@ -163,6 +166,14 @@ forward-metrics:
 	@echo "Forwarding $(DEV_CONTEXT) $(METRICS_NAMESPACE)/svc/$(METRICS_SERVICE) → localhost:$(METRICS_PORT)  (Ctrl-C to stop)"
 	@trap 'exit 0' INT; while true; do \
 	  kubectl --context $(DEV_CONTEXT) port-forward -n $(METRICS_NAMESPACE) svc/$(METRICS_SERVICE) $(METRICS_PORT):9090 || true; \
+	  echo "port-forward dropped — reconnecting in 2s"; \
+	  sleep 2; \
+	done
+
+forward-logging:
+	@echo "Forwarding $(DEV_CONTEXT) $(LOGGING_NAMESPACE)/svc/$(LOGGING_SERVICE) → localhost:$(LOGGING_PORT)  (Ctrl-C to stop)"
+	@trap 'exit 0' INT; while true; do \
+	  kubectl --context $(DEV_CONTEXT) port-forward -n $(LOGGING_NAMESPACE) svc/$(LOGGING_SERVICE) $(LOGGING_PORT):80 || true; \
 	  echo "port-forward dropped — reconnecting in 2s"; \
 	  sleep 2; \
 	done
