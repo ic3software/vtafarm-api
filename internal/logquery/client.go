@@ -52,8 +52,8 @@ func NewClient(baseURL string, timeout time.Duration) *Client {
 	}
 }
 
-// WriteRange writes every matching entry in chronological order using Loki's
-// human-readable convention: timestamp, labels, then the original log line.
+// WriteRange writes every matching entry in chronological order as a timestamp
+// followed by the original log content.
 // Loki caps each range response, so the query advances in nanosecond pages.
 func (c *Client) WriteRange(ctx context.Context, query string, start, end time.Time, dst io.Writer) (int, error) {
 	if c == nil {
@@ -94,18 +94,13 @@ func (c *Client) WriteRange(ctx context.Context, query string, start, end time.T
 }
 
 func writeEntry(dst io.Writer, entry Entry) error {
-	labels := make([]string, 0, len(entry.Labels))
-	for name, value := range entry.Labels {
-		labels = append(labels, name+"="+strconv.Quote(value))
-	}
-	sort.Strings(labels)
-
 	line := strings.TrimRight(entry.Line, "\r\n")
-	if len(labels) == 0 {
-		_, err := fmt.Fprintf(dst, "%s %s\n", entry.Timestamp.Format(time.RFC3339Nano), line)
-		return err
+	if separator := strings.IndexAny(line, " \t"); separator > 0 {
+		if _, err := time.Parse(time.RFC3339Nano, line[:separator]); err == nil {
+			line = strings.TrimLeft(line[separator:], " \t")
+		}
 	}
-	_, err := fmt.Fprintf(dst, "%s {%s} %s\n", entry.Timestamp.Format(time.RFC3339Nano), strings.Join(labels, ", "), line)
+	_, err := fmt.Fprintf(dst, "%s %s\n", entry.Timestamp.Format(time.RFC3339Nano), line)
 	return err
 }
 

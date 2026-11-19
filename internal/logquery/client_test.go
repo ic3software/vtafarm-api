@@ -54,9 +54,9 @@ func TestWriteRangePagesAndSortsEntries(t *testing.T) {
 		t.Fatalf("lines = %d", len(lines))
 	}
 	for i, want := range []string{
-		`1970-01-01T00:00:00.00000001Z {pod="a"} first`,
-		`1970-01-01T00:00:00.000000011Z {pod="b"} second`,
-		`1970-01-01T00:00:00.000000012Z {pod="c"} third`,
+		`1970-01-01T00:00:00.00000001Z first`,
+		`1970-01-01T00:00:00.000000011Z second`,
+		`1970-01-01T00:00:00.000000012Z third`,
 	} {
 		if lines[i] != want {
 			t.Fatalf("line %d = %q, want %q", i, lines[i], want)
@@ -64,17 +64,17 @@ func TestWriteRangePagesAndSortsEntries(t *testing.T) {
 	}
 }
 
-func TestWriteEntrySortsLabelsAndTrimsTrailingNewline(t *testing.T) {
+func TestWriteEntryOmitsLabelsAndDuplicateTimestamp(t *testing.T) {
 	var output bytes.Buffer
 	err := writeEntry(&output, Entry{
 		Timestamp: time.Date(2026, 11, 19, 8, 0, 0, 123, time.UTC),
 		Labels:    map[string]string{"pod": "vta-7-a", "app": "vta"},
-		Line:      "started\n",
+		Line:      "2026-11-19T08:00:00.000000100Z INFO started\n",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "2026-11-19T08:00:00.000000123Z {app=\"vta\", pod=\"vta-7-a\"} started\n"
+	want := "2026-11-19T08:00:00.000000123Z INFO started\n"
 	if output.String() != want {
 		t.Fatalf("output = %q, want %q", output.String(), want)
 	}
