@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ic3software/vtafarm-api/internal/logquery"
 	"github.com/ic3software/vtafarm-api/internal/model"
 )
 
@@ -57,15 +58,30 @@ func TestLogExportWindowFollowsOwnerEntitlement(t *testing.T) {
 	if free.Plan != "free" || free.RetentionDays != 7 {
 		t.Fatalf("free export = %#v", free)
 	}
+	if _, err := requestedLogRange("30d", free.RetentionDays); !errors.Is(err, errLogRangeLimit) {
+		t.Fatalf("free 30-day export error = %v, want retention limit", err)
+	}
 
 	premium := logExportEntitlement(model.User{FullstackAccess: true}, false)
 	if premium.Plan != "premium" || premium.RetentionDays != 30 {
 		t.Fatalf("premium export = %#v", premium)
 	}
+	if days, err := requestedLogRange("30d", premium.RetentionDays); err != nil || days != 30 {
+		t.Fatalf("premium 30-day export = %d, %v", days, err)
+	}
 
 	admin := logExportEntitlement(model.User{}, true)
 	if admin.Plan != "premium" || admin.RetentionDays != 30 {
 		t.Fatalf("admin export = %#v", admin)
+	}
+}
+
+func TestLogSourceMatchesConfiguredBackend(t *testing.T) {
+	if got := (&SetupHandler{}).logSource(); got != logSourceKubernetes {
+		t.Fatalf("fallback source = %q, want %q", got, logSourceKubernetes)
+	}
+	if got := (&SetupHandler{logquery: &logquery.Client{}}).logSource(); got != logSourceRetained {
+		t.Fatalf("configured source = %q, want %q", got, logSourceRetained)
 	}
 }
 

@@ -22,6 +22,11 @@ import (
 
 const exportLogTailLines = 10000
 
+const (
+	logSourceRetained   = "retained"
+	logSourceKubernetes = "kubernetes"
+)
+
 // The mediator's config sits under conf/; every other component's is at the
 // mount root (docs/full-stack-setup-design.md §"Path ownership").
 type exportComponent struct {
@@ -179,15 +184,6 @@ type retainedLogFile struct {
 }
 
 func (h *SetupHandler) exportRetainedLogs(c *gin.Context, session *model.SetupSession, admin bool) {
-	if h.logquery == nil {
-		h.exportArchive(c, session, exportKindLogs)
-		return
-	}
-	if h.k8s == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "logging backend is not configured"})
-		return
-	}
-
 	var owner model.User
 	if err := h.db.WithContext(c.Request.Context()).First(&owner, session.UserID).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load log retention entitlement"})
@@ -202,6 +198,15 @@ func (h *SetupHandler) exportRetainedLogs(c *gin.Context, session *model.SetupSe
 	}
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if h.logquery == nil {
+		c.Header("X-Log-Source", logSourceKubernetes)
+		h.exportArchive(c, session, exportKindLogs)
+		return
+	}
+	if h.k8s == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "logging backend is not configured"})
 		return
 	}
 	start := logExportStart(session.CreatedAt, end, rangeDays)
@@ -259,8 +264,16 @@ func (h *SetupHandler) exportRetainedLogs(c *gin.Context, session *model.SetupSe
 
 	c.Header("X-Log-Retention-Days", strconv.Itoa(entitlement.RetentionDays))
 	c.Header("X-Log-Range-Days", strconv.Itoa(rangeDays))
+	c.Header("X-Log-Source", logSourceRetained)
 	filename := fmt.Sprintf("%s-logs-%s.zip", session.VtaName, end.Format("20060102-150405"))
 	c.FileAttachment(archivePath, filename)
+}
+
+func (h *SetupHandler) logSource() string {
+	if h.logquery == nil {
+		return logSourceKubernetes
+	}
+	return logSourceRetained
 }
 
 func logExportEntitlement(owner model.User, admin bool) metrics.Entitlement {

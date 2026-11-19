@@ -784,6 +784,7 @@ func (h *SetupHandler) Get(c *gin.Context) {
 		"id":              session.VtaName,
 		"status":          session.Status,
 		"mode":            session.Mode,
+		"log_source":      h.logSource(),
 		"domain_type":     session.DomainType,
 		"domain":          session.Domain,
 		"url":             session.PublicURL(),
