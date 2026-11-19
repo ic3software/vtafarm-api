@@ -46,6 +46,7 @@ type Config struct {
 	Monitor            MonitorConfig
 	Placement          PlacementConfig
 	Metrics            MetricsConfig
+	Logging            LoggingConfig
 }
 
 type MetricsConfig struct {
@@ -58,6 +59,11 @@ type MetricsConfig struct {
 	MaxPoints           int
 	MaxStreamsPerUser   int
 	MaxStreamsPerTarget int
+}
+
+type LoggingConfig struct {
+	QueryURL     string
+	QueryTimeout time.Duration
 }
 
 const (
@@ -289,6 +295,10 @@ func Load() *Config {
 			MaxPoints:           getEnvInt("METRICS_MAX_POINTS", 2000),
 			MaxStreamsPerUser:   getEnvInt("METRICS_MAX_STREAMS_PER_USER", 4),
 			MaxStreamsPerTarget: getEnvInt("METRICS_MAX_STREAMS_PER_TARGET", 2),
+		},
+		Logging: LoggingConfig{
+			QueryURL:     getEnv("LOGGING_QUERY_URL", ""),
+			QueryTimeout: getEnvDuration("LOGGING_QUERY_TIMEOUT", 5*time.Minute),
 		},
 		Vault: VaultConfig{
 			Addr:         getEnv("VAULT_ADDR", ""),

@@ -4,13 +4,19 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/ic3software/vtafarm-api/internal/metrics"
 	"github.com/ic3software/vtafarm-api/internal/model"
 )
 
@@ -52,7 +58,7 @@ func (h *SetupHandler) ExportConfigs(c *gin.Context) {
 // GET /api/v1/setup/:id/export/logs
 func (h *SetupHandler) ExportLogs(c *gin.Context) {
 	if s := h.userSession(c); s != nil {
-		h.exportArchive(c, s, exportKindLogs)
+		h.exportRetainedLogs(c, s, false)
 	}
 }
 
@@ -66,7 +72,7 @@ func (h *SetupHandler) AdminExportConfigs(c *gin.Context) {
 // AdminExportLogs — GET /api/v1/admin/setup-sessions/:id/export/logs.
 func (h *SetupHandler) AdminExportLogs(c *gin.Context) {
 	if s := h.adminSession(c); s != nil {
-		h.exportArchive(c, s, exportKindLogs)
+		h.exportRetainedLogs(c, s, true)
 	}
 }
 
@@ -157,4 +163,162 @@ func (h *SetupHandler) exportOne(ctx context.Context, ns string, comp exportComp
 		return "", "", err
 	}
 	return comp.name + "-config.toml", body, nil
+}
+
+type logExportManifest struct {
+	RetentionDays int       `json:"retention_days"`
+	RangeDays     int       `json:"range_days"`
+	Start         time.Time `json:"start"`
+	End           time.Time `json:"end"`
+	Entries       int       `json:"entries"`
+}
+
+func (h *SetupHandler) exportRetainedLogs(c *gin.Context, session *model.SetupSession, admin bool) {
+	if h.logquery == nil {
+		h.exportArchive(c, session, exportKindLogs)
+		return
+	}
+	if h.k8s == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "logging backend is not configured"})
+		return
+	}
+
+	var owner model.User
+	if err := h.db.WithContext(c.Request.Context()).First(&owner, session.UserID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load log retention entitlement"})
+		return
+	}
+	end := time.Now().UTC()
+	entitlement := logExportEntitlement(owner, admin)
+	rangeDays, err := requestedLogRange(c.Query("range"), entitlement.RetentionDays)
+	if errors.Is(err, errLogRangeLimit) {
+		c.JSON(http.StatusForbidden, gin.H{"error": err.Error(), "code": "retention_limit"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	start := logExportStart(session.CreatedAt, end, rangeDays)
+
+	logsFile, err := os.CreateTemp("", "vtafarm-session-logs-*.log")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to prepare log export"})
+		return
+	}
+	logsPath := logsFile.Name()
+	defer os.Remove(logsPath)
+
+	ns := h.k8s.UserNamespace(strconv.FormatUint(uint64(session.UserID), 10))
+	query := fmt.Sprintf(`{namespace=%s} | pod=~%s`, strconv.Quote(ns), strconv.Quote(sessionPodPattern(session)))
+	entries, queryErr := h.logquery.WriteRange(c.Request.Context(), query, start, end, logsFile)
+	closeErr := logsFile.Close()
+	if queryErr != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": queryErr.Error()})
+		return
+	}
+	if closeErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to finalize log export"})
+		return
+	}
+
+	archive, err := os.CreateTemp("", "vtafarm-session-logs-*.zip")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to prepare log archive"})
+		return
+	}
+	archivePath := archive.Name()
+	defer os.Remove(archivePath)
+	manifest := logExportManifest{
+		RetentionDays: entitlement.RetentionDays,
+		RangeDays:     rangeDays, Start: start, End: end, Entries: entries,
+	}
+	if err := writeRetainedLogArchive(archive, logsPath, manifest); err != nil {
+		archive.Close()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build log archive"})
+		return
+	}
+	if err := archive.Close(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to finalize log archive"})
+		return
+	}
+
+	c.Header("X-Log-Retention-Days", strconv.Itoa(entitlement.RetentionDays))
+	c.Header("X-Log-Range-Days", strconv.Itoa(rangeDays))
+	filename := fmt.Sprintf("%s-logs-%s.zip", session.VtaName, end.Format("20060102-150405"))
+	c.FileAttachment(archivePath, filename)
+}
+
+func logExportEntitlement(owner model.User, admin bool) metrics.Entitlement {
+	entitlement := metrics.EntitlementFor(owner)
+	if admin {
+		entitlement = metrics.Entitlement{Plan: "premium", RetentionDays: metrics.PremiumRetentionDays}
+	}
+	return entitlement
+}
+
+var errLogRangeLimit = errors.New("requested log range exceeds plan retention")
+
+func requestedLogRange(preset string, maxDays int) (int, error) {
+	if preset == "" {
+		return maxDays, nil
+	}
+	daysByPreset := map[string]int{"1d": 1, "7d": 7, "30d": 30}
+	days, ok := daysByPreset[preset]
+	if !ok {
+		return 0, fmt.Errorf("range must be 1d, 7d, or 30d")
+	}
+	if days > maxDays {
+		return 0, errLogRangeLimit
+	}
+	return days, nil
+}
+
+func logExportStart(sessionCreated, end time.Time, rangeDays int) time.Time {
+	start := end.Add(-time.Duration(rangeDays) * 24 * time.Hour)
+	if sessionCreated.After(start) {
+		start = sessionCreated.UTC()
+	}
+	return start
+}
+
+func sessionPodPattern(session *model.SetupSession) string {
+	id := strconv.FormatUint(uint64(session.ID), 10)
+	if session.IsFullStack() {
+		return "^fs-" + id + "-.+$"
+	}
+	return "^(vta-" + id + "-|vta-setup-" + id + "-|vta-provision-" + id + "-|vta-acl-" + id + "-).+$"
+}
+
+func writeRetainedLogArchive(dst *os.File, logsPath string, manifest logExportManifest) (err error) {
+	zw := zip.NewWriter(dst)
+	defer func() {
+		if closeErr := zw.Close(); err == nil {
+			err = closeErr
+		}
+	}()
+	logs, err := os.Open(logsPath)
+	if err != nil {
+		return err
+	}
+	member, err := zw.Create("all-logs.log")
+	if err == nil {
+		_, err = io.Copy(member, logs)
+	}
+	logs.Close()
+	if err != nil {
+		return err
+	}
+	manifestMember, err := zw.Create("manifest.json")
+	if err != nil {
+		return err
+	}
+	encoded, err := json.MarshalIndent(manifest, "", "  ")
+	if err == nil {
+		_, err = manifestMember.Write(append(encoded, '\n'))
+	}
+	if err != nil {
+		return err
+	}
+	return nil
 }

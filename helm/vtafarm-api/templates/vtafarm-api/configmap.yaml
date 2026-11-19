@@ -37,6 +37,8 @@ data:
   METRICS_MAX_POINTS:         {{ .Values.metrics.maxPoints | quote }}
   METRICS_MAX_STREAMS_PER_USER:   {{ .Values.metrics.maxStreamsPerUser | quote }}
   METRICS_MAX_STREAMS_PER_TARGET: {{ .Values.metrics.maxStreamsPerTarget | quote }}
+  LOGGING_QUERY_URL:              {{ .Values.logging.queryURL | quote }}
+  LOGGING_QUERY_TIMEOUT:          {{ .Values.logging.queryTimeout | quote }}
   PLACEMENT_MODE:                     {{ .Values.placement.mode | quote }}
   PLACEMENT_CANARY_SESSION_IDS:       {{ .Values.placement.canarySessionIDs | quote }}
   PLACEMENT_GREEN_BELOW_PCT:          {{ .Values.placement.greenBelowPct | quote }}
