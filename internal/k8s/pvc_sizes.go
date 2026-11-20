@@ -5,6 +5,6 @@ package k8s
 const (
 	VtaPVCStorageSize        = "200Mi"
 	DIDHostingPVCStorageSize = "200Mi"
-	MediatorPVCStorageSize   = "1Gi"
+	MediatorPVCStorageSize   = "200Mi"
 	VtcPVCStorageSize        = "200Mi"
 )

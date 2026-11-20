@@ -156,7 +156,7 @@ func TestCapacityEstimatesReservePoolVTAResourcesForEveryMode(t *testing.T) {
 		t.Fatalf("VTA-only estimate = %+v", vtaOnly)
 	}
 	fullStack := estimates["full_stack"]
-	if fullStack.Count != 1 || fullStack.ByCPU != 6 || fullStack.ByMemory != 1 || fullStack.ByStorage != 19 {
+	if fullStack.Count != 1 || fullStack.ByCPU != 6 || fullStack.ByMemory != 1 || fullStack.ByStorage != 39 {
 		t.Fatalf("full-stack estimate = %+v", fullStack)
 	}
 	if fullStack.LimitingResource != "memory" {
