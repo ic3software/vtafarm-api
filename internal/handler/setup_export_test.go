@@ -80,8 +80,12 @@ func TestLogSourceMatchesConfiguredBackend(t *testing.T) {
 	if got := (&SetupHandler{}).logSource(); got != logSourceKubernetes {
 		t.Fatalf("fallback source = %q, want %q", got, logSourceKubernetes)
 	}
-	if got := (&SetupHandler{logquery: &logquery.Client{}}).logSource(); got != logSourceRetained {
+	h := &SetupHandler{logquery: &logquery.Client{}}
+	if got := h.logSource(); got != logSourceRetained {
 		t.Fatalf("configured source = %q, want %q", got, logSourceRetained)
+	}
+	if got := h.logSourceAfter(errors.New("loki unavailable")); got != logSourceKubernetes {
+		t.Fatalf("failed retained source = %q, want %q", got, logSourceKubernetes)
 	}
 }
 
