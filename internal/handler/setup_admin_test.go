@@ -115,9 +115,10 @@ func TestAdminListSessionsSearchAndModeFilter(t *testing.T) {
 		} `json:"resources"`
 	}
 	type page struct {
-		Items    []item   `json:"items"`
-		Total    int64    `json:"total"`
-		Statuses []string `json:"statuses"`
+		Items     []item   `json:"items"`
+		Total     int64    `json:"total"`
+		Statuses  []string `json:"statuses"`
+		LogSource string   `json:"log_source"`
 	}
 	request := func(query string) page {
 		t.Helper()
@@ -144,6 +145,9 @@ func TestAdminListSessionsSearchAndModeFilter(t *testing.T) {
 	unfiltered := request("")
 	if unfiltered.Total != 3 {
 		t.Fatalf("unfiltered response = %+v", unfiltered)
+	}
+	if unfiltered.LogSource != logSourceKubernetes {
+		t.Fatalf("unfiltered log source = %q, want %q", unfiltered.LogSource, logSourceKubernetes)
 	}
 	if len(unfiltered.Statuses) != 2 || unfiltered.Statuses[0] != "failed" || unfiltered.Statuses[1] != "running" {
 		t.Fatalf("unfiltered statuses = %v", unfiltered.Statuses)

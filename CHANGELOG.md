@@ -7,7 +7,7 @@
 - Session log exports can read retained history from a configured Loki endpoint,
   enforce seven-day or 30-day access limits, and include the selected range in
   the archive manifest; exports fall back to live Kubernetes logs when Loki is
-  not configured.
+  not configured or a retained-log query fails.
 - The Helm chart exposes the Loki query endpoint and timeout used for retained
   log exports.
 

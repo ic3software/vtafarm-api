@@ -323,11 +323,12 @@ SELECT
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"items":     items,
-		"total":     queryResult.Total,
-		"page":      page,
-		"page_size": pageSize,
-		"statuses":  statuses,
+		"items":      items,
+		"total":      queryResult.Total,
+		"page":       page,
+		"page_size":  pageSize,
+		"statuses":   statuses,
+		"log_source": h.logSource(),
 	})
 }
 

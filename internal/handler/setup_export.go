@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -200,9 +201,8 @@ func (h *SetupHandler) exportRetainedLogs(c *gin.Context, session *model.SetupSe
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if h.logquery == nil {
-		c.Header("X-Log-Source", logSourceKubernetes)
-		h.exportArchive(c, session, exportKindLogs)
+	if h.logSource() == logSourceKubernetes {
+		h.exportKubernetesLogs(c, session, nil)
 		return
 	}
 	if h.k8s == nil {
@@ -230,8 +230,8 @@ func (h *SetupHandler) exportRetainedLogs(c *gin.Context, session *model.SetupSe
 		query := componentLogQuery(ns, session, comp)
 		count, queryErr := h.logquery.WriteRange(c.Request.Context(), query, start, end, logsFile)
 		closeErr := logsFile.Close()
-		if queryErr != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": queryErr.Error()})
+		if h.logSourceAfter(queryErr) == logSourceKubernetes {
+			h.exportKubernetesLogs(c, session, queryErr)
 			return
 		}
 		if closeErr != nil {
@@ -269,8 +269,20 @@ func (h *SetupHandler) exportRetainedLogs(c *gin.Context, session *model.SetupSe
 	c.FileAttachment(archivePath, filename)
 }
 
+func (h *SetupHandler) exportKubernetesLogs(c *gin.Context, session *model.SetupSession, retainedErr error) {
+	if retainedErr != nil {
+		log.Printf("[log-export] retained logs unavailable for session %d; falling back to Kubernetes: %v", session.ID, retainedErr)
+	}
+	c.Header("X-Log-Source", logSourceKubernetes)
+	h.exportArchive(c, session, exportKindLogs)
+}
+
 func (h *SetupHandler) logSource() string {
-	if h.logquery == nil {
+	return h.logSourceAfter(nil)
+}
+
+func (h *SetupHandler) logSourceAfter(retainedErr error) string {
+	if h.logquery == nil || retainedErr != nil {
 		return logSourceKubernetes
 	}
 	return logSourceRetained
