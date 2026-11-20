@@ -48,7 +48,7 @@ var (
 	// so there is no lighter full-stack shape to plan for.
 	FullStack = Mode{Name: "full_stack", Components: []Component{
 		planningComponent(k8s.ComponentDids, 200*mi),
-		planningComponent(k8s.ComponentMediator, gi),
+		planningComponent(k8s.ComponentMediator, 200*mi),
 		planningComponent(k8s.ComponentVTA, 200*mi),
 		planningComponent(k8s.ComponentVTC, 200*mi),
 	}}

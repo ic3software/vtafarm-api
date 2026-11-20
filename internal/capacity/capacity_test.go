@@ -99,13 +99,13 @@ func TestEstimateModePerResourceMatchesCount(t *testing.T) {
 
 func TestEstimateModeStorageBound(t *testing.T) {
 	nodes := []NodeFree{{CPUMillis: 10000, MemBytes: 100 * gi}}
-	// Each full_stack session requests 1Gi + 3*200Mi = 1624Mi, so 9Gi fits
-	// five whole sessions but not six.
+	// Each full_stack session requests 4*200Mi = 800Mi, so 9Gi fits eleven
+	// whole sessions but not twelve.
 	disks := []DiskFree{{Bytes: 9 * gi}}
 
 	est := EstimateMode(FullStack, nodes, disks, 1, true)
-	if est.Count != 5 {
-		t.Fatalf("Count = %d, want 5", est.Count)
+	if est.Count != 11 {
+		t.Fatalf("Count = %d, want 11", est.Count)
 	}
 	if est.LimitingResource != "storage" {
 		t.Fatalf("LimitingResource = %q, want storage", est.LimitingResource)
@@ -161,7 +161,7 @@ func TestReserveModeChargesReservedResourceFootprint(t *testing.T) {
 	}
 
 	est := EstimateMode(FullStack, reservedNodes, reservedDisks, 1, true)
-	if est.Count != 1 || est.ByCPU != 6 || est.ByMemory != 1 || est.ByStorage != 19 {
+	if est.Count != 1 || est.ByCPU != 6 || est.ByMemory != 1 || est.ByStorage != 39 {
 		t.Fatalf("full-stack estimate after VTA reservations = %+v", est)
 	}
 	if est.LimitingResource != "memory" {
