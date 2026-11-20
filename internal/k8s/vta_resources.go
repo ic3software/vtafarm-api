@@ -63,48 +63,40 @@ func vtaServiceName(sessionID uint) string {
 const VtaServiceAccount = "vta"
 
 // VtaTuningEnv is shared by the VTA-only and full-stack Deployments.
-//
-// MALLOC_ARENA_MAX caps glibc's per-thread malloc arenas. The VTA runs ~24
-// threads, and without the cap each arena keeps the memory a burst of requests
-// freed, so the pod stays near its high-water mark long after going idle. On
-// staging the same light session left a VTA at 50Mi without the cap and 18Mi
-// with it. glibc reads the variable once at process start.
 func VtaTuningEnv() []corev1.EnvVar {
 	return []corev1.EnvVar{
 		{Name: "STORAGE_FJALL_BLOCK_CACHE", Value: "8388608"},   // 8 MiB
 		{Name: "STORAGE_FJALL_WRITE_BUFFER", Value: "16777216"}, // 16 MiB
 		{Name: "STORAGE_FJALL_MAX_JOURNAL", Value: "67108864"},  // 64 MiB
-		{Name: "MALLOC_ARENA_MAX", Value: "2"},
 	}
 }
 
 // DidsTuningEnv is the DID hosting daemon's tuning. The daemon applies the
 // Fjall budgets to each of its two stores.
-//
-// MALLOC_ARENA_MAX: same glibc arena retention as the VTA. The platform DID
-// host on staging held 80 MB in 26 arenas after 90 hours without the cap and
-// 15 MB in one arena after 86 hours with it.
 func DidsTuningEnv() []corev1.EnvVar {
 	return []corev1.EnvVar{
 		{Name: "STORAGE_FJALL_BLOCK_CACHE", Value: "8388608"},   // 8 MiB
 		{Name: "STORAGE_FJALL_WRITE_BUFFER", Value: "16777216"}, // 16 MiB
 		{Name: "STORAGE_FJALL_MAX_JOURNAL", Value: "67108864"},  // 64 MiB
-		{Name: "MALLOC_ARENA_MAX", Value: "2"},
 	}
 }
 
 // VtcTuningEnv is the VTC's tuning.
-//
-// MALLOC_ARENA_MAX: the VTC runs 40–55 threads and held 60–110 MB in 22–29
-// glibc arenas on staging; with the cap that was 15 MB in one arena. The cap
-// does not bound the main heap, which still grows on a busy VTC.
 func VtcTuningEnv() []corev1.EnvVar {
 	return []corev1.EnvVar{
 		{Name: "STORAGE_FJALL_BLOCK_CACHE", Value: "16777216"},  // 16 MiB
 		{Name: "STORAGE_FJALL_WRITE_BUFFER", Value: "33554432"}, // 32 MiB
 		{Name: "STORAGE_FJALL_MAX_JOURNAL", Value: "134217728"}, // 128 MiB
-		{Name: "MALLOC_ARENA_MAX", Value: "2"},
 	}
+}
+
+// retiredTuningEnv lists variables an earlier template set that no longer do
+// anything, so the upgrade path removes them.
+//
+// MALLOC_ARENA_MAX capped glibc's malloc arenas. The VTA, DID hosting and VTC
+// images now link jemalloc, which does not read the variable.
+var retiredTuningEnv = map[string]bool{
+	"MALLOC_ARENA_MAX": true,
 }
 
 // tuningEnvFor returns the tuning template for a Deployment's app label, or
@@ -121,28 +113,40 @@ func tuningEnvFor(app string) []corev1.EnvVar {
 	return nil
 }
 
-// ensureTuningEnv adds any tuning variable a VTA, DID hosting or VTC
-// Deployment is missing from its component's template. Deployments are only
-// ever created from the template, never re-rendered, so one created before a
-// variable existed would otherwise lack it forever. It only adds: a value
-// already set is left alone, because operators tune individual Deployments by
-// hand. Other components are not touched. Reports whether it changed anything.
-func ensureTuningEnv(deployment *appsv1.Deployment) bool {
+// reconcileTuningEnv brings a VTA, DID hosting or VTC Deployment's tuning
+// variables in line with its component's template. Deployments are only ever
+// created from the template, never re-rendered, so without this one created
+// under an older template would keep that template's variables forever.
+//
+// It adds any template variable that is missing and removes the retired ones.
+// A template variable that is already set keeps its value, because operators
+// tune individual Deployments by hand. Other components are not touched.
+// Reports whether it changed anything.
+func reconcileTuningEnv(deployment *appsv1.Deployment) bool {
 	want := tuningEnvFor(deployment.Labels["app"])
 	if len(want) == 0 || len(deployment.Spec.Template.Spec.Containers) == 0 {
 		return false
 	}
 	container := &deployment.Spec.Template.Spec.Containers[0]
+	changed := false
+	kept := make([]corev1.EnvVar, 0, len(container.Env)+len(want))
 	present := make(map[string]bool, len(container.Env))
 	for _, env := range container.Env {
+		if retiredTuningEnv[env.Name] {
+			changed = true
+			continue
+		}
+		kept = append(kept, env)
 		present[env.Name] = true
 	}
-	changed := false
 	for _, env := range want {
 		if !present[env.Name] {
-			container.Env = append(container.Env, env)
+			kept = append(kept, env)
 			changed = true
 		}
+	}
+	if changed {
+		container.Env = kept
 	}
 	return changed
 }
