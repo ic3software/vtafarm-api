@@ -264,19 +264,21 @@ func (o *Orchestrator) fsDeployVtc(ctx context.Context, ns string, s *model.Setu
 	}
 	name := k8s.FSVtcName(s.ID)
 	if err := o.k8s.CreateComponentDeployment(ctx, ns, k8s.ComponentDeploymentSpec{
-		Name:            name,
-		Image:           s.VtcImage,
-		Command:         []string{"vtc"},
-		WorkingDir:      "/work/vtc",
-		ServiceAccount:  k8s.VtaServiceAccount,
-		PVCMounts:       []k8s.PVCMount{{Name: "vtc-data", ClaimName: name, MountPath: "/work/vtc"}},
-		Env:             append(fsNoColorEnv(), k8s.VtcTuningEnv()...),
-		Port:            8200,
-		Labels:          fsLabels("vtc", s.ID),
-		PlacementMode:   k8s.PlacementModeFullStack,
-		Component:       k8s.ComponentVTC,
-		HealthCheckPath: "/health",
-		Resources:       profiles.Requirements(k8s.ComponentVTC),
+		Name:           name,
+		Image:          s.VtcImage,
+		Command:        []string{"vtc"},
+		WorkingDir:     "/work/vtc",
+		ServiceAccount: k8s.VtaServiceAccount,
+		PVCMounts:      []k8s.PVCMount{{Name: "vtc-data", ClaimName: name, MountPath: "/work/vtc"}},
+		Env:            append(fsNoColorEnv(), k8s.VtcTuningEnv()...),
+		Port:           8200,
+		Labels:         fsLabels("vtc", s.ID),
+		PlacementMode:  k8s.PlacementModeFullStack,
+		Component:      k8s.ComponentVTC,
+		ReadinessPath:  "/health",
+		LivenessPath:   "/health",
+		StartupPath:    "/health",
+		Resources:      profiles.Requirements(k8s.ComponentVTC),
 	}); err != nil {
 		return err
 	}

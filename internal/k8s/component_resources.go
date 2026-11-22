@@ -39,13 +39,19 @@ type ComponentDeploymentSpec struct {
 	Labels         map[string]string
 	PlacementMode  string
 	Component      string
-	// HealthCheckPath, if set, wires an HTTP readinessProbe against this path
-	// on Port. Without it, Kubernetes marks the pod Ready the instant the
+	// ReadinessPath, if set, wires an HTTP readinessProbe against this path on
+	// Port. Without it, Kubernetes marks the pod Ready the instant the
 	// container process starts (no probe = ready-by-default), which is true
 	// long before the app inside has actually bound its listener — so
 	// WaitForComponentDeploymentReady's poll of ReadyReplicas was previously
 	// a near-instant no-op rather than a real "is this serving" check.
-	HealthCheckPath string
+	ReadinessPath string
+	// LivenessPath is process-only: it must not fail merely because a remote
+	// dependency is unavailable, since restarting the process cannot repair it.
+	LivenessPath string
+	// StartupPath suppresses readiness and liveness until the HTTP runtime is
+	// serving, protecting slow store initialization from premature restarts.
+	StartupPath string
 	// Resources sets the container's requests/limits. Memory always carries a
 	// limit (incompressible); CPU deliberately gets requests only — a CFS quota
 	// would throttle bursts even when node CPU is idle, while the request alone
@@ -95,19 +101,40 @@ func (c *Client) CreateComponentDeployment(ctx context.Context, ns string, spec 
 		ports = []corev1.ContainerPort{{ContainerPort: spec.Port, Protocol: corev1.ProtocolTCP}}
 	}
 
-	var readinessProbe *corev1.Probe
-	if spec.HealthCheckPath != "" {
+	var readinessProbe, livenessProbe, startupProbe *corev1.Probe
+	if spec.ReadinessPath != "" {
 		readinessProbe = &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
-					Path: spec.HealthCheckPath,
+					Path: spec.ReadinessPath,
 					Port: intstr.FromInt32(spec.Port),
 				},
 			},
-			InitialDelaySeconds: 1,
-			PeriodSeconds:       2,
-			TimeoutSeconds:      2,
-			FailureThreshold:    3,
+			PeriodSeconds:    2,
+			TimeoutSeconds:   2,
+			FailureThreshold: 3,
+		}
+	}
+	if spec.LivenessPath != "" {
+		livenessProbe = &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+				Path: spec.LivenessPath,
+				Port: intstr.FromInt32(spec.Port),
+			}},
+			PeriodSeconds:    10,
+			TimeoutSeconds:   2,
+			FailureThreshold: 3,
+		}
+	}
+	if spec.StartupPath != "" {
+		startupProbe = &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+				Path: spec.StartupPath,
+				Port: intstr.FromInt32(spec.Port),
+			}},
+			PeriodSeconds:    2,
+			TimeoutSeconds:   2,
+			FailureThreshold: 60,
 		}
 	}
 
@@ -135,6 +162,8 @@ func (c *Client) CreateComponentDeployment(ctx context.Context, ns string, spec 
 						Ports:          ports,
 						VolumeMounts:   mounts,
 						ReadinessProbe: readinessProbe,
+						LivenessProbe:  livenessProbe,
+						StartupProbe:   startupProbe,
 						Resources:      spec.Resources,
 					}},
 					Volumes: volumes,

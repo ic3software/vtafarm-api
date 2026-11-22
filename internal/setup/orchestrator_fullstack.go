@@ -1082,19 +1082,19 @@ func (o *Orchestrator) fsDeployDids(ctx context.Context, ns string, s *model.Set
 	}
 	name := k8s.FSDidsName(s.ID)
 	if err := o.k8s.CreateComponentDeployment(ctx, ns, k8s.ComponentDeploymentSpec{
-		Name:            name,
-		Image:           s.DidsImage,
-		Command:         []string{"did-hosting-daemon"},
-		WorkingDir:      "/work/dids",
-		ServiceAccount:  k8s.VtaServiceAccount,
-		PVCMounts:       []k8s.PVCMount{{Name: "dids-data", ClaimName: name, MountPath: "/work/dids"}},
-		Env:             append(fsNoColorEnv(), k8s.DidsTuningEnv()...),
-		Port:            8534,
-		Labels:          fsLabels("dids", s.ID),
-		PlacementMode:   k8s.PlacementModeFullStack,
-		Component:       k8s.ComponentDids,
-		HealthCheckPath: "/health",
-		Resources:       profiles.Requirements(k8s.ComponentDids),
+		Name:           name,
+		Image:          s.DidsImage,
+		Command:        []string{"did-hosting-daemon"},
+		WorkingDir:     "/work/dids",
+		ServiceAccount: k8s.VtaServiceAccount,
+		PVCMounts:      []k8s.PVCMount{{Name: "dids-data", ClaimName: name, MountPath: "/work/dids"}},
+		Env:            append(fsNoColorEnv(), k8s.DidsTuningEnv()...),
+		Port:           8534,
+		Labels:         fsLabels("dids", s.ID),
+		PlacementMode:  k8s.PlacementModeFullStack,
+		Component:      k8s.ComponentDids,
+		ReadinessPath:  "/health",
+		Resources:      profiles.Requirements(k8s.ComponentDids),
 	}); err != nil {
 		return err
 	}
@@ -1119,21 +1119,23 @@ func (o *Orchestrator) fsDeployMediator(ctx context.Context, ns string, s *model
 	env := append(fsNoColorEnv(), fsMediatorTuningEnv()...)
 	env = append(env, k8s.VaultCAEnvVar())
 	if err := o.k8s.CreateComponentDeployment(ctx, ns, k8s.ComponentDeploymentSpec{
-		Name:            name,
-		Image:           s.MediatorImage,
-		Command:         []string{"mediator"},
-		WorkingDir:      "/work/mediator",
-		ServiceAccount:  k8s.VtaServiceAccount,
-		PVCMounts:       []k8s.PVCMount{{Name: "mediator-data", ClaimName: name, MountPath: "/work/mediator"}},
-		Env:             env,
-		ExtraVolumes:    extraVolumes,
-		ExtraMounts:     extraMounts,
-		Port:            7037,
-		Labels:          fsLabels("mediator", s.ID),
-		PlacementMode:   k8s.PlacementModeFullStack,
-		Component:       k8s.ComponentMediator,
-		HealthCheckPath: "/mediator/v1/readyz",
-		Resources:       profiles.Requirements(k8s.ComponentMediator),
+		Name:           name,
+		Image:          s.MediatorImage,
+		Command:        []string{"mediator"},
+		WorkingDir:     "/work/mediator",
+		ServiceAccount: k8s.VtaServiceAccount,
+		PVCMounts:      []k8s.PVCMount{{Name: "mediator-data", ClaimName: name, MountPath: "/work/mediator"}},
+		Env:            env,
+		ExtraVolumes:   extraVolumes,
+		ExtraMounts:    extraMounts,
+		Port:           7037,
+		Labels:         fsLabels("mediator", s.ID),
+		PlacementMode:  k8s.PlacementModeFullStack,
+		Component:      k8s.ComponentMediator,
+		ReadinessPath:  "/mediator/v1/readyz",
+		LivenessPath:   "/mediator/v1/livez",
+		StartupPath:    "/mediator/v1/livez",
+		Resources:      profiles.Requirements(k8s.ComponentMediator),
 	}); err != nil {
 		return err
 	}
@@ -1174,12 +1176,11 @@ func (o *Orchestrator) fsStepImportAdminDid(ctx context.Context, ns string, s *m
 // fsDeployVta starts the VTA Deployment and waits for it to become Ready —
 // full_stack's step_vtc_setup makes live calls against it right
 // after, so the deploy_* invariant (returns only once the component is
-// actually up) matters here too. HealthCheckPath wires a readinessProbe
+// actually up) matters here too. ReadinessPath wires a readinessProbe
 // against GET /health (vta-service's unauthenticated health route) — without
 // it, Kubernetes marks the pod Ready the instant the container starts,
-// before the REST/DIDComm/storage subsystems have finished their async
-// startup, so WaitForComponentDeploymentReady below returned almost
-// instantly regardless of whether VTA could actually serve a request yet.
+// before the HTTP listener is serving, so WaitForComponentDeploymentReady
+// below returned almost instantly and the next setup step raced the listener.
 func (o *Orchestrator) fsDeployVta(ctx context.Context, ns string, s *model.SetupSession) error {
 	profiles, err := resourceprofile.Load(ctx, o.db)
 	if err != nil {
@@ -1187,19 +1188,21 @@ func (o *Orchestrator) fsDeployVta(ctx context.Context, ns string, s *model.Setu
 	}
 	name := k8s.FSVtaName(s.ID)
 	if err := o.k8s.CreateComponentDeployment(ctx, ns, k8s.ComponentDeploymentSpec{
-		Name:            name,
-		Image:           s.VtaImage,
-		Command:         []string{"vta"},
-		WorkingDir:      "/work/vta",
-		ServiceAccount:  k8s.VtaServiceAccount,
-		PVCMounts:       []k8s.PVCMount{{Name: "vta-data", ClaimName: name, MountPath: "/work/vta"}},
-		Env:             append(fsNoColorEnv(), k8s.VtaTuningEnv()...),
-		Port:            8100,
-		Labels:          fsLabels("vta", s.ID),
-		PlacementMode:   k8s.PlacementModeFullStack,
-		Component:       k8s.ComponentVTA,
-		HealthCheckPath: "/health",
-		Resources:       profiles.Requirements(k8s.ComponentVTA),
+		Name:           name,
+		Image:          s.VtaImage,
+		Command:        []string{"vta"},
+		WorkingDir:     "/work/vta",
+		ServiceAccount: k8s.VtaServiceAccount,
+		PVCMounts:      []k8s.PVCMount{{Name: "vta-data", ClaimName: name, MountPath: "/work/vta"}},
+		Env:            append(fsNoColorEnv(), k8s.VtaTuningEnv()...),
+		Port:           8100,
+		Labels:         fsLabels("vta", s.ID),
+		PlacementMode:  k8s.PlacementModeFullStack,
+		Component:      k8s.ComponentVTA,
+		ReadinessPath:  "/health",
+		LivenessPath:   "/health",
+		StartupPath:    "/health",
+		Resources:      profiles.Requirements(k8s.ComponentVTA),
 	}); err != nil {
 		return err
 	}

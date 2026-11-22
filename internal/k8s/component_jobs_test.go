@@ -114,10 +114,12 @@ func TestCreateComponentDeploymentUsesConfiguredHealthReadinessProbe(t *testing.
 	client := &Client{kube: fake.NewSimpleClientset()}
 
 	if err := client.CreateComponentDeployment(context.Background(), "test", ComponentDeploymentSpec{
-		Name:            "mediator",
-		Image:           "example/mediator:test",
-		Port:            7037,
-		HealthCheckPath: "/mediator/v1/readyz",
+		Name:          "mediator",
+		Image:         "example/mediator:test",
+		Port:          7037,
+		ReadinessPath: "/mediator/v1/readyz",
+		LivenessPath:  "/mediator/v1/livez",
+		StartupPath:   "/mediator/v1/livez",
 	}); err != nil {
 		t.Fatalf("CreateComponentDeployment() error = %v", err)
 	}
@@ -134,6 +136,14 @@ func TestCreateComponentDeploymentUsesConfiguredHealthReadinessProbe(t *testing.
 	}
 	if probe.HTTPGet.Path != "/mediator/v1/readyz" {
 		t.Fatalf("readiness path = %q, want /mediator/v1/readyz", probe.HTTPGet.Path)
+	}
+	liveness := deployment.Spec.Template.Spec.Containers[0].LivenessProbe
+	if liveness == nil || liveness.HTTPGet == nil || liveness.HTTPGet.Path != "/mediator/v1/livez" {
+		t.Fatalf("unexpected liveness probe: %+v", liveness)
+	}
+	startup := deployment.Spec.Template.Spec.Containers[0].StartupProbe
+	if startup == nil || startup.HTTPGet == nil || startup.HTTPGet.Path != "/mediator/v1/livez" {
+		t.Fatalf("unexpected startup probe: %+v", startup)
 	}
 	if probe.HTTPGet.Port.IntVal != 7037 {
 		t.Fatalf("readiness port = %d, want 7037", probe.HTTPGet.Port.IntVal)

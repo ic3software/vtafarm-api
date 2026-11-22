@@ -51,9 +51,19 @@ func TestCreateVtaDeploymentUsesHealthReadinessProbe(t *testing.T) {
 	if probe.HTTPGet.Port.IntVal != 8100 {
 		t.Fatalf("readiness port = %d, want 8100", probe.HTTPGet.Port.IntVal)
 	}
-	if probe.InitialDelaySeconds != 1 || probe.PeriodSeconds != 2 ||
+	if probe.InitialDelaySeconds != 0 || probe.PeriodSeconds != 2 ||
 		probe.TimeoutSeconds != 2 || probe.FailureThreshold != 3 {
 		t.Fatalf("unexpected readiness timing: %+v", probe)
+	}
+	liveness := deployment.Spec.Template.Spec.Containers[0].LivenessProbe
+	if liveness == nil || liveness.HTTPGet == nil || liveness.HTTPGet.Path != "/health" ||
+		liveness.PeriodSeconds != 10 || liveness.TimeoutSeconds != 2 || liveness.FailureThreshold != 3 {
+		t.Fatalf("unexpected liveness probe: %+v", liveness)
+	}
+	startup := deployment.Spec.Template.Spec.Containers[0].StartupProbe
+	if startup == nil || startup.HTTPGet == nil || startup.HTTPGet.Path != "/health" ||
+		startup.PeriodSeconds != 2 || startup.TimeoutSeconds != 2 || startup.FailureThreshold != 60 {
+		t.Fatalf("unexpected startup probe: %+v", startup)
 	}
 }
 

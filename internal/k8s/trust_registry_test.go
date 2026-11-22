@@ -112,7 +112,7 @@ func TestRegistryJobRetryRetainsIdentityAndActiveJobs(t *testing.T) {
 func TestRegistryDeploymentKeepsCredentialInMemoryAndOutOfExports(t *testing.T) {
 	kube := fake.NewSimpleClientset()
 	client := &Client{kube: kube}
-	spec := ComponentDeploymentSpec{Name: "registry", Labels: map[string]string{"app": "registry"}, Image: "registry:image", ServiceAccount: VtaServiceAccount, Command: []string{"trust-registry"}, Port: 3232, HealthCheckPath: "/health", Recreate: true,
+	spec := ComponentDeploymentSpec{Name: "registry", Labels: map[string]string{"app": "registry"}, Image: "registry:image", ServiceAccount: VtaServiceAccount, Command: []string{"trust-registry"}, Port: 3232, ReadinessPath: "/health", LivenessPath: "/health", StartupPath: "/health", Recreate: true,
 		Env:            []corev1.EnvVar{{Name: "MEDIATOR_DID", Value: "did:webvh:mediator"}, {Name: "TR_VTA_CONTEXT_ID", Value: "registry-7"}, {Name: "TR_SECRETS_SEED", Value: "test-only-secret"}},
 		ExtraVolumes:   []corev1.Volume{{Name: "credential", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}}},
 		ExtraMounts:    []corev1.VolumeMount{{Name: "credential", MountPath: "/run/trust-registry", ReadOnly: true}},
