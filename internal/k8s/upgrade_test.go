@@ -70,6 +70,78 @@ func deploymentEnv(t *testing.T, client *Client, name string) map[string]string 
 	return env
 }
 
+func TestSetDeploymentImageAddsMissingHealthProbes(t *testing.T) {
+	cases := []struct {
+		app                 string
+		port                int32
+		readiness, liveness string
+		startup             string
+	}{
+		{app: "vta", port: 8100, readiness: "/health", liveness: "/health", startup: "/health"},
+		{app: "fs-vta", port: 8100, readiness: "/health", liveness: "/health", startup: "/health"},
+		{app: "fs-vtc", port: 8200, readiness: "/health", liveness: "/health", startup: "/health"},
+		{app: "fs-trust-registry", port: 3232, readiness: "/health", liveness: "/health", startup: "/health"},
+		{app: "fs-mediator", port: 7037, readiness: "/mediator/v1/readyz", liveness: "/mediator/v1/livez", startup: "/mediator/v1/livez"},
+		{app: "fs-dids", port: 8534, readiness: "/health"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.app, func(t *testing.T) {
+			deployment := tuningTestDeployment("workload", tc.app)
+			deployment.Spec.Template.Spec.Containers[0].Ports = []corev1.ContainerPort{{ContainerPort: tc.port}}
+			client := &Client{kube: fake.NewSimpleClientset(deployment)}
+
+			if err := client.SetDeploymentImage(context.Background(), "test", "workload", "example/new:image"); err != nil {
+				t.Fatalf("SetDeploymentImage() error = %v", err)
+			}
+			got, err := client.kube.AppsV1().Deployments("test").Get(context.Background(), "workload", metav1.GetOptions{})
+			if err != nil {
+				t.Fatalf("get Deployment: %v", err)
+			}
+			container := got.Spec.Template.Spec.Containers[0]
+			assertHTTPProbe(t, "readiness", container.ReadinessProbe, tc.readiness, tc.port)
+			assertHTTPProbe(t, "liveness", container.LivenessProbe, tc.liveness, tc.port)
+			assertHTTPProbe(t, "startup", container.StartupProbe, tc.startup, tc.port)
+		})
+	}
+}
+
+func TestSetDeploymentImagePreservesExistingHealthProbes(t *testing.T) {
+	deployment := tuningTestDeployment("vta-7", "vta")
+	container := &deployment.Spec.Template.Spec.Containers[0]
+	container.Ports = []corev1.ContainerPort{{ContainerPort: 8100}}
+	container.ReadinessProbe = upgradeHTTPProbe("/operator-ready", 8100, 7, 4)
+	client := &Client{kube: fake.NewSimpleClientset(deployment)}
+
+	if err := client.SetDeploymentImage(context.Background(), "test", "vta-7", "example/vta:new"); err != nil {
+		t.Fatalf("SetDeploymentImage() error = %v", err)
+	}
+	got, err := client.kube.AppsV1().Deployments("test").Get(context.Background(), "vta-7", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get Deployment: %v", err)
+	}
+	probe := got.Spec.Template.Spec.Containers[0].ReadinessProbe
+	assertHTTPProbe(t, "readiness", probe, "/operator-ready", 8100)
+	if probe.PeriodSeconds != 7 || probe.FailureThreshold != 4 {
+		t.Fatalf("operator readiness timing changed: %+v", probe)
+	}
+}
+
+func assertHTTPProbe(t *testing.T, name string, probe *corev1.Probe, path string, port int32) {
+	t.Helper()
+	if path == "" {
+		if probe != nil {
+			t.Fatalf("%s probe = %+v, want nil", name, probe)
+		}
+		return
+	}
+	if probe == nil || probe.HTTPGet == nil {
+		t.Fatalf("%s probe = %+v, want HTTP probe", name, probe)
+	}
+	if probe.HTTPGet.Path != path || probe.HTTPGet.Port.IntVal != port {
+		t.Fatalf("%s probe = %+v, want %s:%d", name, probe.HTTPGet, path, port)
+	}
+}
+
 func TestSetDeploymentImageAddsMissingVtaTuningEnv(t *testing.T) {
 	for _, app := range []string{"vta", "fs-vta"} {
 		t.Run(app, func(t *testing.T) {

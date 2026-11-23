@@ -6,12 +6,77 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/util/retry"
 )
 
 const recoveryRestartAnnotation = "vtafarm.ic3software.com/recovery-restarted-at"
+
+type upgradeProbePaths struct {
+	readiness string
+	liveness  string
+	startup   string
+}
+
+func upgradeProbePathsFor(app string) (upgradeProbePaths, bool) {
+	switch app {
+	case "vta", "fs-vta", "fs-vtc", "fs-trust-registry":
+		return upgradeProbePaths{readiness: "/health", liveness: "/health", startup: "/health"}, true
+	case "fs-mediator":
+		return upgradeProbePaths{
+			readiness: "/mediator/v1/readyz",
+			liveness:  "/mediator/v1/livez",
+			startup:   "/mediator/v1/livez",
+		}, true
+	case "fs-dids":
+		// DID Hosting's /health includes its store and own DID. It is valid
+		// readiness, but using it for liveness could create a restart loop.
+		return upgradeProbePaths{readiness: "/health"}, true
+	default:
+		return upgradeProbePaths{}, false
+	}
+}
+
+func upgradeHTTPProbe(path string, port int32, period, failures int32) *corev1.Probe {
+	if path == "" {
+		return nil
+	}
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+			Path: path,
+			Port: intstr.FromInt32(port),
+		}},
+		PeriodSeconds:    period,
+		TimeoutSeconds:   2,
+		FailureThreshold: failures,
+	}
+}
+
+// reconcileUpgradeHealthProbes fills probes missing from an older Deployment.
+// Existing operator-supplied probes are preserved.
+func reconcileUpgradeHealthProbes(deployment *appsv1.Deployment) {
+	paths, ok := upgradeProbePathsFor(deployment.Labels["app"])
+	if !ok || len(deployment.Spec.Template.Spec.Containers) == 0 {
+		return
+	}
+	container := &deployment.Spec.Template.Spec.Containers[0]
+	if len(container.Ports) == 0 {
+		return
+	}
+	port := container.Ports[0].ContainerPort
+	if container.ReadinessProbe == nil {
+		container.ReadinessProbe = upgradeHTTPProbe(paths.readiness, port, 2, 3)
+	}
+	if container.LivenessProbe == nil {
+		container.LivenessProbe = upgradeHTTPProbe(paths.liveness, port, 10, 3)
+	}
+	if container.StartupProbe == nil {
+		container.StartupProbe = upgradeHTTPProbe(paths.startup, port, 2, 60)
+	}
+}
 
 // VtaDeploymentName exposes vta_only's Deployment name (vta-<sessionID>) to
 // the upgrade runner, which patches Deployments created by CreateVtaDeployment.
@@ -21,12 +86,13 @@ func VtaDeploymentName(sessionID uint) string {
 }
 
 // SetDeploymentImage points every container in the Deployment at image and
-// forces the Recreate strategy. The same rollout reconciles component tuning and an
-// existing mediator's persisted Vault CA configuration. Recreate matters: these Deployments mount RWO
-// PVCs, so the default RollingUpdate would start the new pod while the old
-// one still holds the volume and deadlock the rollout. Replacing the whole
-// Strategy struct also clears any rollingUpdate params, which the API server
-// rejects alongside type Recreate.
+// forces the Recreate strategy. The same rollout reconciles component tuning,
+// missing health probes, and an existing mediator's persisted Vault CA
+// configuration. Recreate matters: these Deployments mount RWO PVCs, so the
+// default RollingUpdate would start the new pod while the old one still holds
+// the volume and deadlock the rollout. Replacing the whole Strategy struct also
+// clears any rollingUpdate params, which the API server rejects alongside type
+// Recreate.
 func (c *Client) SetDeploymentImage(ctx context.Context, ns, name, image string) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		deploy, err := c.kube.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
@@ -38,6 +104,7 @@ func (c *Client) SetDeploymentImage(ctx context.Context, ns, name, image string)
 			deploy.Spec.Template.Spec.Containers[i].Image = image
 		}
 		reconcileTuningEnv(deploy)
+		reconcileUpgradeHealthProbes(deploy)
 		ensureMediatorVaultCA(deploy, image)
 		_, err = c.kube.AppsV1().Deployments(ns).Update(ctx, deploy, metav1.UpdateOptions{})
 		return err
