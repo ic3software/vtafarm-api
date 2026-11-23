@@ -254,7 +254,7 @@ func (o *Orchestrator) fsStepVtcSetup(ctx context.Context, ns string, s *model.S
 // /work/vtc with workingDir to match — the same layout every other
 // component uses — so vtc resolves its relative config.toml and data_dir
 // onto what step_vtc_setup/step_vtc_setup_key wrote. The unauthenticated
-// /health probe confirms the HTTP listener is serving before the full stack
+// /readyz probe confirms the service is ready before the full stack
 // can be marked running. Runs as SA vta — it reads its Vault key bundle at
 // every boot.
 func (o *Orchestrator) fsDeployVtc(ctx context.Context, ns string, s *model.SetupSession) error {
@@ -275,9 +275,9 @@ func (o *Orchestrator) fsDeployVtc(ctx context.Context, ns string, s *model.Setu
 		Labels:         fsLabels("vtc", s.ID),
 		PlacementMode:  k8s.PlacementModeFullStack,
 		Component:      k8s.ComponentVTC,
-		ReadinessPath:  "/health",
-		LivenessPath:   "/health",
-		StartupPath:    "/health",
+		ReadinessPath:  "/readyz",
+		LivenessPath:   "/livez",
+		StartupPath:    "/livez",
 		Resources:      profiles.Requirements(k8s.ComponentVTC),
 	}); err != nil {
 		return err

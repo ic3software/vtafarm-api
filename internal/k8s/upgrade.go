@@ -21,20 +21,31 @@ type upgradeProbePaths struct {
 	startup   string
 }
 
-func upgradeProbePathsFor(app string) (upgradeProbePaths, bool) {
+func currentProbePathsFor(app string) (upgradeProbePaths, bool) {
 	switch app {
-	case "vta", "fs-vta", "fs-vtc", "fs-trust-registry":
-		return upgradeProbePaths{readiness: "/health", liveness: "/health", startup: "/health"}, true
+	case "vta", "fs-vta", "fs-vtc", "fs-trust-registry", "fs-dids":
+		return upgradeProbePaths{readiness: "/readyz", liveness: "/livez", startup: "/livez"}, true
 	case "fs-mediator":
 		return upgradeProbePaths{
 			readiness: "/mediator/v1/readyz",
 			liveness:  "/mediator/v1/livez",
 			startup:   "/mediator/v1/livez",
 		}, true
+	default:
+		return upgradeProbePaths{}, false
+	}
+}
+
+// rollbackProbePathsFor uses only endpoints available before the dedicated
+// probes landed, so a failed new image can still roll back cleanly.
+func rollbackProbePathsFor(app string) (upgradeProbePaths, bool) {
+	switch app {
+	case "vta", "fs-vta", "fs-vtc", "fs-trust-registry":
+		return upgradeProbePaths{readiness: "/health", liveness: "/health", startup: "/health"}, true
 	case "fs-dids":
-		// DID Hosting's /health includes its store and own DID. It is valid
-		// readiness, but using it for liveness could create a restart loop.
 		return upgradeProbePaths{readiness: "/health"}, true
+	case "fs-mediator":
+		return upgradeProbePaths{readiness: "/mediator/v1/readyz"}, true
 	default:
 		return upgradeProbePaths{}, false
 	}
@@ -55,27 +66,60 @@ func upgradeHTTPProbe(path string, port int32, period, failures int32) *corev1.P
 	}
 }
 
-// reconcileUpgradeHealthProbes fills probes missing from an older Deployment.
-// Existing operator-supplied probes are preserved.
-func reconcileUpgradeHealthProbes(deployment *appsv1.Deployment) {
-	paths, ok := upgradeProbePathsFor(deployment.Labels["app"])
+func isManagedHTTPProbe(probe *corev1.Probe, port, period, failures int32, paths ...string) bool {
+	if probe == nil || probe.HTTPGet == nil || probe.HTTPGet.Port.IntVal != port ||
+		probe.PeriodSeconds != period || probe.TimeoutSeconds != 2 ||
+		probe.FailureThreshold != failures {
+		return false
+	}
+	for _, path := range paths {
+		if path != "" && probe.HTTPGet.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
+func reconcileProbe(
+	probe **corev1.Probe,
+	desiredPath string,
+	port, period, failures int32,
+	managedPaths ...string,
+) {
+	if *probe != nil && !isManagedHTTPProbe(*probe, port, period, failures, managedPaths...) {
+		return
+	}
+	*probe = upgradeHTTPProbe(desiredPath, port, period, failures)
+}
+
+func reconcileHealthProbes(deployment *appsv1.Deployment, rollback bool) {
+	current, ok := currentProbePathsFor(deployment.Labels["app"])
 	if !ok || len(deployment.Spec.Template.Spec.Containers) == 0 {
 		return
+	}
+	legacy, _ := rollbackProbePathsFor(deployment.Labels["app"])
+	desired := current
+	if rollback {
+		desired = legacy
 	}
 	container := &deployment.Spec.Template.Spec.Containers[0]
 	if len(container.Ports) == 0 {
 		return
 	}
 	port := container.Ports[0].ContainerPort
-	if container.ReadinessProbe == nil {
-		container.ReadinessProbe = upgradeHTTPProbe(paths.readiness, port, 2, 3)
-	}
-	if container.LivenessProbe == nil {
-		container.LivenessProbe = upgradeHTTPProbe(paths.liveness, port, 10, 3)
-	}
-	if container.StartupProbe == nil {
-		container.StartupProbe = upgradeHTTPProbe(paths.startup, port, 2, 60)
-	}
+	reconcileProbe(&container.ReadinessProbe, desired.readiness, port, 2, 3, current.readiness, legacy.readiness)
+	reconcileProbe(&container.LivenessProbe, desired.liveness, port, 10, 3, current.liveness, legacy.liveness)
+	reconcileProbe(&container.StartupProbe, desired.startup, port, 2, 60, current.startup, legacy.startup)
+}
+
+// reconcileUpgradeHealthProbes fills missing probes and migrates probes from
+// the Farm's former `/health` policy. Other operator-supplied probes remain.
+func reconcileUpgradeHealthProbes(deployment *appsv1.Deployment) {
+	reconcileHealthProbes(deployment, false)
+}
+
+func reconcileRollbackHealthProbes(deployment *appsv1.Deployment) {
+	reconcileHealthProbes(deployment, true)
 }
 
 // VtaDeploymentName exposes vta_only's Deployment name (vta-<sessionID>) to
@@ -94,6 +138,16 @@ func VtaDeploymentName(sessionID uint) string {
 // clears any rollingUpdate params, which the API server rejects alongside type
 // Recreate.
 func (c *Client) SetDeploymentImage(ctx context.Context, ns, name, image string) error {
+	return c.setDeploymentImage(ctx, ns, name, image, false)
+}
+
+// RollbackDeploymentImage restores an older image with the legacy probe paths
+// that image is guaranteed to expose.
+func (c *Client) RollbackDeploymentImage(ctx context.Context, ns, name, image string) error {
+	return c.setDeploymentImage(ctx, ns, name, image, true)
+}
+
+func (c *Client) setDeploymentImage(ctx context.Context, ns, name, image string, rollback bool) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		deploy, err := c.kube.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
@@ -104,7 +158,11 @@ func (c *Client) SetDeploymentImage(ctx context.Context, ns, name, image string)
 			deploy.Spec.Template.Spec.Containers[i].Image = image
 		}
 		reconcileTuningEnv(deploy)
-		reconcileUpgradeHealthProbes(deploy)
+		if rollback {
+			reconcileRollbackHealthProbes(deploy)
+		} else {
+			reconcileUpgradeHealthProbes(deploy)
+		}
 		ensureMediatorVaultCA(deploy, image)
 		_, err = c.kube.AppsV1().Deployments(ns).Update(ctx, deploy, metav1.UpdateOptions{})
 		return err

@@ -1073,8 +1073,8 @@ func (o *Orchestrator) fsStepVtaRegisterDids(ctx context.Context, ns string, s *
 // its Vault-backed secrets at every boot. Waits for the pod to actually
 // become Ready before returning: step_vta_register_dids (right after
 // deploy_mediator) live-resolves this daemon's DID over HTTPS, so a
-// Deployment object existing isn't enough. The daemon's /health endpoint
-// proves its HTTP listener and combined service router are serving.
+// Deployment object existing isn't enough. The daemon's /readyz endpoint
+// proves its HTTP listener and required stores are ready to serve.
 func (o *Orchestrator) fsDeployDids(ctx context.Context, ns string, s *model.SetupSession) error {
 	profiles, err := resourceprofile.Load(ctx, o.db)
 	if err != nil {
@@ -1093,7 +1093,9 @@ func (o *Orchestrator) fsDeployDids(ctx context.Context, ns string, s *model.Set
 		Labels:         fsLabels("dids", s.ID),
 		PlacementMode:  k8s.PlacementModeFullStack,
 		Component:      k8s.ComponentDids,
-		ReadinessPath:  "/health",
+		ReadinessPath:  "/readyz",
+		LivenessPath:   "/livez",
+		StartupPath:    "/livez",
 		Resources:      profiles.Requirements(k8s.ComponentDids),
 	}); err != nil {
 		return err
@@ -1177,7 +1179,7 @@ func (o *Orchestrator) fsStepImportAdminDid(ctx context.Context, ns string, s *m
 // full_stack's step_vtc_setup makes live calls against it right
 // after, so the deploy_* invariant (returns only once the component is
 // actually up) matters here too. ReadinessPath wires a readinessProbe
-// against GET /health (vta-service's unauthenticated health route) — without
+// against GET /readyz (vta-service's unauthenticated readiness route) — without
 // it, Kubernetes marks the pod Ready the instant the container starts,
 // before the HTTP listener is serving, so WaitForComponentDeploymentReady
 // below returned almost instantly and the next setup step raced the listener.
@@ -1199,9 +1201,9 @@ func (o *Orchestrator) fsDeployVta(ctx context.Context, ns string, s *model.Setu
 		Labels:         fsLabels("vta", s.ID),
 		PlacementMode:  k8s.PlacementModeFullStack,
 		Component:      k8s.ComponentVTA,
-		ReadinessPath:  "/health",
-		LivenessPath:   "/health",
-		StartupPath:    "/health",
+		ReadinessPath:  "/readyz",
+		LivenessPath:   "/livez",
+		StartupPath:    "/livez",
 		Resources:      profiles.Requirements(k8s.ComponentVTA),
 	}); err != nil {
 		return err

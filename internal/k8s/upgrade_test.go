@@ -70,42 +70,64 @@ func deploymentEnv(t *testing.T, client *Client, name string) map[string]string 
 	return env
 }
 
-func TestSetDeploymentImageAddsMissingHealthProbes(t *testing.T) {
+func TestImageUpgradeAndRollbackReconcileHealthProbes(t *testing.T) {
 	cases := []struct {
-		app                 string
-		port                int32
-		readiness, liveness string
-		startup             string
+		app                               string
+		port                              int32
+		legacyReadiness, legacyLiveness   string
+		legacyStartup                     string
+		currentReadiness, currentLiveness string
+		currentStartup                    string
 	}{
-		{app: "vta", port: 8100, readiness: "/health", liveness: "/health", startup: "/health"},
-		{app: "fs-vta", port: 8100, readiness: "/health", liveness: "/health", startup: "/health"},
-		{app: "fs-vtc", port: 8200, readiness: "/health", liveness: "/health", startup: "/health"},
-		{app: "fs-trust-registry", port: 3232, readiness: "/health", liveness: "/health", startup: "/health"},
-		{app: "fs-mediator", port: 7037, readiness: "/mediator/v1/readyz", liveness: "/mediator/v1/livez", startup: "/mediator/v1/livez"},
-		{app: "fs-dids", port: 8534, readiness: "/health"},
+		{app: "vta", port: 8100, legacyReadiness: "/health", legacyLiveness: "/health", legacyStartup: "/health", currentReadiness: "/readyz", currentLiveness: "/livez", currentStartup: "/livez"},
+		{app: "fs-vta", port: 8100, legacyReadiness: "/health", legacyLiveness: "/health", legacyStartup: "/health", currentReadiness: "/readyz", currentLiveness: "/livez", currentStartup: "/livez"},
+		{app: "fs-vtc", port: 8200, legacyReadiness: "/health", legacyLiveness: "/health", legacyStartup: "/health", currentReadiness: "/readyz", currentLiveness: "/livez", currentStartup: "/livez"},
+		{app: "fs-trust-registry", port: 3232, legacyReadiness: "/health", legacyLiveness: "/health", legacyStartup: "/health", currentReadiness: "/readyz", currentLiveness: "/livez", currentStartup: "/livez"},
+		{app: "fs-mediator", port: 7037, legacyReadiness: "/mediator/v1/readyz", currentReadiness: "/mediator/v1/readyz", currentLiveness: "/mediator/v1/livez", currentStartup: "/mediator/v1/livez"},
+		{app: "fs-dids", port: 8534, legacyReadiness: "/health", currentReadiness: "/readyz", currentLiveness: "/livez", currentStartup: "/livez"},
 	}
 	for _, tc := range cases {
-		t.Run(tc.app, func(t *testing.T) {
-			deployment := tuningTestDeployment("workload", tc.app)
-			deployment.Spec.Template.Spec.Containers[0].Ports = []corev1.ContainerPort{{ContainerPort: tc.port}}
-			client := &Client{kube: fake.NewSimpleClientset(deployment)}
+		for _, initial := range []string{"missing", "legacy"} {
+			t.Run(tc.app+"/"+initial, func(t *testing.T) {
+				deployment := tuningTestDeployment("workload", tc.app)
+				container := &deployment.Spec.Template.Spec.Containers[0]
+				container.Ports = []corev1.ContainerPort{{ContainerPort: tc.port}}
+				if initial == "legacy" {
+					container.ReadinessProbe = upgradeHTTPProbe(tc.legacyReadiness, tc.port, 2, 3)
+					container.LivenessProbe = upgradeHTTPProbe(tc.legacyLiveness, tc.port, 10, 3)
+					container.StartupProbe = upgradeHTTPProbe(tc.legacyStartup, tc.port, 2, 60)
+				}
+				client := &Client{kube: fake.NewSimpleClientset(deployment)}
 
-			if err := client.SetDeploymentImage(context.Background(), "test", "workload", "example/new:image"); err != nil {
-				t.Fatalf("SetDeploymentImage() error = %v", err)
-			}
-			got, err := client.kube.AppsV1().Deployments("test").Get(context.Background(), "workload", metav1.GetOptions{})
-			if err != nil {
-				t.Fatalf("get Deployment: %v", err)
-			}
-			container := got.Spec.Template.Spec.Containers[0]
-			assertHTTPProbe(t, "readiness", container.ReadinessProbe, tc.readiness, tc.port)
-			assertHTTPProbe(t, "liveness", container.LivenessProbe, tc.liveness, tc.port)
-			assertHTTPProbe(t, "startup", container.StartupProbe, tc.startup, tc.port)
-		})
+				if err := client.SetDeploymentImage(context.Background(), "test", "workload", "example/new:image"); err != nil {
+					t.Fatalf("SetDeploymentImage() error = %v", err)
+				}
+				got, err := client.kube.AppsV1().Deployments("test").Get(context.Background(), "workload", metav1.GetOptions{})
+				if err != nil {
+					t.Fatalf("get Deployment: %v", err)
+				}
+				container = &got.Spec.Template.Spec.Containers[0]
+				assertHTTPProbe(t, "readiness", container.ReadinessProbe, tc.currentReadiness, tc.port)
+				assertHTTPProbe(t, "liveness", container.LivenessProbe, tc.currentLiveness, tc.port)
+				assertHTTPProbe(t, "startup", container.StartupProbe, tc.currentStartup, tc.port)
+
+				if err := client.RollbackDeploymentImage(context.Background(), "test", "workload", "example/old:image"); err != nil {
+					t.Fatalf("RollbackDeploymentImage() error = %v", err)
+				}
+				got, err = client.kube.AppsV1().Deployments("test").Get(context.Background(), "workload", metav1.GetOptions{})
+				if err != nil {
+					t.Fatalf("get rolled-back Deployment: %v", err)
+				}
+				container = &got.Spec.Template.Spec.Containers[0]
+				assertHTTPProbe(t, "rollback readiness", container.ReadinessProbe, tc.legacyReadiness, tc.port)
+				assertHTTPProbe(t, "rollback liveness", container.LivenessProbe, tc.legacyLiveness, tc.port)
+				assertHTTPProbe(t, "rollback startup", container.StartupProbe, tc.legacyStartup, tc.port)
+			})
+		}
 	}
 }
 
-func TestSetDeploymentImagePreservesExistingHealthProbes(t *testing.T) {
+func TestSetDeploymentImagePreservesOperatorHealthProbes(t *testing.T) {
 	deployment := tuningTestDeployment("vta-7", "vta")
 	container := &deployment.Spec.Template.Spec.Containers[0]
 	container.Ports = []corev1.ContainerPort{{ContainerPort: 8100}}

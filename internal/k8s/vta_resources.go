@@ -587,7 +587,7 @@ func (c *Client) createVtaDeployment(ctx context.Context, ns string, sessionID u
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
 								HTTPGet: &corev1.HTTPGetAction{
-									Path: "/health",
+									Path: "/readyz",
 									Port: intstr.FromInt32(port),
 								},
 							},
@@ -597,7 +597,7 @@ func (c *Client) createVtaDeployment(ctx context.Context, ns string, sessionID u
 						},
 						LivenessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
-								Path: "/health",
+								Path: "/livez",
 								Port: intstr.FromInt32(port),
 							}},
 							PeriodSeconds:    10,
@@ -606,7 +606,7 @@ func (c *Client) createVtaDeployment(ctx context.Context, ns string, sessionID u
 						},
 						StartupProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
-								Path: "/health",
+								Path: "/livez",
 								Port: intstr.FromInt32(port),
 							}},
 							PeriodSeconds:    2,
