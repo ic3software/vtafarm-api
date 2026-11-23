@@ -20,7 +20,7 @@ import (
 
 const testActivationID = "00112233445566778899aabbccddeeff"
 
-func TestCreateVtaDeploymentUsesHealthReadinessProbe(t *testing.T) {
+func TestCreateVtaDeploymentUsesDedicatedHealthProbes(t *testing.T) {
 	client := &Client{kube: fake.NewSimpleClientset()}
 
 	if err := client.CreateVtaDeployment(context.Background(), "test", 42, "example/vta:test", ComponentResources("10m", "32Mi", "128Mi")); err != nil {
@@ -45,15 +45,25 @@ func TestCreateVtaDeploymentUsesHealthReadinessProbe(t *testing.T) {
 	if probe == nil || probe.HTTPGet == nil {
 		t.Fatal("readiness probe is not an HTTP probe")
 	}
-	if probe.HTTPGet.Path != "/health" {
-		t.Fatalf("readiness path = %q, want /health", probe.HTTPGet.Path)
+	if probe.HTTPGet.Path != "/readyz" {
+		t.Fatalf("readiness path = %q, want /readyz", probe.HTTPGet.Path)
 	}
 	if probe.HTTPGet.Port.IntVal != 8100 {
 		t.Fatalf("readiness port = %d, want 8100", probe.HTTPGet.Port.IntVal)
 	}
-	if probe.InitialDelaySeconds != 1 || probe.PeriodSeconds != 2 ||
+	if probe.InitialDelaySeconds != 0 || probe.PeriodSeconds != 2 ||
 		probe.TimeoutSeconds != 2 || probe.FailureThreshold != 3 {
 		t.Fatalf("unexpected readiness timing: %+v", probe)
+	}
+	liveness := deployment.Spec.Template.Spec.Containers[0].LivenessProbe
+	if liveness == nil || liveness.HTTPGet == nil || liveness.HTTPGet.Path != "/livez" ||
+		liveness.PeriodSeconds != 10 || liveness.TimeoutSeconds != 2 || liveness.FailureThreshold != 3 {
+		t.Fatalf("unexpected liveness probe: %+v", liveness)
+	}
+	startup := deployment.Spec.Template.Spec.Containers[0].StartupProbe
+	if startup == nil || startup.HTTPGet == nil || startup.HTTPGet.Path != "/livez" ||
+		startup.PeriodSeconds != 2 || startup.TimeoutSeconds != 2 || startup.FailureThreshold != 60 {
+		t.Fatalf("unexpected startup probe: %+v", startup)
 	}
 }
 

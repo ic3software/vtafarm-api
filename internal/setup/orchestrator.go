@@ -552,7 +552,7 @@ func (o *Orchestrator) deployVtaOnly(ctx context.Context, ns string, session *mo
 	}
 
 	// A Deployment exists before the VTA has finished initializing. Its
-	// /health readiness probe is the serving boundary: do not advertise this
+	// /readyz readiness probe is the serving boundary: do not advertise this
 	// session as running until Kubernetes confirms at least one ready replica.
 	if err := o.k8s.WaitForComponentDeploymentReady(
 		ctx, ns, k8s.VtaDeploymentName(session.ID), 2*time.Minute,

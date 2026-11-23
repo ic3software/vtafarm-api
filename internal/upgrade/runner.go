@@ -268,7 +268,7 @@ func (r *Runner) rollbackTask(batch *model.UpgradeBatch, task *model.UpgradeTask
 		r.setTask(task, model.UpgradeTaskRollbackFailed, cause+"; rollback failed: previous image is missing")
 		return
 	}
-	if err := r.k8s.SetDeploymentImage(ctx, ns, deployName, task.FromImage); err != nil {
+	if err := r.k8s.RollbackDeploymentImage(ctx, ns, deployName, task.FromImage); err != nil {
 		r.setTask(task, model.UpgradeTaskRollbackFailed, cause+"; rollback failed: "+err.Error())
 		return
 	}

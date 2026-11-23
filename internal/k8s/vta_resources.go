@@ -587,14 +587,31 @@ func (c *Client) createVtaDeployment(ctx context.Context, ns string, sessionID u
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
 								HTTPGet: &corev1.HTTPGetAction{
-									Path: "/health",
+									Path: "/readyz",
 									Port: intstr.FromInt32(port),
 								},
 							},
-							InitialDelaySeconds: 1,
-							PeriodSeconds:       2,
-							TimeoutSeconds:      2,
-							FailureThreshold:    3,
+							PeriodSeconds:    2,
+							TimeoutSeconds:   2,
+							FailureThreshold: 3,
+						},
+						LivenessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+								Path: "/livez",
+								Port: intstr.FromInt32(port),
+							}},
+							PeriodSeconds:    10,
+							TimeoutSeconds:   2,
+							FailureThreshold: 3,
+						},
+						StartupProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+								Path: "/livez",
+								Port: intstr.FromInt32(port),
+							}},
+							PeriodSeconds:    2,
+							TimeoutSeconds:   2,
+							FailureThreshold: 60,
 						},
 						VolumeMounts: []corev1.VolumeMount{{
 							Name:      "data",
