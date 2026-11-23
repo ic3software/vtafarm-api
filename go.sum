@@ -208,10 +208,12 @@ github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWD
 github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
 github.com/tinylib/msgp v1.6.4 h1:mOwYbyYDLPj35mkA2BjjYejgJk9BuHxDdvRnb6v2ZcQ=
 github.com/tinylib/msgp v1.6.4/go.mod h1:RSp0LW9oSxFut3KzESt5Voq4GVWyS+PSulT77roAqEA=
-github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go v0.11.1 h1:5ZMDnBEQlIdViyKbS9WcLzIkYIuOzuZFj53PDaQj95g=
-github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go v0.11.1/go.mod h1:u7xhXsHAPb+wm12+3VSeSuWp4GZAhILAIJOAnl3pESs=
+github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go v0.13.3 h1:q5pZHG4olW1HmQax5aQXhcCxI9fSTMzmXaeR5i/nZjI=
+github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go v0.13.3/go.mod h1:u7xhXsHAPb+wm12+3VSeSuWp4GZAhILAIJOAnl3pESs=
 github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go/proof v0.2.1 h1:TwF9/O2RROEeB+eyHmiZpC/o9eAfyhonHbi0JVD8EVk=
 github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go/proof v0.2.1/go.mod h1:rjznkfeOOLzOcOvZ9nK4AZ93LU2I3dNRJW6zSFIDGZM=
+github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go/specs v0.1.2 h1:LUipzCOp80jpo4ly6EY5owIWBXvQ9S78m9GPsIPB8Co=
+github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go/specs v0.1.2/go.mod h1:7NrCdskTMsRgpfkZ01tceIpI9rbRWqosnrnp+1kNEIo=
 github.com/twitchyliquid64/golang-asm v0.15.1 h1:SU5vSMR7hnwNxj24w34ZyCi/FmDZTkS4MhqMhdFk5YI=
 github.com/twitchyliquid64/golang-asm v0.15.1/go.mod h1:a1lVb/DtPvCB8fslRZhAngC2+aY1QWCk3Cedj/Gdt08=
 github.com/ugorji/go/codec v1.3.1 h1:waO7eEiFDwidsBN6agj1vJQ4AG7lh2yqXyOXqhgQuyY=
