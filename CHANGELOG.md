@@ -1,5 +1,17 @@
 # Changelog
 
+## [v0.22.0] - 2026-11-23
+
+### Added
+
+- New and upgraded VTA-only and Full Stack deployments use dedicated
+  readiness, liveness, and startup probes; rollbacks restore the health probe
+  paths supported by the previous component images.
+
+### Changed
+
+- Updated Trust Tasks, proof, and Go networking dependencies.
+
 ## [v0.21.4] - 2026-11-20
 
 ### Fixed
