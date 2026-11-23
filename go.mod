@@ -14,7 +14,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go v0.13.3
-	github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go/proof v0.2.1
+	github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go/proof v0.2.3
 	github.com/trustoverip/dtgwg-trust-tasks-tf/trust-tasks-go/specs v0.1.2
 	golang.org/x/net v0.63.0
 	golang.org/x/sync v0.25.0
