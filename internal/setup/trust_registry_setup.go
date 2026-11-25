@@ -8,6 +8,7 @@ import (
 
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/resourceprofile"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -102,7 +103,11 @@ func (o *Orchestrator) provisionRegistry(ctx context.Context, ns string, s *mode
 	if err := o.vault.EnsureUserAccess(ctx, s.UserID, ns, k8s.VtaServiceAccount); err != nil {
 		return err
 	}
-	if err := o.k8s.CreateComponentPVC(ctx, ns, k8s.FSTrustRegistryName(s.ID), RegistryPVCSize); err != nil {
+	profiles, err := resourceprofile.Load(ctx, o.db)
+	if err != nil {
+		return err
+	}
+	if err := o.k8s.CreateComponentPVC(ctx, ns, k8s.FSTrustRegistryName(s.ID), profiles[k8s.ComponentTrustRegistry].StorageSize); err != nil {
 		return err
 	}
 	mounts := []k8s.PVCMount{{Name: "registry-data", ClaimName: k8s.FSTrustRegistryName(s.ID), MountPath: registryWorkDir}}

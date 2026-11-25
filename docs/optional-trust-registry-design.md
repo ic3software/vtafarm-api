@@ -379,7 +379,8 @@ distinguish opted-out stacks from five-component stacks and admit an add-on usin
 its incremental cost. The working branch starts with a 10m CPU request, 64Mi
 memory request, 256Mi memory limit, and 200Mi PVC. These are provisional factory
 values, not measured production sizing. Validate them against expected records
-and traffic in staging; memory defaults can be changed through the Farm UI.
+and traffic in staging; compute and new-PVC defaults can be changed through the
+Farm UI without resizing existing PVCs.
 
 Back up the Registry PVC (records and credential) and the Vault identity cache. Extend deletion to the
 registry Jobs, Deployment, Service, PVC, and session Vault prefix. Audit policies

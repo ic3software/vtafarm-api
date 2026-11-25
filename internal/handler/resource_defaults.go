@@ -35,6 +35,12 @@ func (h *SetupHandler) AdminSaveResourceDefaults(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
 		return
 	}
+	for _, item := range input.Resources {
+		if item.StorageSize == "" {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "storage_size is required for every component"})
+			return
+		}
+	}
 	for _, required := range []string{"vta", "mediator", "dids", "vtc"} {
 		found := false
 		for _, item := range input.Resources {
@@ -57,17 +63,18 @@ func (h *SetupHandler) AdminSaveResourceDefaults(c *gin.Context) {
 			}
 			rows = append(rows, model.ResourceDefault{
 				Component: component, CPURequest: item.CPURequest, CPULimit: item.CPULimit,
-				MemoryRequest: item.MemoryRequest, MemoryLimit: item.MemoryLimit,
+				MemoryRequest: item.MemoryRequest, MemoryLimit: item.MemoryLimit, StorageSize: item.StorageSize,
 			})
 			profile := profiles[component]
 			profile.CPURequest, profile.CPULimit = item.CPURequest, item.CPULimit
 			profile.MemoryRequest, profile.MemoryLimit = item.MemoryRequest, item.MemoryLimit
+			profile.StorageSize = item.StorageSize
 			profiles[component] = profile
 		}
 	}
 	if err := h.db.WithContext(c.Request.Context()).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "component"}},
-		DoUpdates: clause.AssignmentColumns([]string{"cpu_request", "cpu_limit", "memory_request", "memory_limit", "updated_at"}),
+		DoUpdates: clause.AssignmentColumns([]string{"cpu_request", "cpu_limit", "memory_request", "memory_limit", "storage_size", "updated_at"}),
 	}).Create(&rows).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save resource defaults"})
 		return

@@ -260,6 +260,17 @@ components:
         memory_limit: { type: string, example: 512Mi }
       required: [cpu_request, cpu_limit, memory_request, memory_limit]
 
+    ResourceDefaultProfile:
+      allOf:
+        - $ref: "#/components/schemas/ResourceProfile"
+        - type: object
+          properties:
+            storage_size:
+              type: string
+              example: 200Mi
+              description: PVC size for newly created workloads. Existing PVCs are unchanged.
+          required: [storage_size]
+
     ResourceDefaults:
       type: object
       required: [resources, factory_defaults]
@@ -290,10 +301,11 @@ components:
       type: object
       required: [mediator, vtc, vta, dids]
       properties:
-        mediator: { $ref: "#/components/schemas/ResourceProfile" }
-        vtc: { $ref: "#/components/schemas/ResourceProfile" }
-        vta: { $ref: "#/components/schemas/ResourceProfile" }
-        dids: { $ref: "#/components/schemas/ResourceProfile" }
+        mediator: { $ref: "#/components/schemas/ResourceDefaultProfile" }
+        vtc: { $ref: "#/components/schemas/ResourceDefaultProfile" }
+        vta: { $ref: "#/components/schemas/ResourceDefaultProfile" }
+        dids: { $ref: "#/components/schemas/ResourceDefaultProfile" }
+        trust-registry: { $ref: "#/components/schemas/ResourceDefaultProfile" }
 
     VtaAclEntry:
       type: object
@@ -3050,7 +3062,7 @@ paths:
 
   /api/v1/admin/resource-defaults:
     get:
-      summary: Read saved and factory component memory defaults
+      summary: Read saved and factory component resource defaults
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
@@ -3064,14 +3076,13 @@ paths:
         "403": { description: Insufficient role }
         "500": { description: Could not read defaults }
     put:
-      summary: Save component memory defaults
+      summary: Save component resource defaults
       description: |
-        Saves the four core components and optionally Trust Registry memory defaults. Each request
-        and limit must be between 16Mi and 1Gi inclusive, with request <= limit.
-        Values are Kubernetes quantities. CPU settings are unchanged.
+        Saves CPU, memory, and PVC storage defaults for the four core components and optionally
+        Trust Registry. Storage must be between 200Mi and 2Gi. Values are Kubernetes quantities.
         New deployments and subsequent capacity estimates read these settings;
-        existing Deployments are not updated or restarted. To restore factory
-        defaults, submit the memory fields from GET's factory_defaults.
+        existing Deployments and PVCs are not updated or restarted. To restore factory
+        defaults, submit the fields from GET's factory_defaults.
       tags: [Admin]
       security:
         - CookieAuthAdmin: []
@@ -3089,13 +3100,14 @@ paths:
                   maxItems: 5
                   items:
                     type: object
-                    required: [component, cpu_request, cpu_limit, memory_request, memory_limit]
+                    required: [component, cpu_request, cpu_limit, memory_request, memory_limit, storage_size]
                     properties:
                       component: { type: string, enum: [mediator, vtc, vta, dids, trust-registry] }
                       cpu_request: { type: string, example: 25m }
                       cpu_limit: { type: string, example: 250m }
                       memory_request: { type: string, example: 16Mi }
                       memory_limit: { type: string, example: 64Mi }
+                      storage_size: { type: string, example: 200Mi, description: "PVC size for newly created workloads only." }
       responses:
         "200":
           description: Saved defaults

@@ -283,7 +283,7 @@ func (r *Runner) upgradeResourceProfiles(
 	if !ok {
 		return k8s.ResourceProfile{}, k8s.ResourceProfile{}, fmt.Errorf("unknown component %q", component)
 	}
-	fillMissingProfileValues(&desired, defaults)
+	fillMissingProfileValues(&desired, defaults.ResourceProfile)
 	return observed, desired, nil
 }
 

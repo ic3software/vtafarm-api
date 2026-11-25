@@ -175,6 +175,7 @@ func TestModesUseCurrentProfiles(t *testing.T) {
 	profile := profiles["vta"]
 	profile.CPURequest = "100m"
 	profile.MemoryLimit = "1Gi"
+	profile.StorageSize = "2Gi"
 	profiles["vta"] = profile
 	after := Modes(profiles)
 	if before[0].Components[0].MemBytes != 64*mi || after[0].Components[0].MemBytes != gi {
@@ -182,6 +183,9 @@ func TestModesUseCurrentProfiles(t *testing.T) {
 	}
 	if before[0].Components[0].CPUMillis != 10 || after[0].Components[0].CPUMillis != 100 {
 		t.Fatalf("CPU planning did not refresh costs: before=%+v after=%+v", before, after)
+	}
+	if before[0].Components[0].StorageBytes != 200*mi || after[0].Components[0].StorageBytes != 2*gi {
+		t.Fatalf("storage planning did not refresh costs: before=%+v after=%+v", before, after)
 	}
 	if VtaOnly.Components[0].MemBytes != 64*mi {
 		t.Fatal("factory mode was mutated")

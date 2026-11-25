@@ -365,14 +365,18 @@ func (o *Orchestrator) runFullStack(ctx context.Context, sessionID uint) {
 // (design §2: "created up front; 503 until pods come up"). Every component
 // follows the exact same pattern.
 func (o *Orchestrator) fsK8sProvision(ctx context.Context, ns string, s *model.SetupSession) error {
+	profiles, err := resourceprofile.Load(ctx, o.db)
+	if err != nil {
+		return fmt.Errorf("load resource defaults: %w", err)
+	}
 	type pvcSpec struct {
 		name, storageSize string
 	}
 	pvcs := []pvcSpec{
-		{k8s.FSVtaName(s.ID), k8s.VtaPVCStorageSize},
-		{k8s.FSMediatorName(s.ID), k8s.MediatorPVCStorageSize},
-		{k8s.FSDidsName(s.ID), k8s.DIDHostingPVCStorageSize},
-		{k8s.FSVtcName(s.ID), k8s.VtcPVCStorageSize},
+		{k8s.FSVtaName(s.ID), profiles[k8s.ComponentVTA].StorageSize},
+		{k8s.FSMediatorName(s.ID), profiles[k8s.ComponentMediator].StorageSize},
+		{k8s.FSDidsName(s.ID), profiles[k8s.ComponentDids].StorageSize},
+		{k8s.FSVtcName(s.ID), profiles[k8s.ComponentVTC].StorageSize},
 	}
 	for _, pvc := range pvcs {
 		if err := o.k8s.CreateComponentPVC(ctx, ns, pvc.name, pvc.storageSize); err != nil {

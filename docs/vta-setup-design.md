@@ -220,7 +220,7 @@ served by the cluster-wide wildcard, which Traefik serves as **its default certi
 
 | Resource | `vta_only` name | Purpose |
 | --- | --- | --- |
-| `PersistentVolumeClaim` | `vta-data-{sessionID}` | 200Mi RWO; persists `config.toml` + `data/vta/` into the Deployment |
+| `PersistentVolumeClaim` | `vta-data-{sessionID}` | RWO, sized from the VTA Resource default (factory default 200Mi); persists `config.toml` + `data/vta/` into the Deployment |
 | `ConfigMap` (setup input) | `vta-setup-{sessionID}` | holds the rendered `vta-setup.toml` |
 | `Job` (setup) | `vta-setup-{sessionID}` | runs `vta setup --from …` |
 | `Job` (provision) | `vta-provision-{sessionID}` | runs `vta import-did` (+ `did-mgmt servers add`) |

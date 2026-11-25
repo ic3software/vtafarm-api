@@ -8,5 +8,6 @@ type ResourceDefault struct {
 	CPULimit      string `gorm:"not null"`
 	MemoryRequest string `gorm:"not null"`
 	MemoryLimit   string `gorm:"not null"`
+	StorageSize   string `gorm:"not null"`
 	UpdatedAt     time.Time
 }
