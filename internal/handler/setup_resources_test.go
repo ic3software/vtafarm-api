@@ -11,9 +11,7 @@ import (
 func TestValidateResourceBatch(t *testing.T) {
 	input := resourceBatchInput{
 		SessionIDs: []string{" alpha ", "beta"},
-		Resources: []memoryResourceInput{{
-			Component: k8s.ComponentVTA, MemoryRequest: "0.125Gi", MemoryLimit: "0.5Gi",
-		}},
+		Resources:  []workloadResourceInput{testResourceInput(k8s.ComponentVTA, "0.125Gi", "0.5Gi")},
 	}
 	if err := validateResourceBatch(&input); err != nil {
 		t.Fatal(err)
@@ -26,15 +24,24 @@ func TestValidateResourceBatch(t *testing.T) {
 func TestValidateResourceBatchRejectsInvalidInput(t *testing.T) {
 	tests := []resourceBatchInput{
 		{},
-		{SessionIDs: []string{"same", "same"}, Resources: []memoryResourceInput{{Component: "vta", MemoryRequest: "128Mi", MemoryLimit: "512Mi"}}},
-		{SessionIDs: []string{"one"}, Resources: []memoryResourceInput{{Component: "unknown", MemoryRequest: "128Mi", MemoryLimit: "512Mi"}}},
-		{SessionIDs: []string{"one"}, Resources: []memoryResourceInput{{Component: "vta", MemoryRequest: "1Gi", MemoryLimit: "512Mi"}}},
-		{SessionIDs: []string{"one"}, Resources: []memoryResourceInput{{Component: "vta", MemoryRequest: "1Gi", MemoryLimit: "2Gi"}}},
+		{SessionIDs: []string{"same", "same"}, Resources: []workloadResourceInput{testResourceInput("vta", "128Mi", "512Mi")}},
+		{SessionIDs: []string{"one"}, Resources: []workloadResourceInput{{Component: "unknown", CPURequest: "10m", CPULimit: "100m", MemoryRequest: "128Mi", MemoryLimit: "512Mi"}}},
+		{SessionIDs: []string{"one"}, Resources: []workloadResourceInput{testResourceInput("vta", "1Gi", "512Mi")}},
+		{SessionIDs: []string{"one"}, Resources: []workloadResourceInput{testResourceInput("vta", "1Gi", "2Gi")}},
+		{SessionIDs: []string{"one"}, Resources: []workloadResourceInput{{Component: "vta", CPURequest: "250m", CPULimit: "100m", MemoryRequest: "128Mi", MemoryLimit: "512Mi"}}},
 	}
 	for i := range tests {
 		if err := validateResourceBatch(&tests[i]); err == nil {
 			t.Errorf("case %d was accepted: %+v", i, tests[i])
 		}
+	}
+}
+
+func testResourceInput(component, memoryRequest, memoryLimit string) workloadResourceInput {
+	profile, _ := k8s.DefaultResourceProfile(component)
+	return workloadResourceInput{
+		Component: component, CPURequest: profile.CPURequest, CPULimit: profile.CPULimit,
+		MemoryRequest: memoryRequest, MemoryLimit: memoryLimit,
 	}
 }
 

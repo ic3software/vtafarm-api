@@ -49,6 +49,8 @@ type Admission struct {
 	Count                       int
 	Capacity                    int
 	Session                     model.SetupSession
+	CPURequest                  string
+	CPULimit                    string
 	MemoryRequest               string
 	MemoryLimit                 string
 }
@@ -101,7 +103,7 @@ func Admit(ctx context.Context, db *gorm.DB, input Admission) (*AdmissionResult,
 		if err != nil {
 			return err
 		}
-		if err := createPoolMembershipsAndResources(tx, batch.ID, sessions, input.MemoryRequest, input.MemoryLimit); err != nil {
+		if err := createPoolMembershipsAndResources(tx, batch.ID, sessions, input.CPURequest, input.CPULimit, input.MemoryRequest, input.MemoryLimit); err != nil {
 			return err
 		}
 		result.Batch, result.Sessions, result.Created = batch, sessions, true
@@ -155,6 +157,8 @@ type Addition struct {
 	Count         int
 	Capacity      int
 	Session       model.SetupSession
+	CPURequest    string
+	CPULimit      string
 	MemoryRequest string
 	MemoryLimit   string
 }
@@ -230,7 +234,7 @@ func AddInventory(ctx context.Context, db *gorm.DB, input Addition) (*AdditionRe
 		if err != nil {
 			return err
 		}
-		if err := createPoolMembershipsAndResources(tx, batch.ID, sessions, input.MemoryRequest, input.MemoryLimit); err != nil {
+		if err := createPoolMembershipsAndResources(tx, batch.ID, sessions, input.CPURequest, input.CPULimit, input.MemoryRequest, input.MemoryLimit); err != nil {
 			return err
 		}
 		if err := tx.Model(&batch).Update("requested_count", gorm.Expr("requested_count + ?", input.Count)).Error; err != nil {
@@ -340,21 +344,21 @@ func createSetupSessions(tx *gorm.DB, users []model.User, template model.SetupSe
 	return sessions, nil
 }
 
-func createPoolMembershipsAndResources(tx *gorm.DB, batchID uint, sessions []model.SetupSession, memoryRequest, memoryLimit string) error {
+func createPoolMembershipsAndResources(tx *gorm.DB, batchID uint, sessions []model.SetupSession, cpuRequest, cpuLimit, memoryRequest, memoryLimit string) error {
 	values := strings.TrimSuffix(strings.Repeat("(CAST(? AS bigint),CAST(? AS bigint)),", len(sessions)), ",")
-	args := make([]any, 0, len(sessions)*2+2)
+	args := make([]any, 0, len(sessions)*2+4)
 	for i := range sessions {
 		args = append(args, sessions[i].ID, batchID)
 	}
-	args = append(args, memoryRequest, memoryLimit)
+	args = append(args, cpuRequest, cpuLimit, memoryRequest, memoryLimit)
 	result := tx.Exec(`WITH admitted(session_id, batch_id) AS (VALUES `+values+`),
 		memberships AS (
 			INSERT INTO pool_sessions (session_id, batch_id)
 			SELECT session_id, batch_id FROM admitted
 			RETURNING session_id
 		)
-		INSERT INTO workload_resources (setup_session_id, component, memory_request, memory_limit)
-		SELECT session_id, 'vta', ?, ? FROM memberships`, args...)
+		INSERT INTO workload_resources (setup_session_id, component, cpu_request, cpu_limit, memory_request, memory_limit)
+		SELECT session_id, 'vta', ?, ?, ?, ? FROM memberships`, args...)
 	if result.Error != nil {
 		return result.Error
 	}

@@ -33,34 +33,31 @@ type deploymentResourceObserver interface {
 	DeploymentResourceProfile(ctx context.Context, namespace, name string) (k8s.ResourceProfile, error)
 }
 
-type memoryResourceInput struct {
+type workloadResourceInput struct {
 	Component     string `json:"component" binding:"required"`
+	CPURequest    string `json:"cpu_request" binding:"required"`
+	CPULimit      string `json:"cpu_limit" binding:"required"`
 	MemoryRequest string `json:"memory_request" binding:"required"`
 	MemoryLimit   string `json:"memory_limit" binding:"required"`
 }
 
 type resourceBatchInput struct {
-	SessionIDs []string              `json:"session_ids" binding:"required"`
-	Resources  []memoryResourceInput `json:"resources" binding:"required"`
+	SessionIDs []string                `json:"session_ids" binding:"required"`
+	Resources  []workloadResourceInput `json:"resources" binding:"required"`
 }
 
 type plannedResourceChange struct {
 	session   *model.SetupSession
 	target    workloadTarget
 	namespace string
-	input     memoryResourceInput
+	input     workloadResourceInput
 	old       k8s.ResourceProfile
-}
-
-type memoryDesiredState struct {
-	MemoryRequest string `json:"memory_request"`
-	MemoryLimit   string `json:"memory_limit"`
 }
 
 type workloadResourceView struct {
 	Component  string              `json:"component"`
 	Defaults   k8s.ResourceProfile `json:"defaults"`
-	Desired    memoryDesiredState  `json:"desired"`
+	Desired    k8s.ResourceProfile `json:"desired"`
 	Actual     k8s.ResourceProfile `json:"actual"`
 	Status     string              `json:"status"`
 	ApplyError string              `json:"apply_error,omitempty"`
@@ -144,7 +141,9 @@ func (h *SetupHandler) AdminSessionResources(c *gin.Context) {
 
 		defaults := profiles[target.Component]
 		status := "in_sync"
-		if !sameMemory(storedResource.MemoryRequest, actual.MemoryRequest) ||
+		if !sameQuantity(storedResource.CPURequest, actual.CPURequest) ||
+			!sameQuantity(storedResource.CPULimit, actual.CPULimit) ||
+			!sameQuantity(storedResource.MemoryRequest, actual.MemoryRequest) ||
 			!sameMemory(storedResource.MemoryLimit, actual.MemoryLimit) {
 			status = "drifted"
 		}
@@ -154,7 +153,9 @@ func (h *SetupHandler) AdminSessionResources(c *gin.Context) {
 		views = append(views, workloadResourceView{
 			Component: target.Component,
 			Defaults:  defaults,
-			Desired: memoryDesiredState{
+			Desired: k8s.ResourceProfile{
+				CPURequest:    storedResource.CPURequest,
+				CPULimit:      storedResource.CPULimit,
 				MemoryRequest: storedResource.MemoryRequest,
 				MemoryLimit:   storedResource.MemoryLimit,
 			},
@@ -190,6 +191,8 @@ func (h *SetupHandler) cacheObservedResource(
 	item := model.WorkloadResource{
 		SetupSessionID: sessionID,
 		Component:      component,
+		CPURequest:     observed.CPURequest,
+		CPULimit:       observed.CPULimit,
 		MemoryRequest:  observed.MemoryRequest,
 		MemoryLimit:    observed.MemoryLimit,
 	}
@@ -265,7 +268,11 @@ func (h *SetupHandler) AdminApplySessionResources(c *gin.Context) {
 				c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 				return
 			}
-			if err := h.k8s.DryRunDeploymentMemoryUpdate(c.Request.Context(), namespace, target.Deployment, requested.MemoryRequest, requested.MemoryLimit); err != nil {
+			profile := k8s.ResourceProfile{
+				CPURequest: requested.CPURequest, CPULimit: requested.CPULimit,
+				MemoryRequest: requested.MemoryRequest, MemoryLimit: requested.MemoryLimit,
+			}
+			if err := h.k8s.DryRunDeploymentResourceUpdate(c.Request.Context(), namespace, target.Deployment, profile); err != nil {
 				c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Kubernetes rejected the change: " + err.Error()})
 				return
 			}
@@ -290,6 +297,8 @@ func (h *SetupHandler) AdminApplySessionResources(c *gin.Context) {
 			item := model.WorkloadResource{
 				SetupSessionID: change.session.ID,
 				Component:      change.target.Component,
+				CPURequest:     change.input.CPURequest,
+				CPULimit:       change.input.CPULimit,
 				MemoryRequest:  change.input.MemoryRequest,
 				MemoryLimit:    change.input.MemoryLimit,
 				ApplyError:     "",
@@ -297,7 +306,7 @@ func (h *SetupHandler) AdminApplySessionResources(c *gin.Context) {
 			if err := tx.Clauses(clause.OnConflict{
 				Columns: []clause.Column{{Name: "setup_session_id"}, {Name: "component"}},
 				DoUpdates: clause.AssignmentColumns([]string{
-					"memory_request", "memory_limit", "apply_error", "updated_at",
+					"cpu_request", "cpu_limit", "memory_request", "memory_limit", "apply_error", "updated_at",
 				}),
 			}).Create(&item).Error; err != nil {
 				return err
@@ -328,7 +337,11 @@ func (h *SetupHandler) AdminApplySessionResources(c *gin.Context) {
 		}
 
 		applyCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		err := h.k8s.UpdateDeploymentMemory(applyCtx, change.namespace, change.target.Deployment, change.input.MemoryRequest, change.input.MemoryLimit)
+		profile := k8s.ResourceProfile{
+			CPURequest: change.input.CPURequest, CPULimit: change.input.CPULimit,
+			MemoryRequest: change.input.MemoryRequest, MemoryLimit: change.input.MemoryLimit,
+		}
+		err := h.k8s.UpdateDeploymentResources(applyCtx, change.namespace, change.target.Deployment, profile)
 		if err == nil {
 			err = h.k8s.WaitForComponentDeploymentReadyOrRestarts(
 				applyCtx, change.namespace, change.target.Deployment, change.target.Selector, 3*time.Minute, 3,
@@ -351,12 +364,9 @@ func (h *SetupHandler) AdminApplySessionResources(c *gin.Context) {
 }
 
 func (h *SetupHandler) rollbackResourceChange(change plannedResourceChange) error {
-	if err := k8s.ValidateMemoryResources(change.old.MemoryRequest, change.old.MemoryLimit); err != nil {
-		return fmt.Errorf("previous resources are invalid: %w", err)
-	}
 	rollbackCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	if err := h.k8s.UpdateDeploymentMemory(rollbackCtx, change.namespace, change.target.Deployment, change.old.MemoryRequest, change.old.MemoryLimit); err != nil {
+	if err := h.k8s.UpdateDeploymentResources(rollbackCtx, change.namespace, change.target.Deployment, change.old); err != nil {
 		return err
 	}
 	return h.k8s.WaitForComponentDeploymentReadyOrRestarts(
@@ -403,10 +413,10 @@ func validateResourceBatch(input *resourceBatchInput) error {
 		seenSessions[id] = true
 		input.SessionIDs[i] = id
 	}
-	return validateMemoryInputs(input.Resources)
+	return validateResourceInputs(input.Resources)
 }
 
-func validateMemoryInputs(resources []memoryResourceInput) error {
+func validateResourceInputs(resources []workloadResourceInput) error {
 	seenComponents := map[string]bool{}
 	for i := range resources {
 		item := &resources[i]
@@ -415,11 +425,18 @@ func validateMemoryInputs(resources []memoryResourceInput) error {
 			return fmt.Errorf("resources must contain unique known components")
 		}
 		seenComponents[item.Component] = true
+		if err := k8s.ValidateCPUSettings(item.CPURequest, item.CPULimit); err != nil {
+			return fmt.Errorf("%s: %w", item.Component, err)
+		}
 		if err := k8s.ValidateMemorySettings(item.MemoryRequest, item.MemoryLimit); err != nil {
 			return fmt.Errorf("%s: %w", item.Component, err)
 		}
+		cpuRequest, _ := resource.ParseQuantity(strings.TrimSpace(item.CPURequest))
+		cpuLimit, _ := resource.ParseQuantity(strings.TrimSpace(item.CPULimit))
 		request, _ := resource.ParseQuantity(strings.TrimSpace(item.MemoryRequest))
 		limit, _ := resource.ParseQuantity(strings.TrimSpace(item.MemoryLimit))
+		item.CPURequest = cpuRequest.String()
+		item.CPULimit = cpuLimit.String()
 		item.MemoryRequest = request.String()
 		item.MemoryLimit = limit.String()
 	}
@@ -427,6 +444,13 @@ func validateMemoryInputs(resources []memoryResourceInput) error {
 }
 
 func sameMemory(left, right string) bool {
+	return sameQuantity(left, right)
+}
+
+func sameQuantity(left, right string) bool {
+	if strings.TrimSpace(left) == "" || strings.TrimSpace(right) == "" {
+		return strings.TrimSpace(left) == strings.TrimSpace(right)
+	}
 	a, errA := resource.ParseQuantity(left)
 	b, errB := resource.ParseQuantity(right)
 	return errA == nil && errB == nil && a.Cmp(b) == 0
@@ -435,33 +459,49 @@ func sameMemory(left, right string) bool {
 func (h *SetupHandler) validateResourceCapacity(c *gin.Context, changes []plannedResourceChange) error {
 	stats, err := h.k8s.ClusterResourceStats(c.Request.Context())
 	if err != nil {
-		return fmt.Errorf("could not check cluster memory capacity: %w", err)
+		return fmt.Errorf("could not check cluster resource capacity: %w", err)
 	}
-	var free, largestNode, increase int64
+	var memoryFree, largestNodeMemory, memoryIncrease int64
+	var cpuFree, largestNodeCPU, cpuIncrease int64
 	for _, node := range stats.Nodes {
 		if !node.Schedulable {
 			continue
 		}
-		free += max(node.MemAllocatableBytes-node.MemRequestedBytes, 0)
-		largestNode = max(largestNode, node.MemAllocatableBytes)
+		memoryFree += max(node.MemAllocatableBytes-node.MemRequestedBytes, 0)
+		largestNodeMemory = max(largestNodeMemory, node.MemAllocatableBytes)
+		cpuFree += max(node.CPUAllocatableMillis-node.CPURequestedMillis, 0)
+		largestNodeCPU = max(largestNodeCPU, node.CPUAllocatableMillis)
 	}
-	if largestNode == 0 {
+	if largestNodeMemory == 0 || largestNodeCPU == 0 {
 		return fmt.Errorf("cluster has no schedulable nodes")
 	}
 	for _, change := range changes {
-		requested, _ := resource.ParseQuantity(change.input.MemoryRequest)
-		limit, _ := resource.ParseQuantity(change.input.MemoryLimit)
-		old, _ := resource.ParseQuantity(change.old.MemoryRequest)
-		if requested.Value() > largestNode {
+		memoryRequested, _ := resource.ParseQuantity(change.input.MemoryRequest)
+		memoryLimit, _ := resource.ParseQuantity(change.input.MemoryLimit)
+		oldMemory, _ := resource.ParseQuantity(change.old.MemoryRequest)
+		cpuRequested, _ := resource.ParseQuantity(change.input.CPURequest)
+		cpuLimit, _ := resource.ParseQuantity(change.input.CPULimit)
+		oldCPU, _ := resource.ParseQuantity(change.old.CPURequest)
+		if memoryRequested.Value() > largestNodeMemory {
 			return fmt.Errorf("%s memory request exceeds every schedulable node", change.target.Component)
 		}
-		if limit.Value() > largestNode {
+		if memoryLimit.Value() > largestNodeMemory {
 			return fmt.Errorf("%s memory limit exceeds every schedulable node", change.target.Component)
 		}
-		increase += max(requested.Value()-old.Value(), 0)
+		if cpuRequested.MilliValue() > largestNodeCPU {
+			return fmt.Errorf("%s CPU request exceeds every schedulable node", change.target.Component)
+		}
+		if cpuLimit.MilliValue() > largestNodeCPU {
+			return fmt.Errorf("%s CPU limit exceeds every schedulable node", change.target.Component)
+		}
+		memoryIncrease += max(memoryRequested.Value()-oldMemory.Value(), 0)
+		cpuIncrease += max(cpuRequested.MilliValue()-oldCPU.MilliValue(), 0)
 	}
-	if increase > free {
-		return fmt.Errorf("resource changes need %s additional requested memory but the cluster has %s available", resource.NewQuantity(increase, resource.BinarySI).String(), resource.NewQuantity(free, resource.BinarySI).String())
+	if memoryIncrease > memoryFree {
+		return fmt.Errorf("resource changes need %s additional requested memory but the cluster has %s available", resource.NewQuantity(memoryIncrease, resource.BinarySI).String(), resource.NewQuantity(memoryFree, resource.BinarySI).String())
+	}
+	if cpuIncrease > cpuFree {
+		return fmt.Errorf("resource changes need %dm additional requested CPU but the cluster has %dm available", cpuIncrease, cpuFree)
 	}
 	return nil
 }

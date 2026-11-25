@@ -7,9 +7,53 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
+
+func TestImageUpgradeAppliesResourcesAndRollbackRestoresThem(t *testing.T) {
+	deployment := tuningTestDeployment("vta-10", "vta")
+	container := &deployment.Spec.Template.Spec.Containers[0]
+	container.Resources = corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("10m"),
+			corev1.ResourceMemory: resource.MustParse("16Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("64Mi"),
+		},
+	}
+	client := &Client{kube: fake.NewSimpleClientset(deployment)}
+	oldProfile := ResourceProfile{CPURequest: "10m", MemoryRequest: "16Mi", MemoryLimit: "64Mi"}
+	newProfile := ResourceProfile{CPURequest: "10m", CPULimit: "100m", MemoryRequest: "16Mi", MemoryLimit: "64Mi"}
+
+	if err := client.SetDeploymentImageAndResources(context.Background(), "test", "vta-10", "example/vta:new", newProfile); err != nil {
+		t.Fatalf("SetDeploymentImageAndResources() error = %v", err)
+	}
+	got, err := client.kube.AppsV1().Deployments("test").Get(context.Background(), "vta-10", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Spec.Template.Spec.Containers[0].Image != "example/vta:new" ||
+		got.Spec.Template.Spec.Containers[0].Resources.Limits.Cpu().String() != "100m" {
+		t.Fatalf("upgraded container = %+v", got.Spec.Template.Spec.Containers[0])
+	}
+
+	if err := client.RollbackDeploymentImageAndResources(context.Background(), "test", "vta-10", "example/vta:old", oldProfile); err != nil {
+		t.Fatalf("RollbackDeploymentImageAndResources() error = %v", err)
+	}
+	got, err = client.kube.AppsV1().Deployments("test").Get(context.Background(), "vta-10", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Spec.Template.Spec.Containers[0].Image != "example/vta:old" {
+		t.Fatalf("rolled-back image = %q", got.Spec.Template.Spec.Containers[0].Image)
+	}
+	if _, ok := got.Spec.Template.Spec.Containers[0].Resources.Limits[corev1.ResourceCPU]; ok {
+		t.Fatalf("rolled-back CPU limits = %v", got.Spec.Template.Spec.Containers[0].Resources.Limits)
+	}
+}
 
 func TestRecoverDeploymentImageReplacesImageAndForcesRestart(t *testing.T) {
 	deployment := &appsv1.Deployment{

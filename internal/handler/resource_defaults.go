@@ -21,7 +21,7 @@ func (h *SetupHandler) AdminResourceDefaults(c *gin.Context) {
 
 func (h *SetupHandler) AdminSaveResourceDefaults(c *gin.Context) {
 	var input struct {
-		Resources []memoryResourceInput `json:"resources"`
+		Resources []workloadResourceInput `json:"resources"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "resources are required"})
@@ -31,7 +31,7 @@ func (h *SetupHandler) AdminSaveResourceDefaults(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "resources must contain the four core components and optionally Trust Registry"})
 		return
 	}
-	if err := validateMemoryInputs(input.Resources); err != nil {
+	if err := validateResourceInputs(input.Resources); err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
 		return
 	}
@@ -55,15 +55,19 @@ func (h *SetupHandler) AdminSaveResourceDefaults(c *gin.Context) {
 			if item.Component != component {
 				continue
 			}
-			rows = append(rows, model.ResourceDefault{Component: component, MemoryRequest: item.MemoryRequest, MemoryLimit: item.MemoryLimit})
+			rows = append(rows, model.ResourceDefault{
+				Component: component, CPURequest: item.CPURequest, CPULimit: item.CPULimit,
+				MemoryRequest: item.MemoryRequest, MemoryLimit: item.MemoryLimit,
+			})
 			profile := profiles[component]
+			profile.CPURequest, profile.CPULimit = item.CPURequest, item.CPULimit
 			profile.MemoryRequest, profile.MemoryLimit = item.MemoryRequest, item.MemoryLimit
 			profiles[component] = profile
 		}
 	}
 	if err := h.db.WithContext(c.Request.Context()).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "component"}},
-		DoUpdates: clause.AssignmentColumns([]string{"memory_request", "memory_limit", "updated_at"}),
+		DoUpdates: clause.AssignmentColumns([]string{"cpu_request", "cpu_limit", "memory_request", "memory_limit", "updated_at"}),
 	}).Create(&rows).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save resource defaults"})
 		return

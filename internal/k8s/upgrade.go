@@ -138,16 +138,28 @@ func VtaDeploymentName(sessionID uint) string {
 // clears any rollingUpdate params, which the API server rejects alongside type
 // Recreate.
 func (c *Client) SetDeploymentImage(ctx context.Context, ns, name, image string) error {
-	return c.setDeploymentImage(ctx, ns, name, image, false)
+	return c.setDeploymentImage(ctx, ns, name, image, nil, false)
+}
+
+// SetDeploymentImageAndResources applies the image and resource desired state
+// in one Pod-template update so an upgrade causes only one restart.
+func (c *Client) SetDeploymentImageAndResources(ctx context.Context, ns, name, image string, profile ResourceProfile) error {
+	return c.setDeploymentImage(ctx, ns, name, image, &profile, false)
 }
 
 // RollbackDeploymentImage restores an older image with the legacy probe paths
 // that image is guaranteed to expose.
 func (c *Client) RollbackDeploymentImage(ctx context.Context, ns, name, image string) error {
-	return c.setDeploymentImage(ctx, ns, name, image, true)
+	return c.setDeploymentImage(ctx, ns, name, image, nil, true)
 }
 
-func (c *Client) setDeploymentImage(ctx context.Context, ns, name, image string, rollback bool) error {
+// RollbackDeploymentImageAndResources restores the complete Pod-template
+// state captured before an upgrade.
+func (c *Client) RollbackDeploymentImageAndResources(ctx context.Context, ns, name, image string, profile ResourceProfile) error {
+	return c.setDeploymentImage(ctx, ns, name, image, &profile, true)
+}
+
+func (c *Client) setDeploymentImage(ctx context.Context, ns, name, image string, profile *ResourceProfile, rollback bool) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		deploy, err := c.kube.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
@@ -156,6 +168,14 @@ func (c *Client) setDeploymentImage(ctx context.Context, ns, name, image string,
 		deploy.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
 		for i := range deploy.Spec.Template.Spec.Containers {
 			deploy.Spec.Template.Spec.Containers[i].Image = image
+		}
+		if profile != nil {
+			if len(deploy.Spec.Template.Spec.Containers) == 0 {
+				return fmt.Errorf("deployment %s has no containers", name)
+			}
+			if err := applyResourceProfile(&deploy.Spec.Template.Spec.Containers[0], *profile); err != nil {
+				return err
+			}
 		}
 		reconcileTuningEnv(deploy)
 		if rollback {

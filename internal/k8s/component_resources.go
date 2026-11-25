@@ -52,10 +52,7 @@ type ComponentDeploymentSpec struct {
 	// StartupPath suppresses readiness and liveness until the HTTP runtime is
 	// serving, protecting slow store initialization from premature restarts.
 	StartupPath string
-	// Resources sets the container's requests/limits. Memory always carries a
-	// limit (incompressible); CPU deliberately gets requests only — a CFS quota
-	// would throttle bursts even when node CPU is idle, while the request alone
-	// gives fair-share under contention.
+	// Resources sets the container's CPU and memory requests/limits.
 	Resources      corev1.ResourceRequirements
 	Recreate       bool
 	InitContainers []corev1.Container
@@ -63,8 +60,9 @@ type ComponentDeploymentSpec struct {
 	ExtraMounts    []corev1.VolumeMount
 }
 
-// ComponentResources builds the standard farm resource shape: CPU+memory
-// requests, memory-only limit (see ComponentDeploymentSpec.Resources).
+// ComponentResources builds the legacy resource shape without a CPU limit.
+// It remains available for callers that need to reproduce an existing
+// Deployment exactly during migration or rollback.
 func ComponentResources(cpuRequest, memRequest, memLimit string) corev1.ResourceRequirements {
 	return corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
@@ -75,6 +73,15 @@ func ComponentResources(cpuRequest, memRequest, memLimit string) corev1.Resource
 			corev1.ResourceMemory: resource.MustParse(memLimit),
 		},
 	}
+}
+
+// ComponentResourcesWithCPULimit builds the standard farm resource shape.
+func ComponentResourcesWithCPULimit(cpuRequest, cpuLimit, memRequest, memLimit string) corev1.ResourceRequirements {
+	resources := ComponentResources(cpuRequest, memRequest, memLimit)
+	if cpuLimit != "" {
+		resources.Limits[corev1.ResourceCPU] = resource.MustParse(cpuLimit)
+	}
+	return resources
 }
 
 // CreateComponentDeployment creates a Deployment per spec. Idempotent —

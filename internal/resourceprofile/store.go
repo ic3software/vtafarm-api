@@ -40,9 +40,13 @@ func FromRows(rows []model.ResourceDefault) (Profiles, error) {
 		if !ok {
 			return nil, fmt.Errorf("unknown resource component %q", row.Component)
 		}
+		if err := k8s.ValidateCPUSettings(row.CPURequest, row.CPULimit); err != nil {
+			return nil, err
+		}
 		if err := k8s.ValidateMemorySettings(row.MemoryRequest, row.MemoryLimit); err != nil {
 			return nil, err
 		}
+		profile.CPURequest, profile.CPULimit = row.CPURequest, row.CPULimit
 		profile.MemoryRequest, profile.MemoryLimit = row.MemoryRequest, row.MemoryLimit
 		profiles[row.Component] = profile
 	}
@@ -51,5 +55,5 @@ func FromRows(rows []model.ResourceDefault) (Profiles, error) {
 
 func (p Profiles) Requirements(component string) corev1.ResourceRequirements {
 	profile := p[component]
-	return k8s.ComponentResources(profile.CPURequest, profile.MemoryRequest, profile.MemoryLimit)
+	return k8s.ComponentResourcesWithCPULimit(profile.CPURequest, profile.CPULimit, profile.MemoryRequest, profile.MemoryLimit)
 }

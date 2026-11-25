@@ -53,10 +53,31 @@ func TestAvailableComponents(t *testing.T) {
 
 func TestQueryUsesOnlyServerSelectors(t *testing.T) {
 	query := Query(HistoricalDefinitions[0], 42, Target{Scope: "component", Component: "vta"})
-	for _, expected := range []string{`label_session_id="42"`, `label_app=~"vta|fs-vta"`, "sum by (pod)"} {
+	for _, expected := range []string{`label_session_id="42"`, `label_app=~"vta|fs-vta"`, "max("} {
 		if !strings.Contains(query, expected) {
 			t.Fatalf("query %q missing %q", query, expected)
 		}
+	}
+}
+
+func TestQueryCollapsesRolloutPodsByTarget(t *testing.T) {
+	definition := HistoricalDefinitions[1]
+	cases := []struct {
+		name   string
+		target Target
+		want   string
+	}{
+		{name: "component", target: Target{Scope: "component", Component: "vta"}, want: "max("},
+		{name: "stack", target: Target{Scope: "stack"}, want: "sum(max by (label_app) ("},
+		{name: "pod", target: Target{Scope: "pod", Pod: "vta-42-old"}, want: "sum by (pod) ("},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			query := Query(definition, 42, tc.target)
+			if !strings.HasPrefix(query, tc.want) {
+				t.Fatalf("query = %q, want prefix %q", query, tc.want)
+			}
+		})
 	}
 }
 
@@ -69,6 +90,23 @@ func TestRangeQueryAggregatesIntoViewBuckets(t *testing.T) {
 	limit := RangeQuery(HistoricalDefinitions[3], 42, target, time.Hour)
 	if !strings.Contains(limit, "max_over_time(") {
 		t.Fatalf("limit query does not preserve bucket maximum: %q", limit)
+	}
+	if !strings.HasPrefix(limit, "max(") {
+		t.Fatalf("component limit query does not collapse rollout pods: %q", limit)
+	}
+}
+
+func TestSummaryDefinitionsIncludeResourceLimits(t *testing.T) {
+	wanted := map[string]bool{"cpu_limit_cores": false, "memory_limit_bytes": false}
+	for _, definition := range SummaryDefinitions() {
+		if _, ok := wanted[definition.Name]; ok {
+			wanted[definition.Name] = true
+		}
+	}
+	for name, found := range wanted {
+		if !found {
+			t.Fatalf("summary definitions missing %s", name)
+		}
 	}
 }
 

@@ -121,7 +121,7 @@ func Query(def Definition, sessionID uint, target Target) string {
 	if target.Scope == "component" && target.Component == "vta" {
 		selector = strings.Replace(selector, `label_app="vta|fs-vta"`, `label_app=~"vta|fs-vta"`, 1)
 	}
-	return fmt.Sprintf("sum by (pod) (%s%s)", def.Record, selector)
+	return aggregateForTarget(def.Record+selector, target)
 }
 
 // RangeQuery rolls dense samples into the resolution selected for the view.
@@ -138,7 +138,23 @@ func RangeQuery(def Definition, sessionID uint, target Target, window time.Durat
 		"persistent_volume_used_bytes", "persistent_volume_capacity_bytes", "container_restarts_total":
 		function = "max_over_time"
 	}
-	return fmt.Sprintf("sum by (pod) (%s(%s%s[%ds]))", function, def.Record, selector, int64(window.Seconds()))
+	expression := fmt.Sprintf("%s(%s%s[%ds])", function, def.Record, selector, int64(window.Seconds()))
+	return aggregateForTarget(expression, target)
+}
+
+// aggregateForTarget treats a rollout's old and new Pods as two observations
+// of one logical component. Component views take the larger observation;
+// stack views do that per component before adding the components together.
+// A specifically selected Pod keeps its identity for diagnostics.
+func aggregateForTarget(expression string, target Target) string {
+	switch target.Scope {
+	case "stack":
+		return fmt.Sprintf("sum(max by (label_app) (%s))", expression)
+	case "component":
+		return fmt.Sprintf("max(%s)", expression)
+	default:
+		return fmt.Sprintf("sum by (pod) (%s)", expression)
+	}
 }
 
 func LiveDefinitions() []Definition {
@@ -150,6 +166,7 @@ func LiveDefinitions() []Definition {
 func SummaryDefinitions() []Definition {
 	wanted := map[string]bool{
 		"cpu_usage_cores": true, "memory_working_set_bytes": true,
+		"cpu_limit_cores": true, "memory_limit_bytes": true,
 		"persistent_volume_used_bytes": true, "persistent_volume_capacity_bytes": true,
 		"container_restarts_total": true,
 	}
