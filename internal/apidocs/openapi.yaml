@@ -3079,7 +3079,7 @@ paths:
       summary: Save component resource defaults
       description: |
         Saves CPU, memory, and PVC storage defaults for the four core components and optionally
-        Trust Registry. Storage must be between 200Mi and 100Gi. Values are Kubernetes quantities.
+        Trust Registry. Storage must be between 200Mi and 2Gi. Values are Kubernetes quantities.
         New deployments and subsequent capacity estimates read these settings;
         existing Deployments and PVCs are not updated or restarted. To restore factory
         defaults, submit the fields from GET's factory_defaults.

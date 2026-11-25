@@ -71,9 +71,9 @@ func ValidateStorageSize(value string) error {
 	if err != nil || storage.Sign() <= 0 {
 		return fmt.Errorf("storage_size must be a positive Kubernetes quantity")
 	}
-	min, max := resource.MustParse("200Mi"), resource.MustParse("100Gi")
+	min, max := resource.MustParse("200Mi"), resource.MustParse("2Gi")
 	if storage.Cmp(min) < 0 || storage.Cmp(max) > 0 {
-		return fmt.Errorf("storage_size must be between 200Mi and 100Gi")
+		return fmt.Errorf("storage_size must be between 200Mi and 2Gi")
 	}
 	return nil
 }

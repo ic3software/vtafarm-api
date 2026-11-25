@@ -120,7 +120,7 @@ func TestResourceDefaultsPersistence(t *testing.T) {
 		{Component: "vta", CPURequest: "250m", CPULimit: "100m", MemoryRequest: "16Mi", MemoryLimit: "64Mi"},
 		{Component: "unknown", CPURequest: "10m", CPULimit: "100m", MemoryRequest: "16Mi", MemoryLimit: "64Mi"},
 		{Component: "dids", CPURequest: "10m", CPULimit: "100m", MemoryRequest: "64Mi", MemoryLimit: "128Mi", StorageSize: "199Mi"},
-		{Component: "dids", CPURequest: "10m", CPULimit: "100m", MemoryRequest: "64Mi", MemoryLimit: "128Mi", StorageSize: "101Gi"},
+		{Component: "dids", CPURequest: "10m", CPULimit: "100m", MemoryRequest: "64Mi", MemoryLimit: "128Mi", StorageSize: "3Gi"},
 	} {
 		inputs[2].MemoryLimit = "64Mi"
 		inputs[3] = invalid
