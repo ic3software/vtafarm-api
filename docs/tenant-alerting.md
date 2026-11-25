@@ -28,6 +28,8 @@ Alertmanager is responsible for evaluation delivery, grouping, inhibition, and r
 
 CPU and memory percentages use the Kubernetes container limits applied to the workload. Storage uses the PVC requested capacity. A missing limit or capacity produces no percentage alert instead of inventing a denominator.
 
+The table lists the normal-operation defaults. Stack 06 may override the CPU recording window, CPU and memory pending periods, and Alertmanager tenant grouping per cluster. Development uses a 1-minute CPU window, 1-minute warning and critical pending periods, a 10-second initial group wait, and a 30-second group interval for end-to-end testing. Staging and production retain the alert defaults above, use a 30-second initial group wait, and deliver subsequent firing or resolved state changes on a 1-minute group interval.
+
 During a rolling upgrade, two pods may coexist. The rules aggregate with `max` by session and component, so limits and usage do not double merely because an old and a new pod overlap.
 
 ## Labels and annotations
