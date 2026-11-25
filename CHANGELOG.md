@@ -1,5 +1,21 @@
 # Changelog
 
+## [v0.23.0] - 2026-11-25
+
+### Added
+
+- Component resource profiles include CPU requests and limits for new
+  deployments, upgrades, capacity planning, and administrator updates to
+  existing sessions.
+- Per-component PVC storage defaults control new deployments and capacity
+  estimates without resizing existing PVCs.
+- An authenticated Alertmanager webhook records tenant resource and
+  availability incidents, with tenant-isolated history, filtering, read state,
+  resolution tracking, and incident-window log downloads; incidents raised
+  during upgrades remain available only to administrators.
+- The Helm chart supports an optional existing Secret and token revision for
+  Alertmanager webhook authentication.
+
 ## [v0.22.0] - 2026-11-23
 
 ### Added
