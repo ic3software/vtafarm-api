@@ -39,6 +39,7 @@ type workloadResourceInput struct {
 	CPULimit      string `json:"cpu_limit" binding:"required"`
 	MemoryRequest string `json:"memory_request" binding:"required"`
 	MemoryLimit   string `json:"memory_limit" binding:"required"`
+	StorageSize   string `json:"storage_size,omitempty"`
 }
 
 type resourceBatchInput struct {
@@ -139,7 +140,7 @@ func (h *SetupHandler) AdminSessionResources(c *gin.Context) {
 			}
 		}
 
-		defaults := profiles[target.Component]
+		defaults := profiles[target.Component].ResourceProfile
 		status := "in_sync"
 		if !sameQuantity(storedResource.CPURequest, actual.CPURequest) ||
 			!sameQuantity(storedResource.CPULimit, actual.CPULimit) ||
@@ -430,6 +431,13 @@ func validateResourceInputs(resources []workloadResourceInput) error {
 		}
 		if err := k8s.ValidateMemorySettings(item.MemoryRequest, item.MemoryLimit); err != nil {
 			return fmt.Errorf("%s: %w", item.Component, err)
+		}
+		if item.StorageSize != "" {
+			if err := resourceprofile.ValidateStorageSize(item.StorageSize); err != nil {
+				return fmt.Errorf("%s: %w", item.Component, err)
+			}
+			storage, _ := resource.ParseQuantity(strings.TrimSpace(item.StorageSize))
+			item.StorageSize = storage.String()
 		}
 		cpuRequest, _ := resource.ParseQuantity(strings.TrimSpace(item.CPURequest))
 		cpuLimit, _ := resource.ParseQuantity(strings.TrimSpace(item.CPULimit))

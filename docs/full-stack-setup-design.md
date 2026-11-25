@@ -128,10 +128,10 @@ Each component's PVC, Service, Ingress, and Deployment all share **one name**:
 
 | Component | Port | Public URL | Mount | Storage | Notes |
 | --- | --- | --- | --- | --- | --- |
-| VTA | 8100 | `vta-{vta_name}.{domain}` | `/work/vta` | PVC 200Mi + **Vault** seed | reuses `vta_only`'s VTA resources + Vault path |
-| Mediator | 7037 | `mediator-{vta_name}.{domain}` | `/work/mediator` | PVC 200Mi + **Vault** (`vault://`, kubernetes auth) | config + `fjall` message store on the PVC; no Redis/Valkey |
-| DID Hosting daemon | 8534 | `dids-{vta_name}.{domain}` | `/work/dids` | PVC 200Mi + **Vault** (kubernetes auth) | standard (integrated) topology |
-| VTC | 8200 | `vtc-{vtc_name}.{domain}` | `/work/vtc` | PVC 200Mi + **Vault** (kubernetes auth) | `Command`/`workingDir` set by the farm, same as the other three |
+| VTA | 8100 | `vta-{vta_name}.{domain}` | `/work/vta` | PVC from Resource defaults (factory 200Mi) + **Vault** seed | reuses `vta_only`'s VTA resources + Vault path |
+| Mediator | 7037 | `mediator-{vta_name}.{domain}` | `/work/mediator` | PVC from Resource defaults (factory 200Mi) + **Vault** (`vault://`, kubernetes auth) | config + `fjall` message store on the PVC; no Redis/Valkey |
+| DID Hosting daemon | 8534 | `dids-{vta_name}.{domain}` | `/work/dids` | PVC from Resource defaults (factory 200Mi) + **Vault** (kubernetes auth) | standard (integrated) topology |
+| VTC | 8200 | `vtc-{vtc_name}.{domain}` | `/work/vtc` | PVC from Resource defaults (factory 200Mi) + **Vault** (kubernetes auth) | `Command`/`workingDir` set by the farm, same as the other three |
 
 Every component is one PVC + one Deployment + one Service + one Ingress, built on the
 generic `ComponentJobSpec` / `ComponentDeploymentSpec` helpers — no per-component K8s

@@ -274,9 +274,14 @@ func (o *Orchestrator) runSetup(ctx context.Context, sessionID uint) {
 		o.markFailed(sessionID, "failed to render TOML: "+err.Error())
 		return
 	}
+	profiles, err := resourceprofile.Load(ctx, o.db)
+	if err != nil {
+		o.markFailed(sessionID, "failed to load resource defaults: "+err.Error())
+		return
+	}
 
 	jobName := k8s.SetupJobName(sessionID)
-	if err := o.k8s.CreateSetupResources(ctx, ns, sessionID, toml, session.VtaImage); err != nil {
+	if err := o.k8s.CreateSetupResources(ctx, ns, sessionID, toml, session.VtaImage, profiles[k8s.ComponentVTA].StorageSize); err != nil {
 		if ctx.Err() != nil {
 			return
 		}

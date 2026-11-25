@@ -20,8 +20,6 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/webvh"
 )
 
-const RegistryPVCSize = "200Mi"
-
 func (o *Orchestrator) RegistryAvailable() bool {
 	return o != nil && o.k8s != nil && o.vault != nil
 }
@@ -270,7 +268,11 @@ func (o *Orchestrator) restoreRegistryVtc(ns string, s *model.SetupSession) erro
 
 func (o *Orchestrator) deployTrustRegistry(ctx context.Context, ns string, s *model.SetupSession) error {
 	name := k8s.FSTrustRegistryName(s.ID)
-	if err := o.k8s.CreateComponentPVC(ctx, ns, name, RegistryPVCSize); err != nil {
+	profiles, err := resourceprofile.Load(ctx, o.db)
+	if err != nil {
+		return err
+	}
+	if err := o.k8s.CreateComponentPVC(ctx, ns, name, profiles[k8s.ComponentTrustRegistry].StorageSize); err != nil {
 		return err
 	}
 	labels := fsLabels("trust-registry", s.ID)
@@ -304,10 +306,6 @@ func (o *Orchestrator) deployTrustRegistry(ctx context.Context, ns string, s *mo
 	env := fsNoColorEnv()
 	for key, value := range values {
 		env = append(env, corev1.EnvVar{Name: key, Value: value})
-	}
-	profiles, err := resourceprofile.Load(ctx, o.db)
-	if err != nil {
-		return err
 	}
 	if err = o.k8s.CreateComponentDeployment(ctx, ns, k8s.ComponentDeploymentSpec{
 		Name: name, Image: s.TrustRegistryImage,

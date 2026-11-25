@@ -10,6 +10,7 @@ import (
 
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/resourceprofile"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 // Component is one pod of a session mode plus its PVC (StorageBytes 0 = no
@@ -33,40 +34,41 @@ const (
 	gi = int64(1) << 30
 )
 
-// CPU and memory planning costs use the provisioning resource profiles.
-// Keep storage costs in sync with the PVC sizes (internal/k8s/setup_jobs.go and
-// internal/setup/orchestrator_fullstack.go).
+// CPU, memory, and storage planning costs use the same provisioning resource
+// profiles as newly created workloads.
 // CPU uses requests. Memory uses hard limits so a reported session count still
 // fits if every new component grows to its configured ceiling.
 var (
 	VtaOnly = Mode{Name: "vta_only", Components: []Component{
-		planningComponent(k8s.ComponentVTA, 200*mi),
+		planningComponent(k8s.ComponentVTA),
 	}}
 
 	// FullStack covers all four components — the VTC is always provisioned,
 	// so there is no lighter full-stack shape to plan for.
 	FullStack = Mode{Name: "full_stack", Components: []Component{
-		planningComponent(k8s.ComponentDids, 200*mi),
-		planningComponent(k8s.ComponentMediator, 200*mi),
-		planningComponent(k8s.ComponentVTA, 200*mi),
-		planningComponent(k8s.ComponentVTC, 200*mi),
+		planningComponent(k8s.ComponentDids),
+		planningComponent(k8s.ComponentMediator),
+		planningComponent(k8s.ComponentVTA),
+		planningComponent(k8s.ComponentVTC),
 	}}
 )
 
-var TrustRegistry = Mode{Name: "trust_registry", Components: []Component{planningComponent(k8s.ComponentTrustRegistry, 200*mi)}}
+var TrustRegistry = Mode{Name: "trust_registry", Components: []Component{planningComponent(k8s.ComponentTrustRegistry)}}
 
 func FullStackWithRegistry() Mode {
 	components := slices.Clone(FullStack.Components)
 	return Mode{Name: "full_stack_registry", Components: append(components, TrustRegistry.Components...)}
 }
 
-func planningComponent(name string, storageBytes int64) Component {
+func planningComponent(name string) Component {
 	resources := k8s.DefaultResourceRequirements(name)
+	profile := resourceprofile.Factory()[name]
+	storage := resource.MustParse(profile.StorageSize)
 	return Component{
 		Name:         name,
 		CPUMillis:    resources.Requests.Cpu().MilliValue(),
 		MemBytes:     resources.Limits.Memory().Value(),
-		StorageBytes: storageBytes,
+		StorageBytes: storage.Value(),
 	}
 }
 
@@ -77,9 +79,12 @@ func Modes(profiles resourceprofile.Profiles) []Mode {
 		modes[i].Components = slices.Clone(modes[i].Components)
 		for j := range modes[i].Components {
 			comp := &modes[i].Components[j]
+			profile := profiles[comp.Name]
 			resources := profiles.Requirements(comp.Name)
+			storage := resource.MustParse(profile.StorageSize)
 			comp.CPUMillis = resources.Requests.Cpu().MilliValue()
 			comp.MemBytes = resources.Limits.Memory().Value()
+			comp.StorageBytes = storage.Value()
 		}
 	}
 	return modes

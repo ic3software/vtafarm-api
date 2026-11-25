@@ -19,10 +19,10 @@ func TestCreateComponentPVCUsesRequestedStorageSize(t *testing.T) {
 		name string
 		size string
 	}{
-		{name: "vta", size: VtaPVCStorageSize},
-		{name: "did-hosting", size: DIDHostingPVCStorageSize},
-		{name: "mediator", size: MediatorPVCStorageSize},
-		{name: "vtc", size: VtcPVCStorageSize},
+		{name: "vta", size: "200Mi"},
+		{name: "did-hosting", size: "500Mi"},
+		{name: "mediator", size: "1Gi"},
+		{name: "vtc", size: "2Gi"},
 	}
 
 	for _, tt := range tests {
@@ -51,6 +51,26 @@ func TestCreateComponentPVCRejectsInvalidStorageSize(t *testing.T) {
 
 	if err := client.CreateComponentPVC(context.Background(), "test", "vta", "invalid"); err == nil {
 		t.Fatal("CreateComponentPVC() error = nil, want invalid size error")
+	}
+}
+
+func TestCreateComponentPVCKeepsExistingStorageSize(t *testing.T) {
+	client := &Client{kube: fake.NewSimpleClientset()}
+	ctx := context.Background()
+	if err := client.CreateComponentPVC(ctx, "test", "vta", "200Mi"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.CreateComponentPVC(ctx, "test", "vta", "2Gi"); err != nil {
+		t.Fatal(err)
+	}
+	pvc, err := client.kube.CoreV1().PersistentVolumeClaims("test").Get(ctx, "vta", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+	want := resource.MustParse("200Mi")
+	if got.Cmp(want) != 0 {
+		t.Fatalf("existing storage request = %s, want %s", got.String(), want.String())
 	}
 }
 
@@ -152,9 +172,10 @@ func TestCreateComponentDeploymentUsesConfiguredHealthReadinessProbe(t *testing.
 
 func TestCreateSetupResourcesUsesVtaStorageSize(t *testing.T) {
 	client := &Client{kube: fake.NewSimpleClientset()}
+	storageSize := "512Mi"
 
 	if err := client.CreateSetupResources(
-		context.Background(), "test", 42, "setup = true", "example/vta:test",
+		context.Background(), "test", 42, "setup = true", "example/vta:test", storageSize,
 	); err != nil {
 		t.Fatalf("CreateSetupResources() error = %v", err)
 	}
@@ -166,9 +187,38 @@ func TestCreateSetupResourcesUsesVtaStorageSize(t *testing.T) {
 		t.Fatalf("get PVC: %v", err)
 	}
 	got := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
-	want := resource.MustParse(VtaPVCStorageSize)
+	want := resource.MustParse(storageSize)
 	if got.Cmp(want) != 0 {
 		t.Fatalf("storage request = %s, want %s", got.String(), want.String())
+	}
+}
+
+func TestCreateSetupResourcesRejectsInvalidStorageSize(t *testing.T) {
+	client := &Client{kube: fake.NewSimpleClientset()}
+	if err := client.CreateSetupResources(
+		context.Background(), "test", 42, "setup = true", "example/vta:test", "invalid",
+	); err == nil {
+		t.Fatal("CreateSetupResources() error = nil, want invalid storage error")
+	}
+}
+
+func TestCreateSetupResourcesKeepsExistingVtaStorageSize(t *testing.T) {
+	client := &Client{kube: fake.NewSimpleClientset()}
+	ctx := context.Background()
+	if err := client.CreateSetupResources(ctx, "test", 42, "setup = true", "example/vta:test", "200Mi"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.CreateSetupResources(ctx, "test", 42, "setup = true", "example/vta:test", "2Gi"); err != nil {
+		t.Fatal(err)
+	}
+	pvc, err := client.kube.CoreV1().PersistentVolumeClaims("test").Get(ctx, VtaPVCName(42), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+	want := resource.MustParse("200Mi")
+	if got.Cmp(want) != 0 {
+		t.Fatalf("existing storage request = %s, want %s", got.String(), want.String())
 	}
 }
 

@@ -31,6 +31,7 @@ type adminSessionResourceDefault struct {
 	CPULimit      string `json:"cpu_limit"`
 	MemoryRequest string `json:"memory_request"`
 	MemoryLimit   string `json:"memory_limit"`
+	StorageSize   string `json:"storage_size"`
 }
 
 type adminSessionQueryItem struct {
@@ -207,7 +208,8 @@ SELECT
             'cpu_request', rd.cpu_request,
             'cpu_limit', rd.cpu_limit,
             'memory_request', rd.memory_request,
-            'memory_limit', rd.memory_limit
+            'memory_limit', rd.memory_limit,
+            'storage_size', rd.storage_size
         ) ORDER BY rd.component) FROM resource_defaults rd
     ), '[]'::jsonb) AS resource_defaults,
     COALESCE((
@@ -242,7 +244,7 @@ SELECT
 	for i, item := range defaults {
 		defaultRows[i] = model.ResourceDefault{
 			Component: item.Component, CPURequest: item.CPURequest, CPULimit: item.CPULimit,
-			MemoryRequest: item.MemoryRequest, MemoryLimit: item.MemoryLimit,
+			MemoryRequest: item.MemoryRequest, MemoryLimit: item.MemoryLimit, StorageSize: item.StorageSize,
 		}
 	}
 	profiles, err := resourceprofile.FromRows(defaultRows)

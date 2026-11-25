@@ -42,16 +42,20 @@ func VtaACLJobName(sessionID uint) string {
 	return fmt.Sprintf("vta-acl-%d", sessionID)
 }
 
-// CreateSetupResources creates a 200Mi PVC, a ConfigMap with the TOML config, and a Job
+// CreateSetupResources creates a PVC, a ConfigMap with the TOML config, and a Job
 // that runs `vta setup --from /config/vta-setup.toml` with the PVC mounted at /work/vta.
 // All three calls are idempotent (AlreadyExists is ignored).
-func (c *Client) CreateSetupResources(ctx context.Context, ns string, sessionID uint, toml, vtaImage string) error {
+func (c *Client) CreateSetupResources(ctx context.Context, ns string, sessionID uint, toml, vtaImage, storageSize string) error {
 	pvcName := VtaPVCName(sessionID)
 	cmName := setupConfigMapName(sessionID)
 	jobName := SetupJobName(sessionID)
+	storage, err := resource.ParseQuantity(storageSize)
+	if err != nil || storage.Sign() <= 0 {
+		return fmt.Errorf("parse VTA PVC storage size %q", storageSize)
+	}
 
 	// 1. PVC — persists config.toml + data/vta/ across pod restarts and into the Deployment.
-	_, err := c.kube.CoreV1().PersistentVolumeClaims(ns).Create(ctx, &corev1.PersistentVolumeClaim{
+	_, err = c.kube.CoreV1().PersistentVolumeClaims(ns).Create(ctx, &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      pvcName,
 			Namespace: ns,
@@ -62,7 +66,7 @@ func (c *Client) CreateSetupResources(ctx context.Context, ns string, sessionID 
 			StorageClassName: nil, // use cluster default (e.g. longhorn)
 			Resources: corev1.VolumeResourceRequirements{
 				Requests: corev1.ResourceList{
-					corev1.ResourceStorage: resource.MustParse(VtaPVCStorageSize),
+					corev1.ResourceStorage: storage,
 				},
 			},
 		},

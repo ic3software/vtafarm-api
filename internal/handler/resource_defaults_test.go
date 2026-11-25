@@ -80,6 +80,7 @@ func TestResourceDefaultsPersistence(t *testing.T) {
 		testResourceInput("vta", "16Mi", "1Gi"),
 		testResourceInput("dids", "64Mi", "128Mi"),
 	}
+	inputs[2].StorageSize = "2Gi"
 	encode := func() string {
 		b, err := json.Marshal(map[string]any{"resources": inputs})
 		if err != nil {
@@ -97,11 +98,17 @@ func TestResourceDefaultsPersistence(t *testing.T) {
 	if saved["vta"].MemoryLimit != "1Gi" || read()["vta"].MemoryLimit != "1Gi" {
 		t.Fatal("saved defaults were not reloaded")
 	}
+	if saved["vta"].StorageSize != "2Gi" || read()["vta"].StorageSize != "2Gi" {
+		t.Fatal("saved storage default was not reloaded")
+	}
 	if saved["trust-registry"].MemoryRequest != "128Mi" || saved["trust-registry"].MemoryLimit != "512Mi" || read()["trust-registry"].MemoryLimit != "512Mi" {
 		t.Fatal("saved Trust Registry defaults were not reloaded")
 	}
 	if capacity.Modes(saved)[0].Components[0].MemBytes != 1<<30 {
 		t.Fatal("capacity did not use saved defaults")
+	}
+	if capacity.Modes(saved)[0].Components[0].StorageBytes != 2<<30 {
+		t.Fatal("capacity did not use saved storage default")
 	}
 	if saved["mediator"].CPURequest != "50m" {
 		t.Fatal("CPU changed")
@@ -112,6 +119,8 @@ func TestResourceDefaultsPersistence(t *testing.T) {
 		testResourceInput("dids", "256Mi", "64Mi"),
 		{Component: "vta", CPURequest: "250m", CPULimit: "100m", MemoryRequest: "16Mi", MemoryLimit: "64Mi"},
 		{Component: "unknown", CPURequest: "10m", CPULimit: "100m", MemoryRequest: "16Mi", MemoryLimit: "64Mi"},
+		{Component: "dids", CPURequest: "10m", CPULimit: "100m", MemoryRequest: "64Mi", MemoryLimit: "128Mi", StorageSize: "199Mi"},
+		{Component: "dids", CPURequest: "10m", CPULimit: "100m", MemoryRequest: "64Mi", MemoryLimit: "128Mi", StorageSize: "101Gi"},
 	} {
 		inputs[2].MemoryLimit = "64Mi"
 		inputs[3] = invalid
@@ -121,9 +130,13 @@ func TestResourceDefaultsPersistence(t *testing.T) {
 		}
 	}
 	inputs[3] = testResourceInput("dids", "64Mi", "128Mi")
+	inputs[2].StorageSize = resourceprofile.FactoryStorageSize
 	request(http.MethodPut, encode(), http.StatusOK)
 	if read()["vta"].MemoryLimit != "64Mi" {
 		t.Fatal("factory restore failed")
+	}
+	if read()["vta"].StorageSize != resourceprofile.FactoryStorageSize {
+		t.Fatal("factory storage restore failed")
 	}
 	down, err := os.ReadFile("../../migrations/000038_resource_defaults.down.sql")
 	if err != nil {

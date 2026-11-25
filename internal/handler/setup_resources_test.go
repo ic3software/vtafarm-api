@@ -6,6 +6,7 @@ import (
 
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/resourceprofile"
 )
 
 func TestValidateResourceBatch(t *testing.T) {
@@ -41,7 +42,7 @@ func testResourceInput(component, memoryRequest, memoryLimit string) workloadRes
 	profile, _ := k8s.DefaultResourceProfile(component)
 	return workloadResourceInput{
 		Component: component, CPURequest: profile.CPURequest, CPULimit: profile.CPULimit,
-		MemoryRequest: memoryRequest, MemoryLimit: memoryLimit,
+		MemoryRequest: memoryRequest, MemoryLimit: memoryLimit, StorageSize: resourceprofile.FactoryStorageSize,
 	}
 }
 
