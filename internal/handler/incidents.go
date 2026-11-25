@@ -62,6 +62,10 @@ type incidentListResponse struct {
 	TotalPages int                `json:"total_pages"`
 }
 
+type markIncidentsReadResponse struct {
+	Updated int64 `json:"updated"`
+}
+
 func (h *SetupHandler) ConfigureAlertmanagerWebhook(token string) {
 	h.alertmanagerWebhookToken = strings.TrimSpace(token)
 }
@@ -377,6 +381,55 @@ func (h *SetupHandler) MarkSessionIncidentRead(c *gin.Context) {
 	}
 	incident.ReadAt = readAt
 	c.JSON(http.StatusOK, toIncidentResponse(*incident, session.VtaName))
+}
+
+func (h *SetupHandler) MarkSessionIncidentsRead(c *gin.Context) {
+	session := h.userSession(c)
+	if session == nil {
+		return
+	}
+	var input struct {
+		IncidentIDs []string `json:"incident_ids"`
+		All         bool     `json:"all"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if input.All == (len(input.IncidentIDs) > 0) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "provide incident_ids or all, but not both"})
+		return
+	}
+	if len(input.IncidentIDs) > 100 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "incident_ids cannot contain more than 100 items"})
+		return
+	}
+	if !input.All {
+		seen := make(map[string]struct{}, len(input.IncidentIDs))
+		for _, incidentID := range input.IncidentIDs {
+			if _, err := uuid.Parse(incidentID); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "incident_ids must contain UUIDs"})
+				return
+			}
+			seen[incidentID] = struct{}{}
+		}
+		input.IncidentIDs = input.IncidentIDs[:0]
+		for incidentID := range seen {
+			input.IncidentIDs = append(input.IncidentIDs, incidentID)
+		}
+	}
+	now := time.Now().UTC()
+	query := h.db.WithContext(c.Request.Context()).Model(&model.Incident{}).
+		Where("setup_session_id = ? AND suppressed = FALSE AND read_at IS NULL", session.ID)
+	if !input.All {
+		query = query.Where("public_id IN ?", input.IncidentIDs)
+	}
+	result := query.Update("read_at", &now)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not update incidents"})
+		return
+	}
+	c.JSON(http.StatusOK, markIncidentsReadResponse{Updated: result.RowsAffected})
 }
 
 func (h *SetupHandler) findIncident(c *gin.Context, sessionID uint, admin bool) *model.Incident {

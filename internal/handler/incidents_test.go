@@ -42,6 +42,10 @@ func TestAlertmanagerWebhookLifecycleAndUserIncidentAPI(t *testing.T) {
 		c.Set(middleware.ContextUserID, user.ID)
 		h.UserIncidents(c)
 	})
+	router.PATCH("/setup/:id/incidents/read", func(c *gin.Context) {
+		c.Set(middleware.ContextUserID, user.ID)
+		h.MarkSessionIncidentsRead(c)
+	})
 	router.PATCH("/setup/:id/incidents/:incident_id", func(c *gin.Context) {
 		c.Set(middleware.ContextUserID, user.ID)
 		h.MarkSessionIncidentRead(c)
@@ -130,6 +134,20 @@ func TestAlertmanagerWebhookLifecycleAndUserIncidentAPI(t *testing.T) {
 		t.Fatalf("user incidents = %d: %s", w.Code, w.Body.String())
 	}
 	incidentID := response.Incidents[0].PublicID
+	if w := request(http.MethodPatch, "/setup/alert-session/incidents/read", `{}`, ""); w.Code != http.StatusBadRequest {
+		t.Fatalf("missing bulk selection = %d: %s", w.Code, w.Body.String())
+	}
+	w = request(http.MethodPatch, "/setup/alert-session/incidents/read", `{"incident_ids":["`+incidentID+`"]}`, "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"updated":1`) {
+		t.Fatalf("bulk mark selected read = %d: %s", w.Code, w.Body.String())
+	}
+	if err := db.Model(&model.Incident{}).Where("public_id = ?", incidentID).Update("read_at", nil).Error; err != nil {
+		t.Fatal(err)
+	}
+	w = request(http.MethodPatch, "/setup/alert-session/incidents/read", `{"all":true}`, "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"updated":1`) {
+		t.Fatalf("bulk mark all read = %d: %s", w.Code, w.Body.String())
+	}
 	if w := request(http.MethodPatch, "/setup/alert-session/incidents/"+incidentID, `{}`, ""); w.Code != http.StatusBadRequest {
 		t.Fatalf("missing read field = %d: %s", w.Code, w.Body.String())
 	}

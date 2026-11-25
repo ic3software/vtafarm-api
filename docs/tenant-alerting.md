@@ -77,6 +77,7 @@ The full schemas are in `/openapi.yaml` and the interactive reference at `/docs`
 - `GET /api/v1/user/incidents`: incidents across all sessions owned by the current user.
 - `GET /api/v1/setup/{id}/incidents`: incidents for one owned session.
 - `GET /api/v1/setup/{id}/incidents/{incident_id}`: incident detail.
+- `PATCH /api/v1/setup/{id}/incidents/read` with `{ "incident_ids": ["..."] }` or `{ "all": true }`: atomically mark selected or all visible session incidents read.
 - `PATCH /api/v1/setup/{id}/incidents/{incident_id}` with `{ "read": true | false }`: update read state.
 - `GET /api/v1/setup/{id}/incidents/{incident_id}/logs`: download related retained logs.
 

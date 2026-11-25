@@ -6229,6 +6229,47 @@ paths:
         '401': {description: Missing or invalid user cookie.}
         '404': {description: Session not found or belongs to another user.}
 
+  /api/v1/setup/{id}/incidents/read:
+    patch:
+      summary: Mark selected or all session incidents read
+      tags: [User — Incidents]
+      security: [{CookieAuthUser: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  additionalProperties: false
+                  required: [incident_ids]
+                  properties:
+                    incident_ids:
+                      type: array
+                      minItems: 1
+                      maxItems: 100
+                      items: {type: string, format: uuid}
+                - type: object
+                  additionalProperties: false
+                  required: [all]
+                  properties:
+                    all: {const: true}
+      responses:
+        '200':
+          description: Number of previously unread incidents marked read.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [updated]
+                properties: {updated: {type: integer, minimum: 0}}
+        '400': {description: Invalid or ambiguous selection.}
+        '401': {description: Missing or invalid user cookie.}
+        '404': {description: Session not found or belongs to another user.}
+
   /api/v1/setup/{id}/incidents/{incident_id}:
     get:
       summary: Get a session incident

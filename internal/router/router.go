@@ -395,6 +395,7 @@ func Setup(
 		userAuth.GET("/setup/:id/metrics/range", middleware.NoStore(), middleware.RateLimit(120, time.Minute), metricsH.Range)
 		userAuth.GET("/setup/:id/metrics/live", middleware.NoStore(), metricsH.Live)
 		userAuth.GET("/setup/:id/incidents", sh.SessionIncidents)
+		userAuth.PATCH("/setup/:id/incidents/read", sh.MarkSessionIncidentsRead)
 		userAuth.GET("/setup/:id/incidents/:incident_id", sh.GetSessionIncident)
 		userAuth.PATCH("/setup/:id/incidents/:incident_id", sh.MarkSessionIncidentRead)
 		userAuth.GET("/setup/:id/incidents/:incident_id/logs", sh.SessionIncidentLogs)
