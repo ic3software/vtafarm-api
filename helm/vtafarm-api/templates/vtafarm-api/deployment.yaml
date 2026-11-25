@@ -9,6 +9,10 @@ spec:
       {{- include "app.labels" . | nindent 6 }}
   template:
     metadata:
+      {{- with .Values.alerting.existingSecret }}
+      annotations:
+        vtafarm.ic3.dev/alertmanager-webhook-token-revision: {{ $.Values.alerting.tokenRevision | quote }}
+      {{- end }}
       labels:
         {{- include "app.labels" . | nindent 8 }}
     spec:
@@ -35,6 +39,11 @@ spec:
                 name: {{ .Values.name }}-config
             - secretRef:
                 name: {{ .Values.name }}-secrets
+            {{- with .Values.alerting.existingSecret }}
+            - secretRef:
+                name: {{ . }}
+                optional: true
+            {{- end }}
           env:
             - name: DB_PASSWORD
               valueFrom:

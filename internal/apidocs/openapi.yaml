@@ -69,6 +69,10 @@ tags:
     description: User endpoints (requires `vtafarm_user` cookie)
   - name: User — Metrics
     description: Tenant-isolated historical and live session metrics.
+  - name: User — Incidents
+    description: Tenant-visible resource pressure and availability incidents.
+  - name: Internal — Alerting
+    description: Cluster-internal Alertmanager delivery endpoints.
   - name: User — Passkeys
     description: |
       Manage passkeys bound to the authenticated user account (requires `vtafarm_user` cookie).
@@ -92,8 +96,70 @@ components:
       scheme: bearer
       bearerFormat: opaque
       description: Environment-scoped MONITOR_TOKEN for external uptime polling.
+    AlertmanagerBearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: Shared token mounted into Alertmanager and the API from separate Kubernetes Secrets.
 
   schemas:
+    Incident:
+      type: object
+      additionalProperties: false
+      required: [id, session_id, cluster, alert_name, type, component, severity, status, title, message, started_at, last_seen_at, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        session_id: {type: string, description: Public setup-session identifier (the VTA name).}
+        cluster: {type: string}
+        alert_name: {type: string}
+        type: {type: string}
+        component: {type: string, enum: [vta, mediator, dids, vtc, trust-registry]}
+        resource: {type: string, enum: [cpu, memory, storage, runtime, availability]}
+        severity: {type: string, enum: [warning, critical]}
+        status: {type: string, enum: [firing, resolved]}
+        title: {type: string}
+        message: {type: string}
+        usage_percent: {type: number, minimum: 0}
+        started_at: {type: string, format: date-time}
+        resolved_at: {type: string, format: date-time}
+        last_seen_at: {type: string, format: date-time}
+        read_at: {type: string, format: date-time}
+        downtime_seconds: {type: integer, minimum: 0}
+        suppressed: {type: boolean, description: Admin-only visibility for incidents hidden during provisioning or upgrades.}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+
+    IncidentList:
+      type: object
+      additionalProperties: false
+      required: [incidents, page, page_size, total, total_pages]
+      properties:
+        incidents:
+          type: array
+          items: {$ref: '#/components/schemas/Incident'}
+        page: {type: integer, minimum: 1}
+        page_size: {type: integer, minimum: 1, maximum: 100}
+        total: {type: integer, minimum: 0}
+        total_pages: {type: integer, minimum: 0}
+
+    AlertmanagerWebhook:
+      type: object
+      required: [status, alerts]
+      properties:
+        status: {type: string, enum: [firing, resolved]}
+        alerts:
+          type: array
+          items:
+            type: object
+            required: [status, labels, annotations, startsAt, fingerprint]
+            properties:
+              status: {type: string, enum: [firing, resolved]}
+              labels: {type: object, additionalProperties: {type: string}}
+              annotations: {type: object, additionalProperties: {type: string}}
+              startsAt: {type: string, format: date-time}
+              endsAt: {type: string, format: date-time}
+              fingerprint: {type: string}
+
     MaintenanceState:
       type: object
       additionalProperties: false
@@ -6110,6 +6176,203 @@ paths:
         "400": { description: Invalid DID fields, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "409": { description: Farm DID host is not ready, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "422": { description: Public DID does not resolve, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /api/v1/internal/alertmanager/webhook:
+    post:
+      summary: Receive tenant alerts from Alertmanager
+      description: Accepts only the documented tenant alert allowlist. Deliveries are idempotent by cluster, fingerprint, and start time; resolved notifications close the existing incident.
+      tags: [Internal — Alerting]
+      security: [{AlertmanagerBearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AlertmanagerWebhook'}
+      responses:
+        '202': {description: Delivery processed; reports accepted and ignored alert counts.}
+        '400': {description: Invalid Alertmanager payload.}
+        '401': {description: Missing or invalid webhook token.}
+        '503': {description: Webhook token is not configured on the API.}
+
+  /api/v1/user/incidents:
+    get:
+      summary: List incidents across the current user's sessions
+      tags: [User — Incidents]
+      security: [{CookieAuthUser: []}]
+      parameters:
+        - {name: status, in: query, schema: {type: string, enum: [firing, resolved]}}
+        - {name: resource, in: query, schema: {type: string, enum: [cpu, memory, storage, runtime, availability]}}
+        - {name: range, in: query, schema: {type: string, enum: [24h, 7d, 30d, all]}}
+        - {name: unread, in: query, schema: {type: boolean}}
+        - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+      responses:
+        '200': {description: "Visible, newest-first incidents.", content: {application/json: {schema: {$ref: '#/components/schemas/IncidentList'}}}}
+        '400': {description: Invalid filter.}
+        '401': {description: Missing or invalid user cookie.}
+
+  /api/v1/setup/{id}/incidents:
+    get:
+      summary: List incidents for a session
+      tags: [User — Incidents]
+      security: [{CookieAuthUser: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: status, in: query, schema: {type: string, enum: [firing, resolved]}}
+        - {name: resource, in: query, schema: {type: string, enum: [cpu, memory, storage, runtime, availability]}}
+        - {name: range, in: query, schema: {type: string, enum: [24h, 7d, 30d, all]}}
+        - {name: unread, in: query, schema: {type: boolean}}
+        - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+      responses:
+        '200': {description: "Visible, newest-first incidents.", content: {application/json: {schema: {$ref: '#/components/schemas/IncidentList'}}}}
+        '401': {description: Missing or invalid user cookie.}
+        '404': {description: Session not found or belongs to another user.}
+
+  /api/v1/setup/{id}/incidents/read:
+    patch:
+      summary: Mark selected or all session incidents read
+      tags: [User — Incidents]
+      security: [{CookieAuthUser: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  additionalProperties: false
+                  required: [incident_ids]
+                  properties:
+                    incident_ids:
+                      type: array
+                      minItems: 1
+                      maxItems: 100
+                      items: {type: string, format: uuid}
+                - type: object
+                  additionalProperties: false
+                  required: [all]
+                  properties:
+                    all: {const: true}
+      responses:
+        '200':
+          description: Number of previously unread incidents marked read.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [updated]
+                properties: {updated: {type: integer, minimum: 0}}
+        '400': {description: Invalid or ambiguous selection.}
+        '401': {description: Missing or invalid user cookie.}
+        '404': {description: Session not found or belongs to another user.}
+
+  /api/v1/setup/{id}/incidents/{incident_id}:
+    get:
+      summary: Get a session incident
+      tags: [User — Incidents]
+      security: [{CookieAuthUser: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: incident_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Incident detail., content: {application/json: {schema: {$ref: '#/components/schemas/Incident'}}}}
+        '404': {description: Session or incident not found.}
+    patch:
+      summary: Mark a session incident read or unread
+      tags: [User — Incidents]
+      security: [{CookieAuthUser: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: incident_id, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [read]
+              properties: {read: {type: boolean}}
+      responses:
+        '200': {description: Updated incident., content: {application/json: {schema: {$ref: '#/components/schemas/Incident'}}}}
+        '400': {description: The read field is missing.}
+        '404': {description: Session or incident not found.}
+
+  /api/v1/setup/{id}/incidents/{incident_id}/logs:
+    get:
+      summary: Download logs related to an incident
+      description: Returns a ZIP containing retained Loki logs for the affected component, bounded to five minutes before and after the incident. The user's retention entitlement still applies.
+      tags: [User — Incidents]
+      security: [{CookieAuthUser: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: incident_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: ZIP archive., content: {application/zip: {schema: {type: string, format: binary}}}}
+        '404': {description: Session or incident not found.}
+        '410': {description: Incident is outside the user's log-retention window.}
+        '503': {description: Retained logging is not configured.}
+
+  /api/v1/admin/incidents:
+    get:
+      summary: List incidents across all sessions
+      tags: [Admin]
+      security: [{CookieAuthAdmin: []}]
+      parameters:
+        - {name: status, in: query, schema: {type: string, enum: [firing, resolved]}}
+        - {name: resource, in: query, schema: {type: string, enum: [cpu, memory, storage, runtime, availability]}}
+        - {name: range, in: query, schema: {type: string, enum: [24h, 7d, 30d, all]}}
+        - {name: unread, in: query, schema: {type: boolean}}
+        - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+      responses:
+        '200': {description: "Newest-first incidents, including suppressed records.", content: {application/json: {schema: {$ref: '#/components/schemas/IncidentList'}}}}
+
+  /api/v1/admin/setup-sessions/{id}/incidents:
+    get:
+      summary: List incidents for an admin-visible session
+      tags: [Admin]
+      security: [{CookieAuthAdmin: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: status, in: query, schema: {type: string, enum: [firing, resolved]}}
+        - {name: resource, in: query, schema: {type: string, enum: [cpu, memory, storage, runtime, availability]}}
+        - {name: range, in: query, schema: {type: string, enum: [24h, 7d, 30d, all]}}
+        - {name: unread, in: query, schema: {type: boolean}}
+        - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+      responses:
+        '200': {description: "Newest-first incidents, including suppressed records.", content: {application/json: {schema: {$ref: '#/components/schemas/IncidentList'}}}}
+        '404': {description: Session not found.}
+
+  /api/v1/admin/setup-sessions/{id}/incidents/{incident_id}:
+    get:
+      summary: Get an admin-visible incident
+      tags: [Admin]
+      security: [{CookieAuthAdmin: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: incident_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Incident detail., content: {application/json: {schema: {$ref: '#/components/schemas/Incident'}}}}
+        '404': {description: Session or incident not found.}
+
+  /api/v1/admin/setup-sessions/{id}/incidents/{incident_id}/logs:
+    get:
+      summary: Download logs related to an admin-visible incident
+      tags: [Admin]
+      security: [{CookieAuthAdmin: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: incident_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: ZIP archive., content: {application/zip: {schema: {type: string, format: binary}}}}
+        '404': {description: Session or incident not found.}
+        '503': {description: Retained logging is not configured.}
 
   /api/v1/admin/setup-sessions/{id}/metrics/meta:
     get:

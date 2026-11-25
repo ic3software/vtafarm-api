@@ -57,7 +57,7 @@ func Setup(
 
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     allowOrigins,
-		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Authorization", "Content-Type", "Idempotency-Key", "X-VTA-Claim-Token"},
 		ExposeHeaders:    []string{"Content-Length", "Content-Disposition"},
 		AllowCredentials: true,
@@ -113,6 +113,7 @@ func Setup(
 		registryGhcr = ghcr.New(cfg.GHCR.Token, cfg.GHCR.Owner, cfg.GHCR.TrustRegistryPackageName)
 	}
 	sh.ConfigureTrustRegistry(registryGhcr)
+	sh.ConfigureAlertmanagerWebhook(cfg.Alerting.WebhookToken)
 	var placementService *placement.Service
 	if k8sClient != nil {
 		var placementErr error
@@ -130,6 +131,7 @@ func Setup(
 	}
 
 	v1 := r.Group("/api/v1")
+	v1.POST("/internal/alertmanager/webhook", middleware.NoStore(), sh.AlertmanagerWebhook)
 	v1.GET("/status/maintenance", middleware.NoStore(), maintenanceH.Status)
 	v1.GET("/auth/keyring/config", middleware.NoStore(), middleware.RateLimit(60, time.Minute), trustTask.WalletSignInConfig)
 	statusHandler := handler.NewStatusHandler(db, k8sClient, handler.StatusConfig{
@@ -240,6 +242,10 @@ func Setup(
 		adminAuth.GET("/admin/image-defaults", sh.AdminImageDefaults)
 		adminAuth.PUT("/admin/image-defaults", sh.AdminSaveImageDefaults)
 		adminAuth.GET("/admin/setup-sessions", sh.AdminListSessions)
+		adminAuth.GET("/admin/incidents", sh.AdminIncidents)
+		adminAuth.GET("/admin/setup-sessions/:id/incidents", sh.AdminSessionIncidents)
+		adminAuth.GET("/admin/setup-sessions/:id/incidents/:incident_id", sh.AdminGetSessionIncident)
+		adminAuth.GET("/admin/setup-sessions/:id/incidents/:incident_id/logs", sh.AdminSessionIncidentLogs)
 		adminAuth.POST("/admin/setup-sessions/:id/recover", workflow("vta_recovery", true), sh.AdminRecoverSession)
 		adminAuth.GET("/admin/setup-sessions/:id/resources", sh.AdminSessionResources)
 		adminAuth.PUT("/admin/setup-sessions/resources", workflow("resource_update", true), sh.AdminApplySessionResources)
@@ -366,6 +372,7 @@ func Setup(
 	walletBindings := handler.NewWalletLoginBindingHandler(db)
 	{
 		userAuth.GET("/user/me", uh.Me)
+		userAuth.GET("/user/incidents", sh.UserIncidents)
 		userAuth.GET("/user/wallet-login-bindings", walletBindings.List)
 		userAuth.DELETE("/user/wallet-login-bindings/:id", walletBindings.Revoke)
 		userAuth.POST("/user/passkeys/register/begin", pkh.RegisterBegin)
@@ -387,6 +394,11 @@ func Setup(
 		userAuth.GET("/setup/:id/metrics/meta", middleware.NoStore(), middleware.RateLimit(120, time.Minute), metricsH.Meta)
 		userAuth.GET("/setup/:id/metrics/range", middleware.NoStore(), middleware.RateLimit(120, time.Minute), metricsH.Range)
 		userAuth.GET("/setup/:id/metrics/live", middleware.NoStore(), metricsH.Live)
+		userAuth.GET("/setup/:id/incidents", sh.SessionIncidents)
+		userAuth.PATCH("/setup/:id/incidents/read", sh.MarkSessionIncidentsRead)
+		userAuth.GET("/setup/:id/incidents/:incident_id", sh.GetSessionIncident)
+		userAuth.PATCH("/setup/:id/incidents/:incident_id", sh.MarkSessionIncidentRead)
+		userAuth.GET("/setup/:id/incidents/:incident_id/logs", sh.SessionIncidentLogs)
 		userAuth.GET("/setup/:id/trust-registry", sh.GetTrustRegistry)
 		userAuth.POST("/setup/:id/trust-registry", workflow("trust_registry", false), sh.EnableTrustRegistry)
 		userAuth.POST("/setup/:id/recover", workflow("vta_recovery", false), sh.RecoverSession)

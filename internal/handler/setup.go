@@ -47,6 +47,8 @@ type SetupHandler struct {
 	didsGhcr          *ghcr.Client // nil when not configured
 	vtcGhcr           *ghcr.Client // nil when not configured
 	trustRegistryGhcr *ghcr.Client
+
+	alertmanagerWebhookToken string
 }
 
 func NewSetupHandler(

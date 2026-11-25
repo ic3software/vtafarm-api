@@ -96,6 +96,12 @@ logging:
   queryURL: ""
   queryTimeout: "5m"
 
+alerting:
+  # Pre-create this Secret with ALERTMANAGER_WEBHOOK_TOKEN. It is optional so
+  # the API remains deployable before Alertmanager routing is enabled.
+  existingSecret: "vtafarm-alertmanager-webhook"
+  tokenRevision: "0"
+
 placement:
   mode: disabled
   canarySessionIDs: ""
