@@ -7,15 +7,18 @@ package upgrade
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/model"
+	"github.com/ic3software/vtafarm-api/internal/resourceprofile"
 )
 
 const (
@@ -176,7 +179,12 @@ func (r *Runner) runTask(batch *model.UpgradeBatch, taskID uint) {
 	}
 	ns := r.k8s.UserNamespace(fmt.Sprintf("%d", session.UserID))
 	if task.Status == model.UpgradeTaskRollingBack {
-		r.rollbackTask(batch, &task, ns, deployName, task.ErrorMsg)
+		oldProfile, err := r.savedResourceProfile(ctx, session.ID, task.Component)
+		if err != nil {
+			r.failTask(batch, &task, "load rollback resources: "+err.Error())
+			return
+		}
+		r.rollbackTask(batch, &task, ns, deployName, oldProfile, task.ErrorMsg)
 		return
 	}
 	if task.Status != model.UpgradeTaskPending && task.Status != model.UpgradeTaskRunning {
@@ -186,35 +194,61 @@ func (r *Runner) runTask(batch *model.UpgradeBatch, taskID uint) {
 		r.failTask(batch, &task, "previous image is missing; refusing upgrade without a rollback target")
 		return
 	}
+	oldProfile, desiredProfile, err := r.upgradeResourceProfiles(ctx, session.ID, task.Component, ns, deployName)
+	if err != nil {
+		r.failTask(batch, &task, "prepare upgrade resources: "+err.Error())
+		return
+	}
+	if err := r.cacheRollbackProfile(ctx, session.ID, task.Component, oldProfile); err != nil {
+		r.failTask(batch, &task, "save rollback resources: "+err.Error())
+		return
+	}
 	if err := r.setTask(&task, model.UpgradeTaskRunning, ""); err != nil {
 		return
 	}
 
-	if err := r.k8s.SetDeploymentImage(ctx, ns, deployName, task.ToImage); err != nil {
-		r.rollbackTask(batch, &task, ns, deployName, "patch deployment: "+err.Error())
+	if err := r.k8s.SetDeploymentImageAndResources(ctx, ns, deployName, task.ToImage, desiredProfile); err != nil {
+		r.rollbackTask(batch, &task, ns, deployName, &oldProfile, "patch deployment: "+err.Error())
 		return
 	}
 	if err := r.waitForRollout(ctx, ns, deployName, task.ToImage); err != nil {
-		r.rollbackTask(batch, &task, ns, deployName, err.Error())
+		r.rollbackTask(batch, &task, ns, deployName, &oldProfile, err.Error())
 		return
 	}
-	if err := recordSuccessfulUpgrade(r.db, &session, &task); err != nil {
-		r.rollbackTask(batch, &task, ns, deployName, "record new image: "+err.Error())
+	if err := recordSuccessfulUpgrade(r.db, &session, &task, desiredProfile); err != nil {
+		r.rollbackTask(batch, &task, ns, deployName, &oldProfile, "record new image and resources: "+err.Error())
 		return
 	}
 	r.setTask(&task, model.UpgradeTaskSucceeded, "")
 	log.Printf("[upgrade] batch %d: session %d %s → %s ready", batch.ID, session.ID, task.Component, task.ToImage)
 }
 
-// recordSuccessfulUpgrade persists the image that is already confirmed ready.
-// Any component the platform stack runs is also the release users should get
-// by default. Keep those writes atomic so a failed default update restores the
-// Deployment instead of leaving the platform and the advertised default out of
+// recordSuccessfulUpgrade persists the image and resources already confirmed
+// ready. Any component the platform stack runs is also the release users should
+// get by default. Keep those writes atomic so a failed update restores the
+// Deployment instead of leaving Kubernetes and the advertised state out of
 // sync.
-func recordSuccessfulUpgrade(db *gorm.DB, session *model.SetupSession, task *model.UpgradeTask) error {
+func recordSuccessfulUpgrade(db *gorm.DB, session *model.SetupSession, task *model.UpgradeTask, profile k8s.ResourceProfile) error {
 	return db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&model.SetupSession{}).Where("id = ?", session.ID).
 			Update(model.UpgradeImageColumn(task.Component), task.ToImage).Error; err != nil {
+			return err
+		}
+		resources := model.WorkloadResource{
+			SetupSessionID: session.ID,
+			Component:      task.Component,
+			CPURequest:     profile.CPURequest,
+			CPULimit:       profile.CPULimit,
+			MemoryRequest:  profile.MemoryRequest,
+			MemoryLimit:    profile.MemoryLimit,
+			ApplyError:     "",
+		}
+		if err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "setup_session_id"}, {Name: "component"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"cpu_request", "cpu_limit", "memory_request", "memory_limit", "apply_error", "updated_at",
+			}),
+		}).Create(&resources).Error; err != nil {
 			return err
 		}
 		if session.DomainType != model.DomainPlatform {
@@ -222,6 +256,82 @@ func recordSuccessfulUpgrade(db *gorm.DB, session *model.SetupSession, task *mod
 		}
 		return model.UpsertImageDefault(tx, task.Component, task.ToImage)
 	})
+}
+
+func (r *Runner) upgradeResourceProfiles(
+	ctx context.Context,
+	sessionID uint,
+	component, namespace, deployment string,
+) (k8s.ResourceProfile, k8s.ResourceProfile, error) {
+	observed, err := r.k8s.DeploymentResourceProfile(ctx, namespace, deployment)
+	if err != nil {
+		return k8s.ResourceProfile{}, k8s.ResourceProfile{}, err
+	}
+	desired := observed
+	saved, err := r.savedResourceProfile(ctx, sessionID, component)
+	if err != nil {
+		return k8s.ResourceProfile{}, k8s.ResourceProfile{}, err
+	}
+	if saved != nil {
+		desired = *saved
+	}
+	profiles, err := resourceprofile.Load(ctx, r.db)
+	if err != nil {
+		return k8s.ResourceProfile{}, k8s.ResourceProfile{}, err
+	}
+	defaults, ok := profiles[component]
+	if !ok {
+		return k8s.ResourceProfile{}, k8s.ResourceProfile{}, fmt.Errorf("unknown component %q", component)
+	}
+	fillMissingProfileValues(&desired, defaults)
+	return observed, desired, nil
+}
+
+func fillMissingProfileValues(profile *k8s.ResourceProfile, defaults k8s.ResourceProfile) {
+	if profile.CPURequest == "" {
+		profile.CPURequest = defaults.CPURequest
+	}
+	if profile.CPULimit == "" {
+		profile.CPULimit = defaults.CPULimit
+	}
+	if profile.MemoryRequest == "" {
+		profile.MemoryRequest = defaults.MemoryRequest
+	}
+	if profile.MemoryLimit == "" {
+		profile.MemoryLimit = defaults.MemoryLimit
+	}
+}
+
+func (r *Runner) savedResourceProfile(ctx context.Context, sessionID uint, component string) (*k8s.ResourceProfile, error) {
+	var saved model.WorkloadResource
+	err := r.db.WithContext(ctx).
+		Where("setup_session_id = ? AND component = ?", sessionID, component).
+		First(&saved).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &k8s.ResourceProfile{
+		CPURequest:    saved.CPURequest,
+		CPULimit:      saved.CPULimit,
+		MemoryRequest: saved.MemoryRequest,
+		MemoryLimit:   saved.MemoryLimit,
+	}, nil
+}
+
+func (r *Runner) cacheRollbackProfile(ctx context.Context, sessionID uint, component string, profile k8s.ResourceProfile) error {
+	resources := model.WorkloadResource{
+		SetupSessionID: sessionID,
+		Component:      component,
+		CPURequest:     profile.CPURequest,
+		CPULimit:       profile.CPULimit,
+		MemoryRequest:  profile.MemoryRequest,
+		MemoryLimit:    profile.MemoryLimit,
+		ApplyError:     "",
+	}
+	return r.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&resources).Error
 }
 
 func (r *Runner) waitForRollout(ctx context.Context, ns, deployName, image string) error {
@@ -249,7 +359,13 @@ func (r *Runner) waitForRollout(ctx context.Context, ns, deployName, image strin
 	}
 }
 
-func (r *Runner) rollbackTask(batch *model.UpgradeBatch, task *model.UpgradeTask, ns, deployName, cause string) {
+func (r *Runner) rollbackTask(
+	batch *model.UpgradeBatch,
+	task *model.UpgradeTask,
+	ns, deployName string,
+	profile *k8s.ResourceProfile,
+	cause string,
+) {
 	// Persist the direction before touching Kubernetes so a restarted API
 	// continues restoring the old image even though the batch is paused.
 	if err := r.db.Transaction(func(tx *gorm.DB) error {
@@ -268,7 +384,13 @@ func (r *Runner) rollbackTask(batch *model.UpgradeBatch, task *model.UpgradeTask
 		r.setTask(task, model.UpgradeTaskRollbackFailed, cause+"; rollback failed: previous image is missing")
 		return
 	}
-	if err := r.k8s.RollbackDeploymentImage(ctx, ns, deployName, task.FromImage); err != nil {
+	var err error
+	if profile == nil {
+		err = r.k8s.RollbackDeploymentImage(ctx, ns, deployName, task.FromImage)
+	} else {
+		err = r.k8s.RollbackDeploymentImageAndResources(ctx, ns, deployName, task.FromImage, *profile)
+	}
+	if err != nil {
 		r.setTask(task, model.UpgradeTaskRollbackFailed, cause+"; rollback failed: "+err.Error())
 		return
 	}

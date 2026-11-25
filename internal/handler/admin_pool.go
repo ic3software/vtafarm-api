@@ -253,6 +253,8 @@ func (h *PoolHandler) CreateBatch(c *gin.Context) {
 			Portable:             true,
 			PreRotationCount:     1,
 		},
+		CPURequest:    profile.CPURequest,
+		CPULimit:      profile.CPULimit,
 		MemoryRequest: profile.MemoryRequest,
 		MemoryLimit:   profile.MemoryLimit,
 	})
@@ -359,6 +361,7 @@ func (h *PoolHandler) AddInventory(c *gin.Context) {
 		AdminID: c.MustGet(middleware.ContextUserID).(uint), BatchID: batchID,
 		Key: key, Digest: hex.EncodeToString(digestBytes[:]), Count: request.Count,
 		Capacity: capacitySnapshot, Session: template,
+		CPURequest: profile.CPURequest, CPULimit: profile.CPULimit,
 		MemoryRequest: profile.MemoryRequest, MemoryLimit: profile.MemoryLimit,
 	})
 	if err != nil {

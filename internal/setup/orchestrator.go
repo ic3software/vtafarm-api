@@ -533,6 +533,7 @@ func (o *Orchestrator) deployVtaOnly(ctx context.Context, ns string, session *mo
 			return false, fmt.Errorf("pool resource profile is missing: %w", err)
 		}
 		p := profiles[k8s.ComponentVTA]
+		p.CPURequest, p.CPULimit = saved.CPURequest, saved.CPULimit
 		p.MemoryRequest, p.MemoryLimit = saved.MemoryRequest, saved.MemoryLimit
 		profiles[k8s.ComponentVTA] = p
 	}
@@ -616,6 +617,7 @@ func (o *Orchestrator) BuildPool(ctx context.Context, sessionID uint) error {
 		return err
 	}
 	profile := profiles[k8s.ComponentVTA]
+	profile.CPURequest, profile.CPULimit = saved.CPURequest, saved.CPULimit
 	profile.MemoryRequest, profile.MemoryLimit = saved.MemoryRequest, saved.MemoryLimit
 	profiles[k8s.ComponentVTA] = profile
 	ns := o.k8s.UserNamespace(fmt.Sprintf("%d", session.UserID))

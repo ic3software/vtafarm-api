@@ -74,11 +74,11 @@ func TestResourceDefaultsPersistence(t *testing.T) {
 	if requestTotal != 336<<20 || limitTotal != 960<<20 {
 		t.Fatalf("factory totals = %d / %d", requestTotal, limitTotal)
 	}
-	inputs := []memoryResourceInput{
-		{Component: "mediator", MemoryRequest: "128Mi", MemoryLimit: "256Mi"},
-		{Component: "vtc", MemoryRequest: "64Mi", MemoryLimit: "256Mi"},
-		{Component: "vta", MemoryRequest: "16Mi", MemoryLimit: "1Gi"},
-		{Component: "dids", MemoryRequest: "64Mi", MemoryLimit: "128Mi"},
+	inputs := []workloadResourceInput{
+		testResourceInput("mediator", "128Mi", "256Mi"),
+		testResourceInput("vtc", "64Mi", "256Mi"),
+		testResourceInput("vta", "16Mi", "1Gi"),
+		testResourceInput("dids", "64Mi", "128Mi"),
 	}
 	encode := func() string {
 		b, err := json.Marshal(map[string]any{"resources": inputs})
@@ -88,7 +88,7 @@ func TestResourceDefaultsPersistence(t *testing.T) {
 		return string(b)
 	}
 	request(http.MethodPut, encode(), http.StatusOK)
-	inputs = append(inputs, memoryResourceInput{Component: "trust-registry", MemoryRequest: "128Mi", MemoryLimit: "512Mi"})
+	inputs = append(inputs, testResourceInput("trust-registry", "128Mi", "512Mi"))
 	request(http.MethodPut, encode(), http.StatusOK)
 	saved, err := resourceprofile.Load(context.Background(), scoped.Session(&gorm.Session{NewDB: true}))
 	if err != nil {
@@ -106,12 +106,12 @@ func TestResourceDefaultsPersistence(t *testing.T) {
 	if saved["mediator"].CPURequest != "50m" {
 		t.Fatal("CPU changed")
 	}
-	for _, invalid := range []memoryResourceInput{
-		{Component: "dids", MemoryRequest: "15Mi", MemoryLimit: "128Mi"},
-		{Component: "dids", MemoryRequest: "64Mi", MemoryLimit: "1025Mi"},
-		{Component: "dids", MemoryRequest: "256Mi", MemoryLimit: "64Mi"},
-		{Component: "vta", MemoryRequest: "16Mi", MemoryLimit: "64Mi"},
-		{Component: "unknown", MemoryRequest: "16Mi", MemoryLimit: "64Mi"},
+	for _, invalid := range []workloadResourceInput{
+		testResourceInput("dids", "15Mi", "128Mi"),
+		testResourceInput("dids", "64Mi", "1025Mi"),
+		testResourceInput("dids", "256Mi", "64Mi"),
+		{Component: "vta", CPURequest: "250m", CPULimit: "100m", MemoryRequest: "16Mi", MemoryLimit: "64Mi"},
+		{Component: "unknown", CPURequest: "10m", CPULimit: "100m", MemoryRequest: "16Mi", MemoryLimit: "64Mi"},
 	} {
 		inputs[2].MemoryLimit = "64Mi"
 		inputs[3] = invalid
@@ -120,7 +120,7 @@ func TestResourceDefaultsPersistence(t *testing.T) {
 			t.Fatal("invalid batch partially updated defaults")
 		}
 	}
-	inputs[3] = memoryResourceInput{Component: "dids", MemoryRequest: "64Mi", MemoryLimit: "128Mi"}
+	inputs[3] = testResourceInput("dids", "64Mi", "128Mi")
 	request(http.MethodPut, encode(), http.StatusOK)
 	if read()["vta"].MemoryLimit != "64Mi" {
 		t.Fatal("factory restore failed")

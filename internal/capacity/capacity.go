@@ -36,9 +36,8 @@ const (
 // CPU and memory planning costs use the provisioning resource profiles.
 // Keep storage costs in sync with the PVC sizes (internal/k8s/setup_jobs.go and
 // internal/setup/orchestrator_fullstack.go).
-// CPU uses requests (there are deliberately no CPU limits). Memory uses hard
-// limits so a reported session count still fits if every new component grows
-// to its configured ceiling.
+// CPU uses requests. Memory uses hard limits so a reported session count still
+// fits if every new component grows to its configured ceiling.
 var (
 	VtaOnly = Mode{Name: "vta_only", Components: []Component{
 		planningComponent(k8s.ComponentVTA, 200*mi),
@@ -79,6 +78,7 @@ func Modes(profiles resourceprofile.Profiles) []Mode {
 		for j := range modes[i].Components {
 			comp := &modes[i].Components[j]
 			resources := profiles.Requirements(comp.Name)
+			comp.CPUMillis = resources.Requests.Cpu().MilliValue()
 			comp.MemBytes = resources.Limits.Memory().Value()
 		}
 	}

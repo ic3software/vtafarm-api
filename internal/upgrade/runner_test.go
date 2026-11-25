@@ -4,10 +4,26 @@ import (
 	"os"
 	"testing"
 
+	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/model"
 	"github.com/ic3software/vtafarm-api/internal/testutil"
 	"gorm.io/gorm"
 )
+
+var testUpgradeProfile = k8s.ResourceProfile{
+	CPURequest: "10m", CPULimit: "100m", MemoryRequest: "16Mi", MemoryLimit: "64Mi",
+}
+
+func TestFillMissingProfileValuesPreservesExistingSettings(t *testing.T) {
+	profile := k8s.ResourceProfile{
+		CPURequest: "25m", MemoryRequest: "32Mi", MemoryLimit: "128Mi",
+	}
+	fillMissingProfileValues(&profile, testUpgradeProfile)
+	if profile.CPURequest != "25m" || profile.CPULimit != "100m" ||
+		profile.MemoryRequest != "32Mi" || profile.MemoryLimit != "128Mi" {
+		t.Fatalf("filled profile = %+v", profile)
+	}
+}
 
 func makePlatformSession(t *testing.T, db *gorm.DB) model.SetupSession {
 	t.Helper()
@@ -55,7 +71,7 @@ func TestRecordSuccessfulUpgradeSyncsPlatformVtaDefault(t *testing.T) {
 	}
 
 	first := model.UpgradeTask{Component: "vta", ToImage: "ghcr.io/o/vta:1.0.0-new"}
-	if err := recordSuccessfulUpgrade(db, &session, &first); err != nil {
+	if err := recordSuccessfulUpgrade(db, &session, &first, testUpgradeProfile); err != nil {
 		t.Fatal(err)
 	}
 	assertImage(first.ToImage, first.ToImage)
@@ -66,7 +82,7 @@ func TestRecordSuccessfulUpgradeSyncsPlatformVtaDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := model.UpgradeTask{Component: "vta", ToImage: "ghcr.io/o/vta:1.0.1-new"}
-	if err := recordSuccessfulUpgrade(db, &session, &second); err != nil {
+	if err := recordSuccessfulUpgrade(db, &session, &second, testUpgradeProfile); err != nil {
 		t.Fatal(err)
 	}
 	assertImage(second.ToImage, second.ToImage)
@@ -83,7 +99,7 @@ func TestRecordSuccessfulUpgradeLeavesDefaultForOtherTargets(t *testing.T) {
 
 	userSession := testutil.SetupSession(t, db, model.ModeVtaOnly)
 	userTask := model.UpgradeTask{Component: "vta", ToImage: "ghcr.io/o/vta:1.0.1-user"}
-	if err := recordSuccessfulUpgrade(db, &userSession, &userTask); err != nil {
+	if err := recordSuccessfulUpgrade(db, &userSession, &userTask, testUpgradeProfile); err != nil {
 		t.Fatal(err)
 	}
 
@@ -92,7 +108,9 @@ func TestRecordSuccessfulUpgradeLeavesDefaultForOtherTargets(t *testing.T) {
 		t.Fatal(err)
 	}
 	mediatorTask := model.UpgradeTask{Component: "mediator", ToImage: "ghcr.io/o/mediator:1.0.1-new"}
-	if err := recordSuccessfulUpgrade(db, &platformSession, &mediatorTask); err != nil {
+	if err := recordSuccessfulUpgrade(db, &platformSession, &mediatorTask, k8s.ResourceProfile{
+		CPURequest: "50m", CPULimit: "250m", MemoryRequest: "128Mi", MemoryLimit: "256Mi",
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -117,7 +135,9 @@ func TestRecordSuccessfulUpgradeLeavesDefaultForUserComponents(t *testing.T) {
 	db := testutil.Postgres(t)
 	userSession := testutil.SetupSession(t, db, model.ModeFullStack)
 	task := model.UpgradeTask{Component: "mediator", ToImage: "ghcr.io/o/mediator:1.0.1-user"}
-	if err := recordSuccessfulUpgrade(db, &userSession, &task); err != nil {
+	if err := recordSuccessfulUpgrade(db, &userSession, &task, k8s.ResourceProfile{
+		CPURequest: "50m", CPULimit: "250m", MemoryRequest: "128Mi", MemoryLimit: "256Mi",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	var count int64
@@ -126,6 +146,33 @@ func TestRecordSuccessfulUpgradeLeavesDefaultForUserComponents(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("user upgrade wrote %d image defaults", count)
+	}
+}
+
+func TestRecordSuccessfulUpgradeSavesAppliedResources(t *testing.T) {
+	db := testutil.Postgres(t)
+	session := testutil.SetupSession(t, db, model.ModeVtaOnly)
+	if err := db.Create(&model.WorkloadResource{
+		SetupSessionID: session.ID,
+		Component:      k8s.ComponentVTA,
+		CPURequest:     "10m",
+		CPULimit:       "",
+		MemoryRequest:  "16Mi",
+		MemoryLimit:    "64Mi",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	task := model.UpgradeTask{Component: k8s.ComponentVTA, ToImage: "ghcr.io/o/vta:new"}
+	if err := recordSuccessfulUpgrade(db, &session, &task, testUpgradeProfile); err != nil {
+		t.Fatal(err)
+	}
+
+	var got model.WorkloadResource
+	if err := db.First(&got, "setup_session_id = ? AND component = ?", session.ID, k8s.ComponentVTA).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got.CPURequest != "10m" || got.CPULimit != "100m" || got.MemoryRequest != "16Mi" || got.MemoryLimit != "64Mi" {
+		t.Fatalf("saved resources = %+v", got)
 	}
 }
 

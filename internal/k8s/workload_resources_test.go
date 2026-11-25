@@ -13,25 +13,51 @@ import (
 
 func TestDefaultResourceProfiles(t *testing.T) {
 	tests := []struct {
-		component, cpu, request, limit string
+		component, cpuRequest, cpuLimit, memoryRequest, memoryLimit string
 	}{
-		{ComponentVTA, "10m", "16Mi", "64Mi"},
-		{ComponentMediator, "50m", "128Mi", "256Mi"},
-		{ComponentDids, "10m", "64Mi", "128Mi"},
-		{ComponentVTC, "10m", "64Mi", "256Mi"},
+		{ComponentVTA, "10m", "100m", "16Mi", "64Mi"},
+		{ComponentMediator, "50m", "250m", "128Mi", "256Mi"},
+		{ComponentDids, "10m", "100m", "64Mi", "128Mi"},
+		{ComponentVTC, "10m", "100m", "64Mi", "256Mi"},
+		{ComponentTrustRegistry, "10m", "100m", "64Mi", "256Mi"},
 	}
 	for _, test := range tests {
 		profile, ok := DefaultResourceProfile(test.component)
 		if !ok {
 			t.Fatalf("missing profile for %s", test.component)
 		}
-		if profile.CPURequest != test.cpu || profile.CPULimit != "" ||
-			profile.MemoryRequest != test.request || profile.MemoryLimit != test.limit {
+		if profile.CPURequest != test.cpuRequest || profile.CPULimit != test.cpuLimit ||
+			profile.MemoryRequest != test.memoryRequest || profile.MemoryLimit != test.memoryLimit {
 			t.Errorf("%s profile = %+v", test.component, profile)
 		}
 	}
 	if _, ok := DefaultResourceProfile("unknown"); ok {
 		t.Fatal("unknown component has a default profile")
+	}
+}
+
+func TestUpdateDeploymentResourcesSetsCPULimit(t *testing.T) {
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "fs-7-vta", Namespace: "test"},
+		Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "fs-7-vta"}},
+		}}},
+	}
+	client := &Client{kube: fake.NewSimpleClientset(deployment)}
+	profile := ResourceProfile{CPURequest: "25m", CPULimit: "250m", MemoryRequest: "32Mi", MemoryLimit: "128Mi"}
+	if err := client.UpdateDeploymentResources(context.Background(), "test", "fs-7-vta", profile); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := client.kube.AppsV1().Deployments("test").Get(context.Background(), "fs-7-vta", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resources := updated.Spec.Template.Spec.Containers[0].Resources
+	if got := resources.Requests.Cpu().String(); got != "25m" {
+		t.Errorf("CPU request = %s, want 25m", got)
+	}
+	if got := resources.Limits.Cpu().String(); got != "250m" {
+		t.Errorf("CPU limit = %s, want 250m", got)
 	}
 }
 
@@ -104,6 +130,21 @@ func TestValidateMemorySettings(t *testing.T) {
 	} {
 		if err := ValidateMemorySettings(test.request, test.limit); (err == nil) != test.valid {
 			t.Errorf("ValidateMemorySettings(%q, %q) = %v", test.request, test.limit, err)
+		}
+	}
+}
+
+func TestValidateCPUSettings(t *testing.T) {
+	for _, test := range []struct {
+		request, limit string
+		valid          bool
+	}{
+		{"10m", "2", true}, {"25m", "250m", true},
+		{"9m", "100m", false}, {"10m", "2001m", false},
+		{"250m", "100m", false}, {"bad", "1", false},
+	} {
+		if err := ValidateCPUSettings(test.request, test.limit); (err == nil) != test.valid {
+			t.Errorf("ValidateCPUSettings(%q, %q) = %v", test.request, test.limit, err)
 		}
 	}
 }

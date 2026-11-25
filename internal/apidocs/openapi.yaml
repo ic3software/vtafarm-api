@@ -255,7 +255,7 @@ components:
       type: object
       properties:
         cpu_request: { type: string, example: 10m }
-        cpu_limit: { type: string, example: "" }
+        cpu_limit: { type: string, example: 100m }
         memory_request: { type: string, example: 128Mi }
         memory_limit: { type: string, example: 512Mi }
       required: [cpu_request, cpu_limit, memory_request, memory_limit]
@@ -3003,9 +3003,11 @@ paths:
                           description: Cached desired resource settings. Missing cache entries for running sessions are imported from Kubernetes on first read.
                           items:
                             type: object
-                            required: [component, memory_request, memory_limit, customized]
+                            required: [component, cpu_request, cpu_limit, memory_request, memory_limit, customized]
                             properties:
                               component: { type: string, enum: [vta, mediator, dids, vtc, trust-registry] }
+                              cpu_request: { type: string, example: 25m }
+                              cpu_limit: { type: string, example: 250m }
                               memory_request: { type: string, example: 128Mi }
                               memory_limit: { type: string, example: 512Mi }
                               customized:
@@ -3087,9 +3089,11 @@ paths:
                   maxItems: 5
                   items:
                     type: object
-                    required: [component, memory_request, memory_limit]
+                    required: [component, cpu_request, cpu_limit, memory_request, memory_limit]
                     properties:
                       component: { type: string, enum: [mediator, vtc, vta, dids, trust-registry] }
+                      cpu_request: { type: string, example: 25m }
+                      cpu_limit: { type: string, example: 250m }
                       memory_request: { type: string, example: 16Mi }
                       memory_limit: { type: string, example: 64Mi }
       responses:
@@ -3206,11 +3210,16 @@ paths:
                   maxItems: 5
                   items:
                     type: object
-                    required: [component, memory_request, memory_limit]
+                    required: [component, cpu_request, cpu_limit, memory_request, memory_limit]
                     properties:
                       component:
                         type: string
                         enum: [vta, mediator, dids, vtc, trust-registry]
+                      cpu_request:
+                        type: string
+                        example: 25m
+                        description: Kubernetes quantity between 10m and 2 cores inclusive, at most cpu_limit.
+                      cpu_limit: { type: string, example: 250m, description: "Kubernetes quantity between 10m and 2 cores inclusive." }
                       memory_request:
                         type: string
                         example: 128Mi
@@ -3273,6 +3282,8 @@ paths:
                         desired:
                           type: object
                           properties:
+                            cpu_request: { type: string }
+                            cpu_limit: { type: string }
                             memory_request: { type: string }
                             memory_limit: { type: string }
                         actual: { $ref: "#/components/schemas/ResourceProfile" }

@@ -19,12 +19,16 @@ const adminSessionsDefaultPageSize = 20
 
 type adminSessionStoredResource struct {
 	Component     string `json:"component"`
+	CPURequest    string `json:"cpu_request"`
+	CPULimit      string `json:"cpu_limit"`
 	MemoryRequest string `json:"memory_request"`
 	MemoryLimit   string `json:"memory_limit"`
 }
 
 type adminSessionResourceDefault struct {
 	Component     string `json:"component"`
+	CPURequest    string `json:"cpu_request"`
+	CPULimit      string `json:"cpu_limit"`
 	MemoryRequest string `json:"memory_request"`
 	MemoryLimit   string `json:"memory_limit"`
 }
@@ -65,6 +69,8 @@ type adminSessionQueryResult struct {
 
 type adminSessionResourceSummary struct {
 	Component     string `json:"component"`
+	CPURequest    string `json:"cpu_request"`
+	CPULimit      string `json:"cpu_limit"`
 	MemoryRequest string `json:"memory_request"`
 	MemoryLimit   string `json:"memory_limit"`
 	Customized    bool   `json:"customized"`
@@ -178,6 +184,8 @@ WITH base AS (
         COALESCE((
             SELECT jsonb_agg(jsonb_build_object(
                 'component', wr.component,
+                'cpu_request', wr.cpu_request,
+                'cpu_limit', wr.cpu_limit,
                 'memory_request', wr.memory_request,
                 'memory_limit', wr.memory_limit
             ) ORDER BY wr.component)
@@ -196,6 +204,8 @@ SELECT
     COALESCE((
         SELECT jsonb_agg(jsonb_build_object(
             'component', rd.component,
+            'cpu_request', rd.cpu_request,
+            'cpu_limit', rd.cpu_limit,
             'memory_request', rd.memory_request,
             'memory_limit', rd.memory_limit
         ) ORDER BY rd.component) FROM resource_defaults rd
@@ -231,7 +241,8 @@ SELECT
 	defaultRows := make([]model.ResourceDefault, len(defaults))
 	for i, item := range defaults {
 		defaultRows[i] = model.ResourceDefault{
-			Component: item.Component, MemoryRequest: item.MemoryRequest, MemoryLimit: item.MemoryLimit,
+			Component: item.Component, CPURequest: item.CPURequest, CPULimit: item.CPULimit,
+			MemoryRequest: item.MemoryRequest, MemoryLimit: item.MemoryLimit,
 		}
 	}
 	profiles, err := resourceprofile.FromRows(defaultRows)
@@ -292,6 +303,8 @@ SELECT
 				}
 				storedResources[target.Component] = adminSessionStoredResource{
 					Component:     cached.Component,
+					CPURequest:    cached.CPURequest,
+					CPULimit:      cached.CPULimit,
 					MemoryRequest: cached.MemoryRequest,
 					MemoryLimit:   cached.MemoryLimit,
 				}
@@ -305,9 +318,13 @@ SELECT
 			defaults := profiles[target.Component]
 			items[i].Resources = append(items[i].Resources, adminSessionResourceSummary{
 				Component:     target.Component,
+				CPURequest:    stored.CPURequest,
+				CPULimit:      stored.CPULimit,
 				MemoryRequest: stored.MemoryRequest,
 				MemoryLimit:   stored.MemoryLimit,
-				Customized: !sameMemory(stored.MemoryRequest, defaults.MemoryRequest) ||
+				Customized: !sameQuantity(stored.CPURequest, defaults.CPURequest) ||
+					!sameQuantity(stored.CPULimit, defaults.CPULimit) ||
+					!sameMemory(stored.MemoryRequest, defaults.MemoryRequest) ||
 					!sameMemory(stored.MemoryLimit, defaults.MemoryLimit),
 			})
 		}

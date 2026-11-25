@@ -138,9 +138,8 @@ generic `ComponentJobSpec` / `ComponentDeploymentSpec` helpers — no per-compon
 primitives. Nothing is shared between them at runtime; the cross-component file handoffs
 happen only during setup ([§4](#4-cross-component-file-handoffs)).
 
-Per-component resource costs (CPU **requests** only — deliberately no CPU limits — and
-memory limits) are mirrored in `internal/capacity/capacity.go` for admission/capacity
-planning; keep the two in sync.
+Per-component CPU and memory requests/limits come from the resource profiles. Capacity
+planning uses CPU requests and memory limits from the same profile snapshot.
 
 ---
 
