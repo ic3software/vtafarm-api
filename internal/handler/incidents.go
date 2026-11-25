@@ -30,7 +30,6 @@ var tenantAlertTypes = map[string]string{
 	"VTAFarmStorageUsageCritical":  "storage_usage_critical",
 	"VTAFarmMemoryOOMKilled":       "memory_oom",
 	"VTAFarmComponentCrashLooping": "component_crash_looping",
-	"VTAFarmComponentUnavailable":  "component_unavailable",
 }
 
 type alertmanagerWebhook struct {

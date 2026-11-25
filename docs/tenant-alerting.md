@@ -24,7 +24,6 @@ Alertmanager is responsible for evaluation delivery, grouping, inhibition, and r
 | `VTAFarmStorageUsageCritical` | critical | persistent-volume usage is at least 90% of capacity | 5 minutes | Writes may fail soon |
 | `VTAFarmMemoryOOMKilled` | critical | a container restarted in the last 5 minutes and its last termination reason is `OOMKilled` | immediate | Component restarted after reaching its memory limit |
 | `VTAFarmComponentCrashLooping` | critical | a container remains in `CrashLoopBackOff` | 3 minutes | Component cannot start reliably |
-| `VTAFarmComponentUnavailable` | critical | a Deployment has zero available replicas | 2 minutes | Component is unavailable |
 
 CPU and memory percentages use the Kubernetes container limits applied to the workload. Storage uses the PVC requested capacity. A missing limit or capacity produces no percentage alert instead of inventing a denominator.
 
@@ -39,7 +38,7 @@ Every tenant rule sets:
 - `audience="tenant"`: required by both the Alertmanager route and API allowlist.
 - `severity="warning"` or `severity="critical"`.
 - `category="resource"` or `category="availability"`.
-- `resource`: `cpu`, `memory`, `storage`, `runtime`, or `availability`.
+- `resource`: `cpu`, `memory`, `storage`, or `runtime`.
 - `cluster`: supplied by Prometheus external labels.
 - `label_session_id`: internal numeric setup-session ID propagated from the workload label.
 - `label_app`: workload component label, mapped by the API to `vta`, `mediator`, `dids`, `vtc`, or `trust-registry`.
@@ -58,7 +57,7 @@ The API suppresses user visibility when the session is not running or has an act
 
 The incident identity is the tuple `(cluster, fingerprint, starts_at)`. Repeated Alertmanager deliveries update `last_seen_at` rather than creating duplicate rows. A resolved event closes the matching incident; a late firing delivery cannot reopen an already resolved incident.
 
-`downtime_seconds` is the elapsed time between `started_at` and `resolved_at`. It is an observed alert window, not an SLA calculation. For resource-pressure alerts it describes how long the alert condition remained active; for component-unavailable alerts it approximates observed downtime after the two-minute pending period.
+`downtime_seconds` is the elapsed time between `started_at` and `resolved_at`. It is an observed alert window, not an SLA calculation. For resource-pressure alerts it describes how long the alert condition remained active.
 
 ## HTTP API
 
