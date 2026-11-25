@@ -80,7 +80,7 @@ The full schemas are in `/openapi.yaml` and the interactive reference at `/docs`
 - `PATCH /api/v1/setup/{id}/incidents/{incident_id}` with `{ "read": true | false }`: update read state.
 - `GET /api/v1/setup/{id}/incidents/{incident_id}/logs`: download related retained logs.
 
-List endpoints support `status=firing|resolved`, `unread=true`, and `limit=1..100`.
+List endpoints support `status=firing|resolved`, `resource=cpu|memory|storage|runtime|availability`, `range=24h|7d|30d|all`, `unread=true`, `page`, and `limit=1..100`. Responses include `page`, `page_size`, `total`, and `total_pages` alongside the incidents.
 
 ### Admin endpoints
 

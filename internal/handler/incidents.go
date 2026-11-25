@@ -54,6 +54,14 @@ type incidentResponse struct {
 	Suppressed      bool   `json:"suppressed,omitempty"`
 }
 
+type incidentListResponse struct {
+	Incidents  []incidentResponse `json:"incidents"`
+	Page       int                `json:"page"`
+	PageSize   int                `json:"page_size"`
+	Total      int64              `json:"total"`
+	TotalPages int                `json:"total_pages"`
+}
+
 func (h *SetupHandler) ConfigureAlertmanagerWebhook(token string) {
 	h.alertmanagerWebhookToken = strings.TrimSpace(token)
 }
@@ -255,13 +263,47 @@ func (h *SetupHandler) listIncidents(c *gin.Context, query *gorm.DB, hideSuppres
 	if c.Query("unread") == "true" {
 		query = query.Where("incidents.read_at IS NULL")
 	}
+	if resource := c.Query("resource"); resource != "" {
+		switch resource {
+		case "cpu", "memory", "storage", "runtime", "availability":
+			query = query.Where("incidents.resource = ?", resource)
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "resource must be cpu, memory, storage, runtime, or availability"})
+			return
+		}
+	}
+	if incidentRange := c.Query("range"); incidentRange != "" && incidentRange != "all" {
+		var duration time.Duration
+		switch incidentRange {
+		case "24h":
+			duration = 24 * time.Hour
+		case "7d":
+			duration = 7 * 24 * time.Hour
+		case "30d":
+			duration = 30 * 24 * time.Hour
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "range must be 24h, 7d, 30d, or all"})
+			return
+		}
+		query = query.Where("incidents.started_at >= ?", time.Now().UTC().Add(-duration))
+	}
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	if page < 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "page must be at least 1"})
+		return
+	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	if limit < 1 || limit > 100 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "limit must be between 1 and 100"})
 		return
 	}
+	var total int64
+	if err := query.Session(&gorm.Session{}).Model(&model.Incident{}).Count(&total).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not count incidents"})
+		return
+	}
 	var incidents []model.Incident
-	if err := query.Order("incidents.started_at DESC").Limit(limit).Find(&incidents).Error; err != nil {
+	if err := query.Order("incidents.started_at DESC").Offset((page - 1) * limit).Limit(limit).Find(&incidents).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not load incidents"})
 		return
 	}
@@ -276,7 +318,10 @@ func (h *SetupHandler) listIncidents(c *gin.Context, query *gorm.DB, hideSuppres
 		}
 		responses = append(responses, toIncidentResponse(incident, session.VtaName))
 	}
-	c.JSON(http.StatusOK, gin.H{"incidents": responses})
+	totalPages := int((total + int64(limit) - 1) / int64(limit))
+	c.JSON(http.StatusOK, incidentListResponse{
+		Incidents: responses, Page: page, PageSize: limit, Total: total, TotalPages: totalPages,
+	})
 }
 
 func toIncidentResponse(incident model.Incident, sessionID string) incidentResponse {

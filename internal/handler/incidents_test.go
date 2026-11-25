@@ -106,6 +106,26 @@ func TestAlertmanagerWebhookLifecycleAndUserIncidentAPI(t *testing.T) {
 		response.Incidents[0].DowntimeSeconds == nil || *response.Incidents[0].DowntimeSeconds != 180 {
 		t.Fatalf("resolved incidents = %+v", response.Incidents)
 	}
+	w = request(http.MethodGet, "/setup/alert-session/incidents?status=resolved&resource=memory&range=all&page=1&limit=1", "", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("filtered incidents = %d: %s", w.Code, w.Body.String())
+	}
+	var filtered incidentListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &filtered); err != nil {
+		t.Fatal(err)
+	}
+	if len(filtered.Incidents) != 1 || filtered.Total != 1 || filtered.Page != 1 || filtered.PageSize != 1 || filtered.TotalPages != 1 {
+		t.Fatalf("filtered incident page = %+v", filtered)
+	}
+	for _, path := range []string{
+		"/setup/alert-session/incidents?resource=network",
+		"/setup/alert-session/incidents?range=2d",
+		"/setup/alert-session/incidents?page=0",
+	} {
+		if w := request(http.MethodGet, path, "", ""); w.Code != http.StatusBadRequest {
+			t.Fatalf("invalid filter %q = %d: %s", path, w.Code, w.Body.String())
+		}
+	}
 	if w := request(http.MethodGet, "/user/incidents", "", ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"session_id":"alert-session"`) {
 		t.Fatalf("user incidents = %d: %s", w.Code, w.Body.String())
 	}
