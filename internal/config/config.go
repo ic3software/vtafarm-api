@@ -47,6 +47,7 @@ type Config struct {
 	Placement          PlacementConfig
 	Metrics            MetricsConfig
 	Logging            LoggingConfig
+	Alerting           AlertingConfig
 }
 
 type MetricsConfig struct {
@@ -64,6 +65,10 @@ type MetricsConfig struct {
 type LoggingConfig struct {
 	QueryURL     string
 	QueryTimeout time.Duration
+}
+
+type AlertingConfig struct {
+	WebhookToken string
 }
 
 const (
@@ -299,6 +304,9 @@ func Load() *Config {
 		Logging: LoggingConfig{
 			QueryURL:     getEnv("LOGGING_QUERY_URL", ""),
 			QueryTimeout: getEnvDuration("LOGGING_QUERY_TIMEOUT", 5*time.Minute),
+		},
+		Alerting: AlertingConfig{
+			WebhookToken: getEnv("ALERTMANAGER_WEBHOOK_TOKEN", ""),
 		},
 		Vault: VaultConfig{
 			Addr:         getEnv("VAULT_ADDR", ""),
