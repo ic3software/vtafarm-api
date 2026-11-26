@@ -13,6 +13,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	"github.com/ic3software/vtafarm-api/internal/capacity"
+	"github.com/ic3software/vtafarm-api/internal/didkey"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/middleware"
 	"github.com/ic3software/vtafarm-api/internal/model"
@@ -29,6 +30,13 @@ import (
 // internal/setup and internal/handler decoupled).
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func didsEnrollmentSubject(session *model.SetupSession) (string, error) {
+	if !session.DidsEnrollUsed {
+		return session.DIDHostingAdminDid, nil
+	}
+	return didkey.Generate()
 }
 
 // strVal dereferences a nullable model field, returning "" for nil — the
@@ -545,7 +553,10 @@ func (h *SetupHandler) logsFullStack(c *gin.Context, session *model.SetupSession
 
 // ReissueDidsEnroll handles POST /api/v1/setup/:id/dids/reissue-enroll
 // (design §12, optional endpoint) — regenerates the single-use dids admin
-// enrollment URL by re-running `did-hosting-daemon invite`.
+// enrollment URL by re-running `did-hosting-daemon invite`. Once the original
+// invite has been opened, it targets a fresh did:key whose private key is
+// intentionally discarded: the DID is only a unique subject for a separate
+// passkey administrator.
 //
 // The dids daemon holds an exclusive lock on its local (Fjall) store for as
 // long as it's running, so the invite Job can't open the same store
@@ -577,6 +588,11 @@ func (h *SetupHandler) reissueDidsEnroll(c *gin.Context, session *model.SetupSes
 	}
 	if h.k8s == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "k8s not configured"})
+		return
+	}
+	subjectDID, err := didsEnrollmentSubject(session)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate admin DID"})
 		return
 	}
 	release, err := h.acquireSessionMaintenance(session.ID)
@@ -621,7 +637,7 @@ func (h *SetupHandler) reissueDidsEnroll(c *gin.Context, session *model.SetupSes
 
 	h.k8s.DeleteComponentJob(ctx, ns, jobName) // clear a previous (TTL'd) run if still present
 
-	cmd := fmt.Sprintf("did-hosting-daemon invite --role admin --did %s", shellQuote(session.DIDHostingAdminDid))
+	cmd := fmt.Sprintf("did-hosting-daemon invite --role admin --did %s", shellQuote(subjectDID))
 	if err := h.k8s.CreateComponentJob(ctx, ns, k8s.ComponentJobSpec{
 		Name:           jobName,
 		Image:          session.DidsImage,
@@ -662,6 +678,7 @@ func (h *SetupHandler) reissueDidsEnroll(c *gin.Context, session *model.SetupSes
 	c.JSON(http.StatusOK, gin.H{
 		"dids_admin_enroll_url":        enrollURL,
 		"dids_admin_enroll_claim_code": claimCode,
+		"dids_admin_did":               subjectDID,
 	})
 }
 

@@ -4065,7 +4065,9 @@ paths:
         Exists for the platform stack: it is owned by a passkey-less system
         account, so the user-facing route can never be called for it — and
         without this one an admin can see the stack's single-use enrollment link
-        but never replace a spent one.
+        but never replace a spent one. Once the original link has been opened,
+        the replacement targets a newly generated `did:key` subject for a
+        separate passkey-only backup administrator.
       tags: [Admin]
       security: [{ CookieAuthAdmin: [] }]
       parameters:
@@ -4080,7 +4082,8 @@ paths:
                 properties:
                   dids_admin_enroll_url: { type: string }
                   dids_admin_enroll_claim_code: { type: string }
-                required: [dids_admin_enroll_url, dids_admin_enroll_claim_code]
+                  dids_admin_did: { type: string }
+                required: [dids_admin_enroll_url, dids_admin_enroll_claim_code, dids_admin_did]
         "401": { description: Missing or invalid token, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "404": { description: Session not found, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "409": { description: The dids daemon isn't provisioned yet, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
@@ -7377,9 +7380,11 @@ paths:
       description: |
         full_stack only. Regenerates the single-use dids admin-panel enrollment URL
         and its second-channel claim code
-        (re-runs `did-hosting-daemon invite --role admin`) — useful if the original URL
-        (returned once from `step_dids_invite` / `GET /setup/{id}`) was lost or already
-        consumed. Scales the dids Deployment to 0 and waits for its pod to terminate
+        (re-runs `did-hosting-daemon invite --role admin`). Before the original link is
+        opened, the replacement targets the setup-generated admin DID. Afterwards it
+        targets a newly generated `did:key` subject so the invite can enroll a
+        separate passkey-only backup administrator. Scales the dids Deployment
+        to 0 and waits for its pod to terminate
         (releasing the exclusive lock on the daemon's local store), runs the invite Job,
         then scales the daemon back to 1 — the daemon is restarted even if the job
         itself fails. On success, resets `dids_enroll_used` to false.
@@ -7407,7 +7412,10 @@ paths:
                   dids_admin_enroll_claim_code:
                     type: string
                     example: "7KQ4-MX2P-9TDA"
-                required: [dids_admin_enroll_url, dids_admin_enroll_claim_code]
+                  dids_admin_did:
+                    type: string
+                    example: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+                required: [dids_admin_enroll_url, dids_admin_enroll_claim_code, dids_admin_did]
         "400":
           description: Session is not a full_stack session
           content:
