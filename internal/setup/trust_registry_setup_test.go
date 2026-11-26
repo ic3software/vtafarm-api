@@ -3,6 +3,7 @@ package setup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ic3software/vtafarm-api/internal/config"
 	"github.com/ic3software/vtafarm-api/internal/k8s"
@@ -66,6 +68,53 @@ func TestRegistryHeadlessRecipeAndCompletion(t *testing.T) {
 			t.Fatal("accepted an incomplete or mismatched setup receipt")
 		}
 	}
+}
+
+func TestRegistrySetupRetriesOnlyMediatorReadinessFailures(t *testing.T) {
+	t.Run("DIDComm startup gap", func(t *testing.T) {
+		attempts := 0
+		var waited []time.Duration
+		output, err := runRegistrySetupWithRetry(t.Context(), []time.Duration{time.Second, 2 * time.Second}, func() (string, error) {
+			attempts++
+			if attempts == 1 {
+				return "", errors.New("setup job failed: Could not open an authenticated DIDComm session to the VTA (Transport (HTTP(S)) error: WebSocket isActive? command timed out)")
+			}
+			return "registry_did=did:webvh:registry", nil
+		}, func(_ context.Context, delay time.Duration) error {
+			waited = append(waited, delay)
+			return nil
+		})
+		if err != nil || output != "registry_did=did:webvh:registry" || attempts != 2 || len(waited) != 1 || waited[0] != time.Second {
+			t.Fatalf("output=%q err=%v attempts=%d waited=%v", output, err, attempts, waited)
+		}
+	})
+
+	t.Run("configuration failure", func(t *testing.T) {
+		attempts := 0
+		want := errors.New("setup recipe is invalid")
+		_, err := runRegistrySetupWithRetry(t.Context(), []time.Duration{time.Second}, func() (string, error) {
+			attempts++
+			return "", want
+		}, func(context.Context, time.Duration) error {
+			t.Fatal("non-transient failures must not wait for a retry")
+			return nil
+		})
+		if !errors.Is(err, want) || attempts != 1 {
+			t.Fatalf("err=%v attempts=%d", err, attempts)
+		}
+	})
+
+	t.Run("retry budget exhausted", func(t *testing.T) {
+		attempts := 0
+		want := errors.New("WebSocket isActive? command timed out")
+		_, err := runRegistrySetupWithRetry(t.Context(), []time.Duration{time.Second, 2 * time.Second}, func() (string, error) {
+			attempts++
+			return "", want
+		}, func(context.Context, time.Duration) error { return nil })
+		if !errors.Is(err, want) || attempts != 3 {
+			t.Fatalf("err=%v attempts=%d", err, attempts)
+		}
+	})
 }
 
 func TestRegistryPreparationLeavesOptedOutAndExistingCommunitiesAlone(t *testing.T) {

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
+	"time"
 
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/model"
@@ -14,6 +16,11 @@ import (
 
 const registryWorkDir = "/work/trust-registry"
 const registryCredentialPath = registryWorkDir + "/vta-credential.json"
+
+// The VTA's HTTP readiness becomes true before its independently reconnecting
+// mediator WebSocket. Retry only that pre-session timeout: setup has not
+// authenticated or mutated Registry identity state at that point.
+var registrySetupRetryDelays = []time.Duration{5 * time.Second, 15 * time.Second, 30 * time.Second}
 
 // The earlier offline flow created contexts without the one-time admin handoff.
 // Use a distinct context; never repurpose or delete a legacy context's identity.
@@ -63,6 +70,42 @@ func parseRegistrySetupOutput(output string, s *model.SetupSession) (string, err
 		return "", errors.New("registry setup output is incomplete or does not match this session")
 	}
 	return values["registry_did"], nil
+}
+
+func retryableRegistrySetupError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "WebSocket isActive? command timed out")
+}
+
+func waitForRegistrySetupRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func runRegistrySetupWithRetry(
+	ctx context.Context,
+	delays []time.Duration,
+	run func() (string, error),
+	wait func(context.Context, time.Duration) error,
+) (string, error) {
+	for attempt := 0; ; attempt++ {
+		output, err := run()
+		if err == nil || !retryableRegistrySetupError(err) || attempt >= len(delays) {
+			return output, err
+		}
+		log.Printf("[orchestrator] Trust Registry setup reached the VTA before DIDComm was ready; retrying in %s (attempt %d/%d)", delays[attempt], attempt+2, len(delays)+1)
+		if err := wait(ctx, delays[attempt]); err != nil {
+			return "", err
+		}
+	}
 }
 
 // Provision before VTC setup on new stacks, or during opt-in on existing stacks.
@@ -141,8 +184,10 @@ func (o *Orchestrator) provisionRegistry(ctx context.Context, ns string, s *mode
 	if err := o.RegistryPhase(s, "provision_identity"); err != nil {
 		return err
 	}
-	output, err = o.registryJob(ctx, ns, s, "setup", s.TrustRegistryImage, registryWorkDir,
-		[]string{"trust-registry", "setup", "--from", "/config/tr-setup.toml"}, mounts, map[string][]byte{"tr-setup.toml": recipe})
+	output, err = runRegistrySetupWithRetry(ctx, registrySetupRetryDelays, func() (string, error) {
+		return o.registryJob(ctx, ns, s, "setup", s.TrustRegistryImage, registryWorkDir,
+			[]string{"trust-registry", "setup", "--from", "/config/tr-setup.toml"}, mounts, map[string][]byte{"tr-setup.toml": recipe})
+	}, waitForRegistrySetupRetry)
 	if err != nil {
 		return err
 	}
