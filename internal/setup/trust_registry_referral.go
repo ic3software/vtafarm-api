@@ -10,7 +10,6 @@ import (
 	"github.com/ic3software/vtafarm-api/internal/k8s"
 	"github.com/ic3software/vtafarm-api/internal/model"
 	"github.com/ic3software/vtafarm-api/internal/vta"
-	"github.com/ic3software/vtafarm-api/internal/webvh"
 )
 
 const (
@@ -29,6 +28,10 @@ const (
 
 // newVtaClient is the seam a test replaces to stand in a VTA.
 var newVtaClient = vta.NewEphemeral
+
+type referralDIDResolver interface {
+	ResolveDocument(context.Context, string) ([]byte, error)
+}
 
 // publishRegistryReferral adds the TrustRegistry referral to the VTC's
 // published DID document, through the running VTA.
@@ -55,8 +58,8 @@ var newVtaClient = vta.NewEphemeral
 // with an unchanged document, which the VTA answers by reconciling the host
 // and then appending a version. Either way the verify phase that follows reads
 // the host, not this function's belief.
-func (o *Orchestrator) publishRegistryReferral(ctx context.Context, ns string, s *model.SetupSession) error {
-	published, err := webvh.NewResolver(webvh.DefaultTimeout).ResolveDocument(ctx, s.VtcDid)
+func (o *Orchestrator) publishRegistryReferral(ctx context.Context, ns string, s *model.SetupSession, resolver referralDIDResolver) error {
+	published, err := resolver.ResolveDocument(ctx, s.VtcDid)
 	if err != nil {
 		return fmt.Errorf("resolve the VTC DID before publishing the referral: %w", err)
 	}

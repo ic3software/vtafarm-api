@@ -192,7 +192,8 @@ func (o *Orchestrator) EnableTrustRegistry(ctx context.Context, s *model.SetupSe
 	if _, err := MergeRegistryConfig(current, placeholder); err != nil {
 		return err
 	}
-	document, err := o.registryDIDResolver().ResolveDocument(ctx, s.VtcDid)
+	resolver := o.registryDIDResolver()
+	document, err := resolver.ResolveDocument(ctx, s.VtcDid)
 	if err != nil {
 		return fmt.Errorf("cannot validate existing VTC DID history: %w", err)
 	}
@@ -202,7 +203,7 @@ func (o *Orchestrator) EnableTrustRegistry(ctx context.Context, s *model.SetupSe
 	if err = o.provisionRegistry(ctx, ns, s); err != nil {
 		return err
 	}
-	if err = o.registryDIDResolver().ResolveDID(ctx, s.TrustRegistryDid); err != nil {
+	if err = resolver.ResolveDID(ctx, s.TrustRegistryDid); err != nil {
 		return fmt.Errorf("registry DID did not resolve: %w", err)
 	}
 	if err = o.RegistryPhase(s, "deploy_registry"); err != nil {
@@ -216,7 +217,7 @@ func (o *Orchestrator) EnableTrustRegistry(ctx context.Context, s *model.SetupSe
 	}
 	// Through the running VTA, which reads its own head immediately before
 	// editing; the preflight snapshot above is never applied.
-	if err = o.publishRegistryReferral(ctx, ns, s); err != nil {
+	if err = o.publishRegistryReferral(ctx, ns, s, resolver); err != nil {
 		return err
 	}
 	if err = o.RegistryPhase(s, "configure_vtc"); err != nil {
@@ -246,7 +247,7 @@ mv config.toml.vtafarm-registry-next config.toml`}, []k8s.PVCMount{{Name: "vtc-d
 	if err = o.RegistryPhase(s, "verify"); err != nil {
 		return err
 	}
-	document, err = o.registryDIDResolver().ResolveDocument(ctx, s.VtcDid)
+	document, err = resolver.ResolveDocument(ctx, s.VtcDid)
 	if err != nil {
 		return err
 	}
