@@ -1,5 +1,16 @@
 # Changelog
 
+## [v0.23.1] - 2026-11-27
+
+### Fixed
+
+- Trust Registry setup uses one configured DID resolver throughout referral
+  publication and retries when VTA readiness briefly precedes DIDComm
+  connectivity.
+- Reissuing a DID Hosting administrator enrollment after the original link is
+  opened creates a unique subject for a separate passkey-only backup
+  administrator instead of targeting the setup administrator again.
+
 ## [v0.23.0] - 2026-11-25
 
 ### Added
